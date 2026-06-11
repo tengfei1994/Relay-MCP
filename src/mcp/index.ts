@@ -1,0 +1,295 @@
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import express from "express";
+import { z } from "zod";
+import jwt from "jsonwebtoken";
+import { ProjectRegistry } from "./project-registry.js";
+import { RemoteRunner } from "../shared/remote-runner.js";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
+import { join, dirname } from "path";
+import "dotenv/config";
+
+const MCP_PORT = Number(process.env.MCP_PORT ?? 3001);
+const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-in-production";
+
+// ─── Auth middleware ───────────────────────────────────────────────────────────
+function verifyToken(req: express.Request): { id: number; username: string } {
+  const authHeader = req.headers.authorization;
+  const queryToken = req.query.token as string | undefined;
+
+  let token: string | undefined;
+  if (authHeader?.startsWith("Bearer ")) {
+    token = authHeader.slice(7);
+  } else if (queryToken) {
+    token = queryToken;
+  } else {
+    throw new Error("Missing or invalid authentication");
+  }
+  return jwt.verify(token, JWT_SECRET) as { id: number; username: string };
+}
+
+// ─── Build MCP server for a given user ────────────────────────────────────────
+function createMcpServer(user: { id: number; username: string }) {
+  const registry = new ProjectRegistry();
+  const server = new McpServer({
+    name: "remote-ops",
+    version: "1.0.0",
+  });
+
+  // ── Helper: resolve project + runner ──────────────────────────────────────
+  function getRunner(projectName: string, environment = "production") {
+    const project = registry.getProject(user.id, projectName);
+    if (!project) throw new Error(`Project '${projectName}' not found`);
+
+    const projectServers = registry.getProjectServers(project.id);
+    const ps = projectServers.find((s) => s.environment === environment);
+    if (!ps) throw new Error(`No connected server for project '${projectName}' env '${environment}'`);
+
+    const runner = new RemoteRunner({
+      host: ps.server.host,
+      port: ps.server.port,
+      username: ps.server.sshUser,
+      privateKeyPath: ps.server.privateKeyPath,
+    });
+    return { project, ps, runner };
+  }
+
+  // ── Tool: list_projects ────────────────────────────────────────────────────
+  server.tool("list_projects", "List all projects for the current user", {}, async () => {
+    const projects = registry.listProjects(user.id);
+    return {
+      content: [{ type: "text", text: JSON.stringify(projects, null, 2) }],
+    };
+  });
+
+  // ── Tool: exec_remote ──────────────────────────────────────────────────────
+  server.tool(
+    "exec_remote",
+    "Execute a shell command on the remote server for a project",
+    {
+      project: z.string().describe("Project name"),
+      command: z.string().describe("Shell command to run"),
+      environment: z.string().optional().describe("Target environment (default: production)"),
+    },
+    async ({ project: projectName, command, environment }) => {
+      const { ps, runner } = getRunner(projectName, environment);
+      const result = await runner.exec(command);
+      const text = `[${ps.server.host}] $ ${command}\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}\n[exit: ${result.code}]`;
+      return { content: [{ type: "text", text }] };
+    }
+  );
+
+  // ── Tool: deploy ───────────────────────────────────────────────────────────
+  server.tool(
+    "deploy",
+    "Deploy the project to the remote server (git pull + restart)",
+    {
+      project: z.string().describe("Project name"),
+      environment: z.string().optional(),
+      branch: z.string().optional().describe("Git branch (default: main)"),
+    },
+    async ({ project: projectName, environment, branch = "main" }) => {
+      const { ps, runner } = getRunner(projectName, environment);
+      const remotePath = ps.remotePath;
+
+      const steps = [
+        `cd '${remotePath}'`,
+        `git fetch origin`,
+        `git checkout ${branch}`,
+        `git pull origin ${branch}`,
+      ];
+
+      // Try common restart patterns
+      const restartCmds = [
+        `if command -v pm2 &>/dev/null; then pm2 restart all 2>/dev/null || true; fi`,
+        `if [ -f docker-compose.yml ]; then docker compose up -d --build 2>/dev/null || true; fi`,
+      ];
+
+      const fullCommand = [...steps, ...restartCmds].join(" && ");
+      const result = await runner.exec(fullCommand, 120000);
+
+      return {
+        content: [{ type: "text", text: `Deploy result:\n${result.stdout}\n${result.stderr}` }],
+      };
+    }
+  );
+
+  // ── Tool: fetch_logs ───────────────────────────────────────────────────────
+  server.tool(
+    "fetch_logs",
+    "Fetch recent logs from the remote server",
+    {
+      project: z.string(),
+      environment: z.string().optional(),
+      lines: z.number().optional().describe("Number of lines (default: 100)"),
+      logPath: z.string().optional().describe("Custom log file path"),
+    },
+    async ({ project: projectName, environment, lines = 100, logPath }) => {
+      const { ps, runner } = getRunner(projectName, environment);
+
+      let cmd: string;
+      if (logPath) {
+        cmd = `tail -n ${lines} '${logPath}' 2>&1`;
+      } else {
+        // Try common log locations
+        cmd = `(journalctl -u $(basename '${ps.remotePath}') -n ${lines} --no-pager 2>/dev/null) || (pm2 logs --nostream --lines ${lines} 2>/dev/null) || (tail -n ${lines} '${ps.remotePath}/logs/*.log' 2>/dev/null) || echo 'No logs found'`;
+      }
+
+      const result = await runner.exec(cmd, 30000);
+      return { content: [{ type: "text", text: result.stdout || result.stderr }] };
+    }
+  );
+
+  // ── Tool: restart_service ──────────────────────────────────────────────────
+  server.tool(
+    "restart_service",
+    "Restart a service on the remote server",
+    {
+      project: z.string(),
+      environment: z.string().optional(),
+      service: z.string().describe("Service name or 'all' for all project services"),
+    },
+    async ({ project: projectName, environment, service }) => {
+      const { runner } = getRunner(projectName, environment);
+
+      let cmd: string;
+      if (service === "all") {
+        cmd = `pm2 restart all 2>/dev/null || systemctl restart ${service} 2>/dev/null || docker compose restart 2>/dev/null`;
+      } else if (service.startsWith("docker:")) {
+        cmd = `docker restart ${service.slice(7)}`;
+      } else if (service.startsWith("pm2:")) {
+        cmd = `pm2 restart ${service.slice(4)}`;
+      } else {
+        cmd = `sudo systemctl restart ${service}`;
+      }
+
+      const result = await runner.exec(cmd, 30000);
+      return { content: [{ type: "text", text: `${result.stdout}\n${result.stderr}` }] };
+    }
+  );
+
+  // ── Tool: read_remote_file ─────────────────────────────────────────────────
+  server.tool(
+    "read_remote_file",
+    "Read a file from the remote server",
+    {
+      project: z.string(),
+      remotePath: z.string().describe("Absolute path on remote server"),
+      environment: z.string().optional(),
+    },
+    async ({ project: projectName, remotePath, environment }) => {
+      const { runner } = getRunner(projectName, environment);
+      const content = await runner.readFile(remotePath);
+      return { content: [{ type: "text", text: content }] };
+    }
+  );
+
+  // ── Tool: write_remote_file ────────────────────────────────────────────────
+  server.tool(
+    "write_remote_file",
+    "Write content to a file on the remote server",
+    {
+      project: z.string(),
+      remotePath: z.string().describe("Absolute path on remote server"),
+      content: z.string().describe("File content"),
+      environment: z.string().optional(),
+    },
+    async ({ project: projectName, remotePath, content, environment }) => {
+      const { runner } = getRunner(projectName, environment);
+      await runner.writeFile(remotePath, content);
+      return { content: [{ type: "text", text: `Written to ${remotePath}` }] };
+    }
+  );
+
+  // ── Tool: list_remote_files ────────────────────────────────────────────────
+  server.tool(
+    "list_remote_files",
+    "List files in a directory on the remote server",
+    {
+      project: z.string(),
+      remotePath: z.string().describe("Absolute directory path on remote server"),
+      environment: z.string().optional(),
+    },
+    async ({ project: projectName, remotePath, environment }) => {
+      const { runner } = getRunner(projectName, environment);
+      const entries = await runner.listDir(remotePath);
+      return { content: [{ type: "text", text: JSON.stringify(entries, null, 2) }] };
+    }
+  );
+
+  // ── Tool: read_local_file ──────────────────────────────────────────────────
+  server.tool(
+    "read_local_file",
+    "Read a file from the project workspace on the MCP server",
+    {
+      project: z.string(),
+      path: z.string().describe("Relative path within project workspace"),
+    },
+    async ({ project: projectName, path: relPath }) => {
+      const project = registry.getProject(user.id, projectName);
+      if (!project) throw new Error(`Project '${projectName}' not found`);
+
+      const fullPath = join(project.workspacePath, relPath);
+      if (!fullPath.startsWith(project.workspacePath)) {
+        throw new Error("Path traversal not allowed");
+      }
+      const content = readFileSync(fullPath, "utf8");
+      return { content: [{ type: "text", text: content }] };
+    }
+  );
+
+  // ── Tool: write_local_file ─────────────────────────────────────────────────
+  server.tool(
+    "write_local_file",
+    "Write a file to the project workspace on the MCP server",
+    {
+      project: z.string(),
+      path: z.string().describe("Relative path within project workspace"),
+      content: z.string(),
+    },
+    async ({ project: projectName, path: relPath, content }) => {
+      const project = registry.getProject(user.id, projectName);
+      if (!project) throw new Error(`Project '${projectName}' not found`);
+
+      const fullPath = join(project.workspacePath, relPath);
+      if (!fullPath.startsWith(project.workspacePath)) {
+        throw new Error("Path traversal not allowed");
+      }
+      mkdirSync(dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, content, "utf8");
+      return { content: [{ type: "text", text: `Written to ${fullPath}` }] };
+    }
+  );
+
+  return server;
+}
+
+// ─── Express app with per-request MCP instances ───────────────────────────────
+const app = express();
+app.use(express.json());
+
+app.all("/mcp", async (req, res) => {
+  let user: { id: number; username: string };
+  try {
+    user = verifyToken(req);
+  } catch {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const server = createMcpServer(user);
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+  });
+
+  res.on("close", () => transport.close());
+  await server.connect(transport);
+  await transport.handleRequest(req, res, req.body);
+});
+
+app.get("/mcp/health", (_req, res) => {
+  res.json({ ok: true });
+});
+
+app.listen(MCP_PORT, "0.0.0.0", () => {
+  console.log(`MCP server running on port ${MCP_PORT}`);
+});

@@ -1,0 +1,11 @@
+{
+  "_comment": "Add this to your Claude Code settings (~/.claude/settings.json) under mcpServers",
+  "mcpServers": {
+    "remote-ops": {
+      "url": "http://ftd1994.mycloudnas.com:7231/mcp",
+      "headers": {
+        "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwidXNlcm5hbWUiOiJmdGQiLCJpYXQiOjE3ODExNDk2NTl9.dG4UjgaV121It273kGvYPpOtCUJN5w3-4gRUkdyb_-0"
+      }
+    }
+  }
+}

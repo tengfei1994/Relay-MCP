@@ -1,0 +1,37 @@
+{
+  "name": "remote-ops-platform",
+  "version": "1.0.0",
+  "description": "MCP-based remote operations platform with web management UI",
+  "type": "module",
+  "scripts": {
+    "dev:server": "tsx watch src/server/index.ts",
+    "dev:mcp": "tsx watch src/mcp/index.ts",
+    "build": "tsc && vite build --root frontend",
+    "start:server": "node dist/server/index.js",
+    "start:mcp": "node dist/mcp/index.js",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "fastify": "^4.28.0",
+    "@fastify/jwt": "^8.0.0",
+    "@fastify/cors": "^9.0.0",
+    "@fastify/static": "^7.0.0",
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^9.4.0",
+    "drizzle-orm": "^0.30.0",
+    "dotenv": "^16.4.0",
+    "node-ssh": "^13.2.0",
+    "yaml": "^2.4.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/node": "^20.0.0",
+    "drizzle-kit": "^0.20.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}

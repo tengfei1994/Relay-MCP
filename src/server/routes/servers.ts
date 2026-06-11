@@ -230,6 +230,83 @@ export async function serverRoutes(app: FastifyInstance) {
     }
   );
 
+  // Setup: push key via password + test (SSE streaming)
+  app.post(
+    "/api/servers/:id/setup",
+    { onRequest: [app.authenticate] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const { password } = req.body as { password?: string };
+      if (!password) return reply.status(400).send({ error: "Password required" });
+
+      const server = db
+        .select()
+        .from(servers)
+        .where(and(eq(servers.id, Number(id)), eq(servers.userId, req.user.id)))
+        .get();
+      if (!server) return reply.status(404).send({ error: "Not found" });
+
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+
+      const send = (type: "log" | "success" | "error", message: string) => {
+        reply.raw.write(`data: ${JSON.stringify({ type, message })}\n\n`);
+      };
+
+      try {
+        send("log", `Connecting to ${server.sshUser}@${server.host}:${server.port ?? 22} with password...`);
+        const ssh1 = new NodeSSH();
+        await ssh1.connect({
+          host: server.host,
+          port: server.port ?? 22,
+          username: server.sshUser,
+          password,
+          readyTimeout: 15000,
+        });
+        send("log", "Connected. Writing public key to ~/.ssh/authorized_keys...");
+
+        const r1 = await ssh1.execCommand(
+          `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '${server.publicKey}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && echo KEY_ADDED`
+        );
+        if (r1.stdout) send("log", r1.stdout.trim());
+        if (r1.stderr) send("log", r1.stderr.trim());
+        ssh1.dispose();
+
+        if (!r1.stdout.includes("KEY_ADDED")) {
+          throw new Error("Failed to write public key");
+        }
+        send("log", "Public key written. Testing key-based auth...");
+
+        const ssh2 = new NodeSSH();
+        await ssh2.connect({
+          host: server.host,
+          port: server.port ?? 22,
+          username: server.sshUser,
+          privateKeyPath: server.privateKeyPath,
+          readyTimeout: 15000,
+        });
+        const r2 = await ssh2.execCommand("echo SSH_OK");
+        ssh2.dispose();
+
+        if (r2.stdout.includes("SSH_OK")) {
+          db.update(servers).set({ status: "connected" }).where(eq(servers.id, server.id)).run();
+          send("success", "Setup complete — server is now connected!");
+        } else {
+          throw new Error("Key auth test failed");
+        }
+      } catch (err: any) {
+        db.update(servers).set({ status: "failed" }).where(eq(servers.id, server.id)).run();
+        send("error", `Setup failed: ${err.message}`);
+      }
+
+      reply.raw.end();
+    }
+  );
+
   // Delete server
   app.delete(
     "/api/servers/:id",

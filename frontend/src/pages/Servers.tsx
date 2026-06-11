@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Plus, Server, CheckCircle, XCircle, Clock, Copy, Trash2, Key, Pencil } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Plus, Server, CheckCircle, XCircle, Clock, Copy, Trash2, Key, Pencil, Terminal } from "lucide-react";
 import { api } from "../api/client";
 
 const STATUS_ICON: Record<string, JSX.Element> = {
@@ -8,20 +8,51 @@ const STATUS_ICON: Record<string, JSX.Element> = {
   pending: <Clock size={13} className="text-yellow-400" />,
 };
 
+type TerminalLine = { type: "log" | "success" | "error"; message: string };
+
 export default function ServersPage() {
   const [servers, setServers] = useState<any[]>([]);
   const [showAdd, setShowAdd] = useState(false);
-  const [newServer, setNewServer] = useState({ name: "", host: "", port: "22", sshUser: "root" });
-  const [addedKey, setAddedKey] = useState<{ id: number; key: string; instructions: string } | null>(null);
-  const [pushPassword, setPushPassword] = useState("");
-  const [pushLoading, setPushLoading] = useState(false);
+  const [newServer, setNewServer] = useState({ name: "", host: "", port: "22", sshUser: "root", password: "" });
+  const [addedKey, setAddedKey] = useState<{ id: number; key: string } | null>(null);
   const [editServer, setEditServer] = useState<any | null>(null);
   const [editForm, setEditForm] = useState({ name: "", host: "", port: "22", sshUser: "" });
   const [error, setError] = useState("");
 
+  // Terminal modal
+  const [terminal, setTerminal] = useState<{ serverId: number; password: string } | null>(null);
+  const [termLines, setTermLines] = useState<TerminalLine[]>([]);
+  const [termRunning, setTermRunning] = useState(false);
+  const termRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     api.listServers().then((r) => setServers(r.servers));
   }, []);
+
+  // Auto-scroll terminal
+  useEffect(() => {
+    if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight;
+  }, [termLines]);
+
+  // Start setup stream when terminal modal opens
+  useEffect(() => {
+    if (!terminal) return;
+    setTermLines([]);
+    setTermRunning(true);
+    api
+      .setupServer(terminal.serverId, terminal.password, (type, message) => {
+        setTermLines((l) => [...l, { type, message }]);
+      })
+      .then(() => {
+        setTermRunning(false);
+        // Refresh server status
+        api.listServers().then((r) => setServers(r.servers));
+      })
+      .catch((err) => {
+        setTermLines((l) => [...l, { type: "error", message: err.message }]);
+        setTermRunning(false);
+      });
+  }, [terminal]);
 
   const addServer = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,12 +65,25 @@ export default function ServersPage() {
         sshUser: newServer.sshUser,
       });
       setServers((s) => [...s, r.server]);
-      setAddedKey({ id: r.server.id, key: r.publicKey, instructions: r.instructions });
       setShowAdd(false);
-      setNewServer({ name: "", host: "", port: "22", sshUser: "root" });
+      const pwd = newServer.password.trim();
+      setNewServer({ name: "", host: "", port: "22", sshUser: "root", password: "" });
+
+      if (pwd) {
+        // Auto-launch terminal setup
+        setTerminal({ serverId: r.server.id, password: pwd });
+      } else {
+        // Show public key for manual copy
+        setAddedKey({ id: r.server.id, key: r.publicKey });
+      }
     } catch (err: any) {
       setError(err.message);
     }
+  };
+
+  const openSetup = (s: any) => {
+    const pwd = prompt(`Enter SSH password for ${s.sshUser}@${s.host} to push key:`);
+    if (pwd) setTerminal({ serverId: s.id, password: pwd });
   };
 
   const openEdit = (s: any) => {
@@ -58,7 +102,7 @@ export default function ServersPage() {
         port: Number(editForm.port),
         sshUser: editForm.sshUser,
       });
-      setServers((s) => s.map((sv) => sv.id === editServer.id ? r.server : sv));
+      setServers((s) => s.map((sv) => (sv.id === editServer.id ? r.server : sv)));
       setEditServer(null);
     } catch (err: any) {
       setError(err.message);
@@ -68,25 +112,8 @@ export default function ServersPage() {
   const testServer = async (id: number) => {
     const r = await api.testServer(id);
     setServers((s) =>
-      s.map((sv) => sv.id === id ? { ...sv, status: r.ok ? "connected" : "failed" } : sv)
+      s.map((sv) => (sv.id === id ? { ...sv, status: r.ok ? "connected" : "failed" } : sv))
     );
-  };
-
-  const pushKey = async () => {
-    if (!addedKey) return;
-    setPushLoading(true);
-    try {
-      const r = await api.pushKey(addedKey.id, pushPassword);
-      if (r.ok) {
-        await testServer(addedKey.id);
-        setAddedKey(null);
-        setPushPassword("");
-      }
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setPushLoading(false);
-    }
   };
 
   const deleteServer = async (id: number) => {
@@ -95,7 +122,8 @@ export default function ServersPage() {
     setServers((s) => s.filter((sv) => sv.id !== id));
   };
 
-  const inputCls = "w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500";
+  const inputCls =
+    "w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500";
 
   return (
     <div className="p-6 max-w-3xl">
@@ -112,12 +140,17 @@ export default function ServersPage() {
 
       <div className="space-y-3">
         {servers.map((s) => (
-          <div key={s.id} className="flex items-center justify-between bg-gray-900 border border-gray-800 rounded-lg px-4 py-3">
+          <div
+            key={s.id}
+            className="flex items-center justify-between bg-gray-900 border border-gray-800 rounded-lg px-4 py-3"
+          >
             <div className="flex items-center gap-3">
               <Server size={16} className="text-gray-500" />
               <div>
                 <p className="text-sm font-medium text-gray-200">{s.name}</p>
-                <p className="text-xs text-gray-500">{s.sshUser}@{s.host}:{s.port}</p>
+                <p className="text-xs text-gray-500">
+                  {s.sshUser}@{s.host}:{s.port}
+                </p>
               </div>
             </div>
             <div className="flex items-center gap-3">
@@ -125,6 +158,13 @@ export default function ServersPage() {
                 {STATUS_ICON[s.status] ?? STATUS_ICON.pending}
                 {s.status}
               </div>
+              <button
+                onClick={() => openSetup(s)}
+                className="text-gray-500 hover:text-yellow-400"
+                title="Push Key & Setup"
+              >
+                <Key size={14} />
+              </button>
               <button
                 onClick={() => testServer(s.id)}
                 className="text-xs text-indigo-400 hover:text-indigo-300 px-2 py-1 border border-gray-700 rounded"
@@ -138,18 +178,13 @@ export default function ServersPage() {
               >
                 <Pencil size={14} />
               </button>
-              <button
-                onClick={() => deleteServer(s.id)}
-                className="text-gray-600 hover:text-red-400"
-              >
+              <button onClick={() => deleteServer(s.id)} className="text-gray-600 hover:text-red-400">
                 <Trash2 size={14} />
               </button>
             </div>
           </div>
         ))}
-        {servers.length === 0 && (
-          <p className="text-sm text-gray-600">No servers added yet.</p>
-        )}
+        {servers.length === 0 && <p className="text-sm text-gray-600">No servers added yet.</p>}
       </div>
 
       {/* Add server modal */}
@@ -174,12 +209,31 @@ export default function ServersPage() {
                   />
                 </div>
               ))}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">
+                  SSH Password <span className="text-gray-600">(optional — auto-push key)</span>
+                </label>
+                <input
+                  type="password"
+                  value={newServer.password}
+                  onChange={(e) => setNewServer((s) => ({ ...s, password: e.target.value }))}
+                  placeholder="Leave blank to copy key manually"
+                  className={inputCls}
+                />
+              </div>
               {error && <p className="text-xs text-red-400">{error}</p>}
               <div className="flex gap-2 pt-1">
-                <button type="submit" className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-md">
-                  Generate SSH Key & Add
+                <button
+                  type="submit"
+                  className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-md"
+                >
+                  {newServer.password ? "Add & Setup" : "Generate SSH Key & Add"}
                 </button>
-                <button type="button" onClick={() => setShowAdd(false)} className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md">
+                <button
+                  type="button"
+                  onClick={() => setShowAdd(false)}
+                  className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md"
+                >
                   Cancel
                 </button>
               </div>
@@ -212,10 +266,20 @@ export default function ServersPage() {
               {error && <p className="text-xs text-red-400">{error}</p>}
               <p className="text-xs text-yellow-500">Changing host/user will reset status to pending.</p>
               <div className="flex gap-2 pt-1">
-                <button type="submit" className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-md">
+                <button
+                  type="submit"
+                  className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-md"
+                >
                   Save
                 </button>
-                <button type="button" onClick={() => { setEditServer(null); setError(""); }} className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditServer(null);
+                    setError("");
+                  }}
+                  className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md"
+                >
                   Cancel
                 </button>
               </div>
@@ -224,7 +288,7 @@ export default function ServersPage() {
         </div>
       )}
 
-      {/* Public key display + push */}
+      {/* Manual key copy modal */}
       {addedKey && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
           <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-lg">
@@ -232,7 +296,10 @@ export default function ServersPage() {
               <Key size={16} className="text-indigo-400" />
               <h3 className="text-base font-semibold text-gray-100">SSH Key Generated</h3>
             </div>
-            <p className="text-xs text-gray-400 mb-2">Public key — add to server's <code className="text-indigo-300">~/.ssh/authorized_keys</code>:</p>
+            <p className="text-xs text-gray-400 mb-2">
+              Add this public key to the server's{" "}
+              <code className="text-indigo-300">~/.ssh/authorized_keys</code>:
+            </p>
             <div className="relative">
               <pre className="bg-gray-800 rounded p-3 text-xs text-green-300 break-all whitespace-pre-wrap mb-3">
                 {addedKey.key}
@@ -244,32 +311,62 @@ export default function ServersPage() {
                 <Copy size={13} />
               </button>
             </div>
-            <div className="border-t border-gray-700 pt-3 mt-1">
-              <p className="text-xs text-gray-400 mb-2">Or auto-push via password (one-time):</p>
-              <div className="flex gap-2">
-                <input
-                  type="password"
-                  placeholder="SSH password"
-                  value={pushPassword}
-                  onChange={(e) => setPushPassword(e.target.value)}
-                  className="flex-1 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                />
-                <button
-                  onClick={pushKey}
-                  disabled={pushLoading || !pushPassword}
-                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm rounded"
-                >
-                  {pushLoading ? "Pushing…" : "Push Key"}
-                </button>
-              </div>
-            </div>
-            {error && <p className="text-xs text-red-400 mt-2">{error}</p>}
             <button
-              onClick={() => { setAddedKey(null); setPushPassword(""); setError(""); }}
-              className="mt-4 w-full py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md"
+              onClick={() => setAddedKey(null)}
+              className="mt-2 w-full py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md"
             >
-              Done (I'll add the key manually)
+              Done
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Terminal modal */}
+      {terminal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-gray-950 border border-gray-700 rounded-xl w-full max-w-2xl flex flex-col" style={{ height: "420px" }}>
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-800">
+              <Terminal size={15} className="text-green-400" />
+              <span className="text-sm font-mono text-gray-300">Server Setup</span>
+              {termRunning && (
+                <span className="ml-2 text-xs text-yellow-400 animate-pulse">running…</span>
+              )}
+            </div>
+            <div
+              ref={termRef}
+              className="flex-1 overflow-y-auto p-4 font-mono text-xs space-y-1"
+              style={{ background: "#0d1117" }}
+            >
+              {termLines.map((l, i) => (
+                <div
+                  key={i}
+                  className={
+                    l.type === "success"
+                      ? "text-green-400"
+                      : l.type === "error"
+                      ? "text-red-400"
+                      : "text-gray-300"
+                  }
+                >
+                  <span className="text-gray-600 mr-2 select-none">
+                    {l.type === "success" ? "✓" : l.type === "error" ? "✗" : "›"}
+                  </span>
+                  {l.message}
+                </div>
+              ))}
+              {termRunning && (
+                <div className="text-gray-600 animate-pulse">█</div>
+              )}
+            </div>
+            <div className="px-4 py-3 border-t border-gray-800">
+              <button
+                onClick={() => setTerminal(null)}
+                disabled={termRunning}
+                className="w-full py-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-gray-300 text-sm rounded-md"
+              >
+                {termRunning ? "Running…" : "Close"}
+              </button>
+            </div>
           </div>
         </div>
       )}

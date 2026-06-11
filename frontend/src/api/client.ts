@@ -79,6 +79,43 @@ export const api = {
     ),
   deleteServer: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/servers/${id}`),
+  setupServer: async (
+    id: number,
+    password: string,
+    onMessage: (type: "log" | "success" | "error", message: string) => void
+  ): Promise<void> => {
+    const token = getToken();
+    const res = await fetch(`${BASE}/servers/${id}/setup`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ password }),
+    });
+    if (!res.ok || !res.body) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error ?? "Request failed");
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          try {
+            const { type, message } = JSON.parse(line.slice(6));
+            onMessage(type, message);
+          } catch {}
+        }
+      }
+    }
+  },
 
   // Users (admin)
   listUsers: () =>

@@ -238,6 +238,45 @@ function createMcpServer(user: { id: number; username: string }) {
     }
   );
 
+  // ── Tool: sync_workspace ──────────────────────────────────────────────────
+  server.tool(
+    "sync_workspace",
+    "Sync the entire project workspace to the linked remote server via SFTP (no size limit). Excludes node_modules, .git, dist, .env by default.",
+    {
+      project: z.string(),
+      environment: z.string().optional(),
+      remoteDir: z.string().optional().describe("Override remote destination path (default: project's remotePath)"),
+      exclude: z.array(z.string()).optional().describe("Additional patterns to exclude"),
+    },
+    async ({ project: projectName, environment, remoteDir, exclude }) => {
+      const { project, ps, runner } = getRunner(projectName, environment);
+      const dest = remoteDir ?? ps.remotePath;
+      const { transferred, failed } = await runner.syncDir(project.workspacePath, dest, { exclude });
+      const msg = `Synced ${transferred} file(s) to ${ps.server.host}:${dest}` +
+        (failed.length ? `\nFailed (${failed.length}): ${failed.join(", ")}` : "");
+      return { content: [{ type: "text", text: msg }] };
+    }
+  );
+
+  // ── Tool: upload_workspace_file ────────────────────────────────────────────
+  server.tool(
+    "upload_workspace_file",
+    "Upload a single file from the project workspace to the remote server via SFTP. Handles files of any size.",
+    {
+      project: z.string(),
+      localPath: z.string().describe("Relative path within project workspace"),
+      remotePath: z.string().describe("Absolute destination path on remote server"),
+      environment: z.string().optional(),
+    },
+    async ({ project: projectName, localPath: relPath, remotePath, environment }) => {
+      const { project, ps, runner } = getRunner(projectName, environment);
+      const fullLocal = join(project.workspacePath, relPath);
+      if (!fullLocal.startsWith(project.workspacePath)) throw new Error("Path traversal not allowed");
+      await runner.uploadFile(fullLocal, remotePath);
+      return { content: [{ type: "text", text: `Uploaded ${relPath} → ${ps.server.host}:${remotePath}` }] };
+    }
+  );
+
   // ── Tool: write_local_file ─────────────────────────────────────────────────
   server.tool(
     "write_local_file",

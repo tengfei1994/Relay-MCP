@@ -1,4 +1,7 @@
 import { NodeSSH } from "node-ssh";
+import { writeFileSync, unlinkSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 
 export interface SshConfig {
   host: string;
@@ -46,23 +49,13 @@ export class RemoteRunner {
   }
 
   async writeFile(remotePath: string, content: string): Promise<void> {
-    const ssh = new NodeSSH();
+    // Write to a local temp file then SFTP-upload — avoids shell command size limits
+    const tmpPath = join(tmpdir(), `remote-ops-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    writeFileSync(tmpPath, content, "utf8");
     try {
-      await ssh.connect({
-        host: this.config.host,
-        port: this.config.port,
-        username: this.config.username,
-        privateKeyPath: this.config.privateKeyPath,
-        readyTimeout: 10000,
-      });
-
-      // Use heredoc to write file content
-      const escaped = content.replace(/\\/g, "\\\\").replace(/'/g, "'\\''");
-      await ssh.execCommand(
-        `mkdir -p "$(dirname '${remotePath}')" && cat > '${remotePath}' << 'REMOTE_OPS_EOF'\n${content}\nREMOTE_OPS_EOF`
-      );
+      await this.uploadFile(tmpPath, remotePath);
     } finally {
-      ssh.dispose();
+      try { unlinkSync(tmpPath); } catch {}
     }
   }
 
@@ -107,7 +100,55 @@ export class RemoteRunner {
         privateKeyPath: this.config.privateKeyPath,
         readyTimeout: 10000,
       });
+      // Ensure remote parent directory exists
+      await ssh.execCommand(`mkdir -p "$(dirname '${remotePath}')"`);
       await ssh.putFile(localPath, remotePath);
+    } finally {
+      ssh.dispose();
+    }
+  }
+
+  async syncDir(
+    localDir: string,
+    remoteDir: string,
+    options: { exclude?: string[] } = {}
+  ): Promise<{ transferred: number; failed: string[] }> {
+    const ssh = new NodeSSH();
+    const failed: string[] = [];
+    let transferred = 0;
+
+    try {
+      await ssh.connect({
+        host: this.config.host,
+        port: this.config.port,
+        username: this.config.username,
+        privateKeyPath: this.config.privateKeyPath,
+        readyTimeout: 15000,
+      });
+
+      // Ensure remote directory exists
+      await ssh.execCommand(`mkdir -p '${remoteDir}'`);
+
+      const defaultExclude = ["node_modules", ".git", "dist", ".env", "*.log"];
+      const excludes = new Set([...defaultExclude, ...(options.exclude ?? [])]);
+
+      const status = await ssh.putDirectory(localDir, remoteDir, {
+        recursive: true,
+        concurrency: 5,
+        validate: (itemPath) => {
+          const name = itemPath.split(/[/\\]/).pop() ?? "";
+          return !excludes.has(name);
+        },
+        tick: (_local, _remote, error) => {
+          if (error) {
+            failed.push(_remote);
+          } else {
+            transferred++;
+          }
+        },
+      });
+
+      return { transferred, failed };
     } finally {
       ssh.dispose();
     }

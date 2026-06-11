@@ -5,6 +5,7 @@ export const users = sqliteTable("users", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   username: text("username").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
+  isAdmin: integer("is_admin", { mode: "boolean" }).default(false),
   createdAt: text("created_at").default(sql`(datetime('now'))`),
 });
 

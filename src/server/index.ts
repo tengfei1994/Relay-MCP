@@ -10,11 +10,13 @@ import { runMigrations } from "./db/index.js";
 import { authRoutes } from "./routes/auth.js";
 import { projectRoutes } from "./routes/projects.js";
 import { serverRoutes } from "./routes/servers.js";
+import { projectServerRoutes } from "./routes/project-servers.js";
+import { userRoutes } from "./routes/users.js";
 
 declare module "@fastify/jwt" {
   interface FastifyJWT {
-    payload: { id: number; username: string };
-    user: { id: number; username: string };
+    payload: { id: number; username: string; isAdmin: boolean };
+    user: { id: number; username: string; isAdmin: boolean };
   }
 }
 
@@ -64,6 +66,8 @@ if (existsSync(frontendDist)) {
 await app.register(authRoutes);
 await app.register(projectRoutes);
 await app.register(serverRoutes);
+await app.register(projectServerRoutes);
+await app.register(userRoutes);
 
 // Health check
 app.get("/api/health", async () => ({ ok: true, ts: new Date().toISOString() }));

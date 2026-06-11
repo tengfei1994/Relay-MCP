@@ -4,10 +4,11 @@ import { api } from "./api/client";
 import LoginPage from "./pages/Login";
 import ProjectsPage from "./pages/Projects";
 import ServersPage from "./pages/Servers";
+import UsersPage from "./pages/Users";
 import Layout from "./components/Layout";
 
 interface AuthCtx {
-  user: { id: number; username: string } | null;
+  user: { id: number; username: string; isAdmin: boolean } | null;
   login: (username: string, password: string) => Promise<void>;
   register: (username: string, password: string) => Promise<void>;
   logout: () => void;
@@ -17,7 +18,7 @@ export const AuthContext = createContext<AuthCtx>({} as AuthCtx);
 export const useAuth = () => useContext(AuthContext);
 
 export default function App() {
-  const [user, setUser] = useState<{ id: number; username: string } | null>(null);
+  const [user, setUser] = useState<{ id: number; username: string; isAdmin: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -71,6 +72,7 @@ export default function App() {
           <Route index element={<Navigate to="/projects" replace />} />
           <Route path="projects" element={<ProjectsPage />} />
           <Route path="servers" element={<ServersPage />} />
+          <Route path="users" element={user?.isAdmin ? <UsersPage /> : <Navigate to="/projects" replace />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

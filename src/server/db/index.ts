@@ -23,6 +23,7 @@ export function runMigrations() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
+      is_admin INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now'))
     );
 
@@ -56,4 +57,13 @@ export function runMigrations() {
       environment TEXT DEFAULT 'production'
     );
   `);
+
+  // Incremental migrations for existing databases
+  try { sqlite.exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0`); } catch {}
+
+  // Set first user as admin if no admin exists
+  const adminExists = sqlite.prepare(`SELECT id FROM users WHERE is_admin = 1 LIMIT 1`).get();
+  if (!adminExists) {
+    sqlite.prepare(`UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users)`).run();
+  }
 }

@@ -19,23 +19,23 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const { username, password } = body.data;
 
-    const existing = db
-      .select()
-      .from(users)
-      .where(eq(users.username, username))
-      .get();
+    const existing = db.select().from(users).where(eq(users.username, username)).get();
     if (existing) {
       return reply.status(409).send({ error: "Username already taken" });
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
+    // First user becomes admin
+    const userCount = db.select().from(users).all().length;
+    const isAdmin = userCount === 0;
+
     const result = db
       .insert(users)
-      .values({ username, passwordHash })
-      .returning({ id: users.id, username: users.username })
+      .values({ username, passwordHash, isAdmin })
+      .returning({ id: users.id, username: users.username, isAdmin: users.isAdmin })
       .get();
 
-    const token = app.jwt.sign({ id: result.id, username: result.username });
+    const token = app.jwt.sign({ id: result.id, username: result.username, isAdmin: result.isAdmin });
     return reply.send({ token, user: result });
   });
 
@@ -47,11 +47,7 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const { username, password } = body.data;
 
-    const user = db
-      .select()
-      .from(users)
-      .where(eq(users.username, username))
-      .get();
+    const user = db.select().from(users).where(eq(users.username, username)).get();
     if (!user) {
       return reply.status(401).send({ error: "Invalid credentials" });
     }
@@ -61,10 +57,10 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(401).send({ error: "Invalid credentials" });
     }
 
-    const token = app.jwt.sign({ id: user.id, username: user.username });
+    const token = app.jwt.sign({ id: user.id, username: user.username, isAdmin: user.isAdmin ?? false });
     return reply.send({
       token,
-      user: { id: user.id, username: user.username },
+      user: { id: user.id, username: user.username, isAdmin: user.isAdmin ?? false },
     });
   });
 

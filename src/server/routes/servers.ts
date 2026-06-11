@@ -114,6 +114,40 @@ export async function serverRoutes(app: FastifyInstance) {
     }
   );
 
+  // Edit server
+  app.put(
+    "/api/servers/:id",
+    { onRequest: [app.authenticate] },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const EditSchema = z.object({
+        name: z.string().min(1).max(100).optional(),
+        host: z.string().min(1).optional(),
+        port: z.number().int().min(1).max(65535).optional(),
+        sshUser: z.string().min(1).optional(),
+      });
+      const body = EditSchema.safeParse(req.body);
+      if (!body.success) return reply.status(400).send({ error: "Invalid input" });
+
+      const server = db
+        .select()
+        .from(servers)
+        .where(and(eq(servers.id, Number(id)), eq(servers.userId, req.user.id)))
+        .get();
+      if (!server) return reply.status(404).send({ error: "Not found" });
+
+      const updated = db
+        .update(servers)
+        .set({ ...body.data, status: "pending" })
+        .where(eq(servers.id, Number(id)))
+        .returning()
+        .get();
+
+      const { privateKeyPath, ...safe } = updated;
+      return reply.send({ server: safe });
+    }
+  );
+
   // Test connectivity
   app.post(
     "/api/servers/:id/test",

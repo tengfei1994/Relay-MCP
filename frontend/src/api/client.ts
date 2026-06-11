@@ -30,15 +30,15 @@ async function request<T>(
 export const api = {
   // Auth
   login: (username: string, password: string) =>
-    request<{ token: string; user: { id: number; username: string } }>(
+    request<{ token: string; user: { id: number; username: string; isAdmin: boolean } }>(
       "POST", "/auth/login", { username, password }
     ),
   register: (username: string, password: string) =>
-    request<{ token: string; user: { id: number; username: string } }>(
+    request<{ token: string; user: { id: number; username: string; isAdmin: boolean } }>(
       "POST", "/auth/register", { username, password }
     ),
   me: () =>
-    request<{ user: { id: number; username: string } }>("GET", "/auth/me"),
+    request<{ user: { id: number; username: string; isAdmin: boolean } }>("GET", "/auth/me"),
 
   // Projects
   listProjects: () =>
@@ -52,6 +52,14 @@ export const api = {
       "GET", `/projects/${id}/files?path=${encodeURIComponent(path)}`
     ),
 
+  // Project-Server links
+  listProjectServers: (projectId: number) =>
+    request<{ servers: any[] }>("GET", `/projects/${projectId}/servers`),
+  linkServer: (projectId: number, serverId: number, remotePath: string, environment = "production") =>
+    request<{ link: any }>("POST", `/projects/${projectId}/servers`, { serverId, remotePath, environment }),
+  unlinkServer: (projectId: number, linkId: number) =>
+    request<{ ok: boolean }>("DELETE", `/projects/${projectId}/servers/${linkId}`),
+
   // Servers
   listServers: () =>
     request<{ servers: any[] }>("GET", "/servers"),
@@ -59,6 +67,8 @@ export const api = {
     request<{ server: any; publicKey: string; instructions: string }>(
       "POST", "/servers", data
     ),
+  updateServer: (id: number, data: { name?: string; host?: string; port?: number; sshUser?: string }) =>
+    request<{ server: any }>("PUT", `/servers/${id}`, data),
   testServer: (id: number) =>
     request<{ ok: boolean; output?: string; error?: string }>(
       "POST", `/servers/${id}/test`
@@ -69,4 +79,16 @@ export const api = {
     ),
   deleteServer: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/servers/${id}`),
+
+  // Users (admin)
+  listUsers: () =>
+    request<{ users: any[] }>("GET", "/users"),
+  createUser: (username: string, password: string, isAdmin = false) =>
+    request<{ user: any }>("POST", "/users", { username, password, isAdmin }),
+  changePassword: (id: number, password: string) =>
+    request<{ ok: boolean }>("PATCH", `/users/${id}/password`, { password }),
+  toggleAdmin: (id: number, isAdmin: boolean) =>
+    request<{ ok: boolean }>("PATCH", `/users/${id}/admin`, { isAdmin }),
+  deleteUser: (id: number) =>
+    request<{ ok: boolean }>("DELETE", `/users/${id}`),
 };

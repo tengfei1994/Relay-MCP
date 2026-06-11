@@ -60,6 +60,7 @@ export function runMigrations() {
 
   // Incremental migrations for existing databases
   try { sqlite.exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0`); } catch {}
+  try { sqlite.exec(`ALTER TABLE servers ADD COLUMN os TEXT DEFAULT 'linux'`); } catch {}
 
   // Set first user as admin if no admin exists
   const adminExists = sqlite.prepare(`SELECT id FROM users WHERE is_admin = 1 LIMIT 1`).get();

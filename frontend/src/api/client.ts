@@ -63,11 +63,11 @@ export const api = {
   // Servers
   listServers: () =>
     request<{ servers: any[] }>("GET", "/servers"),
-  addServer: (data: { name: string; host: string; port: number; sshUser: string }) =>
+  addServer: (data: { name: string; host: string; port: number; sshUser: string; os?: "linux" | "windows" }) =>
     request<{ server: any; publicKey: string; instructions: string }>(
       "POST", "/servers", data
     ),
-  updateServer: (id: number, data: { name?: string; host?: string; port?: number; sshUser?: string }) =>
+  updateServer: (id: number, data: { name?: string; host?: string; port?: number; sshUser?: string; os?: "linux" | "windows" }) =>
     request<{ server: any }>("PUT", `/servers/${id}`, data),
   testServer: (id: number) =>
     request<{ ok: boolean; output?: string; error?: string }>(

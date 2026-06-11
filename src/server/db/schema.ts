@@ -31,6 +31,7 @@ export const servers = sqliteTable("servers", {
   sshUser: text("ssh_user").notNull(),
   privateKeyPath: text("private_key_path").notNull(), // path on MCP server
   publicKey: text("public_key").notNull(),
+  os: text("os").default("linux"), // linux | windows
   status: text("status").default("pending"), // pending | connected | failed
   createdAt: text("created_at").default(sql`(datetime('now'))`),
 });

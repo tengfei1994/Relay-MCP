@@ -13,10 +13,10 @@ type TerminalLine = { type: "log" | "success" | "error"; message: string };
 export default function ServersPage() {
   const [servers, setServers] = useState<any[]>([]);
   const [showAdd, setShowAdd] = useState(false);
-  const [newServer, setNewServer] = useState({ name: "", host: "", port: "22", sshUser: "root", password: "" });
+  const [newServer, setNewServer] = useState({ name: "", host: "", port: "22", sshUser: "root", os: "linux", password: "" });
   const [addedKey, setAddedKey] = useState<{ id: number; key: string } | null>(null);
   const [editServer, setEditServer] = useState<any | null>(null);
-  const [editForm, setEditForm] = useState({ name: "", host: "", port: "22", sshUser: "" });
+  const [editForm, setEditForm] = useState({ name: "", host: "", port: "22", sshUser: "", os: "linux" });
   const [error, setError] = useState("");
 
   // Terminal modal
@@ -63,11 +63,12 @@ export default function ServersPage() {
         host: newServer.host,
         port: Number(newServer.port),
         sshUser: newServer.sshUser,
+        os: newServer.os as "linux" | "windows",
       });
       setServers((s) => [...s, r.server]);
       setShowAdd(false);
       const pwd = newServer.password.trim();
-      setNewServer({ name: "", host: "", port: "22", sshUser: "root", password: "" });
+      setNewServer({ name: "", host: "", port: "22", sshUser: "root", os: "linux", password: "" });
 
       if (pwd) {
         // Auto-launch terminal setup
@@ -88,7 +89,7 @@ export default function ServersPage() {
 
   const openEdit = (s: any) => {
     setEditServer(s);
-    setEditForm({ name: s.name, host: s.host, port: String(s.port ?? 22), sshUser: s.sshUser });
+    setEditForm({ name: s.name, host: s.host, port: String(s.port ?? 22), sshUser: s.sshUser, os: s.os ?? "linux" });
     setError("");
   };
 
@@ -101,6 +102,7 @@ export default function ServersPage() {
         host: editForm.host,
         port: Number(editForm.port),
         sshUser: editForm.sshUser,
+        os: editForm.os as "linux" | "windows",
       });
       setServers((s) => s.map((sv) => (sv.id === editServer.id ? r.server : sv)));
       setEditServer(null);
@@ -210,6 +212,17 @@ export default function ServersPage() {
                 </div>
               ))}
               <div>
+                <label className="block text-xs text-gray-400 mb-1">OS</label>
+                <select
+                  value={newServer.os}
+                  onChange={(e) => setNewServer((s) => ({ ...s, os: e.target.value }))}
+                  className={inputCls}
+                >
+                  <option value="linux">Linux / Unix</option>
+                  <option value="windows">Windows</option>
+                </select>
+              </div>
+              <div>
                 <label className="block text-xs text-gray-400 mb-1">
                   SSH Password <span className="text-gray-600">(optional — auto-push key)</span>
                 </label>
@@ -263,6 +276,17 @@ export default function ServersPage() {
                   />
                 </div>
               ))}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">OS</label>
+                <select
+                  value={editForm.os}
+                  onChange={(e) => setEditForm((f) => ({ ...f, os: e.target.value }))}
+                  className={inputCls}
+                >
+                  <option value="linux">Linux / Unix</option>
+                  <option value="windows">Windows</option>
+                </select>
+              </div>
               {error && <p className="text-xs text-red-400">{error}</p>}
               <p className="text-xs text-yellow-500">Changing host/user will reset status to pending.</p>
               <div className="flex gap-2 pt-1">

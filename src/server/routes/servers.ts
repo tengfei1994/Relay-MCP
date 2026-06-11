@@ -18,6 +18,7 @@ const AddServerSchema = z.object({
   host: z.string().min(1),
   port: z.number().int().min(1).max(65535).default(22),
   sshUser: z.string().min(1),
+  os: z.enum(["linux", "windows"]).default("linux"),
 });
 
 async function generateSshKeyPair(keyPath: string): Promise<string> {
@@ -58,7 +59,7 @@ export async function serverRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Invalid input" });
       }
 
-      const { name, host, port, sshUser } = body.data;
+      const { name, host, port, sshUser, os } = body.data;
       const userId = req.user.id;
       const username = req.user.username;
 
@@ -82,6 +83,7 @@ export async function serverRoutes(app: FastifyInstance) {
           host,
           port,
           sshUser,
+          os,
           privateKeyPath: keyPath,
           publicKey,
           status: "pending",
@@ -125,6 +127,7 @@ export async function serverRoutes(app: FastifyInstance) {
         host: z.string().min(1).optional(),
         port: z.number().int().min(1).max(65535).optional(),
         sshUser: z.string().min(1).optional(),
+        os: z.enum(["linux", "windows"]).optional(),
       });
       const body = EditSchema.safeParse(req.body);
       if (!body.success) return reply.status(400).send({ error: "Invalid input" });
@@ -267,16 +270,33 @@ export async function serverRoutes(app: FastifyInstance) {
           password,
           readyTimeout: 15000,
         });
-        send("log", "Connected. Writing public key to ~/.ssh/authorized_keys...");
+        const isWindows = server.os === "windows";
+        send("log", `Target OS: ${isWindows ? "Windows" : "Linux/Unix"}`);
 
-        const r1 = await ssh1.execCommand(
-          `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '${server.publicKey}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && echo KEY_ADDED`
-        );
-        if (r1.stdout) send("log", r1.stdout.trim());
-        if (r1.stderr) send("log", r1.stderr.trim());
+        let keyWritten = false;
+        if (isWindows) {
+          // Windows: write to administrators_authorized_keys with correct permissions
+          send("log", "Writing public key to C:\\ProgramData\\ssh\\administrators_authorized_keys...");
+          const keyPath = "C:\\ProgramData\\ssh\\administrators_authorized_keys";
+          const r1 = await ssh1.execCommand(
+            `powershell -Command "Add-Content -Path '${keyPath}' -Value '${server.publicKey}'; icacls '${keyPath}' /inheritance:r /grant 'SYSTEM:(F)' /grant 'Administrators:(F)' | Out-Null; Write-Output KEY_ADDED"`
+          );
+          if (r1.stdout) send("log", r1.stdout.trim());
+          if (r1.stderr) send("log", r1.stderr.trim());
+          keyWritten = r1.stdout.includes("KEY_ADDED");
+        } else {
+          // Linux/Unix
+          send("log", "Writing public key to ~/.ssh/authorized_keys...");
+          const r1 = await ssh1.execCommand(
+            `mkdir -p ~/.ssh; chmod 700 ~/.ssh; echo '${server.publicKey}' >> ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; echo KEY_ADDED`
+          );
+          if (r1.stdout) send("log", r1.stdout.trim());
+          if (r1.stderr) send("log", r1.stderr.trim());
+          keyWritten = r1.stdout.includes("KEY_ADDED");
+        }
         ssh1.dispose();
 
-        if (!r1.stdout.includes("KEY_ADDED")) {
+        if (!keyWritten) {
           throw new Error("Failed to write public key");
         }
         send("log", "Public key written. Testing key-based auth...");

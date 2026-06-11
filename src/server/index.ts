@@ -20,6 +20,12 @@ declare module "@fastify/jwt" {
   }
 }
 
+declare module "fastify" {
+  interface FastifyInstance {
+    authenticate: (req: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => Promise<void>;
+  }
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const app = Fastify({ logger: true });

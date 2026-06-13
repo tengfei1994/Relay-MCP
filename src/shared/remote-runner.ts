@@ -2,6 +2,7 @@ import { NodeSSH } from "node-ssh";
 import { writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { applyPatch } from "diff";
 
 export interface SshConfig {
   host: string;
@@ -106,6 +107,25 @@ export class RemoteRunner {
     } finally {
       ssh.dispose();
     }
+  }
+
+  async patchFile(remotePath: string, unifiedDiff: string): Promise<{ linesChanged: number }> {
+    // Read current content from remote
+    const original = await this.readFile(remotePath);
+
+    // Apply patch in Node.js (relay side) — works for both Linux and Windows targets
+    const patched = applyPatch(original, unifiedDiff);
+    if (patched === false) {
+      throw new Error("Patch failed to apply — diff may not match the current file content");
+    }
+
+    // Write back via SFTP
+    await this.writeFile(remotePath, patched as string);
+
+    // Count changed lines from diff header
+    const linesChanged = (unifiedDiff.match(/^[+-]/gm) ?? [])
+      .filter((l) => l !== "---" && l !== "+++").length;
+    return { linesChanged };
   }
 
   async syncDir(

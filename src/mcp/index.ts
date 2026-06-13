@@ -5,7 +5,7 @@ import { z } from "zod";
 import jwt from "jsonwebtoken";
 import { ProjectRegistry } from "./project-registry.js";
 import { RemoteRunner } from "../shared/remote-runner.js";
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import "dotenv/config";
 
@@ -280,13 +280,14 @@ function createMcpServer(user: { id: number; username: string }) {
   // ── Tool: write_local_file ─────────────────────────────────────────────────
   server.tool(
     "write_local_file",
-    "Write a file to the project workspace on the MCP server",
+    "Write (or append) a file to the project workspace. Use append=true for chunked writes of large files — call repeatedly with sequential chunks, then upload_workspace_file or sync_workspace once done.",
     {
       project: z.string(),
       path: z.string().describe("Relative path within project workspace"),
-      content: z.string(),
+      content: z.string().describe("File content (or next chunk if append=true)"),
+      append: z.boolean().optional().describe("If true, append to existing file instead of overwriting. Default false."),
     },
-    async ({ project: projectName, path: relPath, content }) => {
+    async ({ project: projectName, path: relPath, content, append = false }) => {
       const project = registry.getProject(user.id, projectName);
       if (!project) throw new Error(`Project '${projectName}' not found`);
 
@@ -295,8 +296,32 @@ function createMcpServer(user: { id: number; username: string }) {
         throw new Error("Path traversal not allowed");
       }
       mkdirSync(dirname(fullPath), { recursive: true });
-      writeFileSync(fullPath, content, "utf8");
-      return { content: [{ type: "text", text: `Written to ${fullPath}` }] };
+      if (append) {
+        appendFileSync(fullPath, content, "utf8");
+      } else {
+        writeFileSync(fullPath, content, "utf8");
+      }
+      const bytes = Buffer.byteLength(content, "utf8");
+      return { content: [{ type: "text", text: `${append ? "Appended" : "Written"} ${bytes} bytes → ${relPath}` }] };
+    }
+  );
+
+  // ── Tool: patch_remote_file ────────────────────────────────────────────────
+  server.tool(
+    "patch_remote_file",
+    "Apply a unified diff (patch) to a file on the remote server. Far more token-efficient than rewriting the whole file — only send what changed. The diff must be in standard unified diff format (diff -u / git diff).",
+    {
+      project: z.string(),
+      remotePath: z.string().describe("Absolute path to the file on the remote server"),
+      diff: z.string().describe("Unified diff string (output of `diff -u old new` or `git diff`)"),
+      environment: z.string().optional(),
+    },
+    async ({ project: projectName, remotePath, diff, environment }) => {
+      const { ps, runner } = getRunner(projectName, environment);
+      const { linesChanged } = await runner.patchFile(remotePath, diff);
+      return {
+        content: [{ type: "text", text: `Patched ${ps.server.host}:${remotePath} (${linesChanged} lines changed)` }],
+      };
     }
   );
 

@@ -19,6 +19,7 @@ export interface ServerInfo {
   privateKeyPath: string;
   name: string;
   status: string;
+  os: "linux" | "windows";
 }
 
 export interface ProjectServer {
@@ -71,6 +72,7 @@ export class ProjectRegistry {
         privateKeyPath: r.private_key_path,
         name: r.name,
         status: r.status,
+        os: r.os === "windows" ? "windows" : "linux",
       },
       remotePath: r.remote_path,
       environment: r.environment,

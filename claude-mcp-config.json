@@ -1,10 +1,10 @@
 {
-  "_comment": "Add this to your Claude Code settings (~/.claude/settings.json) under mcpServers",
+  "_comment": "Example only. Add this to any MCP-compatible client and replace URL/TOKEN with your own values.",
   "mcpServers": {
     "remote-ops": {
-      "url": "http://ftd1994.mycloudnas.com:7231/mcp",
+      "url": "http://YOUR_RELAY_MCP_SERVER:3001/mcp",
       "headers": {
-        "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwidXNlcm5hbWUiOiJmdGQiLCJpYXQiOjE3ODExNDk2NTl9.dG4UjgaV121It273kGvYPpOtCUJN5w3-4gRUkdyb_-0"
+        "Authorization": "Bearer YOUR_JWT_TOKEN"
       }
     }
   }

@@ -5,6 +5,15 @@ import { z } from "zod";
 import jwt from "jsonwebtoken";
 import { ProjectRegistry } from "./project-registry.js";
 import { RemoteRunner } from "../shared/remote-runner.js";
+import { compactText, summarizeExec, summarizeJson } from "../shared/output.js";
+import { getJob, listJobs, startJob, writeAudit } from "../shared/job-store.js";
+import { recordFact, searchFacts } from "../shared/context-store.js";
+import {
+  clearFormCache,
+  recentErrors,
+  restartSampleManagerInstance,
+  runSql,
+} from "../shared/samplemanager-tools.js";
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import "dotenv/config";
@@ -50,6 +59,7 @@ function createMcpServer(user: { id: number; username: string }) {
       port: ps.server.port,
       username: ps.server.sshUser,
       privateKeyPath: ps.server.privateKeyPath,
+      os: ps.server.os,
     });
     return { project, ps, runner };
   }
@@ -74,7 +84,17 @@ function createMcpServer(user: { id: number; username: string }) {
     async ({ project: projectName, command, environment }) => {
       const { ps, runner } = getRunner(projectName, environment);
       const result = await runner.exec(command);
-      const text = `[${ps.server.host}] $ ${command}\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}\n[exit: ${result.code}]`;
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        project: projectName,
+        tool: "exec_remote",
+        environment: environment ?? "production",
+        host: ps.server.host,
+        command,
+        exitCode: result.code,
+      });
+      const text = `[${ps.server.host}]\n${summarizeExec(command, result)}`;
       return { content: [{ type: "text", text }] };
     }
   );
@@ -109,7 +129,7 @@ function createMcpServer(user: { id: number; username: string }) {
       const result = await runner.exec(fullCommand, 120000);
 
       return {
-        content: [{ type: "text", text: `Deploy result:\n${result.stdout}\n${result.stderr}` }],
+        content: [{ type: "text", text: compactText(`Deploy result:\n${result.stdout}\n${result.stderr}`) }],
       };
     }
   );
@@ -136,7 +156,7 @@ function createMcpServer(user: { id: number; username: string }) {
       }
 
       const result = await runner.exec(cmd, 30000);
-      return { content: [{ type: "text", text: result.stdout || result.stderr }] };
+      return { content: [{ type: "text", text: compactText(result.stdout || result.stderr) }] };
     }
   );
 
@@ -164,7 +184,7 @@ function createMcpServer(user: { id: number; username: string }) {
       }
 
       const result = await runner.exec(cmd, 30000);
-      return { content: [{ type: "text", text: `${result.stdout}\n${result.stderr}` }] };
+      return { content: [{ type: "text", text: compactText(`${result.stdout}\n${result.stderr}`) }] };
     }
   );
 
@@ -322,6 +342,137 @@ function createMcpServer(user: { id: number; username: string }) {
       return {
         content: [{ type: "text", text: `Patched ${ps.server.host}:${remotePath} (${linesChanged} lines changed)` }],
       };
+    }
+  );
+
+  // ── Tool: job status and history ──────────────────────────────────────────
+  server.tool(
+    "job_status",
+    "Get status/result for an asynchronous Relay-MCP job",
+    {
+      jobId: z.string().describe("Job id returned by an async tool"),
+    },
+    async ({ jobId }) => {
+      const job = getJob(jobId);
+      if (!job || job.userId !== user.id) throw new Error(`Job '${jobId}' not found`);
+      return { content: [{ type: "text", text: summarizeJson(job) }] };
+    }
+  );
+
+  server.tool(
+    "job_list",
+    "List recent asynchronous Relay-MCP jobs for the current user",
+    {
+      limit: z.number().optional().describe("Maximum jobs to return (default 20)"),
+    },
+    async ({ limit = 20 }) => {
+      return { content: [{ type: "text", text: summarizeJson(listJobs(user.id, limit)) }] };
+    }
+  );
+
+  // ── Tool: project context memory ──────────────────────────────────────────
+  server.tool(
+    "context_record_fact",
+    "Record a durable project fact so future LLM calls do not need chat history",
+    {
+      project: z.string(),
+      text: z.string().describe("Short fact, pitfall, path, or project convention"),
+      tags: z.array(z.string()).optional(),
+    },
+    async ({ project, text, tags = [] }) => {
+      const fact = recordFact(user, project, text, tags);
+      writeAudit({ userId: user.id, username: user.username, project, tool: "context_record_fact", tags });
+      return { content: [{ type: "text", text: summarizeJson(fact) }] };
+    }
+  );
+
+  server.tool(
+    "context_search",
+    "Search durable project facts recorded on the MCP server",
+    {
+      project: z.string(),
+      query: z.string().optional(),
+      limit: z.number().optional(),
+    },
+    async ({ project, query = "", limit = 10 }) => {
+      return { content: [{ type: "text", text: summarizeJson(searchFacts(user.id, project, query, limit)) }] };
+    }
+  );
+
+  // ── SampleManager high-level tools ────────────────────────────────────────
+  server.tool(
+    "samplemanager_restart_instance",
+    "Restart a SampleManager instance on a linked Windows server and stop stuck client task hosts",
+    {
+      project: z.string(),
+      instance: z.string().describe("SampleManager instance name, e.g. VGSM"),
+      environment: z.string().optional(),
+      async: z.boolean().optional().describe("Run as an async job and return a jobId"),
+    },
+    async ({ project: projectName, instance, environment, async = false }) => {
+      const { runner } = getRunner(projectName, environment);
+      const work = () => restartSampleManagerInstance(runner, instance);
+      if (async) {
+        const job = startJob(user, projectName, "samplemanager_restart_instance", { instance, environment }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_clear_form_cache",
+    "Clear FormsBin cache for one SampleManager form without creating local throwaway scripts",
+    {
+      project: z.string(),
+      instance: z.string(),
+      formName: z.string(),
+      environment: z.string().optional(),
+    },
+    async ({ project: projectName, instance, formName, environment }) => {
+      const { runner } = getRunner(projectName, environment);
+      return { content: [{ type: "text", text: await clearFormCache(runner, instance, formName) }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_recent_errors",
+    "Search recent SampleManager logs and return a compact error-focused result",
+    {
+      project: z.string(),
+      instance: z.string(),
+      environment: z.string().optional(),
+      minutes: z.number().optional(),
+      keywords: z.array(z.string()).optional(),
+    },
+    async ({ project: projectName, instance, environment, minutes = 30, keywords }) => {
+      const { runner } = getRunner(projectName, environment);
+      return { content: [{ type: "text", text: await recentErrors(runner, instance, minutes, keywords) }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_sql_query",
+    "Run a compact SQL query against a SampleManager SQL Server database. Read-only by default.",
+    {
+      project: z.string(),
+      database: z.string().describe("Database name, e.g. vgsm"),
+      sql: z.string(),
+      environment: z.string().optional(),
+      allowMutation: z.boolean().optional(),
+    },
+    async ({ project: projectName, database, sql, environment, allowMutation = false }) => {
+      const { runner } = getRunner(projectName, environment);
+      const text = await runSql(runner, database, sql, allowMutation);
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        project: projectName,
+        tool: "samplemanager_sql_query",
+        database,
+        allowMutation,
+      });
+      return { content: [{ type: "text", text }] };
     }
   );
 

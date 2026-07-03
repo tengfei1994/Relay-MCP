@@ -9,6 +9,7 @@ export interface SshConfig {
   port: number;
   username: string;
   privateKeyPath: string;
+  os?: "linux" | "windows";
 }
 
 export interface ExecResult {
@@ -49,6 +50,15 @@ export class RemoteRunner {
     }
   }
 
+  async execPowerShell(script: string, timeout = 60000): Promise<ExecResult> {
+    const encoded = Buffer.from(script, "utf16le").toString("base64");
+    return this.exec(`powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}`, timeout);
+  }
+
+  isWindows(): boolean {
+    return this.config.os === "windows";
+  }
+
   async writeFile(remotePath: string, content: string): Promise<void> {
     // Write to a local temp file then SFTP-upload — avoids shell command size limits
     const tmpPath = join(tmpdir(), `remote-ops-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -61,7 +71,9 @@ export class RemoteRunner {
   }
 
   async readFile(remotePath: string): Promise<string> {
-    const result = await this.exec(`cat '${remotePath}'`);
+    const result = this.isWindows()
+      ? await this.execPowerShell(`Get-Content -LiteralPath ${psQuote(remotePath)} -Raw`, 30000)
+      : await this.exec(`cat '${shQuote(remotePath)}'`);
     if (result.code !== 0) {
       throw new Error(`Failed to read file: ${result.stderr}`);
     }
@@ -69,8 +81,26 @@ export class RemoteRunner {
   }
 
   async listDir(remotePath: string): Promise<Array<{ name: string; type: "file" | "directory"; size?: number }>> {
+    if (this.isWindows()) {
+      const script = `
+$items = Get-ChildItem -LiteralPath ${psQuote(remotePath)} -Force | ForEach-Object {
+  [pscustomobject]@{
+    name = $_.Name
+    type = if ($_.PSIsContainer) { "directory" } else { "file" }
+    size = if ($_.PSIsContainer) { $null } else { $_.Length }
+  }
+}
+$items | ConvertTo-Json -Compress
+`;
+      const result = await this.execPowerShell(script, 30000);
+      if (result.code !== 0) throw new Error(result.stderr);
+      if (!result.stdout.trim()) return [];
+      const parsed = JSON.parse(result.stdout);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    }
+
     const result = await this.exec(
-      `ls -la '${remotePath}' 2>&1 | awk 'NR>1 {print $1,$5,$9}'`
+      `ls -la '${shQuote(remotePath)}' 2>&1 | awk 'NR>1 {print $1,$5,$9}'`
     );
     if (result.code !== 0) throw new Error(result.stderr);
 
@@ -101,8 +131,17 @@ export class RemoteRunner {
         privateKeyPath: this.config.privateKeyPath,
         readyTimeout: 10000,
       });
-      // Ensure remote parent directory exists
-      await ssh.execCommand(`mkdir -p "$(dirname '${remotePath}')"`);
+      if (this.isWindows()) {
+        const parent = remotePath.replace(/[\\/][^\\/]+$/, "");
+        await ssh.execCommand(
+          `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${Buffer.from(
+            `New-Item -ItemType Directory -Force -Path ${psQuote(parent)} | Out-Null`,
+            "utf16le"
+          ).toString("base64")}`
+        );
+      } else {
+        await ssh.execCommand(`mkdir -p "$(dirname '${shQuote(remotePath)}')"`);
+      }
       await ssh.putFile(localPath, remotePath);
     } finally {
       ssh.dispose();
@@ -146,8 +185,16 @@ export class RemoteRunner {
         readyTimeout: 15000,
       });
 
-      // Ensure remote directory exists
-      await ssh.execCommand(`mkdir -p '${remoteDir}'`);
+      if (this.isWindows()) {
+        await ssh.execCommand(
+          `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${Buffer.from(
+            `New-Item -ItemType Directory -Force -Path ${psQuote(remoteDir)} | Out-Null`,
+            "utf16le"
+          ).toString("base64")}`
+        );
+      } else {
+        await ssh.execCommand(`mkdir -p '${shQuote(remoteDir)}'`);
+      }
 
       const defaultExclude = ["node_modules", ".git", "dist", ".env", "*.log"];
       const excludes = new Set([...defaultExclude, ...(options.exclude ?? [])]);
@@ -173,4 +220,12 @@ export class RemoteRunner {
       ssh.dispose();
     }
   }
+}
+
+function shQuote(value: string): string {
+  return value.replace(/'/g, `'\\''`);
+}
+
+function psQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
 }

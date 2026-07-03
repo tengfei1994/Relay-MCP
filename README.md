@@ -1,6 +1,6 @@
 # Remote Ops Platform
 
-> A self-hosted remote operations platform that lets AI agents (Claude) manage production servers via SSH through an MCP (Model Context Protocol) server.
+> A self-hosted remote operations platform that lets any MCP-compatible LLM agent manage remote servers through a controlled relay server.
 
 **中文说明见下方 / Chinese documentation below ↓**
 
@@ -9,12 +9,12 @@
 ## Architecture
 
 ```
-Claude (AI Agent)
+LLM Client (Claude, Codex, Cursor, Cline, custom agents)
       │  MCP over HTTP
       ▼
 RelayMCP Server (Ubuntu VM)
   ├── Web UI        :3000  — project & server management
-  └── MCP Server    :3001  — tools for Claude
+  └── MCP Server    :3001  — platform-neutral tools for LLM clients
       │  SSH
       ▼
 Production Servers (any SSH-accessible host)
@@ -23,10 +23,42 @@ Production Servers (any SSH-accessible host)
 ## Features
 
 - **MCP Tools**: `exec_remote`, `deploy`, `fetch_logs`, `restart_service`, `read/write_remote_file`, `list_remote_files`, `read/write_local_file`, `list_projects`
+- **Token-saving tools**: compact command/log output, async job tracking, project memory (`context_record_fact`, `context_search`)
+- **SampleManager tools**: `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`
 - **Server Management**: add servers, auto-generate SSH key pairs, push public keys, test connectivity, edit settings
 - **Project Management**: workspace directories per user, link/unlink servers per project per environment
 - **User Management**: admin-only user creation, password reset, admin role toggle
 - **JWT Auth**: token-based authentication for both Web UI and MCP
+
+## Agent Boundary
+
+RelayMCP is designed to keep the LLM client thin:
+
+| Local LLM Agent | RelayMCP Server |
+|-----------------|-----------------|
+| Understands user intent and edits source files | Stores server connections, SSH keys, project/environment mapping |
+| Calls high-level MCP tools | Executes remote commands and playbooks |
+| Reads compact summaries | Compresses logs, SQL output, file listings, and build output |
+| Keeps durable source/docs in the user's repo | Owns temp scripts, staging zips, job logs, audit records, and project facts |
+
+This means one-off local `inspect-*.ps1`, `fix-*.ps1`, and `deploy-*.ps1`
+scripts should gradually become MCP tools or playbooks. Temporary PowerShell or
+Python snippets are generated and cleaned up on the relay/server side instead of
+polluting the local agent workspace.
+
+## Token Efficiency
+
+RelayMCP defaults to returning compact output (`MCP_OUTPUT_LIMIT`, default
+`12000` characters). Long-running operations can use async jobs:
+
+- `job_list`
+- `job_status`
+
+Project facts can be stored in relay-side memory so future LLM calls do not need
+the full chat history:
+
+- `context_record_fact`
+- `context_search`
 
 ## Tech Stack
 
@@ -75,12 +107,14 @@ pm2 save && pm2 startup
 |----------|---------|-------------|
 | `PORT` | `3000` | Web server port |
 | `MCP_PORT` | `3001` | MCP server port |
+| `MCP_OUTPUT_LIMIT` | `12000` | Maximum characters returned by compact tool output |
 | `JWT_SECRET` | *(required)* | Secret for signing JWT tokens |
 | `WORKSPACE_ROOT` | `/workspace` | Root directory for project workspaces |
+| `RELAY_STATE_ROOT` | `/workspace/.relay-mcp` | Job, audit, and project-memory storage |
 | `SSH_KEYS_DIR` | `/workspace/.ssh-keys` | Directory for generated SSH key pairs |
 | `DB_PATH` | `./data/app.db` | SQLite database file path |
 
-## Connecting Claude
+## Connecting MCP Clients
 
 ### Claude Desktop (Cowork)
 
@@ -116,6 +150,17 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
+### Other MCP Clients
+
+Any client that supports HTTP MCP can connect to:
+
+```text
+http://YOUR_SERVER:3001/mcp
+Authorization: Bearer YOUR_JWT_TOKEN
+```
+
+Clients that only support local stdio MCP can use `mcp-remote` as a bridge.
+
 Get your JWT token:
 ```bash
 curl -s -X POST http://YOUR_SERVER:3000/api/auth/login \
@@ -143,17 +188,17 @@ Restart-Service sshd
 
 # 远端运维平台
 
-> 一个自托管的远端运维平台，通过 MCP (Model Context Protocol) 让 AI 智能体（Claude）经由 SSH 管理生产服务器。
+> 一个自托管的远端运维平台，通过 MCP (Model Context Protocol) 让任意兼容 MCP 的 LLM 智能体经由受控中继管理远端服务器。
 
 ## 架构说明
 
 ```
-Claude（AI 智能体）
+LLM 客户端（Claude、Codex、Cursor、Cline、自定义 Agent）
       │  MCP over HTTP
       ▼
 RelayMCP 服务器（Ubuntu VM）
   ├── Web UI        :3000  — 项目与服务器管理界面
-  └── MCP Server    :3001  — 提供给 Claude 的工具
+  └── MCP Server    :3001  — 提供平台无关的 MCP 工具
       │  SSH
       ▼
 生产服务器（任意可 SSH 访问的主机）
@@ -162,6 +207,8 @@ RelayMCP 服务器（Ubuntu VM）
 ## 功能特性
 
 - **MCP 工具**：`exec_remote`（执行命令）、`deploy`（部署）、`fetch_logs`（获取日志）、`restart_service`（重启服务）、远程/本地文件读写、项目列表查询
+- **节省 token 工具**：输出压缩、异步 job、项目事实记忆（`context_record_fact`、`context_search`）
+- **SampleManager 工具**：实例重启、FormsBin 缓存清理、近期错误检索、SQL 查询
 - **服务器管理**：添加服务器、自动生成 SSH 密钥对、一键推送公钥、连通性测试、编辑服务器信息
 - **项目管理**：按用户隔离的工作区目录、支持多环境的项目-服务器关联管理
 - **用户管理**：仅管理员可创建用户、重置密码、管理员权限授予/撤销
@@ -214,12 +261,14 @@ pm2 save && pm2 startup
 |--------|--------|------|
 | `PORT` | `3000` | Web 服务端口 |
 | `MCP_PORT` | `3001` | MCP 服务端口 |
+| `MCP_OUTPUT_LIMIT` | `12000` | 工具返回内容的默认压缩上限 |
 | `JWT_SECRET` | *必填* | JWT 签名密钥 |
 | `WORKSPACE_ROOT` | `/workspace` | 项目工作区根目录 |
+| `RELAY_STATE_ROOT` | `/workspace/.relay-mcp` | job、审计、项目记忆存储目录 |
 | `SSH_KEYS_DIR` | `/workspace/.ssh-keys` | SSH 密钥对存储目录 |
 | `DB_PATH` | `./data/app.db` | SQLite 数据库路径 |
 
-## 连接 Claude
+## 连接 MCP 客户端
 
 ### Claude Desktop（Cowork）
 
@@ -254,6 +303,17 @@ pm2 save && pm2 startup
   }
 }
 ```
+
+### 其他 MCP 客户端
+
+任意支持 HTTP MCP 的客户端都可以连接：
+
+```text
+http://你的服务器:3001/mcp
+Authorization: Bearer 你的JWT令牌
+```
+
+如果客户端只支持本地 stdio MCP，可以用 `mcp-remote` 做桥接。
 
 获取 JWT 令牌：
 ```bash

@@ -6,7 +6,7 @@
   "scripts": {
     "dev:server": "tsx watch src/server/index.ts",
     "dev:mcp": "tsx watch src/mcp/index.ts",
-    "build": "tsc && vite build --root frontend",
+    "build": "tsc && npm --prefix frontend run build",
     "start:server": "node dist/server/index.js",
     "start:mcp": "node dist/mcp/index.js",
     "db:migrate": "drizzle-kit migrate",

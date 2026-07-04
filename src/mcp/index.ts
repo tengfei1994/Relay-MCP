@@ -230,6 +230,81 @@ function createMcpServer(user: McpUser) {
     }
   );
 
+  server.tool(
+    "exec_remote_powershell",
+    "Execute PowerShell on a linked Windows remote server using EncodedCommand, avoiding shell quoting issues with $ variables.",
+    {
+      project: z.string().optional().describe("Project name. Optional when the MCP token has a default project."),
+      script: z.string().describe("PowerShell script content to execute"),
+      environment: z.string().optional().describe("Target environment (default: production)"),
+      timeoutMs: z.number().optional().describe("Command timeout in milliseconds (default 120000)"),
+    },
+    async ({ project: projectName, script, environment, timeoutMs = 120000 }) => {
+      const { ps, runner } = getRunner(projectName, environment);
+      const result = await runner.execPowerShell(script, timeoutMs);
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        project: projectName,
+        tool: "exec_remote_powershell",
+        environment: environment ?? "production",
+        host: ps.server.host,
+        exitCode: result.code,
+      });
+      const text = `[${ps.server.host}]\n${summarizeExec("powershell -EncodedCommand <script>", result)}`;
+      return { content: [{ type: "text", text }] };
+    }
+  );
+
+  server.tool(
+    "exec_remote_script",
+    "Write a PowerShell script to a linked Windows remote server, execute it, and clean it up automatically on success.",
+    {
+      project: z.string().optional().describe("Project name. Optional when the MCP token has a default project."),
+      script: z.string().describe("PowerShell script content to write and execute"),
+      environment: z.string().optional().describe("Target environment (default: production)"),
+      remotePath: z.string().optional().describe("Optional absolute remote .ps1 path; defaults to C:\\Windows\\Temp\\relay-mcp-*.ps1"),
+      timeoutMs: z.number().optional().describe("Script timeout in milliseconds (default 120000)"),
+      cleanup: z.boolean().optional().describe("Remove the remote script after execution. Default true."),
+      preserveOnFailure: z.boolean().optional().describe("Keep the remote script when execution fails. Default false."),
+    },
+    async ({
+      project: projectName,
+      script,
+      environment,
+      remotePath,
+      timeoutMs = 120000,
+      cleanup = true,
+      preserveOnFailure = false,
+    }) => {
+      const { ps, runner } = getRunner(projectName, environment);
+      const result = await runner.execPowerShellScript(script, {
+        remotePath,
+        timeout: timeoutMs,
+        cleanup,
+        preserveOnFailure,
+      });
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        project: projectName,
+        tool: "exec_remote_script",
+        environment: environment ?? "production",
+        host: ps.server.host,
+        remotePath: result.remotePath,
+        cleanedUp: result.cleanedUp,
+        exitCode: result.code,
+      });
+      const text = [
+        `[${ps.server.host}]`,
+        `remotePath=${result.remotePath}`,
+        `cleanedUp=${result.cleanedUp}`,
+        summarizeExec("powershell -File <remote script>", result),
+      ].join("\n");
+      return { content: [{ type: "text", text }] };
+    }
+  );
+
   // ── Tool: deploy ───────────────────────────────────────────────────────────
   server.tool(
     "deploy",

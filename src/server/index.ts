@@ -25,6 +25,7 @@ declare module "@fastify/jwt" {
       defaultProject?: string;
       defaultEnvironment?: string;
       projectServerId?: number;
+      defaultServerId?: number;
     };
     user: {
       id: number;
@@ -35,6 +36,7 @@ declare module "@fastify/jwt" {
       defaultProject?: string;
       defaultEnvironment?: string;
       projectServerId?: number;
+      defaultServerId?: number;
     };
   }
 }

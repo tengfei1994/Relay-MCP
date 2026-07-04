@@ -93,6 +93,19 @@ export class ProjectRegistry {
       .run(tokenDbId, projectId);
   }
 
+  listScopedServerIds(userId: number, tokenDbId?: number): number[] {
+    if (!tokenDbId) return [];
+    const rows = this.db
+      .prepare(`
+        SELECT s.id
+        FROM servers s
+        JOIN mcp_token_server_scopes scope ON scope.server_id = s.id
+        WHERE s.user_id = ? AND scope.token_id = ?
+      `)
+      .all(userId, tokenDbId) as any[];
+    return rows.map((row) => row.id);
+  }
+
   getServerForUser(userId: number, serverId: number): ServerInfo | undefined {
     const row = this.db
       .prepare("SELECT * FROM servers WHERE id = ? AND user_id = ?")

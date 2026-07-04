@@ -33,6 +33,7 @@ interface McpUser {
   defaultProject?: string;
   defaultEnvironment?: string;
   projectServerId?: number;
+  defaultServerId?: number;
   allowAllProjects?: boolean;
   canCreateProjects?: boolean;
 }
@@ -57,6 +58,7 @@ function verifyToken(req: express.Request): McpUser {
       const row = db
         .prepare(`
           SELECT mt.id, mt.project_id, mt.project_server_id, mt.environment, mt.allow_all_projects, mt.can_create_projects, p.name AS project_name
+          , mt.default_server_id
           FROM mcp_tokens mt
           LEFT JOIN projects p ON p.id = mt.project_id
           WHERE mt.token_id = ? AND mt.user_id = ? AND mt.active = 1
@@ -69,6 +71,7 @@ function verifyToken(req: express.Request): McpUser {
       payload.defaultProject = row.project_name ?? payload.defaultProject;
       payload.defaultEnvironment = row.environment ?? payload.defaultEnvironment;
       payload.projectServerId = row.project_server_id ?? payload.projectServerId;
+      payload.defaultServerId = row.default_server_id ?? payload.defaultServerId;
       payload.allowAllProjects = Boolean(row.allow_all_projects);
       payload.canCreateProjects = Boolean(row.can_create_projects);
     } finally {
@@ -94,6 +97,17 @@ function createMcpServer(user: McpUser) {
       return defaultProject ? [defaultProject] : [];
     }
     return projects;
+  }
+
+  function listAllowedServerIds() {
+    return registry.listScopedServerIds(user.id, user.tokenDbId);
+  }
+
+  function assertServerAllowed(serverId: number) {
+    const allowed = listAllowedServerIds();
+    if (!allowed.includes(serverId)) {
+      throw new Error(`Server '${serverId}' is not allowed for this MCP token`);
+    }
   }
 
   function resolveProjectName(projectName?: string) {
@@ -122,8 +136,11 @@ function createMcpServer(user: McpUser) {
     const project = registry.getProject(user.id, resolvedProjectName);
     if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
 
-    const projectServers = registry.getProjectServers(project.id);
-    const ps = projectServers.find((s) => s.environment === resolvedEnvironment);
+    const projectServers = registry.getProjectServers(project.id)
+      .filter((s) => listAllowedServerIds().includes(s.server.id));
+    const ps = user.defaultServerId
+      ? projectServers.find((s) => s.server.id === user.defaultServerId && s.environment === resolvedEnvironment)
+      : projectServers.find((s) => s.environment === resolvedEnvironment);
     if (!ps) throw new Error(`No connected server for project '${resolvedProjectName}' env '${resolvedEnvironment}'`);
 
     const runner = new RemoteRunner({
@@ -157,6 +174,7 @@ function createMcpServer(user: McpUser) {
     async ({ name, description = "", serverId, remotePath, environment = "production" }) => {
       if (!user.canCreateProjects) throw new Error("This MCP token is not allowed to create projects");
       if (serverId && !remotePath) throw new Error("remotePath is required when serverId is supplied");
+      if (serverId) assertServerAllowed(serverId);
 
       const project = registry.createProject(user.id, user.username, name, description);
       if (user.tokenDbId && !user.allowAllProjects) {

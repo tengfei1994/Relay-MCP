@@ -5,7 +5,7 @@ import { api } from "../api/client";
 export default function TokensPage() {
   const [tokens, setTokens] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
-  const [linkedServers, setLinkedServers] = useState<any[]>([]);
+  const [servers, setServers] = useState<any[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [createdToken, setCreatedToken] = useState("");
   const [error, setError] = useState("");
@@ -13,7 +13,8 @@ export default function TokensPage() {
     name: "",
     defaultProjectId: "",
     projectIds: [] as string[],
-    projectServerId: "",
+    serverIds: [] as string[],
+    defaultServerId: "",
     environment: "production",
     allowAllProjects: true,
     canCreateProjects: true,
@@ -25,34 +26,19 @@ export default function TokensPage() {
   );
 
   const load = async () => {
-    const [tokenResult, projectResult] = await Promise.all([
+    const [tokenResult, projectResult, serverResult] = await Promise.all([
       api.listTokens(),
       api.listProjects(),
+      api.listServers(),
     ]);
     setTokens(tokenResult.tokens);
     setProjects(projectResult.projects);
+    setServers(serverResult.servers);
   };
 
   useEffect(() => {
     void load();
   }, []);
-
-  useEffect(() => {
-    if (!form.defaultProjectId) {
-      setLinkedServers([]);
-      setForm((f) => ({ ...f, projectServerId: "", environment: "production" }));
-      return;
-    }
-    api.listProjectServers(Number(form.defaultProjectId)).then((r) => {
-      setLinkedServers(r.servers);
-      const first = r.servers[0];
-      setForm((f) => ({
-        ...f,
-        projectServerId: first ? String(first.id) : "",
-        environment: first?.environment ?? "production",
-      }));
-    });
-  }, [form.defaultProjectId]);
 
   const toggleProject = (projectId: string) => {
     setForm((f) => {
@@ -67,6 +53,19 @@ export default function TokensPage() {
     });
   };
 
+  const toggleServer = (serverId: string) => {
+    setForm((f) => {
+      const serverIds = f.serverIds.includes(serverId)
+        ? f.serverIds.filter((id) => id !== serverId)
+        : [...f.serverIds, serverId];
+      return {
+        ...f,
+        serverIds,
+        defaultServerId: serverIds.includes(f.defaultServerId) ? f.defaultServerId : "",
+      };
+    });
+  };
+
   const createToken = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
@@ -76,7 +75,8 @@ export default function TokensPage() {
         name: form.name || `${selectedProject?.name ?? "relay"} token`,
         projectId: form.defaultProjectId ? Number(form.defaultProjectId) : undefined,
         projectIds: form.allowAllProjects ? undefined : form.projectIds.map(Number),
-        projectServerId: form.projectServerId ? Number(form.projectServerId) : undefined,
+        defaultServerId: form.defaultServerId ? Number(form.defaultServerId) : undefined,
+        serverIds: form.serverIds.map(Number),
         environment: form.environment || "production",
         allowAllProjects: form.allowAllProjects,
         canCreateProjects: form.canCreateProjects,
@@ -87,7 +87,8 @@ export default function TokensPage() {
         name: "",
         defaultProjectId: "",
         projectIds: [],
-        projectServerId: "",
+        serverIds: [],
+        defaultServerId: "",
         environment: "production",
         allowAllProjects: true,
         canCreateProjects: true,
@@ -190,19 +191,32 @@ export default function TokensPage() {
               )}
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Default Server Link</label>
+              <label className="block text-xs text-gray-500 mb-1">Allowed Servers</label>
+              <div className="max-h-28 overflow-auto border border-gray-800 rounded p-2 space-y-1">
+                {servers.map((s) => (
+                  <label key={s.id} className="flex items-center gap-2 text-xs text-gray-400">
+                    <input
+                      type="checkbox"
+                      checked={form.serverIds.includes(String(s.id))}
+                      onChange={() => toggleServer(String(s.id))}
+                    />
+                    {s.name} · {s.sshUser}@{s.host}:{s.port}
+                  </label>
+                ))}
+                {servers.length === 0 && <p className="text-xs text-gray-600">No servers yet</p>}
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Default Server</label>
               <select
-                value={form.projectServerId}
-                onChange={(e) => {
-                  const link = linkedServers.find((s) => String(s.id) === e.target.value);
-                  setForm((f) => ({ ...f, projectServerId: e.target.value, environment: link?.environment ?? f.environment }));
-                }}
+                value={form.defaultServerId}
+                onChange={(e) => setForm((f) => ({ ...f, defaultServerId: e.target.value }))}
                 className={inputCls}
-                disabled={!form.defaultProjectId || linkedServers.length === 0}
+                disabled={form.serverIds.length === 0}
               >
                 <option value="">No default server</option>
-                {linkedServers.map((s) => (
-                  <option key={s.id} value={s.id}>{s.serverName} · {s.environment} · {s.serverHost}</option>
+                {servers.filter((s) => form.serverIds.includes(String(s.id))).map((s) => (
+                  <option key={s.id} value={s.id}>{s.name} · {s.host}</option>
                 ))}
               </select>
             </div>
@@ -233,11 +247,16 @@ export default function TokensPage() {
             <div>
               <p className="text-sm font-medium text-gray-200">{token.name}</p>
               <p className="text-xs text-gray-500">
-                default: {token.projectName ?? "ask agent"} · access: {token.allowAllProjects ? "all projects" : `${token.projectScopes?.length ?? 0} project(s)`} · create: {token.canCreateProjects ? "yes" : "no"} · env: {token.environment ?? "production"} · {token.active ? "active" : "revoked"}
+                default project: {token.projectName ?? "ask agent"} · projects: {token.allowAllProjects ? "all" : `${token.projectScopes?.length ?? 0}`} · servers: {token.serverScopes?.length ?? 0} · create: {token.canCreateProjects ? "yes" : "no"} · env: {token.environment ?? "production"} · {token.active ? "active" : "revoked"}
               </p>
               {!token.allowAllProjects && token.projectScopes?.length > 0 && (
                 <p className="text-xs text-gray-600">
                   projects: {token.projectScopes.map((scope: any) => scope.projectName).join(", ")}
+                </p>
+              )}
+              {token.serverScopes?.length > 0 && (
+                <p className="text-xs text-gray-600">
+                  servers: {token.serverScopes.map((scope: any) => scope.serverName).join(", ")}
                 </p>
               )}
               <p className="text-xs text-gray-600">created: {token.createdAt ?? "-"} · last used: {token.lastUsedAt ?? "-"}</p>

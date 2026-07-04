@@ -57,6 +57,7 @@ export const mcpTokens = sqliteTable("mcp_tokens", {
   name: text("name").notNull(),
   projectId: integer("project_id").references(() => projects.id, { onDelete: "set null" }),
   projectServerId: integer("project_server_id").references(() => projectServers.id, { onDelete: "set null" }),
+  defaultServerId: integer("default_server_id").references(() => servers.id, { onDelete: "set null" }),
   environment: text("environment").default("production"),
   allowAllProjects: integer("allow_all_projects", { mode: "boolean" }).default(false),
   canCreateProjects: integer("can_create_projects", { mode: "boolean" }).default(false),
@@ -73,4 +74,14 @@ export const mcpTokenProjectScopes = sqliteTable("mcp_token_project_scopes", {
   projectId: integer("project_id")
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),
+});
+
+export const mcpTokenServerScopes = sqliteTable("mcp_token_server_scopes", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  tokenId: integer("token_id")
+    .notNull()
+    .references(() => mcpTokens.id, { onDelete: "cascade" }),
+  serverId: integer("server_id")
+    .notNull()
+    .references(() => servers.id, { onDelete: "cascade" }),
 });

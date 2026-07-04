@@ -125,6 +125,8 @@ export const api = {
     projectId?: number;
     projectIds?: number[];
     projectServerId?: number;
+    defaultServerId?: number;
+    serverIds: number[];
     environment?: string;
     allowAllProjects?: boolean;
     canCreateProjects?: boolean;

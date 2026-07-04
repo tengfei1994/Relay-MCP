@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db } from "../db/index.js";
-import { mcpTokenProjectScopes, mcpTokens, projects, projectServers, servers } from "../db/schema.js";
+import { mcpTokenProjectScopes, mcpTokenServerScopes, mcpTokens, projects, projectServers, servers } from "../db/schema.js";
 import { z } from "zod";
 
 const CreateTokenSchema = z.object({
@@ -10,6 +10,8 @@ const CreateTokenSchema = z.object({
   projectId: z.number().int().optional(),
   projectIds: z.array(z.number().int()).optional(),
   projectServerId: z.number().int().optional(),
+  defaultServerId: z.number().int().optional(),
+  serverIds: z.array(z.number().int()).min(1),
   environment: z.string().min(1).max(50).default("production"),
   allowAllProjects: z.boolean().default(false),
   canCreateProjects: z.boolean().default(false),
@@ -25,6 +27,7 @@ export async function tokenRoutes(app: FastifyInstance) {
         projectId: mcpTokens.projectId,
         projectName: projects.name,
         projectServerId: mcpTokens.projectServerId,
+        defaultServerId: mcpTokens.defaultServerId,
         environment: mcpTokens.environment,
         allowAllProjects: mcpTokens.allowAllProjects,
         canCreateProjects: mcpTokens.canCreateProjects,
@@ -48,10 +51,23 @@ export async function tokenRoutes(app: FastifyInstance) {
       .where(eq(projects.userId, req.user.id))
       .all();
 
+    const serverScopes = db
+      .select({
+        tokenDbId: mcpTokenServerScopes.tokenId,
+        serverId: mcpTokenServerScopes.serverId,
+        serverName: servers.name,
+        serverHost: servers.host,
+      })
+      .from(mcpTokenServerScopes)
+      .innerJoin(servers, eq(mcpTokenServerScopes.serverId, servers.id))
+      .where(eq(servers.userId, req.user.id))
+      .all();
+
     return reply.send({
       tokens: rows.map((row) => ({
         ...row,
         projectScopes: scopes.filter((scope) => scope.tokenDbId === row.id),
+        serverScopes: serverScopes.filter((scope) => scope.tokenDbId === row.id),
       })),
     });
   });
@@ -63,9 +79,13 @@ export async function tokenRoutes(app: FastifyInstance) {
     let projectName: string | undefined;
     let environment = body.data.environment;
     const scopedProjectIds = Array.from(new Set([...(body.data.projectIds ?? []), ...(body.data.projectId ? [body.data.projectId] : [])]));
+    const scopedServerIds = Array.from(new Set(body.data.serverIds));
 
     if (!body.data.allowAllProjects && scopedProjectIds.length === 0) {
       return reply.status(400).send({ error: "Select at least one project or allow all projects" });
+    }
+    if (body.data.defaultServerId && !scopedServerIds.includes(body.data.defaultServerId)) {
+      return reply.status(400).send({ error: "Default server must be included in allowed servers" });
     }
 
     if (body.data.projectId) {
@@ -89,6 +109,17 @@ export async function tokenRoutes(app: FastifyInstance) {
       if (invalid.length > 0) {
         return reply.status(404).send({ error: `Project scope not found: ${invalid.join(", ")}` });
       }
+    }
+
+    const ownedServers = db
+      .select({ id: servers.id })
+      .from(servers)
+      .where(eq(servers.userId, req.user.id))
+      .all();
+    const ownedServerIds = new Set(ownedServers.map((server) => server.id));
+    const invalidServers = scopedServerIds.filter((serverId) => !ownedServerIds.has(serverId));
+    if (invalidServers.length > 0) {
+      return reply.status(404).send({ error: `Server scope not found: ${invalidServers.join(", ")}` });
     }
 
     if (body.data.projectServerId) {
@@ -124,6 +155,7 @@ export async function tokenRoutes(app: FastifyInstance) {
         name: body.data.name,
         projectId: body.data.projectId,
         projectServerId: body.data.projectServerId,
+        defaultServerId: body.data.defaultServerId,
         environment,
         allowAllProjects: body.data.allowAllProjects,
         canCreateProjects: body.data.canCreateProjects,
@@ -137,6 +169,9 @@ export async function tokenRoutes(app: FastifyInstance) {
         .values(scopedProjectIds.map((projectId) => ({ tokenId: row.id, projectId })))
         .run();
     }
+    db.insert(mcpTokenServerScopes)
+      .values(scopedServerIds.map((serverId) => ({ tokenId: row.id, serverId })))
+      .run();
 
     const token = app.jwt.sign({
       id: req.user.id,
@@ -147,6 +182,7 @@ export async function tokenRoutes(app: FastifyInstance) {
       defaultProject: projectName,
       defaultEnvironment: environment,
       projectServerId: body.data.projectServerId,
+      defaultServerId: body.data.defaultServerId,
     });
 
     return reply.status(201).send({ token, profile: row });

@@ -25,7 +25,7 @@ Production Servers (any SSH-accessible host)
 - **MCP Tools**: `exec_remote`, `deploy`, `fetch_logs`, `restart_service`, `read/write_remote_file`, `list_remote_files`, `read/write_local_file`, `list_projects`, `project_create`
 - **Token-saving tools**: compact command/log output, async job tracking, project memory (`context_record_fact`, `context_search`)
 - **MCP token profiles**: create per-agent tokens from the Web UI, allow one agent to access multiple projects, and manually scope the servers it may use
-- **SampleManager tools**: `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`
+- **SampleManager tools**: `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`
 - **Server Management**: add servers, auto-generate SSH key pairs, push public keys, test connectivity, edit settings
 - **Project Management**: workspace directories per user, link/unlink servers per project per environment
 - **User Management**: admin-only user creation, password reset, admin role toggle
@@ -81,7 +81,7 @@ RelayMCP has two capability layers:
 | Remote files | `read_remote_file`, `write_remote_file`, `list_remote_files`, `patch_remote_file` |
 | Relay-side project workspace | `read_local_file`, `write_local_file`, `upload_workspace_file`, `sync_workspace` |
 | Durable project memory | `context_record_fact`, `context_search` |
-| SampleManager helpers | `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query` |
+| SampleManager helpers | `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`, `samplemanager_sql_execute_file` |
 
 ### PowerShell / SSH Operations
 
@@ -114,7 +114,7 @@ They can later be promoted into dedicated MCP tools when they become frequent.
 | Deploy Report Designer layouts | Upload `.repx`, validate layout loading, run report smoke test |
 | Deploy custom .NET task assemblies | Build with `MSBuild.exe` or `dotnet build`, copy DLL/PDB/config to the target convention, restart affected task hosts |
 | RESOURCE icons | Copy icon files under the instance `Resource\Icon` convention and refresh/reopen clients |
-| SampleManager SQL checks | `samplemanager_sql_query` for compact read-only checks by default; mutation requires explicit opt-in |
+| SampleManager SQL checks | `samplemanager_sql_query` for compact read-only checks by default, or `samplemanager_sql_execute_file` for SQL stored in the relay project workspace; mutation requires explicit opt-in |
 
 Important rules:
 
@@ -361,7 +361,7 @@ RelayMCP 的能力分两层：
 | 远程文件 | `read_remote_file`, `write_remote_file`, `list_remote_files`, `patch_remote_file` |
 | Relay 侧 project workspace | `read_local_file`, `write_local_file`, `upload_workspace_file`, `sync_workspace` |
 | 项目长期记忆 | `context_record_fact`, `context_search` |
-| SampleManager 辅助工具 | `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query` |
+| SampleManager 辅助工具 | `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`, `samplemanager_sql_execute_file` |
 
 ### PowerShell / SSH 能力
 
@@ -393,7 +393,7 @@ RelayMCP 的能力分两层：
 | 部署 Report Designer layout | 上传 `.repx`，验证 layout 可加载，并运行 report smoke test |
 | 部署自定义 .NET task assembly | 使用 `MSBuild.exe` 或 `dotnet build` 编译，复制 DLL/PDB/config 到目标约定目录，并重启受影响 task host |
 | RESOURCE icon | 将 icon 文件放到 instance 的 `Resource\Icon` 约定目录，并刷新/重开客户端 |
-| SampleManager SQL 检查 | `samplemanager_sql_query` 默认用于只读检查；写入操作必须显式开启 mutation |
+| SampleManager SQL 检查 | `samplemanager_sql_query` 默认用于只读检查，`samplemanager_sql_execute_file` 用于执行 relay project workspace 中的 SQL 文件；写入操作必须显式开启 mutation |
 
 重要约束：
 

@@ -103,13 +103,59 @@ $cn.Open()
 try {
   $cmd = $cn.CreateCommand()
   $cmd.CommandTimeout = 120
-  $cmd.CommandText = @'
+$cmd.CommandText = @'
 ${safeSql}
 '@
   $reader = $cmd.ExecuteReader()
-  $table = New-Object System.Data.DataTable
-  $table.Load($reader)
-  $table | ConvertTo-Json -Compress
+  $resultSets = @()
+  do {
+    $schema = $reader.GetSchemaTable()
+    if ($schema -eq $null) {
+      continue
+    }
+
+    $columns = @()
+    foreach ($schemaRow in $schema.Rows) {
+      $columns += [string]$schemaRow.ColumnName
+    }
+
+    $rows = @()
+    while ($reader.Read()) {
+      $row = [ordered]@{}
+      foreach ($column in $columns) {
+        $value = $reader[$column]
+        if ($value -is [System.DBNull]) {
+          $row[$column] = $null
+        }
+        elseif ($value -is [System.DateTime]) {
+          $row[$column] = $value.ToString("o")
+        }
+        else {
+          $row[$column] = $value
+        }
+      }
+      $rows += [pscustomobject]$row
+    }
+
+    $resultSets += [pscustomobject]@{
+      columns = $columns
+      rows = @($rows)
+      rowCount = @($rows).Count
+    }
+  } while ($reader.NextResult())
+
+  $firstRows = @()
+  if (@($resultSets).Count -gt 0) {
+    $firstRows = @($resultSets[0].rows)
+  }
+
+  [pscustomobject]@{
+    rows = @($firstRows)
+    rowCount = @($firstRows).Count
+    resultSetCount = @($resultSets).Count
+    resultSets = @($resultSets)
+    recordsAffected = $reader.RecordsAffected
+  } | ConvertTo-Json -Depth 8 -Compress
 }
 finally {
   $cn.Close()

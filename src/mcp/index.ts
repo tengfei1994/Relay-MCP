@@ -613,6 +613,45 @@ function createMcpServer(user: McpUser) {
     }
   );
 
+  server.tool(
+    "samplemanager_sql_execute_file",
+    "Run a SQL file from the relay project workspace against a SampleManager SQL Server database. Mutations require allowMutation=true.",
+    {
+      project: z.string().optional(),
+      database: z.string().describe("Database name, e.g. vgsm"),
+      path: z.string().describe("Relative SQL file path within the relay project workspace"),
+      environment: z.string().optional(),
+      allowMutation: z.boolean().optional(),
+    },
+    async ({ project: projectName, database, path: relPath, environment, allowMutation = false }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const project = registry.getProject(user.id, resolvedProjectName);
+      if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
+
+      const fullPath = join(project.workspacePath, relPath);
+      if (!fullPath.startsWith(project.workspacePath)) {
+        throw new Error("Path traversal not allowed");
+      }
+      if (!existsSync(fullPath)) {
+        throw new Error(`SQL file '${relPath}' does not exist in project '${resolvedProjectName}'`);
+      }
+
+      const { runner } = getRunner(projectName, environment);
+      const sql = readFileSync(fullPath, "utf8");
+      const text = await runSql(runner, database, sql, allowMutation);
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        project: resolvedProjectName,
+        tool: "samplemanager_sql_execute_file",
+        database,
+        path: relPath,
+        allowMutation,
+      });
+      return { content: [{ type: "text", text }] };
+    }
+  );
+
   return server;
 }
 

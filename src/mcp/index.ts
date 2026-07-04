@@ -13,6 +13,7 @@ import {
   clearFormCache,
   recentErrors,
   restartSampleManagerInstance,
+  runSampleManagerCommand,
   runSql,
 } from "../shared/samplemanager-tools.js";
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync } from "fs";
@@ -671,11 +672,13 @@ function createMcpServer(user: McpUser) {
       sql: z.string(),
       environment: z.string().optional(),
       allowMutation: z.boolean().optional(),
+      maxRows: z.number().optional().describe("Maximum rows returned per result set, capped at 1000. Default 100."),
+      includeResultSets: z.boolean().optional().describe("Include full resultSets payload. Default false."),
     },
-    async ({ project: projectName, database, sql, environment, allowMutation = false }) => {
+    async ({ project: projectName, database, sql, environment, allowMutation = false, maxRows, includeResultSets }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { runner } = getRunner(projectName, environment);
-      const text = await runSql(runner, database, sql, allowMutation);
+      const text = await runSql(runner, database, sql, { allowMutation, maxRows, includeResultSets });
       writeAudit({
         userId: user.id,
         username: user.username,
@@ -683,6 +686,8 @@ function createMcpServer(user: McpUser) {
         tool: "samplemanager_sql_query",
         database,
         allowMutation,
+        maxRows,
+        includeResultSets,
       });
       return { content: [{ type: "text", text }] };
     }
@@ -697,8 +702,10 @@ function createMcpServer(user: McpUser) {
       path: z.string().describe("Relative SQL file path within the relay project workspace"),
       environment: z.string().optional(),
       allowMutation: z.boolean().optional(),
+      maxRows: z.number().optional().describe("Maximum rows returned per result set, capped at 1000. Default 100."),
+      includeResultSets: z.boolean().optional().describe("Include full resultSets payload. Default false."),
     },
-    async ({ project: projectName, database, path: relPath, environment, allowMutation = false }) => {
+    async ({ project: projectName, database, path: relPath, environment, allowMutation = false, maxRows, includeResultSets }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const project = registry.getProject(user.id, resolvedProjectName);
       if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
@@ -713,7 +720,7 @@ function createMcpServer(user: McpUser) {
 
       const { runner } = getRunner(projectName, environment);
       const sql = readFileSync(fullPath, "utf8");
-      const text = await runSql(runner, database, sql, allowMutation);
+      const text = await runSql(runner, database, sql, { allowMutation, maxRows, includeResultSets });
       writeAudit({
         userId: user.id,
         username: user.username,
@@ -722,8 +729,54 @@ function createMcpServer(user: McpUser) {
         database,
         path: relPath,
         allowMutation,
+        maxRows,
+        includeResultSets,
       });
       return { content: [{ type: "text", text }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_run_command",
+    "Run SampleManagerCommand.exe from the instance Exe folder with structured arguments.",
+    {
+      project: z.string().optional(),
+      instance: z.string().describe("SampleManager instance name, e.g. VGSM"),
+      username: z.string().describe("SampleManager username used by SampleManagerCommand.exe"),
+      task: z.string().describe("SampleManager command task, e.g. VGL"),
+      args: z.array(z.string()).optional().describe("Additional arguments, e.g. ['-report', '$table_loader', '-prompts', '(C:\\\\file.csv,overwrite_table)']"),
+      environment: z.string().optional(),
+      timeoutMs: z.number().optional().describe("Command timeout in milliseconds. Default 120000."),
+      async: z.boolean().optional().describe("Run as an async job and return a jobId."),
+    },
+    async ({
+      project: projectName,
+      instance,
+      username,
+      task,
+      args = [],
+      environment,
+      timeoutMs = 120000,
+      async = false,
+    }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { runner } = getRunner(projectName, environment);
+      const work = () => runSampleManagerCommand(runner, instance, { username, task, args, timeoutMs });
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        project: resolvedProjectName,
+        tool: "samplemanager_run_command",
+        instance,
+        commandUsername: username,
+        task,
+        async,
+      });
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_run_command", { instance, username, task, args, environment }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
     }
   );
 

@@ -25,7 +25,7 @@ Production Servers (any SSH-accessible host)
 - **MCP Tools**: `exec_remote`, `exec_remote_powershell`, `exec_remote_script`, `deploy`, `fetch_logs`, `restart_service`, `read/write_remote_file`, `list_remote_files`, `read/write_local_file`, `list_projects`, `project_create`
 - **Token-saving tools**: compact command/log output, async job tracking, project memory (`context_record_fact`, `context_search`)
 - **MCP token profiles**: create per-agent tokens from the Web UI, allow one agent to access multiple projects, and manually scope the servers it may use
-- **SampleManager tools**: `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`
+- **SampleManager tools**: `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_run_command`
 - **Server Management**: add servers, auto-generate SSH key pairs, push public keys, test connectivity, edit settings
 - **Project Management**: workspace directories per user, link/unlink servers per project per environment
 - **User Management**: admin-only user creation, password reset, admin role toggle
@@ -81,7 +81,7 @@ RelayMCP has two capability layers:
 | Remote files | `read_remote_file`, `write_remote_file`, `list_remote_files`, `patch_remote_file` |
 | Relay-side project workspace | `read_local_file`, `write_local_file`, `upload_workspace_file`, `sync_workspace` |
 | Durable project memory | `context_record_fact`, `context_search` |
-| SampleManager helpers | `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`, `samplemanager_sql_execute_file` |
+| SampleManager helpers | `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_run_command` |
 
 ### PowerShell / SSH Operations
 
@@ -111,14 +111,14 @@ They can later be promoted into dedicated MCP tools when they become frequent.
 
 | Scenario | Command Pattern |
 |----------|-----------------|
-| Run VGL report | `SampleManagerCommand.exe -instance <INSTANCE> -username <USER> -task VGL -report '<REPORT_NAME>' -prompts "(...)"` |
-| Load table-loader CSV | Run VGL report `'$table_loader'` with prompts such as `"(C:\path\file.csv,overwrite_table)"` |
+| Run VGL report | Prefer `samplemanager_run_command` with `task="VGL"` and structured `args`, or run `SampleManagerCommand.exe -instance <INSTANCE> -username <USER> -task VGL -report '<REPORT_NAME>' -prompts "(...)"` |
+| Load table-loader CSV | Prefer `samplemanager_run_command` with args such as `["-report","$table_loader","-prompts","(C:\path\file.csv,overwrite_table)"]` |
 | Apply structure changes | `CreateEntityDefinition.exe -instance <INSTANCE>` followed by `convert_table.exe -mode convert -tables <TABLE_NAME> -noconfirm -instance <INSTANCE>` |
 | Deploy form XML / form task code | Copy form artifacts, deploy task assemblies if needed, clear targeted `FormsBin` cache |
 | Deploy Report Designer layouts | Upload `.repx`, validate layout loading, run report smoke test |
 | Deploy custom .NET task assemblies | Build with `MSBuild.exe` or `dotnet build`, copy DLL/PDB/config to the target convention, restart affected task hosts |
 | RESOURCE icons | Copy icon files under the instance `Resource\Icon` convention and refresh/reopen clients |
-| SampleManager SQL checks | `samplemanager_sql_query` for compact read-only checks by default, or `samplemanager_sql_execute_file` for SQL stored in the relay project workspace; mutation requires explicit opt-in |
+| SampleManager SQL checks | `samplemanager_sql_query` for compact read-only checks by default, or `samplemanager_sql_execute_file` for SQL stored in the relay project workspace; use `maxRows` and `includeResultSets` to control output size; mutation requires explicit opt-in |
 
 Important rules:
 
@@ -330,7 +330,7 @@ RelayMCP 服务器（Ubuntu VM）
 - **MCP 工具**：`exec_remote`（执行命令）、`exec_remote_powershell`、`exec_remote_script`、`deploy`（部署）、`fetch_logs`（获取日志）、`restart_service`（重启服务）、远程/本地文件读写、项目列表查询、`project_create`（创建项目）
 - **节省 token 工具**：输出压缩、异步 job、项目事实记忆（`context_record_fact`、`context_search`）
 - **MCP token profile**：在 Web UI 手动生成 agent token，一个 agent 可访问多个 project，但可用 server 必须手动授权
-- **SampleManager 工具**：实例重启、FormsBin 缓存清理、近期错误检索、SQL 查询
+- **SampleManager 工具**：实例重启、FormsBin 缓存清理、近期错误检索、SQL 查询、SQL 文件执行、SampleManagerCommand 封装
 - **服务器管理**：添加服务器、自动生成 SSH 密钥对、一键推送公钥、连通性测试、编辑服务器信息
 - **项目管理**：按用户隔离的工作区目录、支持多环境的项目-服务器关联管理
 - **用户管理**：仅管理员可创建用户、重置密码、管理员权限授予/撤销
@@ -365,7 +365,7 @@ RelayMCP 的能力分两层：
 | 远程文件 | `read_remote_file`, `write_remote_file`, `list_remote_files`, `patch_remote_file` |
 | Relay 侧 project workspace | `read_local_file`, `write_local_file`, `upload_workspace_file`, `sync_workspace` |
 | 项目长期记忆 | `context_record_fact`, `context_search` |
-| SampleManager 辅助工具 | `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`, `samplemanager_sql_execute_file` |
+| SampleManager 辅助工具 | `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_run_command` |
 
 ### PowerShell / SSH 能力
 
@@ -393,14 +393,14 @@ RelayMCP 的能力分两层：
 
 | 场景 | 命令模式 |
 |------|----------|
-| 执行 VGL report | `SampleManagerCommand.exe -instance <INSTANCE> -username <USER> -task VGL -report '<REPORT_NAME>' -prompts "(...)"` |
-| 加载 table-loader CSV | 运行 VGL report `'$table_loader'`，prompts 例如 `"(C:\path\file.csv,overwrite_table)"` |
+| 执行 VGL report | 优先用 `samplemanager_run_command`，传入 `task="VGL"` 和结构化 `args`；也可直接运行 `SampleManagerCommand.exe -instance <INSTANCE> -username <USER> -task VGL -report '<REPORT_NAME>' -prompts "(...)"` |
+| 加载 table-loader CSV | 优先用 `samplemanager_run_command`，args 例如 `["-report","$table_loader","-prompts","(C:\path\file.csv,overwrite_table)"]` |
 | 应用 structure 变更 | `CreateEntityDefinition.exe -instance <INSTANCE>` 后执行 `convert_table.exe -mode convert -tables <TABLE_NAME> -noconfirm -instance <INSTANCE>` |
 | 部署 form XML / form task code | 复制 form 文件，必要时部署 task assembly，并清理对应 `FormsBin` 缓存 |
 | 部署 Report Designer layout | 上传 `.repx`，验证 layout 可加载，并运行 report smoke test |
 | 部署自定义 .NET task assembly | 使用 `MSBuild.exe` 或 `dotnet build` 编译，复制 DLL/PDB/config 到目标约定目录，并重启受影响 task host |
 | RESOURCE icon | 将 icon 文件放到 instance 的 `Resource\Icon` 约定目录，并刷新/重开客户端 |
-| SampleManager SQL 检查 | `samplemanager_sql_query` 默认用于只读检查，`samplemanager_sql_execute_file` 用于执行 relay project workspace 中的 SQL 文件；写入操作必须显式开启 mutation |
+| SampleManager SQL 检查 | `samplemanager_sql_query` 默认用于只读检查，`samplemanager_sql_execute_file` 用于执行 relay project workspace 中的 SQL 文件；用 `maxRows` 和 `includeResultSets` 控制输出大小；写入操作必须显式开启 mutation |
 
 重要约束：
 

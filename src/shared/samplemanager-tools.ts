@@ -5,6 +5,10 @@ function psQuote(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+function psArray(values: string[]): string {
+  return `@(${values.map(psQuote).join(", ")})`;
+}
+
 export function instancePaths(instance: string) {
   const root = `C:\\Thermo\\SampleManager\\Server\\${instance}`;
   return {
@@ -83,12 +87,22 @@ $matches | Select-Object -Last 80 | ConvertTo-Json -Compress
   return compactText(result.stdout || result.stderr);
 }
 
+export interface SqlOptions {
+  allowMutation?: boolean;
+  maxRows?: number;
+  includeResultSets?: boolean;
+}
+
 export async function runSql(
   runner: RemoteRunner,
   database: string,
   sql: string,
-  allowMutation = false
+  options: boolean | SqlOptions = false
 ): Promise<string> {
+  const sqlOptions: SqlOptions = typeof options === "boolean" ? { allowMutation: options } : options;
+  const allowMutation = sqlOptions.allowMutation ?? false;
+  const maxRows = Math.max(1, Math.min(sqlOptions.maxRows ?? 100, 1000));
+  const includeResultSets = sqlOptions.includeResultSets ?? false;
   const mutationPattern = /\b(insert|update|delete|merge|drop|alter|truncate|create|exec|execute)\b/i;
   if (!allowMutation && mutationPattern.test(sql)) {
     throw new Error("SQL appears to mutate data. Pass allowMutation=true only inside an approved workflow.");
@@ -106,6 +120,8 @@ try {
 $cmd.CommandText = @'
 ${safeSql}
 '@
+  $maxRows = ${maxRows}
+  $includeResultSets = ${includeResultSets ? "$true" : "$false"}
   $reader = $cmd.ExecuteReader()
   $resultSets = @()
   do {
@@ -120,40 +136,55 @@ ${safeSql}
     }
 
     $rows = @()
+    $rowCount = 0
     while ($reader.Read()) {
-      $row = [ordered]@{}
-      foreach ($column in $columns) {
-        $value = $reader[$column]
-        if ($value -is [System.DBNull]) {
-          $row[$column] = $null
+      $rowCount += 1
+      if (@($rows).Count -lt $maxRows) {
+        $row = [ordered]@{}
+        foreach ($column in $columns) {
+          $value = $reader[$column]
+          if ($value -is [System.DBNull]) {
+            $row[$column] = $null
+          }
+          elseif ($value -is [System.DateTime]) {
+            $row[$column] = $value.ToString("o")
+          }
+          else {
+            $row[$column] = $value
+          }
         }
-        elseif ($value -is [System.DateTime]) {
-          $row[$column] = $value.ToString("o")
-        }
-        else {
-          $row[$column] = $value
-        }
+        $rows += [pscustomobject]$row
       }
-      $rows += [pscustomobject]$row
     }
 
     $resultSets += [pscustomobject]@{
       columns = $columns
       rows = @($rows)
-      rowCount = @($rows).Count
+      rowCount = $rowCount
+      rowsReturned = @($rows).Count
+      truncated = $rowCount -gt @($rows).Count
     }
   } while ($reader.NextResult())
 
   $firstRows = @()
+  $firstRowCount = 0
+  $firstRowsReturned = 0
+  $firstTruncated = $false
   if (@($resultSets).Count -gt 0) {
     $firstRows = @($resultSets[0].rows)
+    $firstRowCount = $resultSets[0].rowCount
+    $firstRowsReturned = $resultSets[0].rowsReturned
+    $firstTruncated = $resultSets[0].truncated
   }
 
   [pscustomobject]@{
     rows = @($firstRows)
-    rowCount = @($firstRows).Count
+    rowCount = $firstRowCount
+    rowsReturned = $firstRowsReturned
+    truncated = $firstTruncated
+    maxRows = $maxRows
     resultSetCount = @($resultSets).Count
-    resultSets = @($resultSets)
+    resultSets = if ($includeResultSets) { @($resultSets) } else { @() }
     recordsAffected = $reader.RecordsAffected
   } | ConvertTo-Json -Depth 8 -Compress
 }
@@ -163,4 +194,46 @@ finally {
 `;
   const result = await runner.execPowerShell(script, 120000);
   return compactText(result.stdout || result.stderr);
+}
+
+export interface SampleManagerCommandOptions {
+  username: string;
+  task: string;
+  args?: string[];
+  timeoutMs?: number;
+}
+
+export async function runSampleManagerCommand(
+  runner: RemoteRunner,
+  instance: string,
+  options: SampleManagerCommandOptions
+): Promise<string> {
+  const paths = instancePaths(instance);
+  const args = [
+    "-instance",
+    instance,
+    "-username",
+    options.username,
+    "-task",
+    options.task,
+    ...(options.args ?? []),
+  ];
+  const script = `
+$ErrorActionPreference = "Stop"
+$exe = ${psQuote(paths.exe)}
+$command = Join-Path $exe "SampleManagerCommand.exe"
+$arguments = ${psArray(args)}
+Push-Location $exe
+try {
+  & $command @arguments
+  if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
+}
+finally {
+  Pop-Location
+}
+`;
+  const result = await runner.execPowerShell(script, options.timeoutMs ?? 120000);
+  return compactText(`${result.stdout}\n${result.stderr}`.trim());
 }

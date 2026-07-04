@@ -1,5 +1,5 @@
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
-import { FolderOpen, Server, LogOut, Users } from "lucide-react";
+import { FolderOpen, Server, LogOut, Users, KeyRound } from "lucide-react";
 import { useAuth } from "../App";
 
 export default function Layout() {
@@ -36,6 +36,10 @@ export default function Layout() {
           <NavLink to="/servers" className={navCls}>
             <Server size={15} />
             Servers
+          </NavLink>
+          <NavLink to="/tokens" className={navCls}>
+            <KeyRound size={15} />
+            Tokens
           </NavLink>
           {user?.isAdmin && (
             <NavLink to="/users" className={navCls}>

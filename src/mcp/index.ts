@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import express from "express";
 import { z } from "zod";
 import jwt from "jsonwebtoken";
+import Database from "better-sqlite3";
 import { ProjectRegistry } from "./project-registry.js";
 import { RemoteRunner } from "../shared/remote-runner.js";
 import { compactText, summarizeExec, summarizeJson } from "../shared/output.js";
@@ -20,9 +21,19 @@ import "dotenv/config";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? 3001);
 const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-in-production";
+const DB_PATH = process.env.DB_PATH ?? "./data/app.db";
+
+interface McpUser {
+  id: number;
+  username: string;
+  isAdmin?: boolean;
+  tokenId?: string;
+  defaultProject?: string;
+  defaultEnvironment?: string;
+}
 
 // ─── Auth middleware ───────────────────────────────────────────────────────────
-function verifyToken(req: express.Request): { id: number; username: string } {
+function verifyToken(req: express.Request): McpUser {
   const authHeader = req.headers.authorization;
   const queryToken = req.query.token as string | undefined;
 
@@ -34,11 +45,24 @@ function verifyToken(req: express.Request): { id: number; username: string } {
   } else {
     throw new Error("Missing or invalid authentication");
   }
-  return jwt.verify(token, JWT_SECRET) as { id: number; username: string };
+  const payload = jwt.verify(token, JWT_SECRET) as McpUser;
+  if (payload.tokenId) {
+    const db = new Database(DB_PATH, { readonly: false });
+    try {
+      const row = db
+        .prepare("SELECT id FROM mcp_tokens WHERE token_id = ? AND user_id = ? AND active = 1")
+        .get(payload.tokenId, payload.id);
+      if (!row) throw new Error("MCP token is disabled or not found");
+      db.prepare("UPDATE mcp_tokens SET last_used_at = datetime('now') WHERE token_id = ?").run(payload.tokenId);
+    } finally {
+      db.close();
+    }
+  }
+  return payload;
 }
 
 // ─── Build MCP server for a given user ────────────────────────────────────────
-function createMcpServer(user: { id: number; username: string }) {
+function createMcpServer(user: McpUser) {
   const registry = new ProjectRegistry();
   const server = new McpServer({
     name: "remote-ops",
@@ -46,13 +70,25 @@ function createMcpServer(user: { id: number; username: string }) {
   });
 
   // ── Helper: resolve project + runner ──────────────────────────────────────
-  function getRunner(projectName: string, environment = "production") {
-    const project = registry.getProject(user.id, projectName);
-    if (!project) throw new Error(`Project '${projectName}' not found`);
+  function resolveProjectName(projectName?: string) {
+    const resolved = projectName || user.defaultProject;
+    if (!resolved) {
+      throw new Error(
+        "No project selected. Ask the user whether to create a new project or use an existing one, then pass the project name. You can call list_projects first."
+      );
+    }
+    return resolved;
+  }
+
+  function getRunner(projectName?: string, environment?: string) {
+    const resolvedProjectName = resolveProjectName(projectName);
+    const resolvedEnvironment = environment || user.defaultEnvironment || "production";
+    const project = registry.getProject(user.id, resolvedProjectName);
+    if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
 
     const projectServers = registry.getProjectServers(project.id);
-    const ps = projectServers.find((s) => s.environment === environment);
-    if (!ps) throw new Error(`No connected server for project '${projectName}' env '${environment}'`);
+    const ps = projectServers.find((s) => s.environment === resolvedEnvironment);
+    if (!ps) throw new Error(`No connected server for project '${resolvedProjectName}' env '${resolvedEnvironment}'`);
 
     const runner = new RemoteRunner({
       host: ps.server.host,
@@ -77,7 +113,7 @@ function createMcpServer(user: { id: number; username: string }) {
     "exec_remote",
     "Execute a shell command on the remote server for a project",
     {
-      project: z.string().describe("Project name"),
+      project: z.string().optional().describe("Project name. Optional when the MCP token has a default project."),
       command: z.string().describe("Shell command to run"),
       environment: z.string().optional().describe("Target environment (default: production)"),
     },
@@ -104,7 +140,7 @@ function createMcpServer(user: { id: number; username: string }) {
     "deploy",
     "Deploy the project to the remote server (git pull + restart)",
     {
-      project: z.string().describe("Project name"),
+      project: z.string().optional().describe("Project name. Optional when the MCP token has a default project."),
       environment: z.string().optional(),
       branch: z.string().optional().describe("Git branch (default: main)"),
     },
@@ -139,7 +175,7 @@ function createMcpServer(user: { id: number; username: string }) {
     "fetch_logs",
     "Fetch recent logs from the remote server",
     {
-      project: z.string(),
+      project: z.string().optional(),
       environment: z.string().optional(),
       lines: z.number().optional().describe("Number of lines (default: 100)"),
       logPath: z.string().optional().describe("Custom log file path"),
@@ -165,7 +201,7 @@ function createMcpServer(user: { id: number; username: string }) {
     "restart_service",
     "Restart a service on the remote server",
     {
-      project: z.string(),
+      project: z.string().optional(),
       environment: z.string().optional(),
       service: z.string().describe("Service name or 'all' for all project services"),
     },
@@ -193,7 +229,7 @@ function createMcpServer(user: { id: number; username: string }) {
     "read_remote_file",
     "Read a file from the remote server",
     {
-      project: z.string(),
+      project: z.string().optional(),
       remotePath: z.string().describe("Absolute path on remote server"),
       environment: z.string().optional(),
     },
@@ -209,7 +245,7 @@ function createMcpServer(user: { id: number; username: string }) {
     "write_remote_file",
     "Write content to a file on the remote server",
     {
-      project: z.string(),
+      project: z.string().optional(),
       remotePath: z.string().describe("Absolute path on remote server"),
       content: z.string().describe("File content"),
       environment: z.string().optional(),
@@ -226,7 +262,7 @@ function createMcpServer(user: { id: number; username: string }) {
     "list_remote_files",
     "List files in a directory on the remote server",
     {
-      project: z.string(),
+      project: z.string().optional(),
       remotePath: z.string().describe("Absolute directory path on remote server"),
       environment: z.string().optional(),
     },
@@ -242,12 +278,13 @@ function createMcpServer(user: { id: number; username: string }) {
     "read_local_file",
     "Read a file from the project workspace on the MCP server",
     {
-      project: z.string(),
+      project: z.string().optional(),
       path: z.string().describe("Relative path within project workspace"),
     },
     async ({ project: projectName, path: relPath }) => {
-      const project = registry.getProject(user.id, projectName);
-      if (!project) throw new Error(`Project '${projectName}' not found`);
+      const resolvedProjectName = resolveProjectName(projectName);
+      const project = registry.getProject(user.id, resolvedProjectName);
+      if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
 
       const fullPath = join(project.workspacePath, relPath);
       if (!fullPath.startsWith(project.workspacePath)) {
@@ -263,7 +300,7 @@ function createMcpServer(user: { id: number; username: string }) {
     "sync_workspace",
     "Sync the entire project workspace to the linked remote server via SFTP (no size limit). Excludes node_modules, .git, dist, .env by default.",
     {
-      project: z.string(),
+      project: z.string().optional(),
       environment: z.string().optional(),
       remoteDir: z.string().optional().describe("Override remote destination path (default: project's remotePath)"),
       exclude: z.array(z.string()).optional().describe("Additional patterns to exclude"),
@@ -283,7 +320,7 @@ function createMcpServer(user: { id: number; username: string }) {
     "upload_workspace_file",
     "Upload a single file from the project workspace to the remote server via SFTP. Handles files of any size.",
     {
-      project: z.string(),
+      project: z.string().optional(),
       localPath: z.string().describe("Relative path within project workspace"),
       remotePath: z.string().describe("Absolute destination path on remote server"),
       environment: z.string().optional(),
@@ -302,14 +339,15 @@ function createMcpServer(user: { id: number; username: string }) {
     "write_local_file",
     "Write (or append) a file to the project workspace. Use append=true for chunked writes of large files — call repeatedly with sequential chunks, then upload_workspace_file or sync_workspace once done.",
     {
-      project: z.string(),
+      project: z.string().optional(),
       path: z.string().describe("Relative path within project workspace"),
       content: z.string().describe("File content (or next chunk if append=true)"),
       append: z.boolean().optional().describe("If true, append to existing file instead of overwriting. Default false."),
     },
     async ({ project: projectName, path: relPath, content, append = false }) => {
-      const project = registry.getProject(user.id, projectName);
-      if (!project) throw new Error(`Project '${projectName}' not found`);
+      const resolvedProjectName = resolveProjectName(projectName);
+      const project = registry.getProject(user.id, resolvedProjectName);
+      if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
 
       const fullPath = join(project.workspacePath, relPath);
       if (!fullPath.startsWith(project.workspacePath)) {
@@ -331,7 +369,7 @@ function createMcpServer(user: { id: number; username: string }) {
     "patch_remote_file",
     "Apply a unified diff (patch) to a file on the remote server. Far more token-efficient than rewriting the whole file — only send what changed. The diff must be in standard unified diff format (diff -u / git diff).",
     {
-      project: z.string(),
+      project: z.string().optional(),
       remotePath: z.string().describe("Absolute path to the file on the remote server"),
       diff: z.string().describe("Unified diff string (output of `diff -u old new` or `git diff`)"),
       environment: z.string().optional(),
@@ -375,13 +413,14 @@ function createMcpServer(user: { id: number; username: string }) {
     "context_record_fact",
     "Record a durable project fact so future LLM calls do not need chat history",
     {
-      project: z.string(),
+      project: z.string().optional(),
       text: z.string().describe("Short fact, pitfall, path, or project convention"),
       tags: z.array(z.string()).optional(),
     },
     async ({ project, text, tags = [] }) => {
-      const fact = recordFact(user, project, text, tags);
-      writeAudit({ userId: user.id, username: user.username, project, tool: "context_record_fact", tags });
+      const resolvedProjectName = resolveProjectName(project);
+      const fact = recordFact(user, resolvedProjectName, text, tags);
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "context_record_fact", tags });
       return { content: [{ type: "text", text: summarizeJson(fact) }] };
     }
   );
@@ -390,12 +429,13 @@ function createMcpServer(user: { id: number; username: string }) {
     "context_search",
     "Search durable project facts recorded on the MCP server",
     {
-      project: z.string(),
+      project: z.string().optional(),
       query: z.string().optional(),
       limit: z.number().optional(),
     },
     async ({ project, query = "", limit = 10 }) => {
-      return { content: [{ type: "text", text: summarizeJson(searchFacts(user.id, project, query, limit)) }] };
+      const resolvedProjectName = resolveProjectName(project);
+      return { content: [{ type: "text", text: summarizeJson(searchFacts(user.id, resolvedProjectName, query, limit)) }] };
     }
   );
 
@@ -404,16 +444,17 @@ function createMcpServer(user: { id: number; username: string }) {
     "samplemanager_restart_instance",
     "Restart a SampleManager instance on a linked Windows server and stop stuck client task hosts",
     {
-      project: z.string(),
+      project: z.string().optional(),
       instance: z.string().describe("SampleManager instance name, e.g. VGSM"),
       environment: z.string().optional(),
       async: z.boolean().optional().describe("Run as an async job and return a jobId"),
     },
     async ({ project: projectName, instance, environment, async = false }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
       const { runner } = getRunner(projectName, environment);
       const work = () => restartSampleManagerInstance(runner, instance);
       if (async) {
-        const job = startJob(user, projectName, "samplemanager_restart_instance", { instance, environment }, work);
+        const job = startJob(user, resolvedProjectName, "samplemanager_restart_instance", { instance, environment }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
@@ -424,7 +465,7 @@ function createMcpServer(user: { id: number; username: string }) {
     "samplemanager_clear_form_cache",
     "Clear FormsBin cache for one SampleManager form without creating local throwaway scripts",
     {
-      project: z.string(),
+      project: z.string().optional(),
       instance: z.string(),
       formName: z.string(),
       environment: z.string().optional(),
@@ -439,7 +480,7 @@ function createMcpServer(user: { id: number; username: string }) {
     "samplemanager_recent_errors",
     "Search recent SampleManager logs and return a compact error-focused result",
     {
-      project: z.string(),
+      project: z.string().optional(),
       instance: z.string(),
       environment: z.string().optional(),
       minutes: z.number().optional(),
@@ -455,19 +496,20 @@ function createMcpServer(user: { id: number; username: string }) {
     "samplemanager_sql_query",
     "Run a compact SQL query against a SampleManager SQL Server database. Read-only by default.",
     {
-      project: z.string(),
+      project: z.string().optional(),
       database: z.string().describe("Database name, e.g. vgsm"),
       sql: z.string(),
       environment: z.string().optional(),
       allowMutation: z.boolean().optional(),
     },
     async ({ project: projectName, database, sql, environment, allowMutation = false }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
       const { runner } = getRunner(projectName, environment);
       const text = await runSql(runner, database, sql, allowMutation);
       writeAudit({
         userId: user.id,
         username: user.username,
-        project: projectName,
+        project: resolvedProjectName,
         tool: "samplemanager_sql_query",
         database,
         allowMutation,
@@ -484,7 +526,7 @@ const app = express();
 app.use(express.json());
 
 app.all("/mcp", async (req, res) => {
-  let user: { id: number; username: string };
+  let user: McpUser;
   try {
     user = verifyToken(req);
   } catch {

@@ -47,3 +47,18 @@ export const projectServers = sqliteTable("project_servers", {
   remotePath: text("remote_path").notNull(), // deployment target path on server
   environment: text("environment").default("production"),
 });
+
+export const mcpTokens = sqliteTable("mcp_tokens", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  tokenId: text("token_id").notNull().unique(),
+  name: text("name").notNull(),
+  projectId: integer("project_id").references(() => projects.id, { onDelete: "set null" }),
+  projectServerId: integer("project_server_id").references(() => projectServers.id, { onDelete: "set null" }),
+  environment: text("environment").default("production"),
+  active: integer("active", { mode: "boolean" }).default(true),
+  createdAt: text("created_at").default(sql`(datetime('now'))`),
+  lastUsedAt: text("last_used_at"),
+});

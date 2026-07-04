@@ -12,11 +12,30 @@ import { projectRoutes } from "./routes/projects.js";
 import { serverRoutes } from "./routes/servers.js";
 import { projectServerRoutes } from "./routes/project-servers.js";
 import { userRoutes } from "./routes/users.js";
+import { tokenRoutes } from "./routes/tokens.js";
 
 declare module "@fastify/jwt" {
   interface FastifyJWT {
-    payload: { id: number; username: string; isAdmin: boolean };
-    user: { id: number; username: string; isAdmin: boolean };
+    payload: {
+      id: number;
+      username: string;
+      isAdmin: boolean;
+      tokenKind?: string;
+      tokenId?: string;
+      defaultProject?: string;
+      defaultEnvironment?: string;
+      projectServerId?: number;
+    };
+    user: {
+      id: number;
+      username: string;
+      isAdmin: boolean;
+      tokenKind?: string;
+      tokenId?: string;
+      defaultProject?: string;
+      defaultEnvironment?: string;
+      projectServerId?: number;
+    };
   }
 }
 
@@ -74,6 +93,7 @@ await app.register(projectRoutes);
 await app.register(serverRoutes);
 await app.register(projectServerRoutes);
 await app.register(userRoutes);
+await app.register(tokenRoutes);
 
 // Health check
 app.get("/api/health", async () => ({ ok: true, ts: new Date().toISOString() }));

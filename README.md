@@ -24,6 +24,7 @@ Production Servers (any SSH-accessible host)
 
 - **MCP Tools**: `exec_remote`, `deploy`, `fetch_logs`, `restart_service`, `read/write_remote_file`, `list_remote_files`, `read/write_local_file`, `list_projects`
 - **Token-saving tools**: compact command/log output, async job tracking, project memory (`context_record_fact`, `context_search`)
+- **MCP token profiles**: create per-agent tokens from the Web UI and bind a default project/server/environment
 - **SampleManager tools**: `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`
 - **Server Management**: add servers, auto-generate SSH key pairs, push public keys, test connectivity, edit settings
 - **Project Management**: workspace directories per user, link/unlink servers per project per environment
@@ -161,6 +162,17 @@ Authorization: Bearer YOUR_JWT_TOKEN
 
 Clients that only support local stdio MCP can use `mcp-remote` as a bridge.
 
+## MCP Token Profiles
+
+Use the Web UI **Tokens** page to create tokens for local agents. A token can
+optionally carry a default project and server environment. When a token has a
+default project, MCP tools can omit the `project` argument. When no default
+project exists, RelayMCP returns an actionable error telling the local agent to
+ask the user whether to create a new project or choose an existing one.
+
+Generated tokens are shown once. RelayMCP stores only token metadata and the
+token id so profiles can be revoked without storing the full secret.
+
 Get your JWT token:
 ```bash
 curl -s -X POST http://YOUR_SERVER:3000/api/auth/login \
@@ -208,6 +220,7 @@ RelayMCP 服务器（Ubuntu VM）
 
 - **MCP 工具**：`exec_remote`（执行命令）、`deploy`（部署）、`fetch_logs`（获取日志）、`restart_service`（重启服务）、远程/本地文件读写、项目列表查询
 - **节省 token 工具**：输出压缩、异步 job、项目事实记忆（`context_record_fact`、`context_search`）
+- **MCP token profile**：在 Web UI 手动生成 agent token，并绑定默认 project/server/environment
 - **SampleManager 工具**：实例重启、FormsBin 缓存清理、近期错误检索、SQL 查询
 - **服务器管理**：添加服务器、自动生成 SSH 密钥对、一键推送公钥、连通性测试、编辑服务器信息
 - **项目管理**：按用户隔离的工作区目录、支持多环境的项目-服务器关联管理
@@ -314,6 +327,15 @@ Authorization: Bearer 你的JWT令牌
 ```
 
 如果客户端只支持本地 stdio MCP，可以用 `mcp-remote` 做桥接。
+
+## MCP Token Profile
+
+在 Web UI 的 **Tokens** 页面生成本地 agent 使用的 token。生成时可以选择默认
+project 和 server environment。带默认 project 的 token 调用 MCP tool 时可以省略
+`project` 参数；如果 token 没有默认 project，RelayMCP 会返回明确提示，让本地
+agent 询问用户是新建 project 还是选择历史 project。
+
+token 明文只显示一次。数据库只保存 token 元数据和 token id，用于列表展示和撤销。
 
 获取 JWT 令牌：
 ```bash

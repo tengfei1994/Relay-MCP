@@ -56,6 +56,19 @@ export function runMigrations() {
       remote_path TEXT NOT NULL,
       environment TEXT DEFAULT 'production'
     );
+
+    CREATE TABLE IF NOT EXISTS mcp_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_id TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+      project_server_id INTEGER REFERENCES project_servers(id) ON DELETE SET NULL,
+      environment TEXT DEFAULT 'production',
+      active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      last_used_at TEXT
+    );
   `);
 
   // Incremental migrations for existing databases

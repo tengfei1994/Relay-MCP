@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { projects, servers, projectServers } from "../db/schema.js";
+import { RemoteRunner } from "../../shared/remote-runner.js";
 import { z } from "zod";
 
 export async function projectServerRoutes(app: FastifyInstance) {
@@ -85,6 +86,20 @@ export async function projectServerRoutes(app: FastifyInstance) {
         .get();
       if (existing) {
         return reply.status(409).send({ error: `Environment '${body.data.environment}' already has a server linked` });
+      }
+
+      const runner = new RemoteRunner({
+        host: server.host,
+        port: server.port ?? 22,
+        username: server.sshUser,
+        privateKeyPath: server.privateKeyPath,
+        os: server.os === "windows" ? "windows" : "linux",
+      });
+      const mkdirResult = runner.isWindows()
+        ? await runner.execPowerShell(`New-Item -ItemType Directory -Force -Path '${body.data.remotePath.replace(/'/g, "''")}' | Out-Null`)
+        : await runner.exec(`mkdir -p '${body.data.remotePath.replace(/'/g, `'\\''`)}'`);
+      if (mkdirResult.code !== 0) {
+        return reply.status(502).send({ error: mkdirResult.stderr || "Failed to create remote project directory" });
       }
 
       const result = db

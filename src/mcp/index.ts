@@ -28,8 +28,13 @@ interface McpUser {
   username: string;
   isAdmin?: boolean;
   tokenId?: string;
+  tokenDbId?: number;
+  defaultProjectId?: number;
   defaultProject?: string;
   defaultEnvironment?: string;
+  projectServerId?: number;
+  allowAllProjects?: boolean;
+  canCreateProjects?: boolean;
 }
 
 // ─── Auth middleware ───────────────────────────────────────────────────────────
@@ -50,10 +55,22 @@ function verifyToken(req: express.Request): McpUser {
     const db = new Database(DB_PATH, { readonly: false });
     try {
       const row = db
-        .prepare("SELECT id FROM mcp_tokens WHERE token_id = ? AND user_id = ? AND active = 1")
-        .get(payload.tokenId, payload.id);
+        .prepare(`
+          SELECT mt.id, mt.project_id, mt.project_server_id, mt.environment, mt.allow_all_projects, mt.can_create_projects, p.name AS project_name
+          FROM mcp_tokens mt
+          LEFT JOIN projects p ON p.id = mt.project_id
+          WHERE mt.token_id = ? AND mt.user_id = ? AND mt.active = 1
+        `)
+        .get(payload.tokenId, payload.id) as any;
       if (!row) throw new Error("MCP token is disabled or not found");
       db.prepare("UPDATE mcp_tokens SET last_used_at = datetime('now') WHERE token_id = ?").run(payload.tokenId);
+      payload.tokenDbId = row.id;
+      payload.defaultProjectId = row.project_id ?? undefined;
+      payload.defaultProject = row.project_name ?? payload.defaultProject;
+      payload.defaultEnvironment = row.environment ?? payload.defaultEnvironment;
+      payload.projectServerId = row.project_server_id ?? payload.projectServerId;
+      payload.allowAllProjects = Boolean(row.allow_all_projects);
+      payload.canCreateProjects = Boolean(row.can_create_projects);
     } finally {
       db.close();
     }
@@ -70,12 +87,31 @@ function createMcpServer(user: McpUser) {
   });
 
   // ── Helper: resolve project + runner ──────────────────────────────────────
+  function listAllowedProjects() {
+    const projects = registry.listScopedProjects(user.id, user.tokenDbId, user.allowAllProjects);
+    if (projects.length === 0 && user.defaultProject) {
+      const defaultProject = registry.getProject(user.id, user.defaultProject);
+      return defaultProject ? [defaultProject] : [];
+    }
+    return projects;
+  }
+
   function resolveProjectName(projectName?: string) {
-    const resolved = projectName || user.defaultProject;
+    const allowedProjects = listAllowedProjects();
+    const resolved = projectName || user.defaultProject || (allowedProjects.length === 1 ? allowedProjects[0].name : undefined);
     if (!resolved) {
       throw new Error(
-        "No project selected. Ask the user whether to create a new project or use an existing one, then pass the project name. You can call list_projects first."
+        JSON.stringify({
+          needsProjectSelection: true,
+          message: "No project selected. Ask the user whether to create a new project or use an existing one, then pass the project name.",
+          canCreateProjects: Boolean(user.canCreateProjects),
+          projects: allowedProjects.map((project) => ({ name: project.name, id: project.id })),
+        })
       );
+    }
+    if (!user.allowAllProjects && user.tokenDbId) {
+      const allowed = allowedProjects.some((project) => project.name === resolved);
+      if (!allowed) throw new Error(`Project '${resolved}' is not allowed for this MCP token`);
     }
     return resolved;
   }
@@ -102,11 +138,52 @@ function createMcpServer(user: McpUser) {
 
   // ── Tool: list_projects ────────────────────────────────────────────────────
   server.tool("list_projects", "List all projects for the current user", {}, async () => {
-    const projects = registry.listProjects(user.id);
+    const projects = listAllowedProjects();
     return {
       content: [{ type: "text", text: JSON.stringify(projects, null, 2) }],
     };
   });
+
+  server.tool(
+    "project_create",
+    "Create a Relay-MCP project workspace, optionally link it to a server and create the remote directory",
+    {
+      name: z.string().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/),
+      description: z.string().optional(),
+      serverId: z.number().optional().describe("Optional existing server id to link"),
+      remotePath: z.string().optional().describe("Remote project directory to create when serverId is supplied"),
+      environment: z.string().optional().describe("Environment name for the server link, default production"),
+    },
+    async ({ name, description = "", serverId, remotePath, environment = "production" }) => {
+      if (!user.canCreateProjects) throw new Error("This MCP token is not allowed to create projects");
+      if (serverId && !remotePath) throw new Error("remotePath is required when serverId is supplied");
+
+      const project = registry.createProject(user.id, user.username, name, description);
+      if (user.tokenDbId && !user.allowAllProjects) {
+        registry.addTokenProjectScope(user.tokenDbId, project.id);
+      }
+
+      let remote: any = undefined;
+      if (serverId && remotePath) {
+        const linkedServer = registry.getServerForUser(user.id, serverId);
+        if (!linkedServer) throw new Error(`Server '${serverId}' not found`);
+        registry.linkProjectServer(project.id, serverId, remotePath, environment);
+        const runner = new RemoteRunner({
+          host: linkedServer.host,
+          port: linkedServer.port,
+          username: linkedServer.sshUser,
+          privateKeyPath: linkedServer.privateKeyPath,
+          os: linkedServer.os,
+        });
+        const mkdirResult = linkedServer.os === "windows"
+          ? await runner.execPowerShell(`New-Item -ItemType Directory -Force -Path '${remotePath.replace(/'/g, "''")}' | Out-Null`)
+          : await runner.exec(`mkdir -p '${remotePath.replace(/'/g, `'\\''`)}'`);
+        remote = { serverId, remotePath, environment, mkdirExitCode: mkdirResult.code };
+      }
+
+      return { content: [{ type: "text", text: summarizeJson({ project, remote }) }] };
+    }
+  );
 
   // ── Tool: exec_remote ──────────────────────────────────────────────────────
   server.tool(

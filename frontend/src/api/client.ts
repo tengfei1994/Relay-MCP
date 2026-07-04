@@ -120,7 +120,15 @@ export const api = {
   // MCP tokens
   listTokens: () =>
     request<{ tokens: any[] }>("GET", "/tokens"),
-  createToken: (data: { name: string; projectId?: number; projectServerId?: number; environment?: string }) =>
+  createToken: (data: {
+    name: string;
+    projectId?: number;
+    projectIds?: number[];
+    projectServerId?: number;
+    environment?: string;
+    allowAllProjects?: boolean;
+    canCreateProjects?: boolean;
+  }) =>
     request<{ token: string; profile: any }>("POST", "/tokens", data),
   revokeToken: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/tokens/${id}`),

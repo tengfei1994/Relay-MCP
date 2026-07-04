@@ -65,15 +65,25 @@ export function runMigrations() {
       project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
       project_server_id INTEGER REFERENCES project_servers(id) ON DELETE SET NULL,
       environment TEXT DEFAULT 'production',
+      allow_all_projects INTEGER DEFAULT 0,
+      can_create_projects INTEGER DEFAULT 0,
       active INTEGER DEFAULT 1,
       created_at TEXT DEFAULT (datetime('now')),
       last_used_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS mcp_token_project_scopes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token_id INTEGER NOT NULL REFERENCES mcp_tokens(id) ON DELETE CASCADE,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE
     );
   `);
 
   // Incremental migrations for existing databases
   try { sqlite.exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0`); } catch {}
   try { sqlite.exec(`ALTER TABLE servers ADD COLUMN os TEXT DEFAULT 'linux'`); } catch {}
+  try { sqlite.exec(`ALTER TABLE mcp_tokens ADD COLUMN allow_all_projects INTEGER DEFAULT 0`); } catch {}
+  try { sqlite.exec(`ALTER TABLE mcp_tokens ADD COLUMN can_create_projects INTEGER DEFAULT 0`); } catch {}
 
   // Set first user as admin if no admin exists
   const adminExists = sqlite.prepare(`SELECT id FROM users WHERE is_admin = 1 LIMIT 1`).get();

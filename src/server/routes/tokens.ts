@@ -2,14 +2,17 @@ import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db } from "../db/index.js";
-import { mcpTokens, projects, projectServers, servers } from "../db/schema.js";
+import { mcpTokenProjectScopes, mcpTokens, projects, projectServers, servers } from "../db/schema.js";
 import { z } from "zod";
 
 const CreateTokenSchema = z.object({
   name: z.string().min(1).max(100),
   projectId: z.number().int().optional(),
+  projectIds: z.array(z.number().int()).optional(),
   projectServerId: z.number().int().optional(),
   environment: z.string().min(1).max(50).default("production"),
+  allowAllProjects: z.boolean().default(false),
+  canCreateProjects: z.boolean().default(false),
 });
 
 export async function tokenRoutes(app: FastifyInstance) {
@@ -23,6 +26,8 @@ export async function tokenRoutes(app: FastifyInstance) {
         projectName: projects.name,
         projectServerId: mcpTokens.projectServerId,
         environment: mcpTokens.environment,
+        allowAllProjects: mcpTokens.allowAllProjects,
+        canCreateProjects: mcpTokens.canCreateProjects,
         active: mcpTokens.active,
         createdAt: mcpTokens.createdAt,
         lastUsedAt: mcpTokens.lastUsedAt,
@@ -31,7 +36,24 @@ export async function tokenRoutes(app: FastifyInstance) {
       .leftJoin(projects, eq(mcpTokens.projectId, projects.id))
       .where(eq(mcpTokens.userId, req.user.id))
       .all();
-    return reply.send({ tokens: rows });
+
+    const scopes = db
+      .select({
+        tokenDbId: mcpTokenProjectScopes.tokenId,
+        projectId: mcpTokenProjectScopes.projectId,
+        projectName: projects.name,
+      })
+      .from(mcpTokenProjectScopes)
+      .innerJoin(projects, eq(mcpTokenProjectScopes.projectId, projects.id))
+      .where(eq(projects.userId, req.user.id))
+      .all();
+
+    return reply.send({
+      tokens: rows.map((row) => ({
+        ...row,
+        projectScopes: scopes.filter((scope) => scope.tokenDbId === row.id),
+      })),
+    });
   });
 
   app.post("/api/tokens", { onRequest: [app.authenticate] }, async (req, reply) => {
@@ -40,6 +62,11 @@ export async function tokenRoutes(app: FastifyInstance) {
 
     let projectName: string | undefined;
     let environment = body.data.environment;
+    const scopedProjectIds = Array.from(new Set([...(body.data.projectIds ?? []), ...(body.data.projectId ? [body.data.projectId] : [])]));
+
+    if (!body.data.allowAllProjects && scopedProjectIds.length === 0) {
+      return reply.status(400).send({ error: "Select at least one project or allow all projects" });
+    }
 
     if (body.data.projectId) {
       const project = db
@@ -49,6 +76,19 @@ export async function tokenRoutes(app: FastifyInstance) {
         .get();
       if (!project) return reply.status(404).send({ error: "Project not found" });
       projectName = project.name;
+    }
+
+    if (scopedProjectIds.length > 0) {
+      const ownedProjects = db
+        .select({ id: projects.id })
+        .from(projects)
+        .where(eq(projects.userId, req.user.id))
+        .all();
+      const ownedIds = new Set(ownedProjects.map((project) => project.id));
+      const invalid = scopedProjectIds.filter((projectId) => !ownedIds.has(projectId));
+      if (invalid.length > 0) {
+        return reply.status(404).send({ error: `Project scope not found: ${invalid.join(", ")}` });
+      }
     }
 
     if (body.data.projectServerId) {
@@ -85,10 +125,18 @@ export async function tokenRoutes(app: FastifyInstance) {
         projectId: body.data.projectId,
         projectServerId: body.data.projectServerId,
         environment,
+        allowAllProjects: body.data.allowAllProjects,
+        canCreateProjects: body.data.canCreateProjects,
         active: true,
       })
       .returning()
       .get();
+
+    if (!body.data.allowAllProjects && scopedProjectIds.length > 0) {
+      db.insert(mcpTokenProjectScopes)
+        .values(scopedProjectIds.map((projectId) => ({ tokenId: row.id, projectId })))
+        .run();
+    }
 
     const token = app.jwt.sign({
       id: req.user.id,

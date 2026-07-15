@@ -2,15 +2,31 @@ import type { ExecResult } from "./remote-runner.js";
 
 const DEFAULT_LIMIT = Number(process.env.MCP_OUTPUT_LIMIT ?? 12000);
 
-export function compactText(value: string, limit = DEFAULT_LIMIT): string {
-  if (value.length <= limit) return value;
+export interface CompactTextResult {
+  text: string;
+  originalLength: number;
+  truncated: boolean;
+}
+
+export function compactTextWithMetadata(value: string, limit = DEFAULT_LIMIT): CompactTextResult {
+  if (value.length <= limit) {
+    return { text: value, originalLength: value.length, truncated: false };
+  }
   const head = Math.floor(limit * 0.6);
   const tail = limit - head;
-  return [
-    value.slice(0, head),
-    `\n... truncated ${value.length - limit} character(s) ...\n`,
-    value.slice(value.length - tail),
-  ].join("");
+  return {
+    text: [
+      value.slice(0, head),
+      `\n... truncated ${value.length - limit} character(s) ...\n`,
+      value.slice(value.length - tail),
+    ].join(""),
+    originalLength: value.length,
+    truncated: true,
+  };
+}
+
+export function compactText(value: string, limit = DEFAULT_LIMIT): string {
+  return compactTextWithMetadata(value, limit).text;
 }
 
 export function summarizeExec(command: string, result: ExecResult, limit = DEFAULT_LIMIT): string {

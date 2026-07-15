@@ -8,6 +8,7 @@
     "dev:mcp": "tsx watch src/mcp/index.ts",
     "test": "tsx --test tests/*.test.ts",
     "relay-upload": "node scripts/relay-upload.mjs",
+    "relay-download": "node scripts/relay-download.mjs",
     "build": "tsc && npm --prefix frontend run build",
     "start:server": "node dist/server/index.js",
     "start:mcp": "node dist/mcp/index.js",

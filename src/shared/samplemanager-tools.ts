@@ -99,7 +99,42 @@ $matches | Select-Object -Last 80 | ConvertTo-Json -Compress
 export interface SqlOptions {
   allowMutation?: boolean;
   maxRows?: number;
+  offset?: number;
   includeResultSets?: boolean;
+  parameters?: Record<string, SqlParameterValue>;
+  identifiers?: Record<string, string>;
+}
+
+export type SqlParameterValue = string | number | boolean | null;
+
+export function quoteSqlIdentifier(value: string): string {
+  const parts = value.split(".");
+  if (parts.length === 0 || parts.some((part) => !part || !/^[A-Za-z_][A-Za-z0-9_$#@]*$/.test(part))) {
+    throw new Error(`Invalid SQL identifier: ${value}`);
+  }
+  return parts.map((part) => `[${part.replace(/]/g, "]]")}]`).join(".");
+}
+
+export function renderSqlIdentifiers(sql: string, identifiers: Record<string, string> = {}): string {
+  return sql.replace(/\{\{([A-Za-z][A-Za-z0-9_]*)\}\}/g, (match, name: string) => {
+    const value = identifiers[name];
+    if (value === undefined) {
+      throw new Error(`Missing SQL identifier value for ${match}`);
+    }
+    return quoteSqlIdentifier(value);
+  });
+}
+
+function validateSqlParameters(parameters: Record<string, SqlParameterValue> = {}): Record<string, SqlParameterValue> {
+  for (const [name, value] of Object.entries(parameters)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new Error(`Invalid SQL parameter name: ${name}`);
+    }
+    if (value !== null && !["string", "number", "boolean"].includes(typeof value)) {
+      throw new Error(`Unsupported SQL parameter value for ${name}`);
+    }
+  }
+  return parameters;
 }
 
 export function sqlContainsMutation(sql: string): boolean {
@@ -122,26 +157,42 @@ export async function runSql(
   const sqlOptions: SqlOptions = typeof options === "boolean" ? { allowMutation: options } : options;
   const allowMutation = sqlOptions.allowMutation ?? false;
   const maxRows = Math.max(1, Math.min(sqlOptions.maxRows ?? 100, 1000));
+  const offset = Math.max(0, Math.trunc(sqlOptions.offset ?? 0));
   const includeResultSets = sqlOptions.includeResultSets ?? false;
-  if (!allowMutation && sqlContainsMutation(sql)) {
+  const finalSql = renderSqlIdentifiers(sql, sqlOptions.identifiers);
+  const parameters = validateSqlParameters(sqlOptions.parameters);
+  if (!allowMutation && sqlContainsMutation(finalSql)) {
     throw new Error("SQL appears to mutate data. Pass allowMutation=true only inside an approved workflow.");
   }
   if (!/^[A-Za-z0-9_.-]+$/.test(database)) {
     throw new Error(`Invalid database name: ${database}`);
   }
-  const sqlBase64 = Buffer.from(sql, "utf8").toString("base64");
+  const sqlBase64 = Buffer.from(finalSql, "utf8").toString("base64");
+  const parametersBase64 = Buffer.from(JSON.stringify(parameters), "utf8").toString("base64");
   const script = `
 $ErrorActionPreference = "Stop"
 $cs = "Server=localhost;Database=${database};Integrated Security=True;TrustServerCertificate=True"
 $cn = New-Object System.Data.SqlClient.SqlConnection $cs
-$cn.Open()
+$cmd = $null
+$parameters = $null
 try {
+  $cn.Open()
   $cmd = $cn.CreateCommand()
   $cmd.CommandTimeout = 120
   $cmd.CommandText = [System.Text.Encoding]::UTF8.GetString(
     [System.Convert]::FromBase64String(${psQuote(sqlBase64)})
   )
+  $parameters = ConvertFrom-Json ([System.Text.Encoding]::UTF8.GetString(
+    [System.Convert]::FromBase64String(${psQuote(parametersBase64)})
+  ))
+  if ($parameters) {
+    foreach ($property in $parameters.PSObject.Properties) {
+      $value = if ($null -eq $property.Value) { [System.DBNull]::Value } else { $property.Value }
+      [void]$cmd.Parameters.AddWithValue("@$($property.Name)", $value)
+    }
+  }
   $maxRows = ${maxRows}
+  $offset = ${offset}
   $includeResultSets = ${includeResultSets ? "$true" : "$false"}
   $reader = $cmd.ExecuteReader()
   $resultSets = @()
@@ -160,7 +211,7 @@ try {
     $rowCount = 0
     while ($reader.Read()) {
       $rowCount += 1
-      if (@($rows).Count -lt $maxRows) {
+      if ($rowCount -gt $offset -and @($rows).Count -lt $maxRows) {
         $row = [ordered]@{}
         foreach ($column in $columns) {
           $value = $reader[$column]
@@ -183,7 +234,10 @@ try {
       rows = @($rows)
       rowCount = $rowCount
       rowsReturned = @($rows).Count
-      truncated = $rowCount -gt @($rows).Count
+      offset = $offset
+      hasMore = $rowCount -gt ($offset + @($rows).Count)
+      nextOffset = if ($rowCount -gt ($offset + @($rows).Count)) { $offset + @($rows).Count } else { $null }
+      truncated = $offset -gt 0 -or $rowCount -gt ($offset + @($rows).Count)
     }
   } while ($reader.NextResult())
 
@@ -191,22 +245,59 @@ try {
   $firstRowCount = 0
   $firstRowsReturned = 0
   $firstTruncated = $false
+  $firstHasMore = $false
+  $firstNextOffset = $null
   if (@($resultSets).Count -gt 0) {
     $firstRows = @($resultSets[0].rows)
     $firstRowCount = $resultSets[0].rowCount
     $firstRowsReturned = $resultSets[0].rowsReturned
     $firstTruncated = $resultSets[0].truncated
+    $firstHasMore = $resultSets[0].hasMore
+    $firstNextOffset = $resultSets[0].nextOffset
   }
 
   [pscustomobject]@{
+    ok = $true
+    sql = $cmd.CommandText
+    parameters = $parameters
     rows = @($firstRows)
     rowCount = $firstRowCount
     rowsReturned = $firstRowsReturned
+    offset = $offset
+    hasMore = $firstHasMore
+    nextOffset = $firstNextOffset
     truncated = $firstTruncated
     maxRows = $maxRows
     resultSetCount = @($resultSets).Count
     resultSets = if ($includeResultSets) { @($resultSets) } else { @() }
     recordsAffected = $reader.RecordsAffected
+  } | ConvertTo-Json -Depth 8 -Compress
+}
+catch {
+  $exception = $_.Exception
+  $sqlException = $exception
+  while ($sqlException -and -not ($sqlException -is [System.Data.SqlClient.SqlException])) {
+    $sqlException = $sqlException.InnerException
+  }
+  $errors = @()
+  if ($sqlException) {
+    foreach ($item in $sqlException.Errors) {
+      $errors += [pscustomobject]@{
+        number = $item.Number
+        state = $item.State
+        class = $item.Class
+        line = $item.LineNumber
+        procedure = $item.Procedure
+        message = $item.Message
+      }
+    }
+  }
+  [pscustomobject]@{
+    ok = $false
+    sql = if ($cmd) { $cmd.CommandText } else { $null }
+    parameters = if ($parameters) { $parameters } else { @{} }
+    error = $exception.Message
+    sqlErrors = @($errors)
   } | ConvertTo-Json -Depth 8 -Compress
 }
 finally {

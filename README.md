@@ -22,7 +22,7 @@ Production Servers (any SSH-accessible host)
 
 ## Features
 
-- **MCP Tools**: `exec_remote`, `exec_remote_powershell`, `exec_remote_script`, `deploy`, `fetch_logs`, `restart_service`, `read/write_remote_file`, `list_remote_files`, `read/write_local_file`, `list_projects`, `project_create`
+- **MCP Tools**: `exec_remote`, `exec_remote_powershell`, `exec_remote_script`, `deploy`, `fetch_logs`, `restart_service`, `read/write_remote_file`, `download_remote_file`, `list_remote_files`, `read/write_local_file`, `list_projects`, `project_create`
 - **Token-saving tools**: compact command/log output, async job tracking, project memory (`context_record_fact`, `context_search`)
 - **MCP token profiles**: create per-agent tokens from the Web UI, allow one agent to access multiple projects, and manually scope the servers it may use
 - **SampleManager tools**: `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_run_command`
@@ -81,7 +81,7 @@ RelayMCP has two capability layers:
 | Remote command execution | `exec_remote`, `exec_remote_powershell`, `exec_remote_script` |
 | Deployment and restart | `deploy`, `restart_service` |
 | Logs and jobs | `fetch_logs`, `job_list`, `job_status` |
-| Remote files | `read_remote_file`, `write_remote_file`, `list_remote_files`, `patch_remote_file` |
+| Remote files | `read_remote_file`, `download_remote_file`, `write_remote_file`, `list_remote_files`, `patch_remote_file` |
 | Relay-side project workspace | `read_local_file`, `write_local_file`, `upload_workspace_file`, `sync_workspace` |
 | Durable project memory | `context_record_fact`, `context_search` |
 | SampleManager helpers | `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_run_command` |
@@ -98,12 +98,13 @@ argument summary. Tests fail when a registered tool is missing from the catalog.
 | Project | `list_projects` | 列出当前 MCP token 允许访问的 project。 |
 | Project | `project_create` | 创建 Relay workspace，可同时关联服务器和远程目录。 |
 | Remote execution | `exec_remote` | 执行远程 shell 命令，支持真实超时、异步任务、日志和取消。 |
-| Remote execution | `exec_remote_powershell` | 通过 EncodedCommand 执行 inline PowerShell，避免 `$变量` 和引号问题。 |
+| Remote execution | `exec_remote_powershell` | 通过 EncodedCommand 执行 inline PowerShell，支持 text/JSON 输出。 |
 | Remote execution | `exec_remote_script` | 写入并执行远程 `.ps1`，按配置清理或保留失败脚本。 |
-| Remote execution | `deploy` | 更新远程 Git checkout，并按平台尝试重启 PM2 或 Docker。 |
-| Remote execution | `fetch_logs` | 获取 Windows 文件日志、systemd、PM2 或 Docker 日志。 |
+| Remote execution | `deploy` | 更新远程 Git checkout，记录 deployment ID、前后 commit、输出与回滚状态。 |
+| Remote execution | `fetch_logs` | 获取 Windows 文件日志、systemd、PM2 或 Docker 日志，支持时间窗口或 deployment ID。 |
 | Remote execution | `restart_service` | 重启 Windows Service、systemd、PM2 process 或 Docker container。 |
 | Remote files | `read_remote_file` | 读取远程文本文件。 |
+| Remote files | `download_remote_file` | 将远程二进制暂存到 Relay workspace，并生成短期本地下载 URL。 |
 | Remote files | `write_remote_file` | 通过 SFTP 写入远程 UTF-8 文本文件。 |
 | Remote files | `list_remote_files` | 列出远程目录内容。 |
 | Remote files | `patch_remote_file` | 将 unified diff 应用到远程文本文件。 |
@@ -126,8 +127,8 @@ argument summary. Tests fail when a registered tool is missing from the catalog.
 | SampleManager | `samplemanager_restart_instance` | 重启指定 SampleManager instance 的核心服务。 |
 | SampleManager | `samplemanager_clear_form_cache` | 清理指定 form 的 `FormsBin` 编译缓存。 |
 | SampleManager | `samplemanager_recent_errors` | 搜索近期 SampleManager 日志并返回紧凑错误证据。 |
-| SampleManager | `samplemanager_sql_query` | 执行 SQL Server 查询；默认阻止数据和权限变更。 |
-| SampleManager | `samplemanager_sql_execute_file` | 执行 workspace SQL 文件；默认阻止变更语句。 |
+| SampleManager | `samplemanager_sql_query` | 执行参数化 SQL Server 查询，支持标识符转义和结构化错误。 |
+| SampleManager | `samplemanager_sql_execute_file` | 执行参数化 workspace SQL 文件；默认阻止变更语句。 |
 | SampleManager | `samplemanager_run_command` | 使用结构化参数调用 `SampleManagerCommand.exe`。 |
 | SampleManager | `samplemanager_create_entity_definition` | 在 structure 源更新后运行 `CreateEntityDefinition.exe`。 |
 | SampleManager | `samplemanager_convert_tables` | 对每个已校验表名分别运行 `convert_table.exe`。 |
@@ -171,6 +172,23 @@ HTTP endpoints:
 The upload service enforces expiration, maximum bytes, optional expected
 SHA-256, project ownership, path containment, and symlink containment.
 
+### Remote Binary Download
+
+`download_remote_file` copies a remote file into the Relay project workspace
+through SFTP, calculates its size and SHA-256, and creates a short-lived
+capability URL. Stream it into the local agent workspace without placing binary
+content in MCP JSON:
+
+```text
+download_remote_file
+  -> receive downloadUrl + token + sha256
+  -> npm run relay-download -- --url <downloadUrl> --token <token> --file <local-file>
+```
+
+The endpoint is `GET /api/downloads/:id` with
+`X-Relay-Download-Token`. Sessions remain bound to the original user, project,
+and workspace path and expire automatically.
+
 ### Relevant Environment Variables
 
 | Variable | Default | Description |
@@ -178,6 +196,7 @@ SHA-256, project ownership, path containment, and symlink containment.
 | `RELAY_PUBLIC_URL` | `http://localhost:<PORT>` | Public Web API base URL returned by upload sessions. |
 | `RELAY_UPLOAD_TTL_MS` | `900000` | Default upload session lifetime. |
 | `RELAY_UPLOAD_MAX_BYTES` | `268435456` | Maximum streamed upload size. |
+| `RELAY_DOWNLOAD_TTL_MS` | `900000` | Remote-to-local download session lifetime. |
 | `MCP_BINARY_WRITE_LIMIT` | `8388608` | Maximum decoded size for `write_local_binary`. |
 | `RELAY_JOB_LOG_LIMIT` | `200` | Maximum retained log entries per async job. |
 | `RELAY_STATE_ROOT` | `<WORKSPACE_ROOT>/.relay-mcp` | Jobs, upload sessions, context and audit state. |
@@ -192,6 +211,20 @@ it automatically on success. Command timeouts are enforced by closing the SSH
 channel and connection. PowerShell output cleanup supports both marked CLIXML
 and raw `<Objs>` payloads, and script execution probes Windows capability when
 stored server OS metadata is incorrect.
+
+For object or table output, pass `outputFormat="json"` and end the script with
+`ConvertTo-Json -Depth <n> -Compress`. Relay returns parsed JSON when valid and
+otherwise returns a parse error plus explicit truncation metadata.
+
+`fetch_logs` accepts `since`, `until`, or `deploymentId`. Journald applies the
+time range to log records. Generic file logs are selected by file modification
+time because arbitrary application log lines do not share one timestamp format.
+
+`deploy` creates a durable deployment record under Relay state and returns its
+ID, start/end time, previous and resulting commits, output truncation metadata,
+and rollback state. `rollbackOnFailure` defaults to `false` and must be enabled
+explicitly.
+
 Common playbook operations include:
 
 - create/remove remote staging folders
@@ -221,6 +254,26 @@ They can later be promoted into dedicated MCP tools when they become frequent.
 | Deploy custom .NET task assemblies | Build with `MSBuild.exe` or `dotnet build`, copy DLL/PDB/config to the target convention, restart affected task hosts |
 | RESOURCE icons | Copy icon files under the instance `Resource\Icon` convention and refresh/reopen clients |
 | SampleManager SQL checks | `samplemanager_sql_query` for compact read-only checks by default, or `samplemanager_sql_execute_file` for SQL stored in the relay project workspace; use `maxRows` and `includeResultSets` to control output size; mutation requires explicit opt-in |
+
+SQL tools support named value parameters and escaped identifier placeholders:
+
+```json
+{
+  "sql": "select {{column}} from {{table}} where STATUS = @status",
+  "identifiers": {
+    "column": "IDENTITY",
+    "table": "dbo.SAMPLE"
+  },
+  "parameters": {
+    "status": "A"
+  }
+}
+```
+
+This executes `select [IDENTITY] from [dbo].[SAMPLE] where STATUS = @status`.
+Failures return the executed SQL template, parameter values, SQL Server error
+number, severity class, state, procedure, and line number. Large results support
+`maxRows` plus zero-based `offset`; responses return `hasMore` and `nextOffset`.
 
 Important rules:
 
@@ -429,7 +482,7 @@ RelayMCP 服务器（Ubuntu VM）
 
 ## 功能特性
 
-- **MCP 工具**：`exec_remote`（执行命令）、`exec_remote_powershell`、`exec_remote_script`、`deploy`（部署）、`fetch_logs`（获取日志）、`restart_service`（重启服务）、远程/本地文件读写、项目列表查询、`project_create`（创建项目）
+- **MCP 工具**：`exec_remote`（执行命令）、`exec_remote_powershell`、`exec_remote_script`、`deploy`（部署）、`fetch_logs`（获取日志）、`restart_service`（重启服务）、`download_remote_file`（远程文件回传）、远程/本地文件读写、项目列表查询、`project_create`（创建项目）
 - **节省 token 工具**：输出压缩、异步 job、项目事实记忆（`context_record_fact`、`context_search`）
 - **MCP token profile**：在 Web UI 手动生成 agent token，一个 agent 可访问多个 project，但可用 server 必须手动授权
 - **SampleManager 工具**：实例重启、FormsBin 缓存清理、近期错误检索、SQL 查询、SQL 文件执行、SampleManagerCommand 封装
@@ -464,7 +517,7 @@ RelayMCP 的能力分两层：
 | 远程命令执行 | `exec_remote`, `exec_remote_powershell`, `exec_remote_script` |
 | 部署和重启 | `deploy`, `restart_service` |
 | 日志和异步任务 | `fetch_logs`, `job_list`, `job_status` |
-| 远程文件 | `read_remote_file`, `write_remote_file`, `list_remote_files`, `patch_remote_file` |
+| 远程文件 | `read_remote_file`, `download_remote_file`, `write_remote_file`, `list_remote_files`, `patch_remote_file` |
 | Relay 侧 project workspace | `read_local_file`, `write_local_file`, `upload_workspace_file`, `sync_workspace` |
 | 项目长期记忆 | `context_record_fact`, `context_search` |
 | SampleManager 辅助工具 | `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_run_command` |
@@ -508,6 +561,12 @@ RelayMCP 的能力分两层：
 | 部署自定义 .NET task assembly | 使用 `MSBuild.exe` 或 `dotnet build` 编译，复制 DLL/PDB/config 到目标约定目录，并重启受影响 task host |
 | RESOURCE icon | 将 icon 文件放到 instance 的 `Resource\Icon` 约定目录，并刷新/重开客户端 |
 | SampleManager SQL 检查 | `samplemanager_sql_query` 默认用于只读检查，`samplemanager_sql_execute_file` 用于执行 relay project workspace 中的 SQL 文件；用 `maxRows` 和 `includeResultSets` 控制输出大小；写入操作必须显式开启 mutation |
+
+SQL 工具支持 `parameters` 参数化值和 `identifiers` 标识符模板。例如
+`select {{column}} from {{table}} where STATUS=@status` 会把 identifier 自动转换为
+`[IDENTITY]`、`[dbo].[SAMPLE]`，值仍通过 `@status` 参数传递。失败结果包含最终 SQL、
+参数、SQL Server 错误号、严重级别、状态、过程名和行号。大结果可用 `maxRows`
+和零起点 `offset` 分页，响应会返回 `hasMore` 与 `nextOffset`。
 
 重要约束：
 

@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
+import { validateStateId } from "./state-id.js";
 import "dotenv/config";
 
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT ?? "/workspace";
@@ -39,7 +40,7 @@ function ensureUploadRoot(): void {
 }
 
 function sessionPath(id: string): string {
-  return join(UPLOAD_ROOT, `${id}.json`);
+  return join(UPLOAD_ROOT, `${validateStateId(id, "upload id")}.json`);
 }
 
 function hashToken(token: string): string {

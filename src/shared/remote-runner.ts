@@ -1,6 +1,6 @@
 import { NodeSSH } from "node-ssh";
-import { writeFileSync, unlinkSync } from "fs";
-import { join } from "path";
+import { mkdirSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { applyPatch } from "diff";
 
@@ -265,6 +265,24 @@ $items | ConvertTo-Json -Compress
         await ssh.execCommand(`mkdir -p "$(dirname '${shQuote(remotePath)}')"`);
       }
       await ssh.putFile(localPath, remotePath);
+    } finally {
+      ssh.dispose();
+    }
+  }
+
+  async downloadFile(remotePath: string, localPath: string): Promise<{ bytes: number }> {
+    const ssh = new NodeSSH();
+    try {
+      await ssh.connect({
+        host: this.config.host,
+        port: this.config.port,
+        username: this.config.username,
+        privateKeyPath: this.config.privateKeyPath,
+        readyTimeout: 15000,
+      });
+      mkdirSync(dirname(localPath), { recursive: true });
+      await ssh.getFile(localPath, remotePath);
+      return { bytes: statSync(localPath).size };
     } finally {
       ssh.dispose();
     }

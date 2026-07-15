@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
+import { validateStateId } from "./state-id.js";
 import "dotenv/config";
 
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT ?? "/workspace";
@@ -45,7 +46,7 @@ function ensureState(): void {
 }
 
 function jobPath(id: string): string {
-  return join(JOB_ROOT, `${id}.json`);
+  return join(JOB_ROOT, `${validateStateId(id, "job id")}.json`);
 }
 
 export function writeAudit(entry: Record<string, unknown>): void {

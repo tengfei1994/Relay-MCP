@@ -6,9 +6,10 @@ import jwt from "jsonwebtoken";
 import Database from "better-sqlite3";
 import { ProjectRegistry } from "./project-registry.js";
 import { RemoteRunner } from "../shared/remote-runner.js";
-import { compactText, summarizeExec, summarizeJson } from "../shared/output.js";
+import { compactText, compactTextWithMetadata, summarizeExec, summarizeJson } from "../shared/output.js";
 import { cancelJob, getJob, listJobs, startJob, writeAudit, type JobContext } from "../shared/job-store.js";
 import { recordFact, searchFacts } from "../shared/context-store.js";
+import { finishDeployment, getDeployment, startDeployment } from "../shared/deployment-store.js";
 import {
   clearFormCache,
   buildDotNetProject,
@@ -41,6 +42,7 @@ import { basename, dirname, join, relative } from "path";
 import { resolveWorkspacePath } from "../shared/workspace-path.js";
 import { quotePosix, quotePowerShell, validateGitRef, validateServiceName } from "../shared/shell-utils.js";
 import { createUploadSession, publicUploadSession } from "../shared/upload-store.js";
+import { createDownloadSession } from "../shared/download-store.js";
 import { TOOL_CATALOG_BY_NAME } from "../shared/tool-catalog.js";
 import "dotenv/config";
 
@@ -67,7 +69,7 @@ interface McpUser {
 function auditArguments(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(auditArguments);
   if (!value || typeof value !== "object") return value;
-  const sensitive = /^(script|content|base64|token|password|sql)$/i;
+  const sensitive = /^(script|content|base64|token|password|sql|parameters)$/i;
   return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => {
     if (sensitive.test(key)) {
       const text = typeof item === "string" ? item : JSON.stringify(item);
@@ -296,15 +298,16 @@ function createMcpServer(user: McpUser) {
 
   server.tool(
     "exec_remote_powershell",
-    "Execute PowerShell on a linked Windows remote server using EncodedCommand, avoiding shell quoting issues with $ variables.",
+    "Execute PowerShell on a linked Windows remote server using EncodedCommand, avoiding shell quoting issues with $ variables. Supports structured JSON output.",
     {
       project: z.string().optional().describe("Project name. Optional when the MCP token has a default project."),
       script: z.string().describe("PowerShell script content to execute"),
       environment: z.string().optional().describe("Target environment (default: production)"),
       timeoutMs: z.number().optional().describe("Command timeout in milliseconds (default 120000)"),
+      outputFormat: z.enum(["text", "json"]).optional().describe("Output format. Use json when the script emits objects through ConvertTo-Json."),
       async: z.boolean().optional().describe("Run as an async job and return a jobId."),
     },
-    async ({ project: projectName, script, environment, timeoutMs = 120000, async = false }) => {
+    async ({ project: projectName, script, environment, timeoutMs = 120000, outputFormat = "text", async = false }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { ps, runner } = getRunner(projectName, environment);
       const work = async (context?: JobContext) => {
@@ -319,10 +322,32 @@ function createMcpServer(user: McpUser) {
           async,
           exitCode: result.code,
         });
+        if (outputFormat === "json") {
+          const output = result.stdout || result.stderr;
+          try {
+            return summarizeJson({
+              host: ps.server.host,
+              exitCode: result.code,
+              output: JSON.parse(output),
+            });
+          } catch {
+            const compact = compactTextWithMetadata(output);
+            return summarizeJson({
+              host: ps.server.host,
+              exitCode: result.code,
+              outputFormat: "json",
+              parseError: "PowerShell output was not valid JSON. End the script with ConvertTo-Json -Depth <n> -Compress.",
+              output: compact.text,
+              outputLength: compact.originalLength,
+              truncated: compact.truncated,
+              stderr: result.stderr || undefined,
+            });
+          }
+        }
         return `[${ps.server.host}]\n${summarizeExec("powershell -EncodedCommand <script>", result)}`;
       };
       if (async) {
-        const job = startJob(user, resolvedProjectName, "exec_remote_powershell", { environment, timeoutMs, scriptLength: script.length }, work);
+        const job = startJob(user, resolvedProjectName, "exec_remote_powershell", { environment, timeoutMs, outputFormat, scriptLength: script.length }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
@@ -399,44 +424,116 @@ function createMcpServer(user: McpUser) {
   // ── Tool: deploy ───────────────────────────────────────────────────────────
   server.tool(
     "deploy",
-    "Update a remote Git checkout and optionally restart PM2 or Docker workloads. Supports Windows and Linux targets.",
+    "Update a remote Git checkout and optionally restart PM2 or Docker workloads. Returns a deployment run record with commits and rollback status.",
     {
       project: z.string().optional().describe("Project name. Optional when the MCP token has a default project."),
       environment: z.string().optional(),
       branch: z.string().optional().describe("Git branch (default: main)"),
+      rollbackOnFailure: z.boolean().optional().describe("Reset the checkout to its pre-deploy commit when deployment fails. Default false."),
     },
-    async ({ project: projectName, environment, branch = "main" }) => {
+    async ({ project: projectName, environment, branch = "main", rollbackOnFailure = false }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
       const { ps, runner } = getRunner(projectName, environment);
       const remotePath = ps.remotePath;
       const safeBranch = validateGitRef(branch);
-      const result = ps.server.os === "windows"
-        ? await runner.execPowerShell(`
-$ErrorActionPreference = "Stop"
-Set-Location -LiteralPath ${quotePowerShell(remotePath)}
-& git fetch origin
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& git checkout -- ${quotePowerShell(safeBranch)}
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& git pull --ff-only origin ${quotePowerShell(safeBranch)}
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-if (Get-Command pm2 -ErrorAction SilentlyContinue) {
-  & pm2 restart all
-}
-elseif ((Test-Path -LiteralPath "docker-compose.yml") -or (Test-Path -LiteralPath "compose.yml")) {
-  & docker compose up -d --build
-}
-`, 120000)
-        : await runner.exec([
-          `cd -- ${quotePosix(remotePath)}`,
-          "git fetch origin",
-          `git checkout -- ${quotePosix(safeBranch)}`,
-          `git pull --ff-only origin ${quotePosix(safeBranch)}`,
-          "if command -v pm2 >/dev/null 2>&1; then pm2 restart all; elif [ -f docker-compose.yml ] || [ -f compose.yml ]; then docker compose up -d --build; fi",
-        ].join(" && "), 120000);
-
-      return {
-        content: [{ type: "text", text: compactText(`Deploy result:\n${result.stdout}\n${result.stderr}`) }],
+      const run = startDeployment({
+        userId: user.id,
+        username: user.username,
+        project: resolvedProjectName,
+        environment: environment ?? "production",
+        host: ps.server.host,
+        branch: safeBranch,
+        rollbackRequested: rollbackOnFailure,
+      });
+      const output: string[] = [];
+      const execute = async (label: string, linux: string, windows: string) => {
+        const result = ps.server.os === "windows"
+          ? await runner.execPowerShell(windows, 120000)
+          : await runner.exec(linux, 120000);
+        output.push(`${label}\n${summarizeExec(label, result, 4000)}`);
+        if (result.code !== 0) throw new Error(`${label} failed: ${result.stderr || result.stdout || `exit ${result.code}`}`);
+        return result.stdout.trim();
       };
+      const linuxInRepo = (command: string) => `cd -- ${quotePosix(remotePath)} && ${command}`;
+      const windowsInRepo = (command: string) =>
+        `$ErrorActionPreference = "Stop"\nSet-Location -LiteralPath ${quotePowerShell(remotePath)}\n${command}`;
+      let commitBefore: string | undefined;
+      let commitAfter: string | undefined;
+      let rollback = run.rollback;
+
+      try {
+        commitBefore = await execute(
+          "git rev-parse HEAD (before)",
+          linuxInRepo("git rev-parse HEAD"),
+          windowsInRepo("& git rev-parse HEAD\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }")
+        );
+        await execute(
+          "git fetch origin",
+          linuxInRepo("git fetch origin"),
+          windowsInRepo("& git fetch origin\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }")
+        );
+        await execute(
+          `git checkout ${safeBranch}`,
+          linuxInRepo(`git checkout ${quotePosix(safeBranch)}`),
+          windowsInRepo(`& git checkout ${quotePowerShell(safeBranch)}\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`)
+        );
+        await execute(
+          `git pull --ff-only origin ${safeBranch}`,
+          linuxInRepo(`git pull --ff-only origin ${quotePosix(safeBranch)}`),
+          windowsInRepo(`& git pull --ff-only origin ${quotePowerShell(safeBranch)}\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`)
+        );
+        commitAfter = await execute(
+          "git rev-parse HEAD (after)",
+          linuxInRepo("git rev-parse HEAD"),
+          windowsInRepo("& git rev-parse HEAD\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }")
+        );
+        await execute(
+          "restart workload",
+          linuxInRepo(
+            "if command -v pm2 >/dev/null 2>&1; then pm2 restart all; elif [ -f docker-compose.yml ] || [ -f compose.yml ]; then docker compose up -d --build; else echo 'No PM2 or Docker workload found'; fi",
+          ),
+          windowsInRepo(`if (Get-Command pm2 -ErrorAction SilentlyContinue) { & pm2 restart all; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+elseif ((Test-Path -LiteralPath "docker-compose.yml") -or (Test-Path -LiteralPath "compose.yml")) { & docker compose up -d --build; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+else { Write-Output "No PM2 or Docker workload found" }`)
+        );
+        const compact = compactTextWithMetadata(output.join("\n\n"));
+        const record = finishDeployment(run.id, {
+          status: "succeeded",
+          commitBefore,
+          commitAfter,
+          rollback: rollbackOnFailure ? { ...rollback, status: "not-needed" } : rollback,
+          output: compact.text,
+          outputLength: compact.originalLength,
+          outputTruncated: compact.truncated,
+        });
+        writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "deploy", deploymentId: record.id, status: record.status, commitBefore, commitAfter });
+        return { content: [{ type: "text", text: summarizeJson(record) }] };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (rollbackOnFailure && commitBefore) {
+          rollback = { ...rollback, attempted: true };
+          const rollbackResult = ps.server.os === "windows"
+            ? await runner.execPowerShell(windowsInRepo(`& git reset --hard ${quotePowerShell(commitBefore)}\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`), 120000)
+            : await runner.exec(linuxInRepo(`git reset --hard ${quotePosix(commitBefore)}`), 120000);
+          output.push(`rollback\n${summarizeExec("git reset --hard <previous-commit>", rollbackResult, 4000)}`);
+          rollback = rollbackResult.code === 0
+            ? { ...rollback, status: "succeeded", commit: commitBefore }
+            : { ...rollback, status: "failed", commit: commitBefore, error: rollbackResult.stderr || rollbackResult.stdout };
+        }
+        const compact = compactTextWithMetadata(output.join("\n\n"));
+        const record = finishDeployment(run.id, {
+          status: "failed",
+          commitBefore,
+          commitAfter,
+          rollback,
+          error: message,
+          output: compact.text,
+          outputLength: compact.originalLength,
+          outputTruncated: compact.truncated,
+        });
+        writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "deploy", deploymentId: record.id, status: record.status, error: message });
+        return { content: [{ type: "text", text: summarizeJson(record) }] };
+      }
     }
   );
 
@@ -449,18 +546,40 @@ elseif ((Test-Path -LiteralPath "docker-compose.yml") -or (Test-Path -LiteralPat
       environment: z.string().optional(),
       lines: z.number().optional().describe("Number of lines (default: 100)"),
       logPath: z.string().optional().describe("Custom log file path"),
+      since: z.string().optional().describe("ISO-8601 start time. For file logs this filters files by modification time; journald supports line-level filtering."),
+      until: z.string().optional().describe("Optional ISO-8601 end time."),
+      deploymentId: z.string().optional().describe("Use the time window of a prior deploy run."),
     },
-    async ({ project: projectName, environment, lines = 100, logPath }) => {
+    async ({ project: projectName, environment, lines = 100, logPath, since, until, deploymentId }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
       const { ps, runner } = getRunner(projectName, environment);
-
       const safeLines = Math.max(1, Math.min(Math.trunc(lines), 5000));
+      let effectiveSince = since;
+      let effectiveUntil = until;
+      if (deploymentId) {
+        const deployment = getDeployment(deploymentId);
+        if (!deployment || deployment.userId !== user.id || deployment.project !== resolvedProjectName) {
+          throw new Error(`Deployment '${deploymentId}' was not found for project '${resolvedProjectName}'`);
+        }
+        effectiveSince = deployment.startedAt;
+        effectiveUntil = deployment.finishedAt ?? new Date().toISOString();
+      }
+      if (effectiveSince && Number.isNaN(Date.parse(effectiveSince))) throw new Error("since must be an ISO-8601 timestamp");
+      if (effectiveUntil && Number.isNaN(Date.parse(effectiveUntil))) throw new Error("until must be an ISO-8601 timestamp");
+      const windowsTimeFilter = effectiveSince || effectiveUntil
+        ? ` | Where-Object { ${effectiveSince ? `$_.LastWriteTime -ge [datetime]${quotePowerShell(effectiveSince)}` : "$true"} -and ${effectiveUntil ? `$_.LastWriteTime -le [datetime]${quotePowerShell(effectiveUntil)}` : "$true"} }`
+        : "";
+      const journalWindow = [
+        effectiveSince ? `--since ${quotePosix(effectiveSince)}` : "",
+        effectiveUntil ? `--until ${quotePosix(effectiveUntil)}` : "",
+      ].filter(Boolean).join(" ");
       const result = ps.server.os === "windows"
         ? await runner.execPowerShell(logPath
           ? `Get-Content -LiteralPath ${quotePowerShell(logPath)} -Tail ${safeLines} -ErrorAction Stop`
           : `
 $root = ${quotePowerShell(ps.remotePath)}
 $files = Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
-  Where-Object { $_.Extension -in ".log",".txt" } |
+  Where-Object { $_.Extension -in ".log",".txt" }${windowsTimeFilter} |
   Sort-Object LastWriteTime -Descending |
   Select-Object -First 5
 if ($files) {
@@ -477,9 +596,24 @@ else {
 }`, 30000)
         : await runner.exec(logPath
           ? `tail -n ${safeLines} -- ${quotePosix(logPath)} 2>&1`
-          : `(journalctl -u $(basename -- ${quotePosix(ps.remotePath)}) -n ${safeLines} --no-pager 2>/dev/null) || (pm2 logs --nostream --lines ${safeLines} 2>/dev/null) || (find ${quotePosix(`${ps.remotePath.replace(/[\\/]+$/, "")}/logs`)} -type f -name '*.log' -print0 2>/dev/null | xargs -0 tail -n ${safeLines} 2>/dev/null) || echo 'No logs found'`,
+          : `(journalctl -u $(basename -- ${quotePosix(ps.remotePath)}) -n ${safeLines} --no-pager ${journalWindow} 2>/dev/null) || (pm2 logs --nostream --lines ${safeLines} 2>/dev/null) || (find ${quotePosix(`${ps.remotePath.replace(/[\\/]+$/, "")}/logs`)} -type f -name '*.log' -newermt ${effectiveSince ? quotePosix(effectiveSince) : quotePosix("1970-01-01")} -print0 2>/dev/null | xargs -0 tail -n ${safeLines} 2>/dev/null) || echo 'No logs found'`,
           30000);
-      return { content: [{ type: "text", text: compactText(result.stdout || result.stderr) }] };
+      const compact = compactTextWithMetadata(result.stdout || result.stderr);
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            deploymentId,
+            since: effectiveSince,
+            until: effectiveUntil,
+            lines: safeLines,
+            filtersApplied: ps.server.os === "windows" ? "file modification time" : "journald time window when journald is available",
+            output: compact.text,
+            outputLength: compact.originalLength,
+            truncated: compact.truncated,
+          }),
+        }],
+      };
     }
   );
 
@@ -533,6 +667,63 @@ else {
       const { runner } = getRunner(projectName, environment);
       const content = await runner.readFile(remotePath);
       return { content: [{ type: "text", text: content }] };
+    }
+  );
+
+  server.tool(
+    "download_remote_file",
+    "Download a remote file into the Relay project workspace and create a short-lived URL for streaming it into the agent's local workspace.",
+    {
+      project: z.string().optional(),
+      remotePath: z.string().describe("Absolute source path on the remote server"),
+      workspacePath: z.string().describe("Relative staging path in the Relay project workspace"),
+      environment: z.string().optional(),
+      overwrite: z.boolean().optional().describe("Replace an existing Relay workspace file. Default false."),
+      ttlSeconds: z.number().int().min(60).max(3600).optional().describe("Local download URL lifetime. Default 900 seconds."),
+    },
+    async ({ project: projectName, remotePath, workspacePath: relPath, environment, overwrite = false, ttlSeconds }) => {
+      const { project, ps, runner } = getRunner(projectName, environment);
+      const destination = resolveWorkspacePath(project.workspacePath, relPath);
+      if (existsSync(destination) && !overwrite) {
+        throw new Error(`Relay workspace destination already exists: ${relPath}`);
+      }
+      mkdirSync(dirname(destination), { recursive: true });
+      const tempPath = `${destination}.relay-download-${Date.now()}.tmp`;
+      let bytes: number;
+      try {
+        ({ bytes } = await runner.downloadFile(remotePath, tempPath));
+        if (existsSync(destination)) rmSync(destination, { force: true });
+        renameSync(tempPath, destination);
+      } catch (error) {
+        if (existsSync(tempPath)) rmSync(tempPath, { force: true });
+        throw error;
+      }
+      const digest = createHash("sha256");
+      for await (const chunk of createReadStream(destination)) digest.update(chunk);
+      const sha256 = digest.digest("hex");
+      const { session, token } = createDownloadSession({
+        userId: user.id,
+        projectId: project.id,
+        project: project.name,
+        path: relPath,
+        ttlMs: ttlSeconds ? ttlSeconds * 1000 : undefined,
+      });
+      const downloadUrl = `${RELAY_PUBLIC_URL}/api/downloads/${session.id}`;
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            remote: `${ps.server.host}:${remotePath}`,
+            relayWorkspacePath: relPath,
+            bytes,
+            sha256,
+            downloadUrl,
+            token,
+            expiresAt: session.expiresAt,
+            command: `npm run relay-download -- --url ${downloadUrl} --token <token> --file <local-file>`,
+          }),
+        }],
+      };
     }
   );
 
@@ -1034,12 +1225,15 @@ else {
       environment: z.string().optional(),
       allowMutation: z.boolean().optional(),
       maxRows: z.number().optional().describe("Maximum rows returned per result set, capped at 1000. Default 100."),
+      offset: z.number().int().nonnegative().optional().describe("Zero-based result row offset for pagination. Use nextOffset from the previous response."),
       includeResultSets: z.boolean().optional().describe("Include full resultSets payload. Default false."),
+      parameters: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional().describe("Named SQL parameters without '@', referenced as @name in SQL."),
+      identifiers: z.record(z.string()).optional().describe("Identifiers substituted into {{name}} placeholders and escaped with SQL Server brackets."),
     },
-    async ({ project: projectName, database, sql, environment, allowMutation = false, maxRows, includeResultSets }) => {
+    async ({ project: projectName, database, sql, environment, allowMutation = false, maxRows, offset, includeResultSets, parameters, identifiers }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { runner } = getRunner(projectName, environment);
-      const text = await runSql(runner, database, sql, { allowMutation, maxRows, includeResultSets });
+      const text = await runSql(runner, database, sql, { allowMutation, maxRows, offset, includeResultSets, parameters, identifiers });
       writeAudit({
         userId: user.id,
         username: user.username,
@@ -1048,7 +1242,10 @@ else {
         database,
         allowMutation,
         maxRows,
+        offset,
         includeResultSets,
+        parameterNames: Object.keys(parameters ?? {}),
+        identifiers,
       });
       return { content: [{ type: "text", text }] };
     }
@@ -1064,9 +1261,12 @@ else {
       environment: z.string().optional(),
       allowMutation: z.boolean().optional(),
       maxRows: z.number().optional().describe("Maximum rows returned per result set, capped at 1000. Default 100."),
+      offset: z.number().int().nonnegative().optional().describe("Zero-based result row offset for pagination. Use nextOffset from the previous response."),
       includeResultSets: z.boolean().optional().describe("Include full resultSets payload. Default false."),
+      parameters: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional().describe("Named SQL parameters without '@', referenced as @name in SQL."),
+      identifiers: z.record(z.string()).optional().describe("Identifiers substituted into {{name}} placeholders and escaped with SQL Server brackets."),
     },
-    async ({ project: projectName, database, path: relPath, environment, allowMutation = false, maxRows, includeResultSets }) => {
+    async ({ project: projectName, database, path: relPath, environment, allowMutation = false, maxRows, offset, includeResultSets, parameters, identifiers }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const project = registry.getProject(user.id, resolvedProjectName);
       if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
@@ -1078,7 +1278,7 @@ else {
 
       const { runner } = getRunner(projectName, environment);
       const sql = readFileSync(fullPath, "utf8");
-      const text = await runSql(runner, database, sql, { allowMutation, maxRows, includeResultSets });
+      const text = await runSql(runner, database, sql, { allowMutation, maxRows, offset, includeResultSets, parameters, identifiers });
       writeAudit({
         userId: user.id,
         username: user.username,
@@ -1088,7 +1288,10 @@ else {
         path: relPath,
         allowMutation,
         maxRows,
+        offset,
         includeResultSets,
+        parameterNames: Object.keys(parameters ?? {}),
+        identifiers,
       });
       return { content: [{ type: "text", text }] };
     }

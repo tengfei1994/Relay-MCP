@@ -8,6 +8,7 @@ import { promisify } from "util";
 import { mkdirSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { NodeSSH } from "node-ssh";
+import { quotePosix, quotePowerShell } from "../../shared/shell-utils.js";
 import "dotenv/config";
 
 const execFileAsync = promisify(execFile);
@@ -30,6 +31,39 @@ async function generateSshKeyPair(keyPath: string): Promise<string> {
     "-C", "remote-ops-mcp",
   ]);
   return readFileSync(`${keyPath}.pub`, "utf8").trim();
+}
+
+function encodedPowerShell(script: string): string {
+  return `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`;
+}
+
+async function detectTargetOs(ssh: NodeSSH): Promise<"windows" | "linux"> {
+  const probe = await ssh.execCommand(encodedPowerShell("[Console]::Write([Environment]::OSVersion.Platform)"));
+  return probe.code === 0 && probe.stdout.trim().toLowerCase() === "win32nt" ? "windows" : "linux";
+}
+
+async function installPublicKey(ssh: NodeSSH, os: "windows" | "linux", publicKey: string) {
+  if (os === "windows") {
+    const keyPath = "C:\\ProgramData\\ssh\\administrators_authorized_keys";
+    return ssh.execCommand(encodedPowerShell(`
+$ErrorActionPreference = "Stop"
+$keyPath = ${quotePowerShell(keyPath)}
+$publicKey = ${quotePowerShell(publicKey)}
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $keyPath) | Out-Null
+if (-not (Test-Path -LiteralPath $keyPath) -or -not (Select-String -LiteralPath $keyPath -SimpleMatch $publicKey -Quiet)) {
+  Add-Content -LiteralPath $keyPath -Value $publicKey
+}
+& icacls $keyPath /inheritance:r /grant "SYSTEM:(F)" /grant "Administrators:(F)" | Out-Null
+[Console]::Write("KEY_ADDED")
+`));
+  }
+  return ssh.execCommand([
+    "mkdir -p -- ~/.ssh",
+    "chmod 700 ~/.ssh",
+    `grep -Fqx -- ${quotePosix(publicKey)} ~/.ssh/authorized_keys 2>/dev/null || printf '%s\\n' ${quotePosix(publicKey)} >> ~/.ssh/authorized_keys`,
+    "chmod 600 ~/.ssh/authorized_keys",
+    "printf KEY_ADDED",
+  ].join(" && "));
 }
 
 export async function serverRoutes(app: FastifyInstance) {
@@ -174,10 +208,11 @@ export async function serverRoutes(app: FastifyInstance) {
           readyTimeout: 10000,
         });
         const result = await ssh.execCommand("echo ok");
+        const detectedOs = await detectTargetOs(ssh);
         ssh.dispose();
 
         db.update(servers)
-          .set({ status: "connected" })
+          .set({ status: "connected", os: detectedOs })
           .where(eq(servers.id, server.id))
           .run();
 
@@ -218,13 +253,13 @@ export async function serverRoutes(app: FastifyInstance) {
           readyTimeout: 10000,
         });
 
-        // Ensure .ssh dir exists and append public key
-        await ssh.execCommand(`
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh &&
-          echo '${server.publicKey}' >> ~/.ssh/authorized_keys &&
-          chmod 600 ~/.ssh/authorized_keys
-        `);
+        const detectedOs = await detectTargetOs(ssh);
+        const result = await installPublicKey(ssh, detectedOs, server.publicKey);
         ssh.dispose();
+        if (!result.stdout.includes("KEY_ADDED")) {
+          throw new Error(result.stderr || "Failed to install public key");
+        }
+        db.update(servers).set({ os: detectedOs }).where(eq(servers.id, server.id)).run();
 
         return reply.send({ ok: true, message: "Public key added. Run /test to verify." });
       } catch (err: any) {
@@ -270,30 +305,17 @@ export async function serverRoutes(app: FastifyInstance) {
           password,
           readyTimeout: 15000,
         });
-        const isWindows = server.os === "windows";
+        const detectedOs = await detectTargetOs(ssh1);
+        const isWindows = detectedOs === "windows";
         send("log", `Target OS: ${isWindows ? "Windows" : "Linux/Unix"}`);
 
-        let keyWritten = false;
-        if (isWindows) {
-          // Windows: write to administrators_authorized_keys with correct permissions
-          send("log", "Writing public key to C:\\ProgramData\\ssh\\administrators_authorized_keys...");
-          const keyPath = "C:\\ProgramData\\ssh\\administrators_authorized_keys";
-          const r1 = await ssh1.execCommand(
-            `powershell -Command "Add-Content -Path '${keyPath}' -Value '${server.publicKey}'; icacls '${keyPath}' /inheritance:r /grant 'SYSTEM:(F)' /grant 'Administrators:(F)' | Out-Null; Write-Output KEY_ADDED"`
-          );
-          if (r1.stdout) send("log", r1.stdout.trim());
-          if (r1.stderr) send("log", r1.stderr.trim());
-          keyWritten = r1.stdout.includes("KEY_ADDED");
-        } else {
-          // Linux/Unix
-          send("log", "Writing public key to ~/.ssh/authorized_keys...");
-          const r1 = await ssh1.execCommand(
-            `mkdir -p ~/.ssh; chmod 700 ~/.ssh; echo '${server.publicKey}' >> ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; echo KEY_ADDED`
-          );
-          if (r1.stdout) send("log", r1.stdout.trim());
-          if (r1.stderr) send("log", r1.stderr.trim());
-          keyWritten = r1.stdout.includes("KEY_ADDED");
-        }
+        send("log", isWindows
+          ? "Writing public key to C:\\ProgramData\\ssh\\administrators_authorized_keys..."
+          : "Writing public key to ~/.ssh/authorized_keys...");
+        const r1 = await installPublicKey(ssh1, detectedOs, server.publicKey);
+        if (r1.stdout) send("log", r1.stdout.trim());
+        if (r1.stderr) send("log", r1.stderr.trim());
+        const keyWritten = r1.stdout.includes("KEY_ADDED");
         ssh1.dispose();
 
         if (!keyWritten) {
@@ -313,7 +335,7 @@ export async function serverRoutes(app: FastifyInstance) {
         ssh2.dispose();
 
         if (r2.stdout.includes("SSH_OK")) {
-          db.update(servers).set({ status: "connected" }).where(eq(servers.id, server.id)).run();
+          db.update(servers).set({ status: "connected", os: detectedOs }).where(eq(servers.id, server.id)).run();
           send("success", "Setup complete — server is now connected!");
         } else {
           throw new Error("Key auth test failed");

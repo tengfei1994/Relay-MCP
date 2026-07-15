@@ -6,6 +6,7 @@ import { z } from "zod";
 import { mkdirSync, existsSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 import "dotenv/config";
+import { resolveWorkspacePath } from "../../shared/workspace-path.js";
 
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT ?? "/workspace";
 
@@ -131,9 +132,11 @@ export async function projectRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Project not found" });
       }
 
-      const targetDir = join(project.workspacePath, relPath);
-      if (!targetDir.startsWith(project.workspacePath)) {
-        return reply.status(400).send({ error: "Path traversal not allowed" });
+      let targetDir: string;
+      try {
+        targetDir = resolveWorkspacePath(project.workspacePath, relPath, { allowRoot: true });
+      } catch (error) {
+        return reply.status(400).send({ error: error instanceof Error ? error.message : String(error) });
       }
 
       if (!existsSync(targetDir)) {

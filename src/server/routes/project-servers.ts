@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { projects, servers, projectServers } from "../db/schema.js";
 import { RemoteRunner } from "../../shared/remote-runner.js";
 import { z } from "zod";
+import { quotePosix, quotePowerShell } from "../../shared/shell-utils.js";
 
 export async function projectServerRoutes(app: FastifyInstance) {
   // List servers linked to a project
@@ -96,8 +97,8 @@ export async function projectServerRoutes(app: FastifyInstance) {
         os: server.os === "windows" ? "windows" : "linux",
       });
       const mkdirResult = runner.isWindows()
-        ? await runner.execPowerShell(`New-Item -ItemType Directory -Force -Path '${body.data.remotePath.replace(/'/g, "''")}' | Out-Null`)
-        : await runner.exec(`mkdir -p '${body.data.remotePath.replace(/'/g, `'\\''`)}'`);
+        ? await runner.execPowerShell(`New-Item -ItemType Directory -Force -LiteralPath ${quotePowerShell(body.data.remotePath)} | Out-Null`)
+        : await runner.exec(`mkdir -p -- ${quotePosix(body.data.remotePath)}`);
       if (mkdirResult.code !== 0) {
         return reply.status(502).send({ error: mkdirResult.stderr || "Failed to create remote project directory" });
       }

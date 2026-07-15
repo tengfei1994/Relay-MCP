@@ -52,6 +52,9 @@ polluting the local agent workspace.
 RelayMCP defaults to returning compact output (`MCP_OUTPUT_LIMIT`, default
 `12000` characters). Long-running operations can use async jobs:
 
+- set `async: true` on `exec_remote`, `exec_remote_powershell`,
+  `exec_remote_script`, and supported SampleManager tools
+- use the returned `jobId` with:
 - `job_list`
 - `job_status`
 
@@ -83,13 +86,112 @@ RelayMCP has two capability layers:
 | Durable project memory | `context_record_fact`, `context_search` |
 | SampleManager helpers | `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_run_command` |
 
+## Complete MCP Command Catalog
+
+The following table is the complete command inventory. The same classification
+and description are stored in `src/shared/tool-catalog.ts`. Every `tools/call`
+request is written to the Relay audit log with its category and a redacted
+argument summary. Tests fail when a registered tool is missing from the catalog.
+
+| Category | Command | Description |
+|---|---|---|
+| Project | `list_projects` | 列出当前 MCP token 允许访问的 project。 |
+| Project | `project_create` | 创建 Relay workspace，可同时关联服务器和远程目录。 |
+| Remote execution | `exec_remote` | 执行远程 shell 命令，支持真实超时、异步任务、日志和取消。 |
+| Remote execution | `exec_remote_powershell` | 通过 EncodedCommand 执行 inline PowerShell，避免 `$变量` 和引号问题。 |
+| Remote execution | `exec_remote_script` | 写入并执行远程 `.ps1`，按配置清理或保留失败脚本。 |
+| Remote execution | `deploy` | 更新远程 Git checkout，并按平台尝试重启 PM2 或 Docker。 |
+| Remote execution | `fetch_logs` | 获取 Windows 文件日志、systemd、PM2 或 Docker 日志。 |
+| Remote execution | `restart_service` | 重启 Windows Service、systemd、PM2 process 或 Docker container。 |
+| Remote files | `read_remote_file` | 读取远程文本文件。 |
+| Remote files | `write_remote_file` | 通过 SFTP 写入远程 UTF-8 文本文件。 |
+| Remote files | `list_remote_files` | 列出远程目录内容。 |
+| Remote files | `patch_remote_file` | 将 unified diff 应用到远程文本文件。 |
+| Workspace | `read_local_file` | 读取 Relay project workspace 中的 UTF-8 文件。 |
+| Workspace | `write_local_file` | 写入或追加 workspace 文本文件。 |
+| Workspace | `write_local_binary` | 从 Base64 写入小型二进制；默认上限 8 MB。 |
+| Workspace | `list_workspace_files` | 列出 workspace 内容，可受限递归并限制返回数量。 |
+| Workspace | `workspace_file_stat` | 返回文件类型、大小、时间及可选 SHA-256。 |
+| Workspace | `move_workspace_file` | 在同一 workspace 内移动或重命名文件/目录。 |
+| Workspace | `delete_workspace_file` | 删除文件；目录递归删除必须显式指定。 |
+| Workspace | `create_workspace_upload` | 为本机大文件创建短期流式上传 URL 和 token。 |
+| Workspace | `cleanup_workspace_staging` | 预览或清理 `.relay-staging` 中的过期内容。 |
+| Workspace | `sync_workspace` | 通过 SFTP 同步整个 workspace 到远程目录。 |
+| Workspace | `upload_workspace_file` | 将 workspace 中的单个文件上传到远程服务器。 |
+| Jobs | `job_status` | 查看异步任务状态、结果、错误和最近日志。 |
+| Jobs | `job_list` | 列出当前用户最近的异步任务。 |
+| Jobs | `job_cancel` | 请求取消运行中的任务，并关闭活动 SSH channel。 |
+| Context | `context_record_fact` | 持久记录 project 事实、路径、坑点和约定。 |
+| Context | `context_search` | 搜索 project 长期记忆。 |
+| SampleManager | `samplemanager_restart_instance` | 重启指定 SampleManager instance 的核心服务。 |
+| SampleManager | `samplemanager_clear_form_cache` | 清理指定 form 的 `FormsBin` 编译缓存。 |
+| SampleManager | `samplemanager_recent_errors` | 搜索近期 SampleManager 日志并返回紧凑错误证据。 |
+| SampleManager | `samplemanager_sql_query` | 执行 SQL Server 查询；默认阻止数据和权限变更。 |
+| SampleManager | `samplemanager_sql_execute_file` | 执行 workspace SQL 文件；默认阻止变更语句。 |
+| SampleManager | `samplemanager_run_command` | 使用结构化参数调用 `SampleManagerCommand.exe`。 |
+| SampleManager | `samplemanager_create_entity_definition` | 在 structure 源更新后运行 `CreateEntityDefinition.exe`。 |
+| SampleManager | `samplemanager_convert_tables` | 对每个已校验表名分别运行 `convert_table.exe`。 |
+| SampleManager | `samplemanager_table_loader` | 通过 `SampleManagerCommand.exe` 和 `$table_loader` 加载 CSV。 |
+| SampleManager | `samplemanager_run_utility` | 调用允许列表中的 `FormImport`、`BuildFormDefinition` 或 `DeployPackageTask`。 |
+| SampleManager | `samplemanager_build_dotnet` | 在目标 Windows 服务器使用 MSBuild 构建经典 .NET 项目。 |
+| SampleManager | `samplemanager_deploy_file` | 将 staging 文件部署到 instance，并对被替换文件做时间戳备份。 |
+| SampleManager | `samplemanager_restore_backup` | 将指定备份恢复到明确的远程目标文件。 |
+
+### Async Job Behavior
+
+- Long commands should pass `async: true` and an appropriate `timeoutMs`.
+- `job_status` returns the final summary plus bounded stdout/stderr lifecycle
+  logs.
+- `job_cancel` aborts the job and closes the active SSH channel when the
+  underlying operation supports cancellation.
+- Jobs left as `running` during a Relay MCP restart are marked `interrupted` on
+  the next startup instead of remaining permanently stuck.
+
+### Large Binary Upload
+
+MCP JSON is not used to transport large binaries. Create a short-lived upload
+session, then stream the file through the authenticated HTTP upload endpoint:
+
+```text
+create_workspace_upload
+  -> receive uploadUrl + token
+  -> npm run relay-upload -- --url <uploadUrl> --token <token> --file <local-file>
+  -> workspace_file_stat sha256=true
+  -> upload_workspace_file or sync_workspace
+```
+
+HTTP endpoints:
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/api/projects/:id/uploads` | Create an upload session using a normal JWT. |
+| `PUT` | `/api/uploads/:id` | Stream `application/octet-stream` using `X-Relay-Upload-Token`. |
+| `GET` | `/api/uploads/:id` | Inspect upload status using a normal JWT. |
+
+The upload service enforces expiration, maximum bytes, optional expected
+SHA-256, project ownership, path containment, and symlink containment.
+
+### Relevant Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `RELAY_PUBLIC_URL` | `http://localhost:<PORT>` | Public Web API base URL returned by upload sessions. |
+| `RELAY_UPLOAD_TTL_MS` | `900000` | Default upload session lifetime. |
+| `RELAY_UPLOAD_MAX_BYTES` | `268435456` | Maximum streamed upload size. |
+| `MCP_BINARY_WRITE_LIMIT` | `8388608` | Maximum decoded size for `write_local_binary`. |
+| `RELAY_JOB_LOG_LIMIT` | `200` | Maximum retained log entries per async job. |
+| `RELAY_STATE_ROOT` | `<WORKSPACE_ROOT>/.relay-mcp` | Jobs, upload sessions, context and audit state. |
+
 ### PowerShell / SSH Operations
 
 For Windows SampleManager servers, RelayMCP can run remote PowerShell via SSH.
 Use `exec_remote_powershell` for inline scripts and `exec_remote_script` for
 longer scripts. Both avoid shell quoting issues with PowerShell variables such
 as `$svc`; `exec_remote_script` writes a temporary `.ps1`, runs it, and removes
-it automatically on success.
+it automatically on success. Command timeouts are enforced by closing the SSH
+channel and connection. PowerShell output cleanup supports both marked CLIXML
+and raw `<Objs>` payloads, and script execution probes Windows capability when
+stored server OS metadata is incorrect.
 Common playbook operations include:
 
 - create/remove remote staging folders
@@ -373,6 +475,11 @@ RelayMCP 的能力分两层：
 内联脚本优先使用 `exec_remote_powershell`，长脚本优先使用
 `exec_remote_script`。这两个工具会避免 PowerShell `$变量` 被外层 shell
 提前展开；`exec_remote_script` 会写入临时 `.ps1`、执行，并在成功后自动清理。
+三个通用远程执行工具都可以传入 `async: true`，立即获得 `jobId`，再通过
+`job_status` 查询长任务结果。`timeoutMs` 现在会真正关闭超时命令的 SSH channel
+和连接；PowerShell 输出清理同时支持带 `#< CLIXML` 标记和直接以 `<Objs>`
+开头的输出。当服务器 OS 元数据配置错误时，脚本执行会先探测真实的 Windows
+能力。
 典型操作包括：
 
 - 创建/清理远程 staging 目录

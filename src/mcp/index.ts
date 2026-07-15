@@ -7,22 +7,47 @@ import Database from "better-sqlite3";
 import { ProjectRegistry } from "./project-registry.js";
 import { RemoteRunner } from "../shared/remote-runner.js";
 import { compactText, summarizeExec, summarizeJson } from "../shared/output.js";
-import { getJob, listJobs, startJob, writeAudit } from "../shared/job-store.js";
+import { cancelJob, getJob, listJobs, startJob, writeAudit, type JobContext } from "../shared/job-store.js";
 import { recordFact, searchFacts } from "../shared/context-store.js";
 import {
   clearFormCache,
+  buildDotNetProject,
+  convertSampleManagerTables,
+  createEntityDefinition,
+  deploySampleManagerFile,
+  loadTableLoaderFile,
   recentErrors,
+  restoreSampleManagerBackup,
   restartSampleManagerInstance,
   runSampleManagerCommand,
+  runSampleManagerUtility,
   runSql,
 } from "../shared/samplemanager-tools.js";
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync } from "fs";
-import { join, dirname } from "path";
+import {
+  appendFileSync,
+  createReadStream,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "fs";
+import { createHash } from "crypto";
+import { basename, dirname, join, relative } from "path";
+import { resolveWorkspacePath } from "../shared/workspace-path.js";
+import { quotePosix, quotePowerShell, validateGitRef, validateServiceName } from "../shared/shell-utils.js";
+import { createUploadSession, publicUploadSession } from "../shared/upload-store.js";
+import { TOOL_CATALOG_BY_NAME } from "../shared/tool-catalog.js";
 import "dotenv/config";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? 3001);
 const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-in-production";
 const DB_PATH = process.env.DB_PATH ?? "./data/app.db";
+const RELAY_PUBLIC_URL = (process.env.RELAY_PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 3000}`).replace(/\/$/, "");
 
 interface McpUser {
   id: number;
@@ -37,6 +62,19 @@ interface McpUser {
   defaultServerId?: number;
   allowAllProjects?: boolean;
   canCreateProjects?: boolean;
+}
+
+function auditArguments(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(auditArguments);
+  if (!value || typeof value !== "object") return value;
+  const sensitive = /^(script|content|base64|token|password|sql)$/i;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => {
+    if (sensitive.test(key)) {
+      const text = typeof item === "string" ? item : JSON.stringify(item);
+      return [key, { redacted: true, length: text?.length ?? 0 }];
+    }
+    return [key, auditArguments(item)];
+  }));
 }
 
 // ─── Auth middleware ───────────────────────────────────────────────────────────
@@ -154,6 +192,21 @@ function createMcpServer(user: McpUser) {
     return { project, ps, runner };
   }
 
+  function executionForJob(context?: JobContext) {
+    if (!context) return {};
+    return {
+      signal: context.signal,
+      onStdout: (text: string) => {
+        const value = text.trim();
+        if (value) context.log(compactText(value, 2000), "stdout");
+      },
+      onStderr: (text: string) => {
+        const value = text.trim();
+        if (value) context.log(compactText(value, 2000), "stderr");
+      },
+    };
+  }
+
   // ── Tool: list_projects ────────────────────────────────────────────────────
   server.tool("list_projects", "List all projects for the current user", {}, async () => {
     const projects = listAllowedProjects();
@@ -195,8 +248,8 @@ function createMcpServer(user: McpUser) {
           os: linkedServer.os,
         });
         const mkdirResult = linkedServer.os === "windows"
-          ? await runner.execPowerShell(`New-Item -ItemType Directory -Force -Path '${remotePath.replace(/'/g, "''")}' | Out-Null`)
-          : await runner.exec(`mkdir -p '${remotePath.replace(/'/g, `'\\''`)}'`);
+          ? await runner.execPowerShell(`New-Item -ItemType Directory -Force -LiteralPath ${quotePowerShell(remotePath)} | Out-Null`)
+          : await runner.exec(`mkdir -p -- ${quotePosix(remotePath)}`);
         remote = { serverId, remotePath, environment, mkdirExitCode: mkdirResult.code };
       }
 
@@ -212,22 +265,32 @@ function createMcpServer(user: McpUser) {
       project: z.string().optional().describe("Project name. Optional when the MCP token has a default project."),
       command: z.string().describe("Shell command to run"),
       environment: z.string().optional().describe("Target environment (default: production)"),
+      timeoutMs: z.number().optional().describe("Command timeout in milliseconds (default 60000)"),
+      async: z.boolean().optional().describe("Run as an async job and return a jobId."),
     },
-    async ({ project: projectName, command, environment }) => {
+    async ({ project: projectName, command, environment, timeoutMs = 60000, async = false }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
       const { ps, runner } = getRunner(projectName, environment);
-      const result = await runner.exec(command);
-      writeAudit({
-        userId: user.id,
-        username: user.username,
-        project: projectName,
-        tool: "exec_remote",
-        environment: environment ?? "production",
-        host: ps.server.host,
-        command,
-        exitCode: result.code,
-      });
-      const text = `[${ps.server.host}]\n${summarizeExec(command, result)}`;
-      return { content: [{ type: "text", text }] };
+      const work = async (context?: JobContext) => {
+        const result = await runner.exec(command, timeoutMs, executionForJob(context));
+        writeAudit({
+          userId: user.id,
+          username: user.username,
+          project: resolvedProjectName,
+          tool: "exec_remote",
+          environment: environment ?? "production",
+          host: ps.server.host,
+          command,
+          async,
+          exitCode: result.code,
+        });
+        return `[${ps.server.host}]\n${summarizeExec(command, result)}`;
+      };
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "exec_remote", { command, environment, timeoutMs }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
     }
   );
 
@@ -239,21 +302,30 @@ function createMcpServer(user: McpUser) {
       script: z.string().describe("PowerShell script content to execute"),
       environment: z.string().optional().describe("Target environment (default: production)"),
       timeoutMs: z.number().optional().describe("Command timeout in milliseconds (default 120000)"),
+      async: z.boolean().optional().describe("Run as an async job and return a jobId."),
     },
-    async ({ project: projectName, script, environment, timeoutMs = 120000 }) => {
+    async ({ project: projectName, script, environment, timeoutMs = 120000, async = false }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
       const { ps, runner } = getRunner(projectName, environment);
-      const result = await runner.execPowerShell(script, timeoutMs);
-      writeAudit({
-        userId: user.id,
-        username: user.username,
-        project: projectName,
-        tool: "exec_remote_powershell",
-        environment: environment ?? "production",
-        host: ps.server.host,
-        exitCode: result.code,
-      });
-      const text = `[${ps.server.host}]\n${summarizeExec("powershell -EncodedCommand <script>", result)}`;
-      return { content: [{ type: "text", text }] };
+      const work = async (context?: JobContext) => {
+        const result = await runner.execPowerShell(script, timeoutMs, executionForJob(context));
+        writeAudit({
+          userId: user.id,
+          username: user.username,
+          project: resolvedProjectName,
+          tool: "exec_remote_powershell",
+          environment: environment ?? "production",
+          host: ps.server.host,
+          async,
+          exitCode: result.code,
+        });
+        return `[${ps.server.host}]\n${summarizeExec("powershell -EncodedCommand <script>", result)}`;
+      };
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "exec_remote_powershell", { environment, timeoutMs, scriptLength: script.length }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
     }
   );
 
@@ -268,6 +340,7 @@ function createMcpServer(user: McpUser) {
       timeoutMs: z.number().optional().describe("Script timeout in milliseconds (default 120000)"),
       cleanup: z.boolean().optional().describe("Remove the remote script after execution. Default true."),
       preserveOnFailure: z.boolean().optional().describe("Keep the remote script when execution fails. Default false."),
+      async: z.boolean().optional().describe("Run as an async job and return a jobId."),
     },
     async ({
       project: projectName,
@@ -277,39 +350,56 @@ function createMcpServer(user: McpUser) {
       timeoutMs = 120000,
       cleanup = true,
       preserveOnFailure = false,
+      async = false,
     }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
       const { ps, runner } = getRunner(projectName, environment);
-      const result = await runner.execPowerShellScript(script, {
-        remotePath,
-        timeout: timeoutMs,
-        cleanup,
-        preserveOnFailure,
-      });
-      writeAudit({
-        userId: user.id,
-        username: user.username,
-        project: projectName,
-        tool: "exec_remote_script",
-        environment: environment ?? "production",
-        host: ps.server.host,
-        remotePath: result.remotePath,
-        cleanedUp: result.cleanedUp,
-        exitCode: result.code,
-      });
-      const text = [
-        `[${ps.server.host}]`,
-        `remotePath=${result.remotePath}`,
-        `cleanedUp=${result.cleanedUp}`,
-        summarizeExec("powershell -File <remote script>", result),
-      ].join("\n");
-      return { content: [{ type: "text", text }] };
+      const work = async (context?: JobContext) => {
+        const result = await runner.execPowerShellScript(script, {
+          remotePath,
+          timeout: timeoutMs,
+          cleanup,
+          preserveOnFailure,
+          execution: executionForJob(context),
+        });
+        writeAudit({
+          userId: user.id,
+          username: user.username,
+          project: resolvedProjectName,
+          tool: "exec_remote_script",
+          environment: environment ?? "production",
+          host: ps.server.host,
+          remotePath: result.remotePath,
+          cleanedUp: result.cleanedUp,
+          async,
+          exitCode: result.code,
+        });
+        return [
+          `[${ps.server.host}]`,
+          `remotePath=${result.remotePath}`,
+          `cleanedUp=${result.cleanedUp}`,
+          summarizeExec("powershell -File <remote script>", result),
+        ].join("\n");
+      };
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "exec_remote_script", {
+          environment,
+          remotePath,
+          timeoutMs,
+          cleanup,
+          preserveOnFailure,
+          scriptLength: script.length,
+        }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
     }
   );
 
   // ── Tool: deploy ───────────────────────────────────────────────────────────
   server.tool(
     "deploy",
-    "Deploy the project to the remote server (git pull + restart)",
+    "Update a remote Git checkout and optionally restart PM2 or Docker workloads. Supports Windows and Linux targets.",
     {
       project: z.string().optional().describe("Project name. Optional when the MCP token has a default project."),
       environment: z.string().optional(),
@@ -318,22 +408,31 @@ function createMcpServer(user: McpUser) {
     async ({ project: projectName, environment, branch = "main" }) => {
       const { ps, runner } = getRunner(projectName, environment);
       const remotePath = ps.remotePath;
-
-      const steps = [
-        `cd '${remotePath}'`,
-        `git fetch origin`,
-        `git checkout ${branch}`,
-        `git pull origin ${branch}`,
-      ];
-
-      // Try common restart patterns
-      const restartCmds = [
-        `if command -v pm2 &>/dev/null; then pm2 restart all 2>/dev/null || true; fi`,
-        `if [ -f docker-compose.yml ]; then docker compose up -d --build 2>/dev/null || true; fi`,
-      ];
-
-      const fullCommand = [...steps, ...restartCmds].join(" && ");
-      const result = await runner.exec(fullCommand, 120000);
+      const safeBranch = validateGitRef(branch);
+      const result = ps.server.os === "windows"
+        ? await runner.execPowerShell(`
+$ErrorActionPreference = "Stop"
+Set-Location -LiteralPath ${quotePowerShell(remotePath)}
+& git fetch origin
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& git checkout -- ${quotePowerShell(safeBranch)}
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& git pull --ff-only origin ${quotePowerShell(safeBranch)}
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if (Get-Command pm2 -ErrorAction SilentlyContinue) {
+  & pm2 restart all
+}
+elseif ((Test-Path -LiteralPath "docker-compose.yml") -or (Test-Path -LiteralPath "compose.yml")) {
+  & docker compose up -d --build
+}
+`, 120000)
+        : await runner.exec([
+          `cd -- ${quotePosix(remotePath)}`,
+          "git fetch origin",
+          `git checkout -- ${quotePosix(safeBranch)}`,
+          `git pull --ff-only origin ${quotePosix(safeBranch)}`,
+          "if command -v pm2 >/dev/null 2>&1; then pm2 restart all; elif [ -f docker-compose.yml ] || [ -f compose.yml ]; then docker compose up -d --build; fi",
+        ].join(" && "), 120000);
 
       return {
         content: [{ type: "text", text: compactText(`Deploy result:\n${result.stdout}\n${result.stderr}`) }],
@@ -344,7 +443,7 @@ function createMcpServer(user: McpUser) {
   // ── Tool: fetch_logs ───────────────────────────────────────────────────────
   server.tool(
     "fetch_logs",
-    "Fetch recent logs from the remote server",
+    "Fetch recent file, Windows, systemd, PM2, or Docker logs from the linked server.",
     {
       project: z.string().optional(),
       environment: z.string().optional(),
@@ -354,15 +453,32 @@ function createMcpServer(user: McpUser) {
     async ({ project: projectName, environment, lines = 100, logPath }) => {
       const { ps, runner } = getRunner(projectName, environment);
 
-      let cmd: string;
-      if (logPath) {
-        cmd = `tail -n ${lines} '${logPath}' 2>&1`;
-      } else {
-        // Try common log locations
-        cmd = `(journalctl -u $(basename '${ps.remotePath}') -n ${lines} --no-pager 2>/dev/null) || (pm2 logs --nostream --lines ${lines} 2>/dev/null) || (tail -n ${lines} '${ps.remotePath}/logs/*.log' 2>/dev/null) || echo 'No logs found'`;
-      }
-
-      const result = await runner.exec(cmd, 30000);
+      const safeLines = Math.max(1, Math.min(Math.trunc(lines), 5000));
+      const result = ps.server.os === "windows"
+        ? await runner.execPowerShell(logPath
+          ? `Get-Content -LiteralPath ${quotePowerShell(logPath)} -Tail ${safeLines} -ErrorAction Stop`
+          : `
+$root = ${quotePowerShell(ps.remotePath)}
+$files = Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
+  Where-Object { $_.Extension -in ".log",".txt" } |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 5
+if ($files) {
+  foreach ($file in $files) {
+    "===== $($file.FullName) ====="
+    Get-Content -LiteralPath $file.FullName -Tail ${safeLines} -ErrorAction SilentlyContinue
+  }
+}
+elseif (Get-Command pm2 -ErrorAction SilentlyContinue) {
+  & pm2 logs --nostream --lines ${safeLines}
+}
+else {
+  "No logs found"
+}`, 30000)
+        : await runner.exec(logPath
+          ? `tail -n ${safeLines} -- ${quotePosix(logPath)} 2>&1`
+          : `(journalctl -u $(basename -- ${quotePosix(ps.remotePath)}) -n ${safeLines} --no-pager 2>/dev/null) || (pm2 logs --nostream --lines ${safeLines} 2>/dev/null) || (find ${quotePosix(`${ps.remotePath.replace(/[\\/]+$/, "")}/logs`)} -type f -name '*.log' -print0 2>/dev/null | xargs -0 tail -n ${safeLines} 2>/dev/null) || echo 'No logs found'`,
+          30000);
       return { content: [{ type: "text", text: compactText(result.stdout || result.stderr) }] };
     }
   );
@@ -370,27 +486,36 @@ function createMcpServer(user: McpUser) {
   // ── Tool: restart_service ──────────────────────────────────────────────────
   server.tool(
     "restart_service",
-    "Restart a service on the remote server",
+    "Restart Windows services, systemd units, PM2 processes, or Docker containers using a structured service selector.",
     {
       project: z.string().optional(),
       environment: z.string().optional(),
       service: z.string().describe("Service name or 'all' for all project services"),
     },
     async ({ project: projectName, environment, service }) => {
-      const { runner } = getRunner(projectName, environment);
-
-      let cmd: string;
-      if (service === "all") {
-        cmd = `pm2 restart all 2>/dev/null || systemctl restart ${service} 2>/dev/null || docker compose restart 2>/dev/null`;
-      } else if (service.startsWith("docker:")) {
-        cmd = `docker restart ${service.slice(7)}`;
-      } else if (service.startsWith("pm2:")) {
-        cmd = `pm2 restart ${service.slice(4)}`;
-      } else {
-        cmd = `sudo systemctl restart ${service}`;
-      }
-
-      const result = await runner.exec(cmd, 30000);
+      const { ps, runner } = getRunner(projectName, environment);
+      const safeService = service === "all" ? service : validateServiceName(service);
+      const result = ps.server.os === "windows"
+        ? await runner.execPowerShell(
+          safeService === "all"
+            ? `if (Get-Command pm2 -ErrorAction SilentlyContinue) { & pm2 restart all } elseif (Get-Command docker -ErrorAction SilentlyContinue) { & docker compose restart } else { throw "service=all requires PM2 or Docker on Windows" }`
+            : safeService.startsWith("docker:")
+              ? `& docker restart ${quotePowerShell(safeService.slice(7))}`
+              : safeService.startsWith("pm2:")
+                ? `& pm2 restart ${quotePowerShell(safeService.slice(4))}`
+                : `Restart-Service -Name ${quotePowerShell(safeService.replace(/^windows:/, ""))} -Force -ErrorAction Stop`,
+          30000
+        )
+        : await runner.exec(
+          safeService === "all"
+            ? "if command -v pm2 >/dev/null 2>&1; then pm2 restart all; elif command -v docker >/dev/null 2>&1; then docker compose restart; else echo 'service=all requires PM2 or Docker' >&2; exit 2; fi"
+            : safeService.startsWith("docker:")
+              ? `docker restart ${quotePosix(safeService.slice(7))}`
+              : safeService.startsWith("pm2:")
+                ? `pm2 restart ${quotePosix(safeService.slice(4))}`
+                : `sudo systemctl restart -- ${quotePosix(safeService.replace(/^systemd:/, ""))}`,
+          30000
+        );
       return { content: [{ type: "text", text: compactText(`${result.stdout}\n${result.stderr}`) }] };
     }
   );
@@ -457,10 +582,7 @@ function createMcpServer(user: McpUser) {
       const project = registry.getProject(user.id, resolvedProjectName);
       if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
 
-      const fullPath = join(project.workspacePath, relPath);
-      if (!fullPath.startsWith(project.workspacePath)) {
-        throw new Error("Path traversal not allowed");
-      }
+      const fullPath = resolveWorkspacePath(project.workspacePath, relPath, { mustExist: true });
       const content = readFileSync(fullPath, "utf8");
       return { content: [{ type: "text", text: content }] };
     }
@@ -498,8 +620,7 @@ function createMcpServer(user: McpUser) {
     },
     async ({ project: projectName, localPath: relPath, remotePath, environment }) => {
       const { project, ps, runner } = getRunner(projectName, environment);
-      const fullLocal = join(project.workspacePath, relPath);
-      if (!fullLocal.startsWith(project.workspacePath)) throw new Error("Path traversal not allowed");
+      const fullLocal = resolveWorkspacePath(project.workspacePath, relPath, { mustExist: true });
       await runner.uploadFile(fullLocal, remotePath);
       return { content: [{ type: "text", text: `Uploaded ${relPath} → ${ps.server.host}:${remotePath}` }] };
     }
@@ -520,10 +641,7 @@ function createMcpServer(user: McpUser) {
       const project = registry.getProject(user.id, resolvedProjectName);
       if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
 
-      const fullPath = join(project.workspacePath, relPath);
-      if (!fullPath.startsWith(project.workspacePath)) {
-        throw new Error("Path traversal not allowed");
-      }
+      const fullPath = resolveWorkspacePath(project.workspacePath, relPath);
       mkdirSync(dirname(fullPath), { recursive: true });
       if (append) {
         appendFileSync(fullPath, content, "utf8");
@@ -532,6 +650,238 @@ function createMcpServer(user: McpUser) {
       }
       const bytes = Buffer.byteLength(content, "utf8");
       return { content: [{ type: "text", text: `${append ? "Appended" : "Written"} ${bytes} bytes → ${relPath}` }] };
+    }
+  );
+
+  server.tool(
+    "write_local_binary",
+    "Write a small binary file to the Relay project workspace from Base64. Use create_workspace_upload for large files.",
+    {
+      project: z.string().optional(),
+      path: z.string().describe("Relative destination path within the project workspace"),
+      base64: z.string().describe("Base64-encoded file content"),
+    },
+    async ({ project: projectName, path: relPath, base64 }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const project = registry.getProject(user.id, resolvedProjectName);
+      if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
+      const content = Buffer.from(base64, "base64");
+      const limit = Number(process.env.MCP_BINARY_WRITE_LIMIT ?? 8 * 1024 * 1024);
+      if (content.length > limit) {
+        throw new Error(`Binary content exceeds ${limit} bytes; use create_workspace_upload`);
+      }
+      const fullPath = resolveWorkspacePath(project.workspacePath, relPath);
+      mkdirSync(dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, content);
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            path: relPath,
+            bytes: content.length,
+            sha256: createHash("sha256").update(content).digest("hex"),
+          }),
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "list_workspace_files",
+    "List files and directories in a Relay project workspace with optional bounded recursion.",
+    {
+      project: z.string().optional(),
+      path: z.string().optional().describe("Relative directory path; defaults to workspace root"),
+      recursive: z.boolean().optional().describe("Recursively list descendants; default false"),
+      maxEntries: z.number().int().positive().optional().describe("Maximum entries returned; default 500, maximum 5000"),
+    },
+    async ({ project: projectName, path: relPath = "", recursive = false, maxEntries = 500 }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const project = registry.getProject(user.id, resolvedProjectName);
+      if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
+      const root = resolveWorkspacePath(project.workspacePath, relPath, { allowRoot: true, mustExist: true });
+      const rootStat = statSync(root);
+      if (!rootStat.isDirectory()) throw new Error(`Workspace path is not a directory: ${relPath}`);
+      const limit = Math.min(maxEntries, 5000);
+      const entries: Array<Record<string, unknown>> = [];
+      const visit = (directory: string) => {
+        for (const name of readdirSync(directory)) {
+          if (entries.length >= limit) return;
+          const fullPath = resolveWorkspacePath(project.workspacePath, relative(project.workspacePath, join(directory, name)), {
+            mustExist: true,
+          });
+          const stat = lstatSync(fullPath);
+          entries.push({
+            path: relative(project.workspacePath, fullPath).replace(/\\/g, "/"),
+            type: stat.isSymbolicLink() ? "symlink" : stat.isDirectory() ? "directory" : "file",
+            size: stat.isFile() ? stat.size : undefined,
+            modifiedAt: stat.mtime.toISOString(),
+          });
+          if (recursive && stat.isDirectory() && !stat.isSymbolicLink()) visit(fullPath);
+        }
+      };
+      visit(root);
+      return { content: [{ type: "text", text: summarizeJson({ entries, truncated: entries.length >= limit }) }] };
+    }
+  );
+
+  server.tool(
+    "workspace_file_stat",
+    "Return size, timestamps, type, and optional SHA-256 for a Relay workspace file.",
+    {
+      project: z.string().optional(),
+      path: z.string(),
+      sha256: z.boolean().optional().describe("Calculate SHA-256 for files; default false"),
+    },
+    async ({ project: projectName, path: relPath, sha256 = false }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const project = registry.getProject(user.id, resolvedProjectName);
+      if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
+      const fullPath = resolveWorkspacePath(project.workspacePath, relPath, { mustExist: true });
+      const stat = statSync(fullPath);
+      let hash: string | undefined;
+      if (sha256 && stat.isFile()) {
+        const digest = createHash("sha256");
+        for await (const chunk of createReadStream(fullPath)) digest.update(chunk);
+        hash = digest.digest("hex");
+      }
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            path: relPath,
+            type: stat.isDirectory() ? "directory" : "file",
+            size: stat.isFile() ? stat.size : undefined,
+            createdAt: stat.birthtime.toISOString(),
+            modifiedAt: stat.mtime.toISOString(),
+            sha256: hash,
+          }),
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "move_workspace_file",
+    "Move or rename a file or directory inside the same Relay project workspace.",
+    {
+      project: z.string().optional(),
+      from: z.string().describe("Existing relative source path"),
+      to: z.string().describe("Relative destination path"),
+      overwrite: z.boolean().optional().describe("Replace an existing destination; default false"),
+    },
+    async ({ project: projectName, from, to, overwrite = false }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const project = registry.getProject(user.id, resolvedProjectName);
+      if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
+      const source = resolveWorkspacePath(project.workspacePath, from, { mustExist: true });
+      const destination = resolveWorkspacePath(project.workspacePath, to);
+      if (existsSync(destination)) {
+        if (!overwrite) throw new Error(`Destination already exists: ${to}`);
+        rmSync(destination, { recursive: true, force: true });
+      }
+      mkdirSync(dirname(destination), { recursive: true });
+      renameSync(source, destination);
+      return { content: [{ type: "text", text: `Moved ${from} → ${to}` }] };
+    }
+  );
+
+  server.tool(
+    "delete_workspace_file",
+    "Delete a file or directory from a Relay project workspace. Recursive directory deletion must be explicitly enabled.",
+    {
+      project: z.string().optional(),
+      path: z.string(),
+      recursive: z.boolean().optional().describe("Allow recursive directory deletion; default false"),
+    },
+    async ({ project: projectName, path: relPath, recursive = false }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const project = registry.getProject(user.id, resolvedProjectName);
+      if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
+      const fullPath = resolveWorkspacePath(project.workspacePath, relPath, { mustExist: true });
+      const stat = statSync(fullPath);
+      if (stat.isDirectory() && !recursive) {
+        throw new Error("Directory deletion requires recursive=true");
+      }
+      rmSync(fullPath, { recursive, force: false });
+      return { content: [{ type: "text", text: `Deleted ${relPath}` }] };
+    }
+  );
+
+  server.tool(
+    "create_workspace_upload",
+    "Create a short-lived authenticated upload URL for streaming a large local binary file into the Relay workspace.",
+    {
+      project: z.string().optional(),
+      path: z.string().describe("Relative destination path in the Relay workspace"),
+      maxBytes: z.number().int().positive().optional(),
+      expectedSha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
+      ttlSeconds: z.number().int().min(60).max(3600).optional(),
+    },
+    async ({ project: projectName, path: relPath, maxBytes, expectedSha256, ttlSeconds }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const project = registry.getProject(user.id, resolvedProjectName);
+      if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
+      resolveWorkspacePath(project.workspacePath, relPath);
+      const { session, token } = createUploadSession({
+        userId: user.id,
+        projectId: project.id,
+        project: project.name,
+        path: relPath,
+        maxBytes,
+        expectedSha256,
+        ttlMs: ttlSeconds ? ttlSeconds * 1000 : undefined,
+      });
+      const uploadUrl = `${RELAY_PUBLIC_URL}/api/uploads/${session.id}`;
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            upload: publicUploadSession(session),
+            uploadUrl,
+            token,
+            command: `npm run relay-upload -- --url ${uploadUrl} --token <token> --file <local-file>`,
+          }),
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "cleanup_workspace_staging",
+    "Preview or remove old entries from the reserved .relay-staging directory in a project workspace.",
+    {
+      project: z.string().optional(),
+      olderThanMinutes: z.number().positive().optional().describe("Only include entries older than this age; default 1440"),
+      dryRun: z.boolean().optional().describe("Preview without deleting; default true"),
+    },
+    async ({ project: projectName, olderThanMinutes = 1440, dryRun = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const project = registry.getProject(user.id, resolvedProjectName);
+      if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
+      const staging = resolveWorkspacePath(project.workspacePath, ".relay-staging");
+      if (!existsSync(staging)) {
+        return { content: [{ type: "text", text: summarizeJson({ dryRun, entries: [] }) }] };
+      }
+      const cutoff = Date.now() - olderThanMinutes * 60_000;
+      const entries = readdirSync(staging)
+        .map((name) => {
+          const fullPath = resolveWorkspacePath(project.workspacePath, `.relay-staging/${name}`, { mustExist: true });
+          return { name, fullPath, modifiedAt: statSync(fullPath).mtime };
+        })
+        .filter((entry) => entry.modifiedAt.getTime() <= cutoff);
+      if (!dryRun) {
+        for (const entry of entries) rmSync(entry.fullPath, { recursive: true, force: true });
+      }
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            dryRun,
+            entries: entries.map((entry) => ({ name: entry.name, modifiedAt: entry.modifiedAt.toISOString() })),
+          }),
+        }],
+      };
     }
   );
 
@@ -579,6 +929,17 @@ function createMcpServer(user: McpUser) {
     }
   );
 
+  server.tool(
+    "job_cancel",
+    "Request cancellation of a running asynchronous Relay-MCP job and close its active SSH command when supported.",
+    {
+      jobId: z.string().describe("Running job id returned by an async tool"),
+    },
+    async ({ jobId }) => {
+      return { content: [{ type: "text", text: summarizeJson(cancelJob(jobId, user.id)) }] };
+    }
+  );
+
   // ── Tool: project context memory ──────────────────────────────────────────
   server.tool(
     "context_record_fact",
@@ -623,7 +984,7 @@ function createMcpServer(user: McpUser) {
     async ({ project: projectName, instance, environment, async = false }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { runner } = getRunner(projectName, environment);
-      const work = () => restartSampleManagerInstance(runner, instance);
+      const work = (context?: JobContext) => restartSampleManagerInstance(runner, instance, executionForJob(context));
       if (async) {
         const job = startJob(user, resolvedProjectName, "samplemanager_restart_instance", { instance, environment }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
@@ -710,10 +1071,7 @@ function createMcpServer(user: McpUser) {
       const project = registry.getProject(user.id, resolvedProjectName);
       if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
 
-      const fullPath = join(project.workspacePath, relPath);
-      if (!fullPath.startsWith(project.workspacePath)) {
-        throw new Error("Path traversal not allowed");
-      }
+      const fullPath = resolveWorkspacePath(project.workspacePath, relPath, { mustExist: true });
       if (!existsSync(fullPath)) {
         throw new Error(`SQL file '${relPath}' does not exist in project '${resolvedProjectName}'`);
       }
@@ -761,7 +1119,13 @@ function createMcpServer(user: McpUser) {
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { runner } = getRunner(projectName, environment);
-      const work = () => runSampleManagerCommand(runner, instance, { username, task, args, timeoutMs });
+      const work = (context?: JobContext) => runSampleManagerCommand(runner, instance, {
+        username,
+        task,
+        args,
+        timeoutMs,
+        execution: executionForJob(context),
+      });
       writeAudit({
         userId: user.id,
         username: user.username,
@@ -774,6 +1138,238 @@ function createMcpServer(user: McpUser) {
       });
       if (async) {
         const job = startJob(user, resolvedProjectName, "samplemanager_run_command", { instance, username, task, args, environment }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_create_entity_definition",
+    "Run CreateEntityDefinition.exe for a SampleManager instance after controlled structure source changes.",
+    {
+      project: z.string().optional(),
+      instance: z.string(),
+      environment: z.string().optional(),
+      timeoutMs: z.number().positive().optional().describe("Default 600000"),
+      async: z.boolean().optional().describe("Run as an async job; recommended"),
+    },
+    async ({ project: projectName, instance, environment, timeoutMs = 600000, async = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { runner } = getRunner(projectName, environment);
+      const work = (context?: JobContext) => createEntityDefinition(
+        runner,
+        instance,
+        timeoutMs,
+        executionForJob(context)
+      );
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_create_entity_definition", instance, async });
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_create_entity_definition", { instance, environment, timeoutMs }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_convert_tables",
+    "Run convert_table.exe once per SampleManager table using structured, validated table names.",
+    {
+      project: z.string().optional(),
+      instance: z.string(),
+      tables: z.array(z.string()).min(1),
+      environment: z.string().optional(),
+      timeoutMs: z.number().positive().optional().describe("Timeout per table; default 600000"),
+      async: z.boolean().optional().describe("Run as an async job; recommended"),
+    },
+    async ({ project: projectName, instance, tables, environment, timeoutMs = 600000, async = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { runner } = getRunner(projectName, environment);
+      const work = (context?: JobContext) => convertSampleManagerTables(
+        runner,
+        instance,
+        tables,
+        timeoutMs,
+        executionForJob(context)
+      );
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_convert_tables", instance, tables, async });
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_convert_tables", { instance, tables, environment, timeoutMs }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_table_loader",
+    "Load a remote table-loader CSV through SampleManagerCommand.exe and the built-in $table_loader VGL report.",
+    {
+      project: z.string().optional(),
+      instance: z.string(),
+      username: z.string(),
+      remoteCsvPath: z.string(),
+      mode: z.string().optional().describe("Table-loader mode; default overwrite_table"),
+      environment: z.string().optional(),
+      timeoutMs: z.number().positive().optional().describe("Default 300000"),
+      async: z.boolean().optional().describe("Run as an async job; recommended"),
+    },
+    async ({
+      project: projectName,
+      instance,
+      username,
+      remoteCsvPath,
+      mode = "overwrite_table",
+      environment,
+      timeoutMs = 300000,
+      async = true,
+    }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { runner } = getRunner(projectName, environment);
+      const work = (context?: JobContext) => loadTableLoaderFile(
+        runner,
+        instance,
+        username,
+        remoteCsvPath,
+        mode,
+        timeoutMs,
+        executionForJob(context)
+      );
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_table_loader", instance, remoteCsvPath, mode, async });
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_table_loader", { instance, username, remoteCsvPath, mode, environment, timeoutMs }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_run_utility",
+    "Run an allowlisted SampleManager utility with structured arguments. Use dedicated tools for CreateEntityDefinition and convert_table.",
+    {
+      project: z.string().optional(),
+      instance: z.string(),
+      utility: z.enum(["FormImport.exe", "BuildFormDefinition.exe", "DeployPackageTask.exe"]),
+      args: z.array(z.string()).optional(),
+      environment: z.string().optional(),
+      timeoutMs: z.number().positive().optional().describe("Default 300000"),
+      async: z.boolean().optional().describe("Run as an async job"),
+    },
+    async ({ project: projectName, instance, utility, args = [], environment, timeoutMs = 300000, async = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { runner } = getRunner(projectName, environment);
+      const work = (context?: JobContext) => runSampleManagerUtility(runner, instance, utility, {
+        args,
+        timeoutMs,
+        execution: executionForJob(context),
+      });
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_run_utility", instance, utility, args, async });
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_run_utility", { instance, utility, args, environment, timeoutMs }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_build_dotnet",
+    "Build a classic SampleManager .NET project or solution with MSBuild on the linked Windows server.",
+    {
+      project: z.string().optional(),
+      projectOrSolutionPath: z.string(),
+      configuration: z.string().optional().describe("Default Release"),
+      msbuildPath: z.string().optional().describe("Optional explicit MSBuild.exe path"),
+      environment: z.string().optional(),
+      timeoutMs: z.number().positive().optional().describe("Default 600000"),
+      async: z.boolean().optional().describe("Run as an async job; recommended"),
+    },
+    async ({
+      project: projectName,
+      projectOrSolutionPath,
+      configuration = "Release",
+      msbuildPath,
+      environment,
+      timeoutMs = 600000,
+      async = true,
+    }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { runner } = getRunner(projectName, environment);
+      const work = (context?: JobContext) => buildDotNetProject(
+        runner,
+        projectOrSolutionPath,
+        configuration,
+        msbuildPath,
+        timeoutMs,
+        executionForJob(context)
+      );
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_build_dotnet", projectOrSolutionPath, configuration, async });
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_build_dotnet", { projectOrSolutionPath, configuration, msbuildPath, environment, timeoutMs }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_deploy_file",
+    "Copy a staged remote file into a SampleManager instance area and create a timestamped backup of the replaced file.",
+    {
+      project: z.string().optional(),
+      instance: z.string(),
+      sourcePath: z.string().describe("Absolute source file path already present on the remote server"),
+      area: z.enum(["exe", "solutionAssemblies", "forms", "resourceIcon", "data"]),
+      targetRelativePath: z.string(),
+      backup: z.boolean().optional().describe("Create backup before replacement; default true"),
+      environment: z.string().optional(),
+      async: z.boolean().optional().describe("Run as an async job"),
+    },
+    async ({ project: projectName, instance, sourcePath, area, targetRelativePath, backup = true, environment, async = false }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { runner } = getRunner(projectName, environment);
+      const work = (context?: JobContext) => deploySampleManagerFile(
+        runner,
+        instance,
+        sourcePath,
+        area,
+        targetRelativePath,
+        backup,
+        executionForJob(context)
+      );
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_deploy_file", instance, sourcePath, area, targetRelativePath, backup, async });
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_deploy_file", { instance, sourcePath, area, targetRelativePath, backup, environment }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_restore_backup",
+    "Restore a specific timestamped SampleManager backup file to an explicit remote target path.",
+    {
+      project: z.string().optional(),
+      backupPath: z.string(),
+      targetPath: z.string(),
+      environment: z.string().optional(),
+      async: z.boolean().optional(),
+    },
+    async ({ project: projectName, backupPath, targetPath, environment, async = false }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { runner } = getRunner(projectName, environment);
+      const work = (context?: JobContext) => restoreSampleManagerBackup(
+        runner,
+        backupPath,
+        targetPath,
+        executionForJob(context)
+      );
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_restore_backup", backupPath, targetPath, async });
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_restore_backup", { backupPath, targetPath, environment }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
@@ -793,6 +1389,20 @@ app.all("/mcp", async (req, res) => {
     user = verifyToken(req);
   } catch {
     return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const body = req.body as { method?: string; params?: { name?: string; arguments?: unknown } };
+  if (body?.method === "tools/call" && body.params?.name) {
+    const metadata = TOOL_CATALOG_BY_NAME.get(body.params.name);
+    writeAudit({
+      event: "tool_called",
+      userId: user.id,
+      username: user.username,
+      tool: body.params.name,
+      category: metadata?.category ?? "unclassified",
+      description: metadata?.description,
+      arguments: auditArguments(body.params.arguments),
+    });
   }
 
   const server = createMcpServer(user);

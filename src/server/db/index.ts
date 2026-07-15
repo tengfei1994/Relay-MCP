@@ -45,6 +45,7 @@ export function runMigrations() {
       ssh_user TEXT NOT NULL,
       private_key_path TEXT NOT NULL,
       public_key TEXT NOT NULL,
+      os TEXT DEFAULT 'linux',
       status TEXT DEFAULT 'pending',
       created_at TEXT DEFAULT (datetime('now'))
     );

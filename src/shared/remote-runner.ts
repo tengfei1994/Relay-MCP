@@ -18,16 +18,40 @@ export interface ExecResult {
   code: number;
 }
 
+export interface RemoteExecutionOptions {
+  signal?: AbortSignal;
+  onStdout?: (text: string) => void;
+  onStderr?: (text: string) => void;
+}
+
 export interface PowerShellScriptOptions {
   remotePath?: string;
   cleanup?: boolean;
   preserveOnFailure?: boolean;
   timeout?: number;
+  execution?: RemoteExecutionOptions;
 }
 
 export interface PowerShellScriptResult extends ExecResult {
   remotePath: string;
   cleanedUp: boolean;
+}
+
+export class RemoteCommandTimeoutError extends Error {
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`Remote command timed out after ${timeoutMs}ms`);
+    this.name = "RemoteCommandTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+export class RemoteCommandCancelledError extends Error {
+  constructor() {
+    super("Remote command was cancelled");
+    this.name = "RemoteCommandCancelledError";
+  }
 }
 
 export class RemoteRunner {
@@ -37,7 +61,11 @@ export class RemoteRunner {
     this.config = config;
   }
 
-  async exec(command: string, timeout = 60000): Promise<ExecResult> {
+  async exec(
+    command: string,
+    timeout = 60000,
+    options: RemoteExecutionOptions = {}
+  ): Promise<ExecResult> {
     const ssh = new NodeSSH();
     try {
       await ssh.connect({
@@ -48,9 +76,26 @@ export class RemoteRunner {
         readyTimeout: 10000,
       });
 
-      const result = await ssh.execCommand(command, {
-        execOptions: { pty: false },
-      });
+      let channel: { close: () => void } | undefined;
+      const result = await runWithTimeout(
+        ssh.execCommand(command, {
+          execOptions: { pty: false },
+          onChannel: (clientChannel) => {
+            channel = clientChannel;
+          },
+          onStdout: (chunk) => options.onStdout?.(chunk.toString("utf8")),
+          onStderr: (chunk) => options.onStderr?.(chunk.toString("utf8")),
+        }),
+        timeout,
+        () => {
+          try {
+            channel?.close();
+          } finally {
+            ssh.dispose();
+          }
+        },
+        options.signal
+      );
 
       return {
         stdout: result.stdout,
@@ -62,16 +107,22 @@ export class RemoteRunner {
     }
   }
 
-  async execPowerShell(script: string, timeout = 60000): Promise<ExecResult> {
+  async execPowerShell(
+    script: string,
+    timeout = 60000,
+    options: RemoteExecutionOptions = {}
+  ): Promise<ExecResult> {
     const encoded = Buffer.from(script, "utf16le").toString("base64");
-    const result = await this.exec(`powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}`, timeout);
+    const result = await this.exec(
+      `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`,
+      timeout,
+      options
+    );
     return cleanPowerShellResult(result);
   }
 
   async execPowerShellScript(script: string, options: PowerShellScriptOptions = {}): Promise<PowerShellScriptResult> {
-    if (!this.isWindows()) {
-      throw new Error("execPowerShellScript is only supported for Windows targets");
-    }
+    await this.ensureWindowsTarget();
 
     const cleanup = options.cleanup ?? true;
     const preserveOnFailure = options.preserveOnFailure ?? false;
@@ -79,13 +130,27 @@ export class RemoteRunner {
     let cleanedUp = false;
 
     await this.writeFile(remotePath, script);
-    const result = await this.execPowerShell(`
+    let result: ExecResult;
+    try {
+      result = await this.execPowerShell(`
 $ErrorActionPreference = "Stop"
 & ${psQuote(remotePath)}
 if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
 }
-`, options.timeout ?? 120000);
+`, options.timeout ?? 120000, options.execution);
+    } catch (error) {
+      if (cleanup && !preserveOnFailure) {
+        try {
+          const cleanupResult = await this.execPowerShell(
+            `Remove-Item -LiteralPath ${psQuote(remotePath)} -Force -ErrorAction SilentlyContinue`,
+            30000
+          );
+          cleanedUp = cleanupResult.code === 0;
+        } catch {}
+      }
+      throw error;
+    }
 
     if (cleanup && (result.code === 0 || !preserveOnFailure)) {
       const cleanupResult = await this.execPowerShell(`Remove-Item -LiteralPath ${psQuote(remotePath)} -Force -ErrorAction SilentlyContinue`, 30000);
@@ -97,6 +162,23 @@ if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) {
 
   isWindows(): boolean {
     return this.config.os === "windows";
+  }
+
+  private async ensureWindowsTarget(): Promise<void> {
+    if (this.isWindows()) return;
+
+    try {
+      const probe = await this.execPowerShell(
+        "[Console]::Write([Environment]::OSVersion.Platform)",
+        15000
+      );
+      if (probe.code === 0 && probe.stdout.trim().toLowerCase() === "win32nt") {
+        this.config.os = "windows";
+        return;
+      }
+    } catch {}
+
+    throw new Error("execPowerShellScript requires a Windows target; capability probe failed");
   }
 
   async writeFile(remotePath: string, content: string): Promise<void> {
@@ -270,6 +352,62 @@ function psQuote(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+export function runWithTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  onTimeout?: () => void,
+  signal?: AbortSignal
+): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return Promise.reject(new RangeError("timeoutMs must be a positive finite number"));
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      try {
+        onTimeout?.();
+      } catch {
+        // Cleanup errors must not hide timeout or cancellation.
+      }
+    };
+    const finishReject = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abortHandler);
+      cleanup();
+      reject(error);
+    };
+    const abortHandler = () => finishReject(new RemoteCommandCancelledError());
+    const timer = setTimeout(() => {
+      finishReject(new RemoteCommandTimeoutError(timeoutMs));
+    }, timeoutMs);
+    if (signal?.aborted) {
+      finishReject(new RemoteCommandCancelledError());
+      return;
+    }
+    signal?.addEventListener("abort", abortHandler, { once: true });
+
+    operation.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abortHandler);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abortHandler);
+        reject(error);
+      }
+    );
+  });
+}
+
 function cleanPowerShellResult(result: ExecResult): ExecResult {
   return {
     ...result,
@@ -278,7 +416,7 @@ function cleanPowerShellResult(result: ExecResult): ExecResult {
   };
 }
 
-function cleanPowerShellText(value: string): string {
+export function cleanPowerShellText(value: string): string {
   if (!value) return value;
 
   const withoutProgressLines = value
@@ -286,7 +424,13 @@ function cleanPowerShellText(value: string): string {
     .filter((line) => !/^\s*(Preparing modules for first use\.|WARNING:\s*Preparing modules for first use\.)\s*$/.test(line))
     .join("\n");
 
-  if (!withoutProgressLines.includes("#< CLIXML")) {
+  const markerIndex = withoutProgressLines.indexOf("#< CLIXML");
+  const rawXmlIndex = withoutProgressLines.search(/<Objs(?:\s|>)/);
+  const xmlStart = markerIndex >= 0 && rawXmlIndex >= 0
+    ? Math.min(markerIndex, rawXmlIndex)
+    : Math.max(markerIndex, rawXmlIndex);
+
+  if (xmlStart < 0) {
     return withoutProgressLines.trim();
   }
 
@@ -302,11 +446,9 @@ function cleanPowerShellText(value: string): string {
     messages.push(text);
   }
 
-  const nonXmlText = withoutProgressLines
-    .replace(/#< CLIXML[\s\S]*?(?=(?:\r?\n)?[^<\s#]|\s*$)/g, "")
-    .trim();
-  if (nonXmlText) {
-    messages.unshift(nonXmlText);
+  const plainText = withoutProgressLines.slice(0, xmlStart).trim();
+  if (plainText) {
+    messages.unshift(plainText);
   }
 
   return messages.join("\n").trim();

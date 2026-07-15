@@ -13,6 +13,7 @@ import { serverRoutes } from "./routes/servers.js";
 import { projectServerRoutes } from "./routes/project-servers.js";
 import { userRoutes } from "./routes/users.js";
 import { tokenRoutes } from "./routes/tokens.js";
+import { uploadRoutes } from "./routes/uploads.js";
 
 declare module "@fastify/jwt" {
   interface FastifyJWT {
@@ -96,6 +97,7 @@ await app.register(serverRoutes);
 await app.register(projectServerRoutes);
 await app.register(userRoutes);
 await app.register(tokenRoutes);
+await app.register(uploadRoutes);
 
 // Health check
 app.get("/api/health", async () => ({ ok: true, ts: new Date().toISOString() }));

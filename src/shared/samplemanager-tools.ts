@@ -1,4 +1,4 @@
-import type { RemoteExecutionOptions, RemoteRunner } from "./remote-runner.js";
+import { ensureRemoteSuccess, type RemoteExecutionOptions, type RemoteRunner } from "./remote-runner.js";
 import { compactText } from "./output.js";
 import { validateRelativeRemotePath, validateSampleManagerIdentifier } from "./shell-utils.js";
 
@@ -43,6 +43,7 @@ foreach ($svc in $services) {
 Get-Service $services -ErrorAction SilentlyContinue | Select-Object Name,Status | Format-Table -AutoSize
 `;
   const result = await runner.execPowerShell(script, 120000, execution);
+  ensureRemoteSuccess(result);
   return compactText(`${result.stdout}\n${result.stderr}`.trim());
 }
 
@@ -62,6 +63,7 @@ if (Test-Path -LiteralPath $formsBin) {
 [pscustomobject]@{ Instance=${psQuote(instance)}; Form=$formName; Removed=$removed } | ConvertTo-Json -Compress
 `;
   const result = await runner.execPowerShell(script, 30000);
+  ensureRemoteSuccess(result);
   return compactText(result.stdout || result.stderr);
 }
 
@@ -93,6 +95,7 @@ if (Test-Path -LiteralPath $root) {
 $matches | Select-Object -Last 80 | ConvertTo-Json -Compress
 `;
   const result = await runner.execPowerShell(script, 60000);
+  ensureRemoteSuccess(result);
   return compactText(result.stdout || result.stderr);
 }
 
@@ -305,6 +308,7 @@ finally {
 }
 `;
   const result = await runner.execPowerShell(script, 120000);
+  ensureRemoteSuccess(result);
   return compactText(result.stdout || result.stderr);
 }
 
@@ -348,6 +352,7 @@ finally {
 }
 `;
   const result = await runner.execPowerShell(script, options.timeoutMs ?? 120000, options.execution);
+  ensureRemoteSuccess(result);
   return compactText(`${result.stdout}\n${result.stderr}`.trim());
 }
 
@@ -395,6 +400,7 @@ finally {
 }
 `;
   const result = await runner.execPowerShell(script, options.timeoutMs ?? 300000, options.execution);
+  ensureRemoteSuccess(result);
   return compactText(`${result.stdout}\n${result.stderr}`.trim());
 }
 
@@ -492,6 +498,7 @@ if (-not $msbuild -or -not (Test-Path -LiteralPath $msbuild)) {
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 `;
   const result = await runner.execPowerShell(script, timeoutMs, execution);
+  ensureRemoteSuccess(result);
   return compactText(`${result.stdout}\n${result.stderr}`.trim());
 }
 
@@ -504,6 +511,7 @@ export async function deploySampleManagerFile(
   area: SampleManagerDeployArea,
   targetRelativePath: string,
   backup = true,
+  skipIfUnchanged = true,
   execution: RemoteExecutionOptions = {}
 ): Promise<string> {
   validateRelativeRemotePath(targetRelativePath, "targetRelativePath");
@@ -519,6 +527,21 @@ if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
   throw "Deployment source file not found: $source"
 }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+$sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+$targetHash = if (Test-Path -LiteralPath $target -PathType Leaf) {
+  (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+} else { $null }
+if (${skipIfUnchanged ? "$true" : "$false"} -and $targetHash -and $sourceHash -eq $targetHash) {
+  [pscustomobject]@{
+    source = $source
+    target = $target
+    skipped = $true
+    reason = "target_already_matches_source"
+    sha256 = $sourceHash
+    bytes = (Get-Item -LiteralPath $target).Length
+  } | ConvertTo-Json -Compress
+  exit 0
+}
 $backupPath = $null
 if (${backup ? "$true" : "$false"} -and (Test-Path -LiteralPath $target -PathType Leaf)) {
   $stamp = Get-Date -Format "yyyyMMdd-HHmmssfff"
@@ -528,14 +551,21 @@ if (${backup ? "$true" : "$false"} -and (Test-Path -LiteralPath $target -PathTyp
   Copy-Item -LiteralPath $target -Destination $backupPath -Force
 }
 Copy-Item -LiteralPath $source -Destination $target -Force
+$finalHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+if ($finalHash -ne $sourceHash) {
+  throw "Deployment verification failed: source SHA-256 $sourceHash, target SHA-256 $finalHash"
+}
 [pscustomobject]@{
   source = $source
   target = $target
   backup = $backupPath
   bytes = (Get-Item -LiteralPath $target).Length
+  skipped = $false
+  sha256 = $finalHash
 } | ConvertTo-Json -Compress
 `;
   const result = await runner.execPowerShell(script, 120000, execution);
+  ensureRemoteSuccess(result);
   return compactText(result.stdout || result.stderr);
 }
 
@@ -558,5 +588,6 @@ Copy-Item -LiteralPath $backup -Destination $target -Force
   ConvertTo-Json -Compress
 `;
   const result = await runner.execPowerShell(script, 120000, execution);
+  ensureRemoteSuccess(result);
   return compactText(result.stdout || result.stderr);
 }

@@ -5,7 +5,7 @@ import { z } from "zod";
 import jwt from "jsonwebtoken";
 import Database from "better-sqlite3";
 import { ProjectRegistry } from "./project-registry.js";
-import { RemoteRunner } from "../shared/remote-runner.js";
+import { ensureRemoteSuccess, RemoteRunner } from "../shared/remote-runner.js";
 import { compactText, compactTextWithMetadata, summarizeExec, summarizeJson } from "../shared/output.js";
 import { cancelJob, getJob, listJobs, startJob, writeAudit, type JobContext } from "../shared/job-store.js";
 import { recordFact, searchFacts } from "../shared/context-store.js";
@@ -206,6 +206,7 @@ function createMcpServer(user: McpUser) {
         const value = text.trim();
         if (value) context.log(compactText(value, 2000), "stderr");
       },
+      onPhase: (name: string) => context.phase(name),
     };
   }
 
@@ -275,6 +276,7 @@ function createMcpServer(user: McpUser) {
       const { ps, runner } = getRunner(projectName, environment);
       const work = async (context?: JobContext) => {
         const result = await runner.exec(command, timeoutMs, executionForJob(context));
+        ensureRemoteSuccess(result);
         writeAudit({
           userId: user.id,
           username: user.username,
@@ -312,6 +314,7 @@ function createMcpServer(user: McpUser) {
       const { ps, runner } = getRunner(projectName, environment);
       const work = async (context?: JobContext) => {
         const result = await runner.execPowerShell(script, timeoutMs, executionForJob(context));
+        ensureRemoteSuccess(result);
         writeAudit({
           userId: user.id,
           username: user.username,
@@ -387,6 +390,7 @@ function createMcpServer(user: McpUser) {
           preserveOnFailure,
           execution: executionForJob(context),
         });
+        ensureRemoteSuccess(result);
         writeAudit({
           userId: user.id,
           username: user.username,
@@ -657,16 +661,41 @@ else {
   // ── Tool: read_remote_file ─────────────────────────────────────────────────
   server.tool(
     "read_remote_file",
-    "Read a file from the remote server",
+    "Read a text file from the remote server. Use async=true for large or slow files so the job can be checked without retrying the remote read.",
     {
       project: z.string().optional(),
       remotePath: z.string().describe("Absolute path on remote server"),
       environment: z.string().optional(),
+      timeoutMs: z.number().optional().describe("Read timeout in milliseconds (default 30000)"),
+      async: z.boolean().optional().describe("Run as an async job and return a jobId"),
     },
-    async ({ project: projectName, remotePath, environment }) => {
-      const { runner } = getRunner(projectName, environment);
-      const content = await runner.readFile(remotePath);
-      return { content: [{ type: "text", text: content }] };
+    async ({ project: projectName, remotePath, environment, timeoutMs = 30000, async = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { ps, runner } = getRunner(projectName, environment);
+      const work = async (context?: JobContext) => {
+        context?.phase("reading_remote_file");
+        const content = await runner.readFile(remotePath, timeoutMs, executionForJob(context));
+        writeAudit({
+          userId: user.id,
+          username: user.username,
+          project: resolvedProjectName,
+          tool: "read_remote_file",
+          environment: environment ?? "production",
+          host: ps.server.host,
+          remotePath,
+          bytes: Buffer.byteLength(content, "utf8"),
+        });
+        return summarizeJson({
+          host: ps.server.host,
+          remotePath,
+          content: compactTextWithMetadata(content),
+        });
+      };
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "read_remote_file", { remotePath, environment, timeoutMs }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
     }
   );
 
@@ -1105,7 +1134,12 @@ else {
     async ({ jobId }) => {
       const job = getJob(jobId);
       if (!job || job.userId !== user.id) throw new Error(`Job '${jobId}' not found`);
-      return { content: [{ type: "text", text: summarizeJson(job) }] };
+      const snapshot = {
+        ...job,
+        logs: job.logs?.slice(-40),
+        summary: job.summary ? compactTextWithMetadata(job.summary, 6000) : undefined,
+      };
+      return { content: [{ type: "text", text: summarizeJson(snapshot) }] };
     }
   );
 
@@ -1116,7 +1150,12 @@ else {
       limit: z.number().optional().describe("Maximum jobs to return (default 20)"),
     },
     async ({ limit = 20 }) => {
-      return { content: [{ type: "text", text: summarizeJson(listJobs(user.id, limit)) }] };
+      const jobs = listJobs(user.id, limit).map((job) => ({
+        ...job,
+        logs: job.logs?.slice(-8),
+        summary: job.summary ? compactTextWithMetadata(job.summary, 1200) : undefined,
+      }));
+      return { content: [{ type: "text", text: summarizeJson(jobs) }] };
     }
   );
 
@@ -1527,10 +1566,11 @@ else {
       area: z.enum(["exe", "solutionAssemblies", "forms", "resourceIcon", "data"]),
       targetRelativePath: z.string(),
       backup: z.boolean().optional().describe("Create backup before replacement; default true"),
+      skipIfUnchanged: z.boolean().optional().describe("Skip the copy when source and target SHA-256 already match; default true"),
       environment: z.string().optional(),
       async: z.boolean().optional().describe("Run as an async job"),
     },
-    async ({ project: projectName, instance, sourcePath, area, targetRelativePath, backup = true, environment, async = false }) => {
+    async ({ project: projectName, instance, sourcePath, area, targetRelativePath, backup = true, skipIfUnchanged = true, environment, async = false }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { runner } = getRunner(projectName, environment);
       const work = (context?: JobContext) => deploySampleManagerFile(
@@ -1540,11 +1580,12 @@ else {
         area,
         targetRelativePath,
         backup,
+        skipIfUnchanged,
         executionForJob(context)
       );
-      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_deploy_file", instance, sourcePath, area, targetRelativePath, backup, async });
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_deploy_file", instance, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, async });
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_deploy_file", { instance, sourcePath, area, targetRelativePath, backup, environment }, work);
+        const job = startJob(user, resolvedProjectName, "samplemanager_deploy_file", { instance, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, environment }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };

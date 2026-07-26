@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { validateStateId } from "./state-id.js";
+import { RemoteCommandTimeoutError } from "./remote-runner.js";
 import "dotenv/config";
 
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT ?? "/workspace";
@@ -9,7 +10,7 @@ const JOB_ROOT = join(STATE_ROOT, "jobs");
 const AUDIT_PATH = join(STATE_ROOT, "audit.jsonl");
 const MAX_JOB_LOGS = Number(process.env.RELAY_JOB_LOG_LIMIT ?? 200);
 
-export type JobStatus = "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
+export type JobStatus = "running" | "succeeded" | "failed" | "cancelled" | "interrupted" | "unknown";
 
 export interface JobLogEntry {
   at: string;
@@ -24,6 +25,10 @@ export interface JobRecord {
   project: string;
   kind: string;
   status: JobStatus;
+  phase?: string;
+  lastHeartbeatAt?: string;
+  errorCategory?: string;
+  retrySafe?: boolean;
   input: unknown;
   summary?: string;
   error?: string;
@@ -36,6 +41,7 @@ export interface JobRecord {
 export interface JobContext {
   signal: AbortSignal;
   log: (message: string, level?: JobLogEntry["level"]) => void;
+  phase: (name: string) => void;
 }
 
 const activeJobs = new Map<string, AbortController>();
@@ -106,16 +112,28 @@ export function startJob(
   saveJob(job);
   writeAudit({ userId: user.id, username: user.username, project, kind, jobId: job.id, event: "job_started" });
 
-  const log = (message: string, level: JobLogEntry["level"] = "info") => appendJobLog(job.id, message, level);
+  const log = (message: string, level: JobLogEntry["level"] = "info") => {
+    const current = getJob(job.id) ?? job;
+    saveJob({ ...current, lastHeartbeatAt: new Date().toISOString() });
+    appendJobLog(job.id, message, level);
+  };
+  const phase = (name: string) => {
+    const current = getJob(job.id) ?? job;
+    saveJob({ ...current, phase: name, lastHeartbeatAt: new Date().toISOString() });
+    appendJobLog(job.id, `phase=${name}`);
+  };
+  phase("connecting");
   log("Job started");
 
-  void work({ signal: controller.signal, log })
+  void work({ signal: controller.signal, log, phase })
     .then((summary) => {
       const current = getJob(job.id) ?? job;
       const cancelled = Boolean(controller.signal.aborted || current.cancelRequestedAt);
       saveJob({
         ...current,
         status: cancelled ? "cancelled" : "succeeded",
+        phase: cancelled ? "cancelled" : "completed",
+        lastHeartbeatAt: new Date().toISOString(),
         summary: cancelled ? undefined : summary,
         error: cancelled ? "Job cancelled" : undefined,
         finishedAt: new Date().toISOString(),
@@ -133,10 +151,22 @@ export function startJob(
     .catch((err) => {
       const current = getJob(job.id) ?? job;
       const cancelled = Boolean(controller.signal.aborted || current.cancelRequestedAt);
-      const error = cancelled ? "Job cancelled" : err instanceof Error ? err.message : String(err);
+      const errorCategory = err instanceof Error && "category" in err
+        ? String((err as Error & { category?: string }).category)
+        : "remote_or_relay";
+      const timedOut = err instanceof RemoteCommandTimeoutError;
+      const error = cancelled
+        ? "Job cancelled"
+        : timedOut
+          ? "Remote command timed out; execution state is unknown. Verify the target before retrying."
+          : err instanceof Error ? err.message : String(err);
       saveJob({
         ...current,
-        status: cancelled ? "cancelled" : "failed",
+        status: cancelled ? "cancelled" : timedOut ? "unknown" : "failed",
+        phase: cancelled ? "cancelled" : timedOut ? "unknown" : "failed",
+        lastHeartbeatAt: new Date().toISOString(),
+        errorCategory: cancelled ? "cancelled" : timedOut ? "timeout" : errorCategory,
+        retrySafe: timedOut || errorCategory === "remote_exit" ? false : true,
         error,
         finishedAt: new Date().toISOString(),
       });
@@ -184,8 +214,11 @@ export function markInterruptedJobs(): number {
       if (job.status !== "running") continue;
       saveJob({
         ...job,
-        status: "interrupted",
-        error: "Relay MCP restarted before this in-process job completed",
+        status: "unknown",
+        phase: "unknown",
+        errorCategory: "relay_restart",
+        retrySafe: false,
+        error: "Relay MCP restarted before this in-process job completed; remote execution state is unknown",
         finishedAt: new Date().toISOString(),
       });
       count += 1;

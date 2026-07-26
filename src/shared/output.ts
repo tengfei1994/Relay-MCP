@@ -43,5 +43,12 @@ export function summarizeExec(command: string, result: ExecResult, limit = DEFAU
 }
 
 export function summarizeJson(value: unknown, limit = DEFAULT_LIMIT): string {
-  return compactText(JSON.stringify(value, null, 2), limit);
+  const serialized = JSON.stringify(value, null, 2);
+  if (serialized.length <= limit) return serialized;
+  const previewLimit = Math.max(200, limit - 180);
+  return JSON.stringify({
+    truncated: true,
+    originalLength: serialized.length,
+    preview: compactText(serialized, previewLimit),
+  }, null, 2);
 }

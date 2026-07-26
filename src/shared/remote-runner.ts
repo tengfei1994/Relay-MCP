@@ -18,10 +18,20 @@ export interface ExecResult {
   code: number;
 }
 
+export type RemoteErrorCategory =
+  | "timeout"
+  | "cancelled"
+  | "connection"
+  | "remote_exit"
+  | "output"
+  | "parameter"
+  | "unknown";
+
 export interface RemoteExecutionOptions {
   signal?: AbortSignal;
   onStdout?: (text: string) => void;
   onStderr?: (text: string) => void;
+  onPhase?: (name: string) => void;
 }
 
 export interface PowerShellScriptOptions {
@@ -39,6 +49,7 @@ export interface PowerShellScriptResult extends ExecResult {
 
 export class RemoteCommandTimeoutError extends Error {
   readonly timeoutMs: number;
+  readonly category = "timeout" as const;
 
   constructor(timeoutMs: number) {
     super(`Remote command timed out after ${timeoutMs}ms`);
@@ -48,10 +59,31 @@ export class RemoteCommandTimeoutError extends Error {
 }
 
 export class RemoteCommandCancelledError extends Error {
+  readonly category = "cancelled" as const;
   constructor() {
     super("Remote command was cancelled");
     this.name = "RemoteCommandCancelledError";
   }
+}
+
+export class RemoteCommandFailedError extends Error {
+  readonly category = "remote_exit" as const;
+  readonly code: number;
+  readonly stderr: string;
+
+  constructor(code: number, stderr: string) {
+    super(`Remote command exited with code ${code}${stderr ? `: ${stderr.trim()}` : ""}`);
+    this.name = "RemoteCommandFailedError";
+    this.code = code;
+    this.stderr = stderr;
+  }
+}
+
+export function ensureRemoteSuccess(result: ExecResult): ExecResult {
+  if (result.code !== 0) {
+    throw new RemoteCommandFailedError(result.code, result.stderr || result.stdout);
+  }
+  return result;
 }
 
 export class RemoteRunner {
@@ -68,6 +100,7 @@ export class RemoteRunner {
   ): Promise<ExecResult> {
     const ssh = new NodeSSH();
     try {
+      options.onPhase?.("connecting");
       await ssh.connect({
         host: this.config.host,
         port: this.config.port,
@@ -77,6 +110,7 @@ export class RemoteRunner {
       });
 
       let channel: { close: () => void } | undefined;
+      options.onPhase?.("executing");
       const result = await runWithTimeout(
         ssh.execCommand(command, {
           execOptions: { pty: false },
@@ -103,6 +137,7 @@ export class RemoteRunner {
         code: result.code ?? 0,
       };
     } finally {
+      options.onPhase?.("disconnected");
       ssh.dispose();
     }
   }
@@ -192,10 +227,10 @@ if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) {
     }
   }
 
-  async readFile(remotePath: string): Promise<string> {
+  async readFile(remotePath: string, timeout = 30000, execution: RemoteExecutionOptions = {}): Promise<string> {
     const result = this.isWindows()
-      ? await this.execPowerShell(`Get-Content -LiteralPath ${psQuote(remotePath)} -Raw`, 30000)
-      : await this.exec(`cat '${shQuote(remotePath)}'`);
+      ? await this.execPowerShell(`Get-Content -LiteralPath ${psQuote(remotePath)} -Raw`, timeout, execution)
+      : await this.exec(`cat '${shQuote(remotePath)}'`, timeout, execution);
     if (result.code !== 0) {
       throw new Error(`Failed to read file: ${result.stderr}`);
     }

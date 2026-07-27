@@ -27,6 +27,13 @@ test("deployment store records commits and rollback state", async () => {
     assert.equal(finished.status, "succeeded");
     assert.equal(finished.commitAfter, "b");
     assert.equal(store.getDeployment(started.id)?.rollback.status, "not-needed");
+
+    const updated = store.updateDeployment(started.id, {
+      steps: [{ name: "deploy", status: "succeeded", summary: "hash verified" }],
+      artifacts: { sha256: "abc", backupPath: "C:\\backup.dll" },
+    });
+    assert.equal(updated.steps?.[0].status, "succeeded");
+    assert.equal(updated.artifacts?.sha256, "abc");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -16,7 +16,9 @@ export interface DeploymentRecord {
   project: string;
   environment: string;
   host: string;
-  branch: string;
+  branch?: string;
+  kind?: "git" | "samplemanager-assembly";
+  instance?: string;
   status: DeploymentStatus;
   startedAt: string;
   finishedAt?: string;
@@ -33,6 +35,15 @@ export interface DeploymentRecord {
   outputTruncated?: boolean;
   outputLength?: number;
   error?: string;
+  steps?: Array<{
+    name: string;
+    status: "pending" | "running" | "succeeded" | "failed" | "rolled-back";
+    startedAt?: string;
+    finishedAt?: string;
+    summary?: string;
+    error?: string;
+  }>;
+  artifacts?: Record<string, unknown>;
 }
 
 function ensureRoot(): void {
@@ -60,6 +71,10 @@ export function startDeployment(input: Omit<DeploymentRecord, "id" | "status" | 
     environment: input.environment,
     host: input.host,
     branch: input.branch,
+    kind: input.kind,
+    instance: input.instance,
+    steps: input.steps,
+    artifacts: input.artifacts,
     status: "running",
     startedAt: new Date().toISOString(),
     rollback: {
@@ -73,11 +88,20 @@ export function startDeployment(input: Omit<DeploymentRecord, "id" | "status" | 
 export function finishDeployment(
   id: string,
   updates: Pick<DeploymentRecord, "status" | "rollback"> &
-    Partial<Pick<DeploymentRecord, "commitBefore" | "commitAfter" | "output" | "outputTruncated" | "outputLength" | "error">>
+    Partial<Pick<DeploymentRecord, "commitBefore" | "commitAfter" | "output" | "outputTruncated" | "outputLength" | "error" | "steps" | "artifacts">>
 ): DeploymentRecord {
   const existing = getDeployment(id);
   if (!existing) throw new Error(`Deployment '${id}' not found`);
   return save({ ...existing, ...updates, finishedAt: new Date().toISOString() });
+}
+
+export function updateDeployment(
+  id: string,
+  updates: Partial<Pick<DeploymentRecord, "status" | "output" | "outputTruncated" | "outputLength" | "error" | "steps" | "artifacts" | "rollback">>
+): DeploymentRecord {
+  const existing = getDeployment(id);
+  if (!existing) throw new Error(`Deployment '${id}' not found`);
+  return save({ ...existing, ...updates });
 }
 
 export function getDeployment(id: string): DeploymentRecord | undefined {

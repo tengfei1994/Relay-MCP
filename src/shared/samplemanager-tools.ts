@@ -443,6 +443,99 @@ finally {
   return compactText(result.stdout || result.stderr);
 }
 
+export interface SqlMutationOptions {
+  operation: "insert" | "update" | "delete";
+  table: string;
+  values?: Record<string, SqlParameterValue>;
+  where?: string;
+  parameters?: Record<string, SqlParameterValue>;
+  dryRun?: boolean;
+  createBackup?: boolean;
+  maxRows?: number;
+}
+
+export async function runSqlMutation(
+  runner: RemoteRunner,
+  database: string,
+  options: SqlMutationOptions
+): Promise<string> {
+  const table = quoteSqlIdentifier(options.table);
+  const values = validateSqlParameters(options.values ?? {});
+  const where = (options.where ?? "").trim();
+  const dryRun = options.dryRun ?? true;
+  const createBackup = options.createBackup ?? true;
+  if (options.operation !== "insert" && !where) {
+    throw new Error("where is required for update and delete mutations");
+  }
+  if (/[;]|\b(insert|update|delete|merge|drop|alter|truncate|create|exec|execute)\b/i.test(where)) {
+    throw new Error("where must be a single predicate without statements or mutation keywords");
+  }
+  if (options.operation !== "delete" && Object.keys(values).length === 0) {
+    throw new Error(`values are required for ${options.operation}`);
+  }
+
+  const valueParameters: Record<string, SqlParameterValue> = {};
+  const valueBindings = Object.entries(values).map(([column, value], index) => {
+    const name = `relay_value_${index}`;
+    valueParameters[name] = value;
+    return { column: quoteSqlIdentifier(column), parameter: `@${name}` };
+  });
+  const parameters = { ...(options.parameters ?? {}), ...valueParameters };
+  validateSqlParameters(parameters);
+
+  const safeName = options.table.split(".").pop()!.replace(/[^A-Za-z0-9_]/g, "_");
+  const stamp = new Date().toISOString().replace(/\D/g, "").slice(0, 17);
+  const backupName = `RELAY_BACKUP_${safeName}_${stamp}`;
+  const backupTable = quoteSqlIdentifier(`dbo.${backupName}`);
+  const begin = "SET NOCOUNT ON;\nSET XACT_ABORT ON;\nBEGIN TRANSACTION;";
+  const finish = dryRun ? "ROLLBACK TRANSACTION;" : "COMMIT TRANSACTION;";
+  const before = options.operation === "insert"
+    ? "SELECT 'before' AS __relay_phase WHERE 1 = 0;"
+    : `SELECT 'before' AS __relay_phase, * FROM ${table} WHERE ${where};`;
+  const backup = createBackup && options.operation !== "insert"
+    ? `SELECT * INTO ${backupTable} FROM ${table} WHERE ${where};`
+    : "";
+  let mutation: string;
+  if (options.operation === "update") {
+    mutation = `UPDATE ${table} SET ${valueBindings.map((item) => `${item.column} = ${item.parameter}`).join(", ")} WHERE ${where};`;
+  } else if (options.operation === "delete") {
+    mutation = `DELETE FROM ${table} WHERE ${where};`;
+  } else {
+    mutation = `INSERT INTO ${table} (${valueBindings.map((item) => item.column).join(", ")}) VALUES (${valueBindings.map((item) => item.parameter).join(", ")});`;
+  }
+  const after = options.operation === "insert"
+    ? "SELECT 'after' AS __relay_phase, @@ROWCOUNT AS affectedRows;"
+    : `SELECT 'after' AS __relay_phase, * FROM ${table} WHERE ${where};`;
+  const sql = [
+    begin,
+    before,
+    backup,
+    mutation,
+    "SELECT @@ROWCOUNT AS affectedRows;",
+    after,
+    finish,
+  ].filter(Boolean).join("\n");
+
+  const raw = await runSql(runner, database, sql, {
+    allowMutation: true,
+    maxRows: options.maxRows ?? 100,
+    includeResultSets: true,
+    parameters,
+  });
+  let result: unknown = raw;
+  try { result = JSON.parse(raw); } catch {}
+  return compactText(JSON.stringify({
+    operation: options.operation,
+    table: options.table,
+    dryRun,
+    transaction: dryRun ? "rolled_back" : "committed",
+    backupRequested: createBackup,
+    backupTable: createBackup && options.operation !== "insert" ? `dbo.${backupName}` : undefined,
+    backupPersisted: createBackup && options.operation !== "insert" && !dryRun,
+    result,
+  }, null, 2));
+}
+
 export interface SampleManagerCommandOptions {
   username: string;
   task: string;

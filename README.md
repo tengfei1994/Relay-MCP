@@ -25,7 +25,7 @@ Production Servers (any SSH-accessible host)
 - **MCP Tools**: `exec_remote`, `exec_remote_powershell`, `exec_remote_script`, `deploy`, `fetch_logs`, `restart_service`, `read/write_remote_file`, `download_remote_file`, `list_remote_files`, `read/write_local_file`, `list_projects`, `project_create`
 - **Token-saving tools**: compact command/log output, async job tracking, project memory (`context_record_fact`, `context_search`)
 - **MCP token profiles**: create per-agent tokens from the Web UI, allow one agent to access multiple projects, and manually scope the servers it may use
-- **SampleManager tools**: `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_table_schema`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_run_command`, `samplemanager_discover_build_tools`
+- **SampleManager tools**: `samplemanager_deployment_start`, `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_table_schema`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_sql_mutation`, `samplemanager_run_command`, `samplemanager_discover_build_tools`, `samplemanager_build_deploy_assembly`, `samplemanager_deployment_status`, `samplemanager_deployment_finish`
 - **Server Management**: add servers, auto-generate SSH key pairs, push public keys, test connectivity, edit settings
 - **Project Management**: workspace directories per user, link/unlink servers per project per environment
 - **User Management**: admin-only user creation, password reset, admin role toggle
@@ -84,7 +84,7 @@ RelayMCP has two capability layers:
 | Remote files | `read_remote_file`, `download_remote_file`, `write_remote_file`, `list_remote_files`, `patch_remote_file` |
 | Relay-side project workspace | `read_local_file`, `write_local_file`, `upload_workspace_file`, `sync_workspace` |
 | Durable project memory | `context_record_fact`, `context_search` |
-| SampleManager helpers | `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_table_schema`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_run_command`, `samplemanager_discover_build_tools` |
+| SampleManager helpers | `samplemanager_deployment_start`, `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_table_schema`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_sql_mutation`, `samplemanager_run_command`, `samplemanager_discover_build_tools`, `samplemanager_build_deploy_assembly`, `samplemanager_deployment_status`, `samplemanager_deployment_finish` |
 
 ## Complete MCP Command Catalog
 
@@ -128,6 +128,7 @@ argument summary. Tests fail when a registered tool is missing from the catalog.
 | SampleManager | `samplemanager_clear_form_cache` | 清理指定 form 的 `FormsBin` 编译缓存。 |
 | SampleManager | `samplemanager_recent_errors` | 搜索近期 SampleManager 日志并返回紧凑错误证据。 |
 | SampleManager | `samplemanager_table_schema` | 查询 SQL Server 列、类型、主键、identity、默认值和物理映射。 |
+| SampleManager | `samplemanager_sql_mutation` | 结构化执行 insert/update/delete，支持 dry-run、自动备份及 before/after。 |
 | SampleManager | `samplemanager_sql_query` | 执行参数化 SQL Server 查询，支持标识符转义和结构化错误。 |
 | SampleManager | `samplemanager_sql_execute_file` | 执行参数化 workspace SQL 文件；默认阻止变更语句。 |
 | SampleManager | `samplemanager_run_command` | 使用结构化参数调用 `SampleManagerCommand.exe`。 |
@@ -137,6 +138,10 @@ argument summary. Tests fail when a registered tool is missing from the catalog.
 | SampleManager | `samplemanager_run_utility` | 调用允许列表中的 `FormImport`、`BuildFormDefinition` 或 `DeployPackageTask`。 |
 | SampleManager | `samplemanager_build_dotnet` | 在目标 Windows 服务器使用 MSBuild 构建经典 .NET 项目。 |
 | SampleManager | `samplemanager_discover_build_tools` | 按 VS2022、VS2019、Framework、PATH 顺序发现 MSBuild。 |
+| SampleManager | `samplemanager_build_deploy_assembly` | 编译、哈希、备份、部署、重启并在失败时回滚程序集。 |
+| SampleManager | `samplemanager_deployment_status` | 查询 deploymentId 的阶段、制品、备份和回滚状态。 |
+| SampleManager | `samplemanager_deployment_start` | 创建可供 SQL、build、deploy、restart 共用的 deploymentId。 |
+| SampleManager | `samplemanager_deployment_finish` | 将手动编排的 deploymentId 标记为成功或失败。 |
 | SampleManager | `samplemanager_deploy_file` | 将 staging 文件部署到 instance，并对被替换文件做时间戳备份。 |
 | SampleManager | `samplemanager_restore_backup` | 将指定备份恢复到明确的远程目标文件。 |
 
@@ -522,7 +527,7 @@ RelayMCP 的能力分两层：
 | 远程文件 | `read_remote_file`, `download_remote_file`, `write_remote_file`, `list_remote_files`, `patch_remote_file` |
 | Relay 侧 project workspace | `read_local_file`, `write_local_file`, `upload_workspace_file`, `sync_workspace` |
 | 项目长期记忆 | `context_record_fact`, `context_search` |
-| SampleManager 辅助工具 | `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_table_schema`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_run_command`, `samplemanager_discover_build_tools` |
+| SampleManager 辅助工具 | `samplemanager_deployment_start`, `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_table_schema`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_sql_mutation`, `samplemanager_run_command`, `samplemanager_discover_build_tools`, `samplemanager_build_deploy_assembly`, `samplemanager_deployment_status`, `samplemanager_deployment_finish` |
 
 ### PowerShell / SSH 能力
 

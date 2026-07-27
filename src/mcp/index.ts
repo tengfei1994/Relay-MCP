@@ -7,10 +7,10 @@ import Database from "better-sqlite3";
 import { ProjectRegistry } from "./project-registry.js";
 import { ensureRemoteSuccess, RemoteRunner } from "../shared/remote-runner.js";
 import { AgentRemoteRunner } from "../shared/agent-remote-runner.js";
-import { compactText, compactTextWithMetadata, summarizeExec, summarizeJson } from "../shared/output.js";
+import { compactText, compactTextWithMetadata, sanitizeStructuredOutput, summarizeExec, summarizeJson } from "../shared/output.js";
 import { cancelJob, getJob, listJobs, startJob, writeAudit, type JobContext } from "../shared/job-store.js";
 import { recordFact, searchFacts } from "../shared/context-store.js";
-import { finishDeployment, getDeployment, startDeployment } from "../shared/deployment-store.js";
+import { finishDeployment, getDeployment, startDeployment, updateDeployment } from "../shared/deployment-store.js";
 import {
   clearFormCache,
   buildDotNetProject,
@@ -18,6 +18,7 @@ import {
   createEntityDefinition,
   deploySampleManagerFile,
   discoverBuildTools,
+  instancePaths,
   loadTableLoaderFile,
   recentErrors,
   restoreSampleManagerBackup,
@@ -25,6 +26,7 @@ import {
   runSampleManagerCommand,
   runSampleManagerUtility,
   runSql,
+  runSqlMutation,
   sampleManagerTableSchema,
 } from "../shared/samplemanager-tools.js";
 import {
@@ -239,6 +241,55 @@ function createMcpServer(user: McpUser) {
     };
   }
 
+  async function waitForTrackedJob(jobId: string, waitMs: number) {
+    const deadline = Date.now() + waitMs;
+    while (Date.now() < deadline) {
+      const current = getJob(jobId);
+      if (!current || current.status !== "running") return current;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return getJob(jobId);
+  }
+
+  async function withDeploymentStep<T>(
+    deploymentId: string | undefined,
+    projectName: string,
+    name: string,
+    work: () => Promise<T>
+  ): Promise<T> {
+    if (!deploymentId) return work();
+    const deployment = getDeployment(deploymentId);
+    if (!deployment || deployment.userId !== user.id || deployment.project !== projectName) {
+      throw new Error(`Deployment '${deploymentId}' not found for project '${projectName}'`);
+    }
+    const steps = [...(deployment.steps ?? []), {
+      name,
+      status: "running" as const,
+      startedAt: new Date().toISOString(),
+    }];
+    updateDeployment(deploymentId, { steps });
+    try {
+      const result = await work();
+      steps[steps.length - 1] = {
+        ...steps[steps.length - 1],
+        status: "succeeded",
+        finishedAt: new Date().toISOString(),
+        summary: compactText(typeof result === "string" ? result : JSON.stringify(result), 1500),
+      };
+      updateDeployment(deploymentId, { steps });
+      return result;
+    } catch (error) {
+      steps[steps.length - 1] = {
+        ...steps[steps.length - 1],
+        status: "failed",
+        finishedAt: new Date().toISOString(),
+        error: error instanceof Error ? error.message : String(error),
+      };
+      updateDeployment(deploymentId, { steps, status: "failed", error: steps[steps.length - 1].error });
+      throw error;
+    }
+  }
+
   // ── Tool: list_projects ────────────────────────────────────────────────────
   server.tool("list_projects", "List all projects for the current user", {}, async () => {
     const projects = listAllowedProjects();
@@ -336,9 +387,22 @@ function createMcpServer(user: McpUser) {
       environment: z.string().optional().describe("Target environment (default: production)"),
       timeoutMs: z.number().optional().describe("Command timeout in milliseconds (default 120000)"),
       outputFormat: z.enum(["text", "json"]).optional().describe("Output format. Use json when the script emits objects through ConvertTo-Json."),
+      maxDepth: z.number().int().min(1).max(20).optional().describe("Maximum JSON object depth returned; default 6."),
+      maxArrayItems: z.number().int().min(1).max(5000).optional().describe("Maximum items retained per JSON array; default 200."),
+      maxStringLength: z.number().int().min(100).max(100000).optional().describe("Maximum characters retained per JSON string; default 8000."),
       async: z.boolean().optional().describe("Run as an async job and return a jobId."),
     },
-    async ({ project: projectName, script, environment, timeoutMs = 120000, outputFormat = "text", async = false }) => {
+    async ({
+      project: projectName,
+      script,
+      environment,
+      timeoutMs = 120000,
+      outputFormat = "text",
+      maxDepth,
+      maxArrayItems,
+      maxStringLength,
+      async = false,
+    }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { ps, runner } = getRunner(projectName, environment);
       const work = async (context?: JobContext) => {
@@ -357,10 +421,20 @@ function createMcpServer(user: McpUser) {
         if (outputFormat === "json") {
           const output = result.stdout || result.stderr;
           try {
+            const sanitized = sanitizeStructuredOutput(JSON.parse(output), {
+              maxDepth,
+              maxArrayItems,
+              maxStringLength,
+            });
             return summarizeJson({
               host: ps.server.host,
               exitCode: result.code,
-              output: JSON.parse(output),
+              output: sanitized.value,
+              outputDiagnostics: {
+                originalCharacters: output.length,
+                truncatedPaths: sanitized.truncatedPaths,
+                largestFields: sanitized.largestFields,
+              },
             });
           } catch {
             const compact = compactTextWithMetadata(output);
@@ -379,7 +453,15 @@ function createMcpServer(user: McpUser) {
         return `[${ps.server.host}]\n${summarizeExec("powershell -EncodedCommand <script>", result)}`;
       };
       if (async) {
-        const job = startJob(user, resolvedProjectName, "exec_remote_powershell", { environment, timeoutMs, outputFormat, scriptLength: script.length }, work);
+        const job = startJob(user, resolvedProjectName, "exec_remote_powershell", {
+          environment,
+          timeoutMs,
+          outputFormat,
+          maxDepth,
+          maxArrayItems,
+          maxStringLength,
+          scriptLength: script.length,
+        }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
@@ -439,18 +521,35 @@ function createMcpServer(user: McpUser) {
           summarizeExec("powershell -File <remote script>", result),
         ].join("\n");
       };
+      const job = startJob(user, resolvedProjectName, "exec_remote_script", {
+        environment,
+        remotePath,
+        timeoutMs,
+        cleanup,
+        preserveOnFailure,
+        scriptLength: script.length,
+      }, work);
       if (async) {
-        const job = startJob(user, resolvedProjectName, "exec_remote_script", {
-          environment,
-          remotePath,
-          timeoutMs,
-          cleanup,
-          preserveOnFailure,
-          scriptLength: script.length,
-        }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
-      return { content: [{ type: "text", text: await work() }] };
+      const completed = await waitForTrackedJob(job.id, Math.min(90000, Math.max(1000, timeoutMs)));
+      if (completed?.status === "succeeded") {
+        return { content: [{ type: "text", text: completed.summary ?? summarizeJson(completed) }] };
+      }
+      if (completed && completed.status !== "running") {
+        return { content: [{ type: "text", text: summarizeJson(completed) }] };
+      }
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            jobId: job.id,
+            status: completed?.status ?? "running",
+            phase: completed?.phase,
+            message: "Synchronous wait limit reached; the tracked job continues. Use job_status.",
+          }),
+        }],
+      };
     }
   );
 
@@ -1193,6 +1292,13 @@ else {
       if (!job || job.userId !== user.id) throw new Error(`Job '${jobId}' not found`);
       const snapshot = {
         ...job,
+        executionState:
+          job.status === "succeeded" ? "Completed"
+          : job.status === "failed" ? "Failed"
+          : job.status === "unknown" || job.status === "interrupted" ? "Unknown"
+          : job.status === "cancelled" ? "Cancelled"
+          : job.phase === "not_started" ? "NotStarted"
+          : "Running",
         logs: job.logs?.slice(-40),
         summary: job.summary ? compactTextWithMetadata(job.summary, 6000) : undefined,
       };
@@ -1260,20 +1366,54 @@ else {
 
   // ── SampleManager high-level tools ────────────────────────────────────────
   server.tool(
+    "samplemanager_deployment_start",
+    "Create a SampleManager deploymentId that correlates SQL, build, deploy, restart, hashes, backups, logs, and rollback evidence.",
+    {
+      project: z.string().optional(),
+      instance: z.string(),
+      environment: z.string().optional(),
+      label: z.string().optional(),
+    },
+    async ({ project: projectName, instance, environment, label }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { ps } = getRunner(projectName, environment);
+      const run = startDeployment({
+        userId: user.id,
+        username: user.username,
+        project: resolvedProjectName,
+        environment: environment ?? "production",
+        host: ps.server.host || ps.server.agentId || ps.server.name,
+        kind: "samplemanager-assembly",
+        instance,
+        steps: [],
+        artifacts: label ? { label } : {},
+        rollbackRequested: false,
+      });
+      return { content: [{ type: "text", text: summarizeJson({ deploymentId: run.id, status: run.status }) }] };
+    }
+  );
+
+  server.tool(
     "samplemanager_restart_instance",
     "Restart a SampleManager instance on a linked Windows server and stop stuck client task hosts",
     {
       project: z.string().optional(),
       instance: z.string().describe("SampleManager instance name, e.g. VGSM"),
       environment: z.string().optional(),
+      deploymentId: z.string().optional(),
       async: z.boolean().optional().describe("Run as an async job and return a jobId"),
     },
-    async ({ project: projectName, instance, environment, async = false }) => {
+    async ({ project: projectName, instance, environment, deploymentId, async = false }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { runner } = getRunner(projectName, environment);
-      const work = (context?: JobContext) => restartSampleManagerInstance(runner, instance, executionForJob(context));
+      const work = (context?: JobContext) => withDeploymentStep(
+        deploymentId,
+        resolvedProjectName,
+        "restart",
+        () => restartSampleManagerInstance(runner, instance, executionForJob(context))
+      );
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_restart_instance", { instance, environment }, work);
+        const job = startJob(user, resolvedProjectName, "samplemanager_restart_instance", { instance, environment, deploymentId }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
@@ -1620,6 +1760,72 @@ else {
   );
 
   server.tool(
+    "samplemanager_sql_mutation",
+    "Run a structured parameterized SQL mutation with before/after result sets, dry-run rollback, and optional backup table.",
+    {
+      project: z.string().optional(),
+      database: z.string().describe("Database name, e.g. vgsm"),
+      operation: z.enum(["insert", "update", "delete"]),
+      table: z.string().describe("Schema-qualified table name when possible"),
+      values: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+      where: z.string().optional().describe("Single SQL predicate without WHERE keyword; required for update/delete"),
+      parameters: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+      dryRun: z.boolean().optional().describe("Execute inside a transaction and roll back. Default true."),
+      createBackup: z.boolean().optional().describe("Create a timestamped RELAY_BACKUP table before update/delete. Default true."),
+      maxRows: z.number().int().positive().max(1000).optional(),
+      environment: z.string().optional(),
+      deploymentId: z.string().optional(),
+    },
+    async ({
+      project: projectName,
+      database,
+      operation,
+      table,
+      values,
+      where,
+      parameters,
+      dryRun = true,
+      createBackup = true,
+      maxRows,
+      environment,
+      deploymentId,
+    }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { runner } = getRunner(projectName, environment);
+      const text = await withDeploymentStep(
+        deploymentId,
+        resolvedProjectName,
+        `sql:${operation}:${table}`,
+        () => runSqlMutation(runner, database, {
+          operation,
+          table,
+          values,
+          where,
+          parameters,
+          dryRun,
+          createBackup,
+          maxRows,
+        })
+      );
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        project: resolvedProjectName,
+        tool: "samplemanager_sql_mutation",
+        database,
+        operation,
+        table,
+        where,
+        valueColumns: Object.keys(values ?? {}),
+        parameterNames: Object.keys(parameters ?? {}),
+        dryRun,
+        createBackup,
+      });
+      return { content: [{ type: "text", text }] };
+    }
+  );
+
+  server.tool(
     "samplemanager_build_dotnet",
     "Build a classic SampleManager .NET project or solution with MSBuild on the linked Windows server.",
     {
@@ -1628,6 +1834,7 @@ else {
       configuration: z.string().optional().describe("Default Release"),
       msbuildPath: z.string().optional().describe("Optional explicit MSBuild.exe path"),
       environment: z.string().optional(),
+      deploymentId: z.string().optional(),
       timeoutMs: z.number().positive().optional().describe("Default 600000"),
       async: z.boolean().optional().describe("Run as an async job; recommended"),
     },
@@ -1637,25 +1844,273 @@ else {
       configuration = "Release",
       msbuildPath,
       environment,
+      deploymentId,
       timeoutMs = 600000,
       async = true,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { runner } = getRunner(projectName, environment);
-      const work = (context?: JobContext) => buildDotNetProject(
-        runner,
-        projectOrSolutionPath,
-        configuration,
-        msbuildPath,
-        timeoutMs,
-        executionForJob(context)
+      const work = (context?: JobContext) => withDeploymentStep(
+        deploymentId,
+        resolvedProjectName,
+        `build:${basename(projectOrSolutionPath)}`,
+        () => buildDotNetProject(
+          runner,
+          projectOrSolutionPath,
+          configuration,
+          msbuildPath,
+          timeoutMs,
+          executionForJob(context)
+        )
       );
       writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_build_dotnet", projectOrSolutionPath, configuration, async });
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_build_dotnet", { projectOrSolutionPath, configuration, msbuildPath, environment, timeoutMs }, work);
+        const job = startJob(user, resolvedProjectName, "samplemanager_build_dotnet", { projectOrSolutionPath, configuration, msbuildPath, environment, deploymentId, timeoutMs }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_build_deploy_assembly",
+    "Build a .NET project, deploy one assembly with SHA-256 verification and backup, optionally restart the instance, and track every phase under a deploymentId.",
+    {
+      project: z.string().optional(),
+      projectOrSolutionPath: z.string(),
+      assemblyPath: z.string().describe("Absolute built DLL path on the linked server"),
+      instance: z.string(),
+      targetRelativePath: z.string().optional().describe("Destination under SolutionAssemblies; defaults to assembly filename"),
+      configuration: z.string().optional().describe("Default Release"),
+      msbuildPath: z.string().optional(),
+      restart: z.boolean().optional().describe("Restart SampleManager after deploy. Default true."),
+      rollbackOnFailure: z.boolean().optional().describe("Restore the timestamped backup if a later phase fails. Default true."),
+      environment: z.string().optional(),
+      timeoutMs: z.number().positive().optional().describe("Build timeout; default 600000"),
+      async: z.boolean().optional().describe("Return jobId and deploymentId immediately. Default true."),
+    },
+    async ({
+      project: projectName,
+      projectOrSolutionPath,
+      assemblyPath,
+      instance,
+      targetRelativePath,
+      configuration = "Release",
+      msbuildPath,
+      restart = true,
+      rollbackOnFailure = true,
+      environment,
+      timeoutMs = 600000,
+      async = true,
+    }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { ps, runner } = getRunner(projectName, environment);
+      const target = targetRelativePath ?? basename(assemblyPath);
+      const steps: Array<{
+        name: string;
+        status: "pending" | "running" | "succeeded" | "failed" | "rolled-back";
+        startedAt?: string;
+        finishedAt?: string;
+        summary?: string;
+        error?: string;
+      }> = [
+        { name: "build", status: "pending" },
+        { name: "deploy", status: "pending" },
+        { name: "restart", status: restart ? "pending" : "succeeded", summary: restart ? undefined : "Skipped by request" },
+      ];
+      const run = startDeployment({
+        userId: user.id,
+        username: user.username,
+        project: resolvedProjectName,
+        environment: environment ?? "production",
+        host: ps.server.host || ps.server.agentId || ps.server.name,
+        kind: "samplemanager-assembly",
+        instance,
+        steps,
+        artifacts: { projectOrSolutionPath, assemblyPath, targetRelativePath: target },
+        rollbackRequested: rollbackOnFailure,
+      });
+
+      const setStep = (
+        name: string,
+        status: "pending" | "running" | "succeeded" | "failed" | "rolled-back",
+        summary?: string,
+        error?: string
+      ) => {
+        const step = steps.find((item) => item.name === name)!;
+        step.status = status as any;
+        if (status === "running") step.startedAt = new Date().toISOString();
+        if (["succeeded", "failed", "rolled-back"].includes(status)) step.finishedAt = new Date().toISOString();
+        step.summary = summary;
+        step.error = error;
+        updateDeployment(run.id, { steps: steps as any });
+      };
+
+      const work = async (context?: JobContext) => {
+        const output: string[] = [];
+        let backupPath: string | undefined;
+        try {
+          setStep("build", "running");
+          const buildOutput = await buildDotNetProject(
+            runner,
+            projectOrSolutionPath,
+            configuration,
+            msbuildPath,
+            timeoutMs,
+            executionForJob(context)
+          );
+          output.push(`build\n${buildOutput}`);
+          setStep("build", "succeeded", compactText(buildOutput, 1500));
+
+          setStep("deploy", "running");
+          const deployOutput = await deploySampleManagerFile(
+            runner,
+            instance,
+            assemblyPath,
+            "solutionAssemblies",
+            target,
+            true,
+            true,
+            executionForJob(context)
+          );
+          output.push(`deploy\n${deployOutput}`);
+          try {
+            const parsed = JSON.parse(deployOutput);
+            backupPath = parsed.backup ?? undefined;
+            updateDeployment(run.id, {
+              artifacts: {
+                projectOrSolutionPath,
+                assemblyPath,
+                targetRelativePath: target,
+                deployedTarget: parsed.target,
+                sha256: parsed.sha256,
+                backupPath,
+                skipped: parsed.skipped,
+              },
+            });
+          } catch {}
+          setStep("deploy", "succeeded", compactText(deployOutput, 1500));
+
+          if (restart) {
+            setStep("restart", "running");
+            const restartOutput = await restartSampleManagerInstance(runner, instance, executionForJob(context));
+            output.push(`restart\n${restartOutput}`);
+            setStep("restart", "succeeded", compactText(restartOutput, 1500));
+          }
+
+          const compact = compactTextWithMetadata(output.join("\n\n"));
+          finishDeployment(run.id, {
+            status: "succeeded",
+            rollback: { ...run.rollback, status: "not-needed" },
+            steps: steps as any,
+            output: compact.text,
+            outputLength: compact.originalLength,
+            outputTruncated: compact.truncated,
+          });
+          return summarizeJson(getDeployment(run.id));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const runningStep = steps.find((step) => step.status === "running");
+          if (runningStep) setStep(runningStep.name, "failed", undefined, message);
+          let rollback = run.rollback;
+          if (rollbackOnFailure && backupPath) {
+            rollback = { ...rollback, attempted: true };
+            try {
+              const targetPath = `${instancePaths(instance).solutionAssemblies}\\${target}`;
+              await restoreSampleManagerBackup(runner, backupPath, targetPath, executionForJob(context));
+              if (restart) await restartSampleManagerInstance(runner, instance, executionForJob(context));
+              setStep("deploy", "rolled-back", `Restored ${backupPath}`);
+              rollback = { ...rollback, status: "succeeded" };
+            } catch (rollbackError) {
+              rollback = {
+                ...rollback,
+                status: "failed",
+                error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+              };
+            }
+          }
+          finishDeployment(run.id, {
+            status: "failed",
+            rollback,
+            steps: steps as any,
+            output: compactText(output.join("\n\n")),
+            error: message,
+          });
+          throw error;
+        }
+      };
+
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        project: resolvedProjectName,
+        tool: "samplemanager_build_deploy_assembly",
+        deploymentId: run.id,
+        instance,
+        assemblyPath,
+        target,
+        async,
+      });
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_build_deploy_assembly", {
+          deploymentId: run.id,
+          projectOrSolutionPath,
+          assemblyPath,
+          instance,
+          target,
+          configuration,
+          environment,
+          timeoutMs,
+        }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, deploymentId: run.id, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_deployment_status",
+    "Return the current SampleManager deployment record, phase results, artifacts, hashes, backup, and rollback status.",
+    {
+      project: z.string().optional(),
+      deploymentId: z.string(),
+    },
+    async ({ project: projectName, deploymentId }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const deployment = getDeployment(deploymentId);
+      if (!deployment || deployment.userId !== user.id || deployment.project !== resolvedProjectName) {
+        throw new Error(`Deployment '${deploymentId}' not found`);
+      }
+      return { content: [{ type: "text", text: summarizeJson(deployment) }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_deployment_finish",
+    "Mark a manually orchestrated SampleManager deploymentId succeeded or failed after all linked operations complete.",
+    {
+      project: z.string().optional(),
+      deploymentId: z.string(),
+      status: z.enum(["succeeded", "failed"]),
+      error: z.string().optional(),
+    },
+    async ({ project: projectName, deploymentId, status, error }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const deployment = getDeployment(deploymentId);
+      if (!deployment || deployment.userId !== user.id || deployment.project !== resolvedProjectName) {
+        throw new Error(`Deployment '${deploymentId}' not found`);
+      }
+      const finished = finishDeployment(deploymentId, {
+        status,
+        rollback: deployment.rollback,
+        steps: deployment.steps,
+        artifacts: deployment.artifacts,
+        output: deployment.output,
+        outputLength: deployment.outputLength,
+        outputTruncated: deployment.outputTruncated,
+        error,
+      });
+      return { content: [{ type: "text", text: summarizeJson(finished) }] };
     }
   );
 
@@ -1671,24 +2126,30 @@ else {
       backup: z.boolean().optional().describe("Create backup before replacement; default true"),
       skipIfUnchanged: z.boolean().optional().describe("Skip the copy when source and target SHA-256 already match; default true"),
       environment: z.string().optional(),
+      deploymentId: z.string().optional(),
       async: z.boolean().optional().describe("Run as an async job"),
     },
-    async ({ project: projectName, instance, sourcePath, area, targetRelativePath, backup = true, skipIfUnchanged = true, environment, async = false }) => {
+    async ({ project: projectName, instance, sourcePath, area, targetRelativePath, backup = true, skipIfUnchanged = true, environment, deploymentId, async = false }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { runner } = getRunner(projectName, environment);
-      const work = (context?: JobContext) => deploySampleManagerFile(
-        runner,
-        instance,
-        sourcePath,
-        area,
-        targetRelativePath,
-        backup,
-        skipIfUnchanged,
-        executionForJob(context)
+      const work = (context?: JobContext) => withDeploymentStep(
+        deploymentId,
+        resolvedProjectName,
+        `deploy:${targetRelativePath}`,
+        () => deploySampleManagerFile(
+          runner,
+          instance,
+          sourcePath,
+          area,
+          targetRelativePath,
+          backup,
+          skipIfUnchanged,
+          executionForJob(context)
+        )
       );
       writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_deploy_file", instance, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, async });
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_deploy_file", { instance, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, environment }, work);
+        const job = startJob(user, resolvedProjectName, "samplemanager_deploy_file", { instance, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, environment, deploymentId }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };

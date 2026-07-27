@@ -103,6 +103,7 @@ export function startJob(
     project,
     kind,
     status: "running",
+    phase: "not_started",
     input,
     logs: [],
     startedAt: new Date().toISOString(),
@@ -122,10 +123,15 @@ export function startJob(
     saveJob({ ...current, phase: name, lastHeartbeatAt: new Date().toISOString() });
     appendJobLog(job.id, `phase=${name}`);
   };
-  phase("connecting");
-  log("Job started");
-
-  void work({ signal: controller.signal, log, phase })
+  void Promise.resolve()
+    .then(() => {
+      if (controller.signal.aborted) {
+        throw new Error("Job cancelled before remote execution started");
+      }
+      phase("connecting");
+      log("Job started");
+      return work({ signal: controller.signal, log, phase });
+    })
     .then((summary) => {
       const current = getJob(job.id) ?? job;
       const cancelled = Boolean(controller.signal.aborted || current.cancelRequestedAt);

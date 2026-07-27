@@ -78,21 +78,152 @@ export async function recentErrors(
   const script = `
 $ErrorActionPreference = "Continue"
 $since = (Get-Date).AddMinutes(-${minutes})
+$until = Get-Date
 $root = ${psQuote(paths.logfile)}
 $pattern = ${psQuote(pattern)}
 $matches = @()
+$filesScanned = 0
+$timestampPatterns = @(
+  '(?<ts>\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d+)?(?:Z|[+-]\\d{2}:?\\d{2})?)',
+  '(?<ts>\\d{1,2}/\\d{1,2}/\\d{4}\\s+\\d{1,2}:\\d{2}:\\d{2}(?:\\s*[AP]M)?)'
+)
 if (Test-Path -LiteralPath $root) {
   Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $_.LastWriteTime -ge $since -and ($_.Extension -in '.log','.txt','.lis' -or $_.Name -like '*log*') } |
     ForEach-Object {
+      $filesScanned++
       Select-String -LiteralPath $_.FullName -Pattern $pattern -ErrorAction SilentlyContinue |
-        Select-Object -Last 20 |
         ForEach-Object {
-          $matches += [pscustomobject]@{ file=$_.Path; line=$_.LineNumber; text=$_.Line }
+          $parsedTimestamp = $null
+          foreach ($timestampPattern in $timestampPatterns) {
+            $timestampMatch = [regex]::Match($_.Line, $timestampPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            if ($timestampMatch.Success) {
+              $candidate = [datetimeoffset]::MinValue
+              if ([datetimeoffset]::TryParse($timestampMatch.Groups['ts'].Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeLocal, [ref]$candidate) -or
+                  [datetimeoffset]::TryParse($timestampMatch.Groups['ts'].Value, [ref]$candidate)) {
+                $parsedTimestamp = $candidate
+                break
+              }
+            }
+          }
+          if ($parsedTimestamp -and $parsedTimestamp.LocalDateTime -ge $since -and $parsedTimestamp.LocalDateTime -le $until) {
+            $matches += [pscustomobject]@{
+              timestamp = $parsedTimestamp.ToString('o')
+              file = $_.Path
+              line = $_.LineNumber
+              text = $_.Line
+            }
+          }
         }
     }
 }
-$matches | Select-Object -Last 80 | ConvertTo-Json -Compress
+[pscustomobject]@{
+  requestedMinutes = ${minutes}
+  searchedFrom = $since.ToString('o')
+  searchedUntil = $until.ToString('o')
+  filesScanned = $filesScanned
+  matches = @($matches | Sort-Object timestamp | Select-Object -Last 80)
+} | ConvertTo-Json -Depth 5 -Compress
+`;
+  const result = await runner.execPowerShell(script, 60000);
+  ensureRemoteSuccess(result);
+  return compactText(result.stdout || result.stderr);
+}
+
+export async function sampleManagerTableSchema(
+  runner: RemoteRunner,
+  database: string,
+  table: string
+): Promise<string> {
+  if (!/^[A-Za-z0-9_.-]+$/.test(database)) {
+    throw new Error(`Invalid database name: ${database}`);
+  }
+  const parts = table.split(".");
+  if (parts.length > 2 || parts.some((part) => !/^[A-Za-z_][A-Za-z0-9_$#@]*$/.test(part))) {
+    throw new Error(`Invalid table name: ${table}`);
+  }
+  const schema = parts.length === 2 ? parts[0] : undefined;
+  const tableName = parts.length === 2 ? parts[1] : parts[0];
+  const script = `
+$ErrorActionPreference = "Stop"
+$cn = New-Object System.Data.SqlClient.SqlConnection "Server=localhost;Database=${database};Integrated Security=True;TrustServerCertificate=True"
+try {
+  $cn.Open()
+  $cmd = $cn.CreateCommand()
+  $cmd.CommandText = @'
+SELECT
+  s.name AS schema_name,
+  t.name AS table_name,
+  t.object_id,
+  c.column_id,
+  c.name AS column_name,
+  ty.name AS data_type,
+  c.max_length,
+  c.precision,
+  c.scale,
+  c.is_nullable,
+  c.is_identity,
+  c.is_computed,
+  dc.definition AS default_definition,
+  ISNULL(pk.key_ordinal, 0) AS primary_key_ordinal
+FROM sys.tables t
+JOIN sys.schemas s ON s.schema_id = t.schema_id
+JOIN sys.columns c ON c.object_id = t.object_id
+JOIN sys.types ty ON ty.user_type_id = c.user_type_id
+LEFT JOIN sys.default_constraints dc ON dc.object_id = c.default_object_id
+LEFT JOIN (
+  SELECT ic.object_id, ic.column_id, ic.key_ordinal
+  FROM sys.indexes i
+  JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+  WHERE i.is_primary_key = 1
+) pk ON pk.object_id = c.object_id AND pk.column_id = c.column_id
+WHERE t.name = @tableName
+  AND (@schemaName IS NULL OR s.name = @schemaName)
+ORDER BY s.name, t.name, c.column_id
+'@
+  $null = $cmd.Parameters.Add('@tableName', [Data.SqlDbType]::NVarChar, 128)
+  $cmd.Parameters['@tableName'].Value = ${psQuote(tableName)}
+  $null = $cmd.Parameters.Add('@schemaName', [Data.SqlDbType]::NVarChar, 128)
+  $cmd.Parameters['@schemaName'].Value = ${schema ? psQuote(schema) : "[DBNull]::Value"}
+  $reader = $cmd.ExecuteReader()
+  $rows = @()
+  while ($reader.Read()) {
+    $rows += [pscustomobject]@{
+      schema = [string]$reader['schema_name']
+      table = [string]$reader['table_name']
+      objectId = [int]$reader['object_id']
+      ordinal = [int]$reader['column_id']
+      column = [string]$reader['column_name']
+      type = [string]$reader['data_type']
+      maxLength = [int]$reader['max_length']
+      precision = [int]$reader['precision']
+      scale = [int]$reader['scale']
+      nullable = [bool]$reader['is_nullable']
+      identity = [bool]$reader['is_identity']
+      computed = [bool]$reader['is_computed']
+      default = if ($reader['default_definition'] -eq [DBNull]::Value) { $null } else { [string]$reader['default_definition'] }
+      primaryKeyOrdinal = [int]$reader['primary_key_ordinal']
+    }
+  }
+  $reader.Close()
+  if ($rows.Count -eq 0) { throw "Table not found: ${table}" }
+  [pscustomobject]@{
+    database = ${psQuote(database)}
+    requestedTable = ${psQuote(table)}
+    qualifiedTable = "$($rows[0].schema).$($rows[0].table)"
+    objectId = $rows[0].objectId
+    columns = $rows
+    mapping = [pscustomobject]@{
+      physicalSchema = $rows[0].schema
+      physicalTable = $rows[0].table
+      note = "SQL Server physical mapping. SampleManager entity-definition mapping is version-specific and is not inferred."
+    }
+  } | ConvertTo-Json -Depth 6 -Compress
+}
+finally {
+  if ($cn.State -ne [Data.ConnectionState]::Closed) { $cn.Close() }
+  $cn.Dispose()
+}
 `;
   const result = await runner.execPowerShell(script, 60000);
   ensureRemoteSuccess(result);
@@ -458,6 +589,74 @@ export async function loadTableLoaderFile(
   });
 }
 
+function buildToolDiscoveryPowerShell(): string {
+  return `
+function Get-RelayMsBuildCandidates {
+  $items = New-Object 'System.Collections.Generic.List[object]'
+  function Add-RelayMsBuildCandidate([string]$source, [string]$path, [int]$priority) {
+    if (-not $path -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
+    if ($items.path -contains $path) { return }
+    $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($path).FileVersion
+    $null = $items.Add([pscustomobject]@{
+      priority = $priority
+      source = $source
+      path = $path
+      fileVersion = $version
+      supportsModernCSharp = $source -like 'Visual Studio*'
+    })
+  }
+
+  $programFilesX86 = [Environment]::GetFolderPath('ProgramFilesX86')
+  $vswhere = Join-Path $programFilesX86 'Microsoft Visual Studio\\Installer\\vswhere.exe'
+  if (Test-Path -LiteralPath $vswhere) {
+    $vs2022 = & $vswhere -latest -products * -version '[17.0,18.0)' -requires Microsoft.Component.MSBuild -property installationPath
+    if ($vs2022) {
+      Add-RelayMsBuildCandidate 'Visual Studio 2022' (Join-Path $vs2022 'MSBuild\\Current\\Bin\\MSBuild.exe') 10
+    }
+    $vs2019 = & $vswhere -latest -products * -version '[16.0,17.0)' -requires Microsoft.Component.MSBuild -property installationPath
+    if ($vs2019) {
+      Add-RelayMsBuildCandidate 'Visual Studio 2019' (Join-Path $vs2019 'MSBuild\\Current\\Bin\\MSBuild.exe') 20
+    }
+  }
+
+  $windows = [Environment]::GetFolderPath('Windows')
+  Add-RelayMsBuildCandidate '.NET Framework 64-bit' (Join-Path $windows 'Microsoft.NET\\Framework64\\v4.0.30319\\MSBuild.exe') 30
+  Add-RelayMsBuildCandidate '.NET Framework 32-bit' (Join-Path $windows 'Microsoft.NET\\Framework\\v4.0.30319\\MSBuild.exe') 40
+
+  $pathCommand = Get-Command MSBuild.exe -ErrorAction SilentlyContinue
+  if ($pathCommand) {
+    Add-RelayMsBuildCandidate 'PATH' $pathCommand.Source 50
+  }
+  return @($items | Sort-Object priority)
+}
+`;
+}
+
+export async function discoverBuildTools(
+  runner: RemoteRunner,
+  execution: RemoteExecutionOptions = {}
+): Promise<string> {
+  const script = `
+$ErrorActionPreference = "Stop"
+${buildToolDiscoveryPowerShell()}
+$tools = @(Get-RelayMsBuildCandidates)
+[pscustomobject]@{
+  selected = if ($tools.Count -gt 0) { $tools[0] } else { $null }
+  candidates = $tools
+  recommendation = if ($tools.Count -eq 0) {
+    "Install Visual Studio Build Tools 2022 with MSBuild."
+  } elseif (-not $tools[0].supportsModernCSharp) {
+    "Only legacy Framework MSBuild was found; modern LangVersion projects may fail."
+  } else {
+    "Use the selected Visual Studio MSBuild."
+  }
+} | ConvertTo-Json -Depth 5 -Compress
+`;
+  const result = await runner.execPowerShell(script, 60000, execution);
+  ensureRemoteSuccess(result);
+  return compactText(result.stdout || result.stderr);
+}
+
 export async function buildDotNetProject(
   runner: RemoteRunner,
   projectOrSolutionPath: string,
@@ -477,19 +676,9 @@ if (-not (Test-Path -LiteralPath $project)) {
 }
 $msbuild = ${msbuildPath ? psQuote(msbuildPath) : "$null"}
 if (-not $msbuild) {
-  $command = Get-Command MSBuild.exe -ErrorAction SilentlyContinue
-  if ($command) { $msbuild = $command.Source }
-}
-if (-not $msbuild) {
-  $programFilesX86 = [Environment]::GetFolderPath("ProgramFilesX86")
-  $vswhere = Join-Path $programFilesX86 "Microsoft Visual Studio\\Installer\\vswhere.exe"
-  if (Test-Path -LiteralPath $vswhere) {
-    $installation = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
-    if ($installation) {
-      $candidate = Join-Path $installation "MSBuild\\Current\\Bin\\MSBuild.exe"
-      if (Test-Path -LiteralPath $candidate) { $msbuild = $candidate }
-    }
-  }
+  ${buildToolDiscoveryPowerShell()}
+  $tools = @(Get-RelayMsBuildCandidates)
+  if ($tools.Count -gt 0) { $msbuild = $tools[0].path }
 }
 if (-not $msbuild -or -not (Test-Path -LiteralPath $msbuild)) {
   throw "MSBuild.exe was not found; pass msbuildPath explicitly"

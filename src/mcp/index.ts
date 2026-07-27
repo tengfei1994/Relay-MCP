@@ -17,6 +17,7 @@ import {
   convertSampleManagerTables,
   createEntityDefinition,
   deploySampleManagerFile,
+  discoverBuildTools,
   loadTableLoaderFile,
   recentErrors,
   restoreSampleManagerBackup,
@@ -24,6 +25,7 @@ import {
   runSampleManagerCommand,
   runSampleManagerUtility,
   runSql,
+  sampleManagerTableSchema,
 } from "../shared/samplemanager-tools.js";
 import {
   appendFileSync,
@@ -395,7 +397,7 @@ function createMcpServer(user: McpUser) {
       timeoutMs: z.number().optional().describe("Script timeout in milliseconds (default 120000)"),
       cleanup: z.boolean().optional().describe("Remove the remote script after execution. Default true."),
       preserveOnFailure: z.boolean().optional().describe("Keep the remote script when execution fails. Default false."),
-      async: z.boolean().optional().describe("Run as an async job and return a jobId."),
+      async: z.boolean().optional().describe("Run as an async job and return a jobId. Default true."),
     },
     async ({
       project: projectName,
@@ -405,7 +407,7 @@ function createMcpServer(user: McpUser) {
       timeoutMs = 120000,
       cleanup = true,
       preserveOnFailure = false,
-      async = false,
+      async = true,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { ps, runner } = getRunner(projectName, environment);
@@ -858,7 +860,7 @@ else {
   // ── Tool: upload_workspace_file ────────────────────────────────────────────
   server.tool(
     "upload_workspace_file",
-    "Upload a single file from the project workspace to the remote server via SFTP. Handles files of any size.",
+    "Upload one Relay workspace file to the linked server and verify local/remote SHA-256.",
     {
       project: z.string().optional(),
       localPath: z.string().describe("Relative path within project workspace"),
@@ -868,8 +870,36 @@ else {
     async ({ project: projectName, localPath: relPath, remotePath, environment }) => {
       const { project, ps, runner } = getRunner(projectName, environment);
       const fullLocal = resolveWorkspacePath(project.workspacePath, relPath, { mustExist: true });
+      const stat = statSync(fullLocal);
+      if (!stat.isFile()) throw new Error(`Workspace path is not a file: ${relPath}`);
+      const digest = createHash("sha256");
+      for await (const chunk of createReadStream(fullLocal)) digest.update(chunk);
+      const localSha256 = digest.digest("hex");
       await runner.uploadFile(fullLocal, remotePath);
-      return { content: [{ type: "text", text: `Uploaded ${relPath} → ${ps.server.host}:${remotePath}` }] };
+      const hashResult = ps.server.os === "windows"
+        ? await runner.execPowerShell(
+            `[Console]::Write((Get-FileHash -LiteralPath ${quotePowerShell(remotePath)} -Algorithm SHA256).Hash.ToLowerInvariant())`,
+            60000
+          )
+        : await runner.exec(`sha256sum -- ${quotePosix(remotePath)} | awk '{print $1}'`, 60000);
+      ensureRemoteSuccess(hashResult);
+      const remoteSha256 = hashResult.stdout.trim().toLowerCase();
+      if (remoteSha256 !== localSha256) {
+        throw new Error(`Upload SHA-256 mismatch: local=${localSha256}, remote=${remoteSha256}`);
+      }
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            localPath: relPath,
+            remotePath,
+            bytes: stat.size,
+            localSha256,
+            remoteSha256,
+            verified: true,
+          }),
+        }],
+      };
     }
   );
 
@@ -1282,6 +1312,31 @@ else {
   );
 
   server.tool(
+    "samplemanager_table_schema",
+    "Return SQL Server column, type, primary key, identity, computed, default, and physical mapping metadata for a SampleManager table.",
+    {
+      project: z.string().optional(),
+      database: z.string().describe("Database name, e.g. vgsm"),
+      table: z.string().describe("Table name, optionally schema-qualified, e.g. dbo.TEST_INSTRUMENT_USAGE_RECORD"),
+      environment: z.string().optional(),
+    },
+    async ({ project: projectName, database, table, environment }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { runner } = getRunner(projectName, environment);
+      const text = await sampleManagerTableSchema(runner, database, table);
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        project: resolvedProjectName,
+        tool: "samplemanager_table_schema",
+        database,
+        table,
+      });
+      return { content: [{ type: "text", text }] };
+    }
+  );
+
+  server.tool(
     "samplemanager_sql_query",
     "Run a compact SQL query against a SampleManager SQL Server database. Read-only by default.",
     {
@@ -1540,6 +1595,27 @@ else {
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_discover_build_tools",
+    "Discover compatible MSBuild installations in VS2022, VS2019, .NET Framework, then PATH priority order.",
+    {
+      project: z.string().optional(),
+      environment: z.string().optional(),
+    },
+    async ({ project: projectName, environment }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { runner } = getRunner(projectName, environment);
+      const text = await discoverBuildTools(runner);
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        project: resolvedProjectName,
+        tool: "samplemanager_discover_build_tools",
+      });
+      return { content: [{ type: "text", text }] };
     }
   );
 

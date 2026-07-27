@@ -182,8 +182,11 @@ function createMcpServer(user: McpUser) {
     const environmentLinks = allProjectServers.filter((s) => s.environment === resolvedEnvironment);
     const allowedServerIds = listAllowedServerIds();
     const projectServers = environmentLinks.filter((s) => allowedServerIds.includes(s.server.id));
-    const ps = user.projectServerId
-      ? projectServers.find((s) => s.id === user.projectServerId)
+    const explicitlyScopedLink = user.projectServerId
+      ? environmentLinks.find((s) => s.id === user.projectServerId)
+      : undefined;
+    const ps = explicitlyScopedLink
+      ? explicitlyScopedLink
       : user.defaultServerId
         ? projectServers.find((s) => s.server.id === user.defaultServerId)
         : projectServers[0];

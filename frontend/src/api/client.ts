@@ -132,6 +132,18 @@ export const api = {
     canCreateProjects?: boolean;
   }) =>
     request<{ token: string; profile: any }>("POST", "/tokens", data),
+  updateToken: (id: number, data: {
+    name: string;
+    projectId?: number;
+    projectIds?: number[];
+    projectServerId?: number;
+    defaultServerId?: number;
+    serverIds: number[];
+    environment?: string;
+    allowAllProjects?: boolean;
+    canCreateProjects?: boolean;
+  }) =>
+    request<{ profile: any }>("PUT", `/tokens/${id}`, data),
   revokeToken: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/tokens/${id}`),
 

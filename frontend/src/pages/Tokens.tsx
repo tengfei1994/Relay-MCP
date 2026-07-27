@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Copy, KeyRound, Plus, Trash2 } from "lucide-react";
+import { Copy, KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
 import { api } from "../api/client";
 
 export default function TokensPage() {
@@ -8,6 +8,7 @@ export default function TokensPage() {
   const [projects, setProjects] = useState<any[]>([]);
   const [servers, setServers] = useState<any[]>([]);
   const [showCreate, setShowCreate] = useState(false);
+  const [editingTokenId, setEditingTokenId] = useState<number | null>(null);
   const [showCreateAgent, setShowCreateAgent] = useState(false);
   const [createdToken, setCreatedToken] = useState("");
   const [createdAgentToken, setCreatedAgentToken] = useState("");
@@ -17,6 +18,7 @@ export default function TokensPage() {
   const [form, setForm] = useState({
     name: "",
     defaultProjectId: "",
+    projectServerId: "",
     projectIds: [] as string[],
     serverIds: [] as string[],
     defaultServerId: "",
@@ -78,21 +80,29 @@ export default function TokensPage() {
     setError("");
     setCreatedToken("");
     try {
-      const result = await api.createToken({
+      const payload = {
         name: form.name || `${selectedProject?.name ?? "relay"} token`,
         projectId: form.defaultProjectId ? Number(form.defaultProjectId) : undefined,
         projectIds: form.allowAllProjects ? undefined : form.projectIds.map(Number),
+        projectServerId: form.projectServerId ? Number(form.projectServerId) : undefined,
         defaultServerId: form.defaultServerId ? Number(form.defaultServerId) : undefined,
         serverIds: form.serverIds.map(Number),
         environment: form.environment || "production",
         allowAllProjects: form.allowAllProjects,
         canCreateProjects: form.canCreateProjects,
-      });
-      setCreatedToken(result.token);
+      };
+      if (editingTokenId) {
+        await api.updateToken(editingTokenId, payload);
+      } else {
+        const result = await api.createToken(payload);
+        setCreatedToken(result.token);
+      }
       setShowCreate(false);
+      setEditingTokenId(null);
       setForm({
         name: "",
         defaultProjectId: "",
+        projectServerId: "",
         projectIds: [],
         serverIds: [],
         defaultServerId: "",
@@ -104,6 +114,29 @@ export default function TokensPage() {
     } catch (err: any) {
       setError(err.message);
     }
+  };
+
+  const editToken = (token: any) => {
+    setCreatedToken("");
+    setError("");
+    setEditingTokenId(token.id);
+    setForm({
+      name: token.name ?? "",
+      defaultProjectId: token.projectId ? String(token.projectId) : "",
+      projectServerId: token.projectServerId ? String(token.projectServerId) : "",
+      projectIds: token.projectScopes?.map((scope: any) => String(scope.projectId)) ?? [],
+      serverIds: token.serverScopes?.map((scope: any) => String(scope.serverId)) ?? [],
+      defaultServerId: token.defaultServerId ? String(token.defaultServerId) : "",
+      environment: token.environment ?? "production",
+      allowAllProjects: Boolean(token.allowAllProjects),
+      canCreateProjects: Boolean(token.canCreateProjects),
+    });
+    setShowCreate(true);
+  };
+
+  const closeTokenForm = () => {
+    setShowCreate(false);
+    setEditingTokenId(null);
   };
 
   const revoke = async (id: number) => {
@@ -177,6 +210,7 @@ export default function TokensPage() {
 
       {showCreate && (
         <div className="mb-6 bg-gray-900 border border-gray-800 rounded-lg p-4">
+          <p className="mb-4 text-sm font-medium text-gray-200">{editingTokenId ? "Edit MCP Token Permissions" : "New MCP Token"}</p>
           <form onSubmit={createToken} className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs text-gray-500 mb-1">Name</label>
@@ -265,8 +299,8 @@ export default function TokensPage() {
             </label>
             {error && <p className="md:col-span-2 text-xs text-red-400">{error}</p>}
             <div className="md:col-span-2 flex gap-2">
-              <button type="submit" className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-md">Generate</button>
-              <button type="button" onClick={() => setShowCreate(false)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md">Cancel</button>
+              <button type="submit" className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-md">{editingTokenId ? "Save Permissions" : "Generate"}</button>
+              <button type="button" onClick={closeTokenForm} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md">Cancel</button>
             </div>
           </form>
         </div>
@@ -292,9 +326,14 @@ export default function TokensPage() {
               )}
               <p className="text-xs text-gray-600">created: {token.createdAt ?? "-"} · last used: {token.lastUsedAt ?? "-"}</p>
             </div>
-            <button onClick={() => revoke(token.id)} className="text-gray-600 hover:text-red-400" title="Revoke">
-              <Trash2 size={15} />
-            </button>
+            <div className="flex items-center gap-2">
+              <button onClick={() => editToken(token)} className="text-gray-600 hover:text-indigo-400" title="Edit permissions">
+                <Pencil size={15} />
+              </button>
+              <button onClick={() => revoke(token.id)} className="text-gray-600 hover:text-red-400" title="Revoke">
+                <Trash2 size={15} />
+              </button>
+            </div>
           </div>
         ))}
         {tokens.length === 0 && <p className="text-sm text-gray-600">No MCP tokens yet.</p>}

@@ -199,4 +199,106 @@ export async function tokenRoutes(app: FastifyInstance) {
       .run();
     return reply.send({ ok: true });
   });
+
+  app.put("/api/tokens/:id", { onRequest: [app.authenticate] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const tokenDbId = Number(id);
+    const body = CreateTokenSchema.safeParse(req.body);
+    if (!body.success) return reply.status(400).send({ error: "Invalid input" });
+
+    const existing = db.select()
+      .from(mcpTokens)
+      .where(and(eq(mcpTokens.id, tokenDbId), eq(mcpTokens.userId, req.user.id)))
+      .get();
+    if (!existing) return reply.status(404).send({ error: "MCP token not found" });
+
+    let environment = body.data.environment;
+    const scopedProjectIds = Array.from(new Set([
+      ...(body.data.projectIds ?? []),
+      ...(body.data.projectId ? [body.data.projectId] : []),
+    ]));
+    const scopedServerIds = Array.from(new Set(body.data.serverIds));
+
+    if (!body.data.allowAllProjects && scopedProjectIds.length === 0) {
+      return reply.status(400).send({ error: "Select at least one project or allow all projects" });
+    }
+    if (body.data.defaultServerId && !scopedServerIds.includes(body.data.defaultServerId)) {
+      return reply.status(400).send({ error: "Default server must be included in allowed servers" });
+    }
+
+    const ownedProjects = db.select({ id: projects.id })
+      .from(projects)
+      .where(eq(projects.userId, req.user.id))
+      .all();
+    const ownedProjectIds = new Set(ownedProjects.map((project) => project.id));
+    const invalidProjects = scopedProjectIds.filter((projectId) => !ownedProjectIds.has(projectId));
+    if (invalidProjects.length > 0) {
+      return reply.status(404).send({ error: `Project scope not found: ${invalidProjects.join(", ")}` });
+    }
+
+    const ownedServers = db.select({ id: servers.id })
+      .from(servers)
+      .where(eq(servers.userId, req.user.id))
+      .all();
+    const ownedServerIds = new Set(ownedServers.map((server) => server.id));
+    const invalidServers = scopedServerIds.filter((serverId) => !ownedServerIds.has(serverId));
+    if (invalidServers.length > 0) {
+      return reply.status(404).send({ error: `Server scope not found: ${invalidServers.join(", ")}` });
+    }
+
+    if (body.data.projectServerId) {
+      const link = db.select({
+        id: projectServers.id,
+        projectId: projectServers.projectId,
+        serverId: projectServers.serverId,
+        environment: projectServers.environment,
+        serverUserId: servers.userId,
+      })
+        .from(projectServers)
+        .innerJoin(servers, eq(projectServers.serverId, servers.id))
+        .where(eq(projectServers.id, body.data.projectServerId))
+        .get();
+      if (!link || link.serverUserId !== req.user.id) {
+        return reply.status(404).send({ error: "Project server link not found" });
+      }
+      if (body.data.projectId && link.projectId !== body.data.projectId) {
+        return reply.status(400).send({ error: "Project server link does not belong to the selected project" });
+      }
+      environment = link.environment ?? environment;
+      if (!scopedProjectIds.includes(link.projectId)) scopedProjectIds.push(link.projectId);
+      if (!scopedServerIds.includes(link.serverId)) scopedServerIds.push(link.serverId);
+    }
+
+    const row = db.transaction((tx) => {
+      const updated = tx.update(mcpTokens)
+        .set({
+          name: body.data.name,
+          projectId: body.data.projectId ?? null,
+          projectServerId: body.data.projectServerId ?? null,
+          defaultServerId: body.data.defaultServerId ?? null,
+          environment,
+          allowAllProjects: body.data.allowAllProjects,
+          canCreateProjects: body.data.canCreateProjects,
+        })
+        .where(eq(mcpTokens.id, tokenDbId))
+        .returning()
+        .get();
+
+      tx.delete(mcpTokenProjectScopes).where(eq(mcpTokenProjectScopes.tokenId, tokenDbId)).run();
+      tx.delete(mcpTokenServerScopes).where(eq(mcpTokenServerScopes.tokenId, tokenDbId)).run();
+      if (!body.data.allowAllProjects && scopedProjectIds.length > 0) {
+        tx.insert(mcpTokenProjectScopes)
+          .values(scopedProjectIds.map((projectId) => ({ tokenId: tokenDbId, projectId })))
+          .run();
+      }
+      if (scopedServerIds.length > 0) {
+        tx.insert(mcpTokenServerScopes)
+          .values(scopedServerIds.map((serverId) => ({ tokenId: tokenDbId, serverId })))
+          .run();
+      }
+      return updated;
+    });
+
+    return reply.send({ profile: row });
+  });
 }

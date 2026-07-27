@@ -59,6 +59,6 @@ POST /api/agents/{agentId}/jobs/{jobId}/events
 POST /api/agents/{agentId}/jobs/{jobId}/result
 ```
 
-These endpoints are the intended Relay Agent protocol surface. The current
-Relay server still needs matching routes before real remote execution can move
-from SSH to the Agent channel.
+These endpoints are the Relay Agent protocol surface. The agent can execute
+queued `cmd.exe` commands and Encoded PowerShell jobs, then returns stdout,
+stderr, and exit code to the Relay server.

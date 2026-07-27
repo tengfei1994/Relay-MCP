@@ -127,6 +127,7 @@ export async function tokenRoutes(app: FastifyInstance) {
         .select({
           id: projectServers.id,
           projectId: projectServers.projectId,
+          serverId: projectServers.serverId,
           environment: projectServers.environment,
           projectName: projects.name,
           serverUserId: servers.userId,
@@ -144,6 +145,8 @@ export async function tokenRoutes(app: FastifyInstance) {
       }
       projectName = link.projectName;
       environment = link.environment ?? environment;
+      if (!scopedProjectIds.includes(link.projectId)) scopedProjectIds.push(link.projectId);
+      if (!scopedServerIds.includes(link.serverId)) scopedServerIds.push(link.serverId);
     }
 
     const tokenId = randomUUID();

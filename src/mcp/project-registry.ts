@@ -23,12 +23,16 @@ export interface ServerInfo {
   name: string;
   status: string;
   os: "linux" | "windows";
+  connectionMode: "ssh" | "agent";
+  agentId?: string;
 }
 
 export interface ProjectServer {
+  id: number;
   server: ServerInfo;
   remotePath: string;
   environment: string;
+  connectionMode: "ssh" | "agent";
 }
 
 export class ProjectRegistry {
@@ -93,8 +97,13 @@ export class ProjectRegistry {
       .run(tokenDbId, projectId);
   }
 
-  listScopedServerIds(userId: number, tokenDbId?: number): number[] {
-    if (!tokenDbId) return [];
+  listScopedServerIds(userId: number, tokenDbId?: number, allowAllServers = false): number[] {
+    if (!tokenDbId || allowAllServers) {
+      const rows = this.db
+        .prepare("SELECT id FROM servers WHERE user_id = ?")
+        .all(userId) as any[];
+      return rows.map((row) => row.id);
+    }
     const rows = this.db
       .prepare(`
         SELECT s.id
@@ -120,6 +129,8 @@ export class ProjectRegistry {
       name: row.name,
       status: row.status,
       os: row.os === "windows" ? "windows" : "linux",
+      connectionMode: row.connection_mode === "agent" ? "agent" : "ssh",
+      agentId: row.agent_id ?? undefined,
     };
   }
 
@@ -136,14 +147,15 @@ export class ProjectRegistry {
   getProjectServers(projectId: number): ProjectServer[] {
     const rows = this.db
       .prepare(`
-        SELECT s.*, ps.remote_path, ps.environment
+        SELECT s.*, ps.id AS project_server_id, ps.remote_path, ps.environment, ps.connection_mode AS project_connection_mode
         FROM project_servers ps
         JOIN servers s ON s.id = ps.server_id
-        WHERE ps.project_id = ? AND s.status = 'connected'
+        WHERE ps.project_id = ?
       `)
       .all(projectId) as any[];
 
     return rows.map((r) => ({
+      id: r.project_server_id,
       server: {
         id: r.id,
         host: r.host,
@@ -153,9 +165,12 @@ export class ProjectRegistry {
         name: r.name,
         status: r.status,
         os: r.os === "windows" ? "windows" : "linux",
+        connectionMode: r.connection_mode === "agent" ? "agent" : "ssh",
+        agentId: r.agent_id ?? undefined,
       },
       remotePath: r.remote_path,
       environment: r.environment,
+      connectionMode: r.project_connection_mode === "agent" || r.connection_mode === "agent" ? "agent" : "ssh",
     }));
   }
 }

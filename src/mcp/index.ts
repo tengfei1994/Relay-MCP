@@ -6,6 +6,7 @@ import jwt from "jsonwebtoken";
 import Database from "better-sqlite3";
 import { ProjectRegistry } from "./project-registry.js";
 import { ensureRemoteSuccess, RemoteRunner } from "../shared/remote-runner.js";
+import { AgentRemoteRunner } from "../shared/agent-remote-runner.js";
 import { compactText, compactTextWithMetadata, summarizeExec, summarizeJson } from "../shared/output.js";
 import { cancelJob, getJob, listJobs, startJob, writeAudit, type JobContext } from "../shared/job-store.js";
 import { recordFact, searchFacts } from "../shared/context-store.js";
@@ -141,7 +142,7 @@ function createMcpServer(user: McpUser) {
   }
 
   function listAllowedServerIds() {
-    return registry.listScopedServerIds(user.id, user.tokenDbId);
+    return registry.listScopedServerIds(user.id, user.tokenDbId, user.allowAllProjects);
   }
 
   function assertServerAllowed(serverId: number) {
@@ -177,20 +178,43 @@ function createMcpServer(user: McpUser) {
     const project = registry.getProject(user.id, resolvedProjectName);
     if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
 
-    const projectServers = registry.getProjectServers(project.id)
-      .filter((s) => listAllowedServerIds().includes(s.server.id));
-    const ps = user.defaultServerId
-      ? projectServers.find((s) => s.server.id === user.defaultServerId && s.environment === resolvedEnvironment)
-      : projectServers.find((s) => s.environment === resolvedEnvironment);
-    if (!ps) throw new Error(`No connected server for project '${resolvedProjectName}' env '${resolvedEnvironment}'`);
+    const allProjectServers = registry.getProjectServers(project.id);
+    const environmentLinks = allProjectServers.filter((s) => s.environment === resolvedEnvironment);
+    const allowedServerIds = listAllowedServerIds();
+    const projectServers = environmentLinks.filter((s) => allowedServerIds.includes(s.server.id));
+    const ps = user.projectServerId
+      ? projectServers.find((s) => s.id === user.projectServerId)
+      : user.defaultServerId
+        ? projectServers.find((s) => s.server.id === user.defaultServerId)
+        : projectServers[0];
+    if (!ps) {
+      if (environmentLinks.length > 0) {
+        throw new Error(
+          `Server link exists for project '${resolvedProjectName}' env '${resolvedEnvironment}', but it is not allowed for this MCP token`
+        );
+      }
+      throw new Error(`No server link for project '${resolvedProjectName}' env '${resolvedEnvironment}'`);
+    }
 
-    const runner = new RemoteRunner({
-      host: ps.server.host,
-      port: ps.server.port,
-      username: ps.server.sshUser,
-      privateKeyPath: ps.server.privateKeyPath,
-      os: ps.server.os,
-    });
+    const runner = ps.connectionMode === "agent"
+      ? (() => {
+          if (!ps.server.agentId) {
+            throw new Error(`Agent link exists for project '${resolvedProjectName}', but server '${ps.server.name}' has no Agent ID`);
+          }
+          return new AgentRemoteRunner(user.id, ps.server.agentId, ps.server.os);
+        })()
+      : (() => {
+          if (ps.server.status !== "connected") {
+            throw new Error(`SSH link exists for project '${resolvedProjectName}', but server '${ps.server.name}' status is '${ps.server.status}'`);
+          }
+          return new RemoteRunner({
+            host: ps.server.host,
+            port: ps.server.port,
+            username: ps.server.sshUser,
+            privateKeyPath: ps.server.privateKeyPath,
+            os: ps.server.os,
+          });
+        })();
     return { project, ps, runner };
   }
 

@@ -88,6 +88,40 @@ export function runMigrations() {
       token_id INTEGER NOT NULL REFERENCES mcp_tokens(id) ON DELETE CASCADE,
       server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS agent_states (
+      user_id INTEGER NOT NULL,
+      agent_id TEXT NOT NULL COLLATE NOCASE,
+      username TEXT NOT NULL,
+      machine TEXT,
+      last_seen_at TEXT NOT NULL,
+      last_client_timestamp TEXT,
+      PRIMARY KEY (user_id, agent_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_jobs (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      agent_id TEXT NOT NULL COLLATE NOCASE,
+      kind TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      timeout_ms INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      claimed_at TEXT,
+      completed_at TEXT,
+      result_json TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_jobs_next
+    ON agent_jobs (user_id, agent_id, status, created_at);
+
+    CREATE TABLE IF NOT EXISTS agent_job_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      event_json TEXT NOT NULL
+    );
   `);
 
   // Incremental migrations for existing databases

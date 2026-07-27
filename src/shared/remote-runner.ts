@@ -461,7 +461,7 @@ export function runWithTimeout<T>(
   });
 }
 
-function cleanPowerShellResult(result: ExecResult): ExecResult {
+export function cleanPowerShellResult(result: ExecResult): ExecResult {
   return {
     ...result,
     stdout: cleanPowerShellText(result.stdout),

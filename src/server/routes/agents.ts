@@ -19,10 +19,10 @@ const AgentEventSchema = z.object({
 
 const AgentResultSchema = z.object({
   status: z.string().max(80),
-  message: z.string().max(4000).optional(),
+  message: z.string().max(4000).nullish().transform((value) => value ?? undefined),
   exitCode: z.number().int().optional(),
-  stdout: z.string().max(1000000).optional(),
-  stderr: z.string().max(1000000).optional(),
+  stdout: z.string().max(1000000).nullish().transform((value) => value ?? undefined),
+  stderr: z.string().max(1000000).nullish().transform((value) => value ?? undefined),
 });
 
 export async function agentRoutes(app: FastifyInstance) {

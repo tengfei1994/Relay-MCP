@@ -1,5 +1,6 @@
 using RelayAgent.Shared;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net.Http;
 using System.Text;
@@ -236,7 +237,15 @@ namespace RelayAgent.Service
         private static async Task PostResultAsync(HttpClient client, AgentConfig config, string jobId, AgentResult result, CancellationToken token)
         {
             var serializer = new JavaScriptSerializer();
-            var json = serializer.Serialize(result);
+            var payload = new Dictionary<string, object>
+            {
+                { "status", result.status },
+                { "exitCode", result.exitCode }
+            };
+            if (!string.IsNullOrEmpty(result.message)) payload["message"] = result.message;
+            if (result.stdout != null) payload["stdout"] = result.stdout;
+            if (result.stderr != null) payload["stderr"] = result.stderr;
+            var json = serializer.Serialize(payload);
             var url = config.RelayUrl + "/api/agents/" + Uri.EscapeDataString(config.AgentId) + "/jobs/" + Uri.EscapeDataString(jobId) + "/result";
             using (var content = new StringContent(json, Encoding.UTF8, "application/json"))
             {

@@ -16,10 +16,12 @@ const SSH_KEYS_DIR = process.env.SSH_KEYS_DIR ?? "/workspace/.ssh-keys";
 
 const AddServerSchema = z.object({
   name: z.string().min(1).max(100),
-  host: z.string().min(1),
+  host: z.string().optional(),
   port: z.number().int().min(1).max(65535).default(22),
-  sshUser: z.string().min(1),
+  sshUser: z.string().optional(),
   os: z.enum(["linux", "windows"]).default("linux"),
+  connectionMode: z.enum(["ssh", "agent"]).default("ssh"),
+  agentId: z.string().max(120).optional(),
 });
 
 async function generateSshKeyPair(keyPath: string): Promise<string> {
@@ -93,20 +95,32 @@ export async function serverRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Invalid input" });
       }
 
-      const { name, host, port, sshUser, os } = body.data;
+      const { name, port, os, connectionMode } = body.data;
+      const host = body.data.host?.trim() ?? "";
+      const sshUser = body.data.sshUser?.trim() ?? "";
+      const agentId = body.data.agentId?.trim() || undefined;
       const userId = req.user.id;
       const username = req.user.username;
 
+      if (connectionMode === "ssh" && (!host || !sshUser)) {
+        return reply.status(400).send({ error: "Host and SSH user are required for SSH servers" });
+      }
+      if (connectionMode === "agent" && !agentId) {
+        return reply.status(400).send({ error: "Agent ID is required for Agent servers" });
+      }
+
       // Generate unique key pair for this server
       const keyDir = join(SSH_KEYS_DIR, username);
-      const safeHost = host.replace(/[^a-zA-Z0-9.-]/g, "_");
+      const safeHost = (host || agentId || name).replace(/[^a-zA-Z0-9.-]/g, "_");
       const keyPath = join(keyDir, `${safeHost}_${Date.now()}`);
 
-      let publicKey: string;
-      try {
-        publicKey = await generateSshKeyPair(keyPath);
-      } catch (err) {
-        return reply.status(500).send({ error: "Failed to generate SSH key pair" });
+      let publicKey = "";
+      if (connectionMode === "ssh") {
+        try {
+          publicKey = await generateSshKeyPair(keyPath);
+        } catch (err) {
+          return reply.status(500).send({ error: "Failed to generate SSH key pair" });
+        }
       }
 
       const result = db
@@ -117,6 +131,8 @@ export async function serverRoutes(app: FastifyInstance) {
           host,
           port,
           sshUser,
+          connectionMode,
+          agentId,
           os,
           privateKeyPath: keyPath,
           publicKey,
@@ -128,7 +144,9 @@ export async function serverRoutes(app: FastifyInstance) {
       return reply.status(201).send({
         server: { ...result, privateKeyPath: undefined },
         publicKey,
-        instructions: `Add this public key to ${sshUser}@${host}:~/.ssh/authorized_keys, then call /api/servers/${result.id}/test`,
+        instructions: connectionMode === "ssh"
+          ? `Add this public key to ${sshUser}@${host}:~/.ssh/authorized_keys, then call /api/servers/${result.id}/test`
+          : `Install RelayAgent.Client.exe on the server and configure Agent ID '${agentId}'.`,
       });
     }
   );
@@ -160,8 +178,10 @@ export async function serverRoutes(app: FastifyInstance) {
         name: z.string().min(1).max(100).optional(),
         host: z.string().min(1).optional(),
         port: z.number().int().min(1).max(65535).optional(),
-        sshUser: z.string().min(1).optional(),
+        sshUser: z.string().optional(),
         os: z.enum(["linux", "windows"]).optional(),
+        connectionMode: z.enum(["ssh", "agent"]).optional(),
+        agentId: z.string().max(120).optional(),
       });
       const body = EditSchema.safeParse(req.body);
       if (!body.success) return reply.status(400).send({ error: "Invalid input" });
@@ -172,6 +192,13 @@ export async function serverRoutes(app: FastifyInstance) {
         .where(and(eq(servers.id, Number(id)), eq(servers.userId, req.user.id)))
         .get();
       if (!server) return reply.status(404).send({ error: "Not found" });
+      const nextConnectionMode = body.data.connectionMode ?? server.connectionMode ?? "ssh";
+      if (nextConnectionMode === "ssh" && (!body.data.host && !server.host || !body.data.sshUser && !server.sshUser)) {
+        return reply.status(400).send({ error: "Host and SSH user are required for SSH servers" });
+      }
+      if (nextConnectionMode === "agent" && !(body.data.agentId ?? server.agentId)) {
+        return reply.status(400).send({ error: "Agent ID is required for Agent servers" });
+      }
 
       const updated = db
         .update(servers)
@@ -197,6 +224,9 @@ export async function serverRoutes(app: FastifyInstance) {
         .where(and(eq(servers.id, Number(id)), eq(servers.userId, req.user.id)))
         .get();
       if (!server) return reply.status(404).send({ error: "Not found" });
+      if ((server.connectionMode ?? "ssh") === "agent") {
+        return reply.send({ ok: true, output: "Agent server saved. Use Relay Agent Client heartbeat to verify runtime connectivity." });
+      }
 
       const ssh = new NodeSSH();
       try {
@@ -242,6 +272,9 @@ export async function serverRoutes(app: FastifyInstance) {
         .where(and(eq(servers.id, Number(id)), eq(servers.userId, req.user.id)))
         .get();
       if (!server) return reply.status(404).send({ error: "Not found" });
+      if ((server.connectionMode ?? "ssh") === "agent") {
+        return reply.status(400).send({ error: "SSH key setup is not used for Agent connection mode" });
+      }
 
       const ssh = new NodeSSH();
       try {
@@ -283,6 +316,9 @@ export async function serverRoutes(app: FastifyInstance) {
         .where(and(eq(servers.id, Number(id)), eq(servers.userId, req.user.id)))
         .get();
       if (!server) return reply.status(404).send({ error: "Not found" });
+      if ((server.connectionMode ?? "ssh") === "agent") {
+        return reply.status(400).send({ error: "SSH setup is not used for Agent connection mode" });
+      }
 
       reply.raw.writeHead(200, {
         "Content-Type": "text/event-stream",

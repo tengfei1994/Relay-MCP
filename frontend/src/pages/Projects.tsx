@@ -16,7 +16,7 @@ export default function ProjectsPage() {
   const [showServers, setShowServers] = useState(false);
   const [linkedServers, setLinkedServers] = useState<any[]>([]);
   const [allServers, setAllServers] = useState<any[]>([]);
-  const [linkForm, setLinkForm] = useState({ serverId: "", remotePath: "", environment: "production" });
+  const [linkForm, setLinkForm] = useState({ serverId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
   const [linkError, setLinkError] = useState("");
 
   useEffect(() => {
@@ -73,7 +73,7 @@ export default function ProjectsPage() {
     setSelected(project);
     setShowServers(true);
     setLinkError("");
-    setLinkForm({ serverId: "", remotePath: "", environment: "production" });
+    setLinkForm({ serverId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
     const r = await api.listProjectServers(project.id);
     setLinkedServers(r.servers);
   };
@@ -81,15 +81,15 @@ export default function ProjectsPage() {
   const linkServer = async (e: React.FormEvent) => {
     e.preventDefault();
     setLinkError("");
-    if (!linkForm.serverId || !linkForm.remotePath) {
-      setLinkError("Select a server and enter remote path");
+    if (!linkForm.serverId || (linkForm.connectionMode === "ssh" && !linkForm.remotePath)) {
+      setLinkError(linkForm.connectionMode === "ssh" ? "Select a server and enter remote path" : "Select a server");
       return;
     }
     try {
-      await api.linkServer(selected.id, Number(linkForm.serverId), linkForm.remotePath, linkForm.environment);
+      await api.linkServer(selected.id, Number(linkForm.serverId), linkForm.remotePath, linkForm.environment, linkForm.connectionMode as "ssh" | "agent");
       const r = await api.listProjectServers(selected.id);
       setLinkedServers(r.servers);
-      setLinkForm({ serverId: "", remotePath: "", environment: "production" });
+      setLinkForm({ serverId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
     } catch (err: any) {
       setLinkError(err.message);
     }
@@ -195,8 +195,12 @@ export default function ProjectsPage() {
                     <Link2 size={14} className="text-indigo-400" />
                     <div>
                       <p className="text-sm font-medium text-gray-200">{l.serverName}</p>
-                      <p className="text-xs text-gray-500">{l.serverSshUser}@{l.serverHost}:{l.serverPort} · env: {l.environment}</p>
-                      <p className="text-xs text-gray-600">path: {l.remotePath}</p>
+                      <p className="text-xs text-gray-500">
+                        {(l.connectionMode ?? l.serverConnectionMode ?? "ssh") === "agent"
+                          ? `agent: ${l.serverAgentId ?? "-"}`
+                          : `${l.serverSshUser}@${l.serverHost}:${l.serverPort}`} · env: {l.environment} · mode: {l.connectionMode ?? "ssh"}
+                      </p>
+                      <p className="text-xs text-gray-600">path: {l.remotePath || "-"}</p>
                     </div>
                   </div>
                   <button onClick={() => unlinkServer(l.id)} className="text-gray-600 hover:text-red-400" title="Unlink">
@@ -214,19 +218,33 @@ export default function ProjectsPage() {
                   <label className="block text-xs text-gray-500 mb-1">Server</label>
                   <select
                     value={linkForm.serverId}
-                    onChange={(e) => setLinkForm((f) => ({ ...f, serverId: e.target.value }))}
+                    onChange={(e) => {
+                      const server = allServers.find((s) => String(s.id) === e.target.value);
+                      setLinkForm((f) => ({ ...f, serverId: e.target.value, connectionMode: server?.connectionMode ?? "ssh" }));
+                    }}
                     className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                   >
                     <option value="">Select server…</option>
                     {allServers.map((s) => (
-                      <option key={s.id} value={s.id}>{s.name} ({s.host})</option>
+                      <option key={s.id} value={s.id}>{s.name} ({(s.connectionMode ?? "ssh") === "agent" ? s.agentId : s.host})</option>
                     ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Connection</label>
+                  <select
+                    value={linkForm.connectionMode}
+                    onChange={(e) => setLinkForm((f) => ({ ...f, connectionMode: e.target.value }))}
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  >
+                    <option value="ssh">SSH</option>
+                    <option value="agent">Relay Agent</option>
                   </select>
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Remote Path</label>
                   <input
-                    placeholder="/opt/myapp"
+                    placeholder={linkForm.connectionMode === "agent" ? "Optional for agent mode" : "/opt/myapp"}
                     value={linkForm.remotePath}
                     onChange={(e) => setLinkForm((f) => ({ ...f, remotePath: e.target.value }))}
                     className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"

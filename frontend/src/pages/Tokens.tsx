@@ -200,7 +200,7 @@ export default function TokensPage() {
                       checked={form.serverIds.includes(String(s.id))}
                       onChange={() => toggleServer(String(s.id))}
                     />
-                    {s.name} · {s.sshUser}@{s.host}:{s.port}
+                    {s.name} · {(s.connectionMode ?? "ssh") === "agent" ? `agent:${s.agentId ?? "-"}` : `${s.sshUser}@${s.host}:${s.port}`}
                   </label>
                 ))}
                 {servers.length === 0 && <p className="text-xs text-gray-600">No servers yet</p>}
@@ -216,7 +216,7 @@ export default function TokensPage() {
               >
                 <option value="">No default server</option>
                 {servers.filter((s) => form.serverIds.includes(String(s.id))).map((s) => (
-                  <option key={s.id} value={s.id}>{s.name} · {s.host}</option>
+                  <option key={s.id} value={s.id}>{s.name} · {(s.connectionMode ?? "ssh") === "agent" ? s.agentId : s.host}</option>
                 ))}
               </select>
             </div>

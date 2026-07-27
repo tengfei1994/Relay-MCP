@@ -33,7 +33,10 @@ export async function projectServerRoutes(app: FastifyInstance) {
           serverHost: servers.host,
           serverPort: servers.port,
           serverSshUser: servers.sshUser,
+          serverConnectionMode: servers.connectionMode,
+          serverAgentId: servers.agentId,
           serverStatus: servers.status,
+          connectionMode: projectServers.connectionMode,
         })
         .from(projectServers)
         .innerJoin(servers, eq(projectServers.serverId, servers.id))
@@ -54,8 +57,9 @@ export async function projectServerRoutes(app: FastifyInstance) {
 
       const LinkSchema = z.object({
         serverId: z.number().int(),
-        remotePath: z.string().min(1),
+        remotePath: z.string().optional(),
         environment: z.string().default("production"),
+        connectionMode: z.enum(["ssh", "agent"]).optional(),
       });
       const body = LinkSchema.safeParse(req.body);
       if (!body.success) return reply.status(400).send({ error: "Invalid input" });
@@ -73,6 +77,14 @@ export async function projectServerRoutes(app: FastifyInstance) {
         .where(and(eq(servers.id, body.data.serverId), eq(servers.userId, userId)))
         .get();
       if (!server) return reply.status(404).send({ error: "Server not found" });
+      const connectionMode = body.data.connectionMode ?? server.connectionMode ?? "ssh";
+      const remotePath = body.data.remotePath?.trim() ?? "";
+      if (connectionMode === "ssh" && !remotePath) {
+        return reply.status(400).send({ error: "Remote path is required for SSH links" });
+      }
+      if (connectionMode === "agent" && !server.agentId) {
+        return reply.status(400).send({ error: "Selected server does not have an Agent ID" });
+      }
 
       // Check for duplicate environment
       const existing = db
@@ -89,18 +101,20 @@ export async function projectServerRoutes(app: FastifyInstance) {
         return reply.status(409).send({ error: `Environment '${body.data.environment}' already has a server linked` });
       }
 
-      const runner = new RemoteRunner({
-        host: server.host,
-        port: server.port ?? 22,
-        username: server.sshUser,
-        privateKeyPath: server.privateKeyPath,
-        os: server.os === "windows" ? "windows" : "linux",
-      });
-      const mkdirResult = runner.isWindows()
-        ? await runner.execPowerShell(`New-Item -ItemType Directory -Force -LiteralPath ${quotePowerShell(body.data.remotePath)} | Out-Null`)
-        : await runner.exec(`mkdir -p -- ${quotePosix(body.data.remotePath)}`);
-      if (mkdirResult.code !== 0) {
-        return reply.status(502).send({ error: mkdirResult.stderr || "Failed to create remote project directory" });
+      if (connectionMode === "ssh") {
+        const runner = new RemoteRunner({
+          host: server.host,
+          port: server.port ?? 22,
+          username: server.sshUser,
+          privateKeyPath: server.privateKeyPath,
+          os: server.os === "windows" ? "windows" : "linux",
+        });
+        const mkdirResult = runner.isWindows()
+          ? await runner.execPowerShell(`New-Item -ItemType Directory -Force -LiteralPath ${quotePowerShell(remotePath)} | Out-Null`)
+          : await runner.exec(`mkdir -p -- ${quotePosix(remotePath)}`);
+        if (mkdirResult.code !== 0) {
+          return reply.status(502).send({ error: mkdirResult.stderr || "Failed to create remote project directory" });
+        }
       }
 
       const result = db
@@ -108,8 +122,9 @@ export async function projectServerRoutes(app: FastifyInstance) {
         .values({
           projectId: Number(id),
           serverId: body.data.serverId,
-          remotePath: body.data.remotePath,
+          remotePath,
           environment: body.data.environment,
+          connectionMode,
         })
         .returning()
         .get();

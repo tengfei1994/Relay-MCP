@@ -31,6 +31,8 @@ export const servers = sqliteTable("servers", {
   sshUser: text("ssh_user").notNull(),
   privateKeyPath: text("private_key_path").notNull(), // path on MCP server
   publicKey: text("public_key").notNull(),
+  connectionMode: text("connection_mode").default("ssh"), // ssh | agent
+  agentId: text("agent_id"),
   os: text("os").default("linux"), // linux | windows
   status: text("status").default("pending"), // pending | connected | failed
   createdAt: text("created_at").default(sql`(datetime('now'))`),
@@ -46,6 +48,7 @@ export const projectServers = sqliteTable("project_servers", {
     .references(() => servers.id, { onDelete: "cascade" }),
   remotePath: text("remote_path").notNull(), // deployment target path on server
   environment: text("environment").default("production"),
+  connectionMode: text("connection_mode").default("ssh"), // ssh | agent
 });
 
 export const mcpTokens = sqliteTable("mcp_tokens", {

@@ -13,10 +13,10 @@ type TerminalLine = { type: "log" | "success" | "error"; message: string };
 export default function ServersPage() {
   const [servers, setServers] = useState<any[]>([]);
   const [showAdd, setShowAdd] = useState(false);
-  const [newServer, setNewServer] = useState({ name: "", host: "", port: "22", sshUser: "root", os: "linux", password: "" });
+  const [newServer, setNewServer] = useState({ name: "", host: "", port: "22", sshUser: "root", os: "linux", password: "", connectionMode: "ssh", agentId: "" });
   const [addedKey, setAddedKey] = useState<{ id: number; key: string } | null>(null);
   const [editServer, setEditServer] = useState<any | null>(null);
-  const [editForm, setEditForm] = useState({ name: "", host: "", port: "22", sshUser: "", os: "linux" });
+  const [editForm, setEditForm] = useState({ name: "", host: "", port: "22", sshUser: "", os: "linux", connectionMode: "ssh", agentId: "" });
   const [error, setError] = useState("");
 
   // Terminal modal
@@ -64,16 +64,18 @@ export default function ServersPage() {
         port: Number(newServer.port),
         sshUser: newServer.sshUser,
         os: newServer.os as "linux" | "windows",
+        connectionMode: newServer.connectionMode as "ssh" | "agent",
+        agentId: newServer.agentId,
       });
       setServers((s) => [...s, r.server]);
       setShowAdd(false);
       const pwd = newServer.password.trim();
-      setNewServer({ name: "", host: "", port: "22", sshUser: "root", os: "linux", password: "" });
+      setNewServer({ name: "", host: "", port: "22", sshUser: "root", os: "linux", password: "", connectionMode: "ssh", agentId: "" });
 
-      if (pwd) {
+      if (newServer.connectionMode === "ssh" && pwd) {
         // Auto-launch terminal setup
         setTerminal({ serverId: r.server.id, password: pwd });
-      } else {
+      } else if (newServer.connectionMode === "ssh") {
         // Show public key for manual copy
         setAddedKey({ id: r.server.id, key: r.publicKey });
       }
@@ -89,7 +91,7 @@ export default function ServersPage() {
 
   const openEdit = (s: any) => {
     setEditServer(s);
-    setEditForm({ name: s.name, host: s.host, port: String(s.port ?? 22), sshUser: s.sshUser, os: s.os ?? "linux" });
+    setEditForm({ name: s.name, host: s.host ?? "", port: String(s.port ?? 22), sshUser: s.sshUser ?? "", os: s.os ?? "linux", connectionMode: s.connectionMode ?? "ssh", agentId: s.agentId ?? "" });
     setError("");
   };
 
@@ -103,6 +105,8 @@ export default function ServersPage() {
         port: Number(editForm.port),
         sshUser: editForm.sshUser,
         os: editForm.os as "linux" | "windows",
+        connectionMode: editForm.connectionMode as "ssh" | "agent",
+        agentId: editForm.agentId,
       });
       setServers((s) => s.map((sv) => (sv.id === editServer.id ? r.server : sv)));
       setEditServer(null);
@@ -151,7 +155,9 @@ export default function ServersPage() {
               <div>
                 <p className="text-sm font-medium text-gray-200">{s.name}</p>
                 <p className="text-xs text-gray-500">
-                  {s.sshUser}@{s.host}:{s.port}
+                  {(s.connectionMode ?? "ssh") === "agent"
+                    ? `agent: ${s.agentId ?? "-"}`
+                    : `${s.sshUser}@${s.host}:${s.port}`}
                 </p>
               </div>
             </div>
@@ -160,13 +166,15 @@ export default function ServersPage() {
                 {STATUS_ICON[s.status] ?? STATUS_ICON.pending}
                 {s.status}
               </div>
-              <button
-                onClick={() => openSetup(s)}
-                className="text-gray-500 hover:text-yellow-400"
-                title="Push Key & Setup"
-              >
-                <Key size={14} />
-              </button>
+              {(s.connectionMode ?? "ssh") === "ssh" && (
+                <button
+                  onClick={() => openSetup(s)}
+                  className="text-gray-500 hover:text-yellow-400"
+                  title="Push Key & Setup"
+                >
+                  <Key size={14} />
+                </button>
+              )}
               <button
                 onClick={() => testServer(s.id)}
                 className="text-xs text-indigo-400 hover:text-indigo-300 px-2 py-1 border border-gray-700 rounded"
@@ -195,11 +203,8 @@ export default function ServersPage() {
           <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-md">
             <h3 className="text-base font-semibold text-gray-100 mb-4">Add Server</h3>
             <form onSubmit={addServer} className="space-y-3">
-              {[
+              {[ 
                 { label: "Name", key: "name", placeholder: "my-prod-server" },
-                { label: "Host", key: "host", placeholder: "192.168.1.100" },
-                { label: "Port", key: "port", placeholder: "22" },
-                { label: "SSH User", key: "sshUser", placeholder: "root" },
               ].map(({ label, key, placeholder }) => (
                 <div key={key}>
                   <label className="block text-xs text-gray-400 mb-1">{label}</label>
@@ -212,6 +217,46 @@ export default function ServersPage() {
                 </div>
               ))}
               <div>
+                <label className="block text-xs text-gray-400 mb-1">Connection</label>
+                <select
+                  value={newServer.connectionMode}
+                  onChange={(e) => setNewServer((s) => ({ ...s, connectionMode: e.target.value }))}
+                  className={inputCls}
+                >
+                  <option value="ssh">SSH</option>
+                  <option value="agent">Relay Agent</option>
+                </select>
+              </div>
+              {newServer.connectionMode === "ssh" ? (
+                <>
+                  {[
+                    { label: "Host", key: "host", placeholder: "192.168.1.100" },
+                    { label: "Port", key: "port", placeholder: "22" },
+                    { label: "SSH User", key: "sshUser", placeholder: "root" },
+                  ].map(({ label, key, placeholder }) => (
+                    <div key={key}>
+                      <label className="block text-xs text-gray-400 mb-1">{label}</label>
+                      <input
+                        value={(newServer as any)[key]}
+                        onChange={(e) => setNewServer((s) => ({ ...s, [key]: e.target.value }))}
+                        placeholder={placeholder}
+                        className={inputCls}
+                      />
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Agent ID</label>
+                  <input
+                    value={newServer.agentId}
+                    onChange={(e) => setNewServer((s) => ({ ...s, agentId: e.target.value }))}
+                    placeholder="VGSM-SERVER"
+                    className={inputCls}
+                  />
+                </div>
+              )}
+              <div>
                 <label className="block text-xs text-gray-400 mb-1">OS</label>
                 <select
                   value={newServer.os}
@@ -222,7 +267,7 @@ export default function ServersPage() {
                   <option value="windows">Windows</option>
                 </select>
               </div>
-              <div>
+              {newServer.connectionMode === "ssh" && <div>
                 <label className="block text-xs text-gray-400 mb-1">
                   SSH Password <span className="text-gray-600">(optional — auto-push key)</span>
                 </label>
@@ -233,14 +278,14 @@ export default function ServersPage() {
                   placeholder="Leave blank to copy key manually"
                   className={inputCls}
                 />
-              </div>
+              </div>}
               {error && <p className="text-xs text-red-400">{error}</p>}
               <div className="flex gap-2 pt-1">
                 <button
                   type="submit"
                   className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-md"
                 >
-                  {newServer.password ? "Add & Setup" : "Generate SSH Key & Add"}
+                  {newServer.connectionMode === "agent" ? "Add Agent Server" : newServer.password ? "Add & Setup" : "Generate SSH Key & Add"}
                 </button>
                 <button
                   type="button"
@@ -263,9 +308,6 @@ export default function ServersPage() {
             <form onSubmit={saveEdit} className="space-y-3">
               {[
                 { label: "Name", key: "name" },
-                { label: "Host", key: "host" },
-                { label: "Port", key: "port" },
-                { label: "SSH User", key: "sshUser" },
               ].map(({ label, key }) => (
                 <div key={key}>
                   <label className="block text-xs text-gray-400 mb-1">{label}</label>
@@ -276,6 +318,44 @@ export default function ServersPage() {
                   />
                 </div>
               ))}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Connection</label>
+                <select
+                  value={editForm.connectionMode}
+                  onChange={(e) => setEditForm((f) => ({ ...f, connectionMode: e.target.value }))}
+                  className={inputCls}
+                >
+                  <option value="ssh">SSH</option>
+                  <option value="agent">Relay Agent</option>
+                </select>
+              </div>
+              {editForm.connectionMode === "ssh" ? (
+                <>
+                  {[
+                    { label: "Host", key: "host" },
+                    { label: "Port", key: "port" },
+                    { label: "SSH User", key: "sshUser" },
+                  ].map(({ label, key }) => (
+                    <div key={key}>
+                      <label className="block text-xs text-gray-400 mb-1">{label}</label>
+                      <input
+                        value={(editForm as any)[key]}
+                        onChange={(e) => setEditForm((f) => ({ ...f, [key]: e.target.value }))}
+                        className={inputCls}
+                      />
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Agent ID</label>
+                  <input
+                    value={editForm.agentId}
+                    onChange={(e) => setEditForm((f) => ({ ...f, agentId: e.target.value }))}
+                    className={inputCls}
+                  />
+                </div>
+              )}
               <div>
                 <label className="block text-xs text-gray-400 mb-1">OS</label>
                 <select

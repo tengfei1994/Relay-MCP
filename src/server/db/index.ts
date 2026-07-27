@@ -45,6 +45,8 @@ export function runMigrations() {
       ssh_user TEXT NOT NULL,
       private_key_path TEXT NOT NULL,
       public_key TEXT NOT NULL,
+      connection_mode TEXT DEFAULT 'ssh',
+      agent_id TEXT,
       os TEXT DEFAULT 'linux',
       status TEXT DEFAULT 'pending',
       created_at TEXT DEFAULT (datetime('now'))
@@ -55,7 +57,8 @@ export function runMigrations() {
       project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
       remote_path TEXT NOT NULL,
-      environment TEXT DEFAULT 'production'
+      environment TEXT DEFAULT 'production',
+      connection_mode TEXT DEFAULT 'ssh'
     );
 
     CREATE TABLE IF NOT EXISTS mcp_tokens (
@@ -90,6 +93,9 @@ export function runMigrations() {
   // Incremental migrations for existing databases
   try { sqlite.exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0`); } catch {}
   try { sqlite.exec(`ALTER TABLE servers ADD COLUMN os TEXT DEFAULT 'linux'`); } catch {}
+  try { sqlite.exec(`ALTER TABLE servers ADD COLUMN connection_mode TEXT DEFAULT 'ssh'`); } catch {}
+  try { sqlite.exec(`ALTER TABLE servers ADD COLUMN agent_id TEXT`); } catch {}
+  try { sqlite.exec(`ALTER TABLE project_servers ADD COLUMN connection_mode TEXT DEFAULT 'ssh'`); } catch {}
   try { sqlite.exec(`ALTER TABLE mcp_tokens ADD COLUMN default_server_id INTEGER REFERENCES servers(id) ON DELETE SET NULL`); } catch {}
   try { sqlite.exec(`ALTER TABLE mcp_tokens ADD COLUMN allow_all_projects INTEGER DEFAULT 0`); } catch {}
   try { sqlite.exec(`ALTER TABLE mcp_tokens ADD COLUMN can_create_projects INTEGER DEFAULT 0`); } catch {}

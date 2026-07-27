@@ -55,19 +55,19 @@ export const api = {
   // Project-Server links
   listProjectServers: (projectId: number) =>
     request<{ servers: any[] }>("GET", `/projects/${projectId}/servers`),
-  linkServer: (projectId: number, serverId: number, remotePath: string, environment = "production") =>
-    request<{ link: any }>("POST", `/projects/${projectId}/servers`, { serverId, remotePath, environment }),
+  linkServer: (projectId: number, serverId: number, remotePath: string, environment = "production", connectionMode?: "ssh" | "agent") =>
+    request<{ link: any }>("POST", `/projects/${projectId}/servers`, { serverId, remotePath, environment, connectionMode }),
   unlinkServer: (projectId: number, linkId: number) =>
     request<{ ok: boolean }>("DELETE", `/projects/${projectId}/servers/${linkId}`),
 
   // Servers
   listServers: () =>
     request<{ servers: any[] }>("GET", "/servers"),
-  addServer: (data: { name: string; host: string; port: number; sshUser: string; os?: "linux" | "windows" }) =>
+  addServer: (data: { name: string; host?: string; port?: number; sshUser?: string; os?: "linux" | "windows"; connectionMode?: "ssh" | "agent"; agentId?: string }) =>
     request<{ server: any; publicKey: string; instructions: string }>(
       "POST", "/servers", data
     ),
-  updateServer: (id: number, data: { name?: string; host?: string; port?: number; sshUser?: string; os?: "linux" | "windows" }) =>
+  updateServer: (id: number, data: { name?: string; host?: string; port?: number; sshUser?: string; os?: "linux" | "windows"; connectionMode?: "ssh" | "agent"; agentId?: string }) =>
     request<{ server: any }>("PUT", `/servers/${id}`, data),
   testServer: (id: number) =>
     request<{ ok: boolean; output?: string; error?: string }>(

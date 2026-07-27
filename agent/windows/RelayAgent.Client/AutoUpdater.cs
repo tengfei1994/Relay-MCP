@@ -11,6 +11,7 @@ namespace RelayAgent.Client
     public sealed class AutoUpdater
     {
         private const string LatestReleaseApi = "https://api.github.com/repos/tengfei1994/Relay-MCP/releases/latest";
+        public const string CurrentRelease = "v0.3.1";
 
         public async Task<UpdateInfo> CheckLatestAsync()
         {
@@ -26,7 +27,7 @@ namespace RelayAgent.Client
                     throw new InvalidOperationException("Latest GitHub release does not contain RelayAgent.Client.exe.");
                 }
 
-                return new UpdateInfo(tag, downloadUrl);
+                return new UpdateInfo(tag, downloadUrl, string.Equals(NormalizeTag(tag), NormalizeTag(CurrentRelease), StringComparison.OrdinalIgnoreCase));
             }
         }
 
@@ -79,18 +80,26 @@ namespace RelayAgent.Client
             }
             return "";
         }
+
+        private static string NormalizeTag(string tag)
+        {
+            return (tag ?? "").Trim().TrimStart('v', 'V');
+        }
     }
 
     public sealed class UpdateInfo
     {
-        public UpdateInfo(string tagName, string downloadUrl)
+        public UpdateInfo(string tagName, string downloadUrl, bool isCurrent)
         {
             TagName = tagName;
             DownloadUrl = downloadUrl;
+            IsCurrent = isCurrent;
         }
 
         public string TagName { get; private set; }
 
         public string DownloadUrl { get; private set; }
+
+        public bool IsCurrent { get; private set; }
     }
 }

@@ -146,8 +146,16 @@ namespace RelayAgent.Client
                 return;
             }
 
-            RunSc("create " + AgentConfig.ServiceName + " binPath= \"\\\"" + clientExe + "\\\" --service\" start= auto DisplayName= \"Relay MCP Agent\"");
-            RunSc("description " + AgentConfig.ServiceName + " Outbound Relay MCP agent for server-side command execution.");
+            var serviceArgs = "binPath= \"\\\"" + clientExe + "\\\" --service\" start= auto";
+            if (QueryService() == "not installed")
+            {
+                RunSc("create " + AgentConfig.ServiceName + " " + serviceArgs + " DisplayName= \"Relay MCP Agent\"");
+            }
+            else
+            {
+                RunSc("config " + AgentConfig.ServiceName + " " + serviceArgs);
+            }
+            RunSc("description " + AgentConfig.ServiceName + " \"Outbound Relay MCP agent for server-side command execution.\"");
             RefreshStatus();
         }
 
@@ -182,6 +190,11 @@ namespace RelayAgent.Client
                 _status.Text = "Checking GitHub release...";
                 var updater = new AutoUpdater();
                 var update = await updater.CheckLatestAsync();
+                if (update.IsCurrent)
+                {
+                    _status.Text = "Already up to date: " + update.TagName;
+                    return;
+                }
                 var answer = MessageBox.Show("Latest release is " + update.TagName + ". Download and restart this client?", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
                 if (answer != DialogResult.Yes)
                 {

@@ -31,6 +31,8 @@ Copy `RelayAgent.Client.exe` to the target server. Start it normally to open the
 - Agent token
 
 Then click Save, Install Service, and Start.
+If the service already exists, Install Service updates its executable path
+instead of trying to create a duplicate service.
 
 The installed service runs the same executable with:
 
@@ -44,7 +46,8 @@ For foreground diagnostics, run:
 .\RelayAgent.Client.exe --console
 ```
 
-The UI also includes a Check Update button. It downloads the latest
+The UI also includes a Check Update button. It compares the current release
+with GitHub and downloads the latest
 `RelayAgent.Client.exe` from the GitHub release page, stops the service,
 replaces the executable, restarts the service, and reopens the UI.
 

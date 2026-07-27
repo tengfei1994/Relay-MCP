@@ -89,6 +89,18 @@ export function runMigrations() {
       server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS agent_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_id TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      server_id INTEGER REFERENCES servers(id) ON DELETE SET NULL,
+      active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      last_used_at TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS agent_states (
       user_id INTEGER NOT NULL,
       agent_id TEXT NOT NULL COLLATE NOCASE,

@@ -4,11 +4,16 @@ import { api } from "../api/client";
 
 export default function TokensPage() {
   const [tokens, setTokens] = useState<any[]>([]);
+  const [agentTokens, setAgentTokens] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
   const [servers, setServers] = useState<any[]>([]);
   const [showCreate, setShowCreate] = useState(false);
+  const [showCreateAgent, setShowCreateAgent] = useState(false);
   const [createdToken, setCreatedToken] = useState("");
+  const [createdAgentToken, setCreatedAgentToken] = useState("");
   const [error, setError] = useState("");
+  const [agentError, setAgentError] = useState("");
+  const [agentForm, setAgentForm] = useState({ name: "", serverId: "" });
   const [form, setForm] = useState({
     name: "",
     defaultProjectId: "",
@@ -26,12 +31,14 @@ export default function TokensPage() {
   );
 
   const load = async () => {
-    const [tokenResult, projectResult, serverResult] = await Promise.all([
+    const [tokenResult, agentTokenResult, projectResult, serverResult] = await Promise.all([
       api.listTokens(),
+      api.listAgentTokens(),
       api.listProjects(),
       api.listServers(),
     ]);
     setTokens(tokenResult.tokens);
+    setAgentTokens(agentTokenResult.tokens);
     setProjects(projectResult.projects);
     setServers(serverResult.servers);
   };
@@ -100,8 +107,32 @@ export default function TokensPage() {
   };
 
   const revoke = async (id: number) => {
-    if (!confirm("Revoke this MCP token? Existing agents using it will stop working.")) return;
+    if (!confirm("Revoke this MCP token? Existing MCP clients using it will stop working.")) return;
     await api.revokeToken(id);
+    await load();
+  };
+
+  const createAgentToken = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAgentError("");
+    setCreatedAgentToken("");
+    try {
+      const result = await api.createAgentToken({
+        name: agentForm.name || "relay-agent",
+        serverId: Number(agentForm.serverId),
+      });
+      setCreatedAgentToken(result.token);
+      setShowCreateAgent(false);
+      setAgentForm({ name: "", serverId: "" });
+      await load();
+    } catch (err: any) {
+      setAgentError(err.message);
+    }
+  };
+
+  const revokeAgent = async (id: number) => {
+    if (!confirm("Revoke this Agent token? The Agent will stop checking in.")) return;
+    await api.revokeAgentToken(id);
     await load();
   };
 
@@ -117,7 +148,7 @@ export default function TokensPage() {
         <KeyRound size={18} className="text-indigo-400" />
         <div>
           <h2 className="text-lg font-semibold text-gray-100">MCP Tokens</h2>
-          <p className="text-xs text-gray-500">Generate agent profiles that can access one or many projects.</p>
+          <p className="text-xs text-gray-500">Codex access tokens for MCP Project and Server permissions.</p>
         </div>
         <button
           onClick={() => setShowCreate(true)}
@@ -267,6 +298,77 @@ export default function TokensPage() {
           </div>
         ))}
         {tokens.length === 0 && <p className="text-sm text-gray-600">No MCP tokens yet.</p>}
+      </div>
+
+      <div className="flex items-center gap-3 mt-10 mb-4">
+        <KeyRound size={18} className="text-emerald-400" />
+        <div>
+          <h2 className="text-lg font-semibold text-gray-100">Agent Tokens</h2>
+          <p className="text-xs text-gray-500">One-time authorization for a specific Windows Agent.</p>
+        </div>
+        <button
+          onClick={() => setShowCreateAgent(true)}
+          className="ml-auto flex items-center gap-2 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-md"
+        >
+          <Plus size={15} />
+          New Agent Token
+        </button>
+      </div>
+
+      {createdAgentToken && (
+        <div className="mb-6 bg-gray-900 border border-emerald-800 rounded-lg p-4">
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <p className="text-sm font-medium text-emerald-300">Agent token created. Copy it now; it will not be shown again.</p>
+            <button onClick={() => copy(createdAgentToken)} className="flex items-center gap-1 text-xs text-gray-300 hover:text-white">
+              <Copy size={13} /> Copy
+            </button>
+          </div>
+          <pre className="p-3 bg-gray-950 border border-gray-800 rounded text-xs text-gray-300 overflow-auto">{createdAgentToken}</pre>
+          <p className="mt-3 text-xs text-gray-500">Paste this token into the Agent Client Agent Token field.</p>
+        </div>
+      )}
+
+      {showCreateAgent && (
+        <div className="mb-6 bg-gray-900 border border-gray-800 rounded-lg p-4">
+          <form onSubmit={createAgentToken} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Name</label>
+              <input value={agentForm.name} onChange={(e) => setAgentForm((f) => ({ ...f, name: e.target.value }))} className={inputCls} placeholder="HKJC agent token" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Agent Server</label>
+              <select required value={agentForm.serverId} onChange={(e) => setAgentForm((f) => ({ ...f, serverId: e.target.value }))} className={inputCls}>
+                <option value="">Select an Agent server</option>
+                {servers.filter((s) => (s.connectionMode ?? "ssh") === "agent").map((s) => (
+                  <option key={s.id} value={s.id}>{s.name} · {s.agentId}</option>
+                ))}
+              </select>
+            </div>
+            {agentError && <p className="md:col-span-2 text-xs text-red-400">{agentError}</p>}
+            <div className="md:col-span-2 flex gap-2">
+              <button type="submit" className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-md">Generate</button>
+              <button type="button" onClick={() => setShowCreateAgent(false)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md">Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {agentTokens.map((token) => (
+          <div key={token.id} className="flex items-center justify-between bg-gray-900 border border-gray-800 rounded-lg px-4 py-3">
+            <div>
+              <p className="text-sm font-medium text-gray-200">{token.name}</p>
+              <p className="text-xs text-gray-500">
+                agent: {token.agentId} · server: {token.serverName ?? "-"} · {token.active ? "active" : "revoked"}
+              </p>
+              <p className="text-xs text-gray-600">created: {token.createdAt ?? "-"} · last used: {token.lastUsedAt ?? "-"}</p>
+            </div>
+            <button onClick={() => revokeAgent(token.id)} className="text-gray-600 hover:text-red-400" title="Revoke">
+              <Trash2 size={15} />
+            </button>
+          </div>
+        ))}
+        {agentTokens.length === 0 && <p className="text-sm text-gray-600">No Agent tokens yet.</p>}
       </div>
     </div>
   );

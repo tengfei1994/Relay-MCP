@@ -88,3 +88,15 @@ export const mcpTokenServerScopes = sqliteTable("mcp_token_server_scopes", {
     .notNull()
     .references(() => servers.id, { onDelete: "cascade" }),
 });
+
+export const agentTokens = sqliteTable("agent_tokens", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tokenId: text("token_id").notNull().unique(),
+  name: text("name").notNull(),
+  agentId: text("agent_id").notNull(),
+  serverId: integer("server_id").references(() => servers.id, { onDelete: "set null" }),
+  active: integer("active", { mode: "boolean" }).default(true),
+  createdAt: text("created_at").default(sql`(datetime('now'))`),
+  lastUsedAt: text("last_used_at"),
+});

@@ -16,6 +16,7 @@ import { tokenRoutes } from "./routes/tokens.js";
 import { uploadRoutes } from "./routes/uploads.js";
 import { downloadRoutes } from "./routes/downloads.js";
 import { agentRoutes } from "./routes/agents.js";
+import { agentTokenRoutes } from "./routes/agent-tokens.js";
 
 declare module "@fastify/jwt" {
   interface FastifyJWT {
@@ -29,6 +30,7 @@ declare module "@fastify/jwt" {
       defaultEnvironment?: string;
       projectServerId?: number;
       defaultServerId?: number;
+      agentId?: string;
     };
     user: {
       id: number;
@@ -40,6 +42,7 @@ declare module "@fastify/jwt" {
       defaultEnvironment?: string;
       projectServerId?: number;
       defaultServerId?: number;
+      agentId?: string;
     };
   }
 }
@@ -102,6 +105,7 @@ await app.register(tokenRoutes);
 await app.register(uploadRoutes);
 await app.register(downloadRoutes);
 await app.register(agentRoutes);
+await app.register(agentTokenRoutes);
 
 // Health check
 app.get("/api/health", async () => ({ ok: true, ts: new Date().toISOString() }));

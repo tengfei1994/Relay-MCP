@@ -135,6 +135,14 @@ export const api = {
   revokeToken: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/tokens/${id}`),
 
+  // Agent tokens
+  listAgentTokens: () =>
+    request<{ tokens: any[] }>("GET", "/agent-tokens"),
+  createAgentToken: (data: { name: string; serverId: number }) =>
+    request<{ token: string; profile: any }>("POST", "/agent-tokens", data),
+  revokeAgentToken: (id: number) =>
+    request<{ ok: boolean }>("DELETE", `/agent-tokens/${id}`),
+
   // Users (admin)
   listUsers: () =>
     request<{ users: any[] }>("GET", "/users"),

@@ -110,10 +110,10 @@ function verifyToken(req: express.Request): McpUser {
       db.prepare("UPDATE mcp_tokens SET last_used_at = datetime('now') WHERE token_id = ?").run(payload.tokenId);
       payload.tokenDbId = row.id;
       payload.defaultProjectId = row.project_id ?? undefined;
-      payload.defaultProject = row.project_name ?? payload.defaultProject;
-      payload.defaultEnvironment = row.environment ?? payload.defaultEnvironment;
-      payload.projectServerId = row.project_server_id ?? payload.projectServerId;
-      payload.defaultServerId = row.default_server_id ?? payload.defaultServerId;
+      payload.defaultProject = row.project_name ?? undefined;
+      payload.defaultEnvironment = row.environment ?? "production";
+      payload.projectServerId = row.project_server_id ?? undefined;
+      payload.defaultServerId = row.default_server_id ?? undefined;
       payload.allowAllProjects = Boolean(row.allow_all_projects);
       payload.canCreateProjects = Boolean(row.can_create_projects);
     } finally {

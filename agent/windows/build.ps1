@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $out = Join-Path $root "out"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
+Remove-Item (Join-Path $out "RelayAgent.*.exe") -Force -ErrorAction SilentlyContinue
 
 $msbuildPath = $null
 $msbuild = Get-Command MSBuild.exe -ErrorAction SilentlyContinue
@@ -26,12 +27,9 @@ if (-not $msbuildPath) {
   throw "MSBuild.exe was not found. Install Visual Studio Build Tools with .NET desktop build tools."
 }
 
-& $msbuildPath (Join-Path $root "RelayAgent.Service\RelayAgent.Service.csproj") /p:Configuration=Release /nologo
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $msbuildPath (Join-Path $root "RelayAgent.Client\RelayAgent.Client.csproj") /p:Configuration=Release /nologo
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Copy-Item (Join-Path $root "RelayAgent.Service\bin\Release\RelayAgent.Service.exe") $out -Force
 Copy-Item (Join-Path $root "RelayAgent.Client\bin\Release\RelayAgent.Client.exe") $out -Force
 
 Write-Host "Built Relay Agent package:"

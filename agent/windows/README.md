@@ -2,8 +2,7 @@
 
 This folder contains a small Windows Agent package:
 
-- `RelayAgent.Client.exe`: WinForms UI for Relay URL/token configuration and service control.
-- `RelayAgent.Service.exe`: Windows Service that runs on the target server and connects outbound to Relay.
+- `RelayAgent.Client.exe`: one-file WinForms UI and Windows Service host.
 
 The client writes configuration to:
 
@@ -25,13 +24,29 @@ The output is written to:
 agent\windows\out
 ```
 
-Copy both EXEs to the target server. Start `RelayAgent.Client.exe`, enter:
+Copy `RelayAgent.Client.exe` to the target server. Start it normally to open the UI, enter:
 
 - Relay URL, for example `http://ftd1994.mycloudnas.com:7230`
 - Agent ID, for example `VGSM-SERVER`
 - Agent token
 
 Then click Save, Install Service, and Start.
+
+The installed service runs the same executable with:
+
+```text
+RelayAgent.Client.exe --service
+```
+
+For foreground diagnostics, run:
+
+```powershell
+.\RelayAgent.Client.exe --console
+```
+
+The UI also includes a Check Update button. It downloads the latest
+`RelayAgent.Client.exe` from the GitHub release page, stops the service,
+replaces the executable, restarts the service, and reopens the UI.
 
 ## Current Protocol
 
@@ -47,4 +62,3 @@ POST /api/agents/{agentId}/jobs/{jobId}/result
 These endpoints are the intended Relay Agent protocol surface. The current
 Relay server still needs matching routes before real remote execution can move
 from SSH to the Agent channel.
-

@@ -3,6 +3,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace RelayAgent.Client
@@ -19,7 +20,7 @@ namespace RelayAgent.Client
         {
             Text = "Relay MCP Agent Client";
             Width = 620;
-            Height = 360;
+            Height = 400;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
 
@@ -57,8 +58,9 @@ namespace RelayAgent.Client
             AddButton("Start", 20, 235, StartService);
             AddButton("Stop", 140, 235, StopService);
             AddButton("Refresh", 260, 235, (s, e) => RefreshStatus());
+            AddButton("Check Update", 380, 235, CheckUpdate);
 
-            _status.SetBounds(20, 285, 550, 30);
+            _status.SetBounds(20, 295, 550, 45);
             _status.AutoEllipsis = true;
             Controls.Add(_status);
         }
@@ -137,14 +139,14 @@ namespace RelayAgent.Client
 
         private void InstallService(object sender, EventArgs e)
         {
-            var serviceExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RelayAgent.Service.exe");
-            if (!File.Exists(serviceExe))
+            var clientExe = Process.GetCurrentProcess().MainModule.FileName;
+            if (!File.Exists(clientExe))
             {
-                MessageBox.Show("RelayAgent.Service.exe must be in the same folder as this client.", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("Unable to locate RelayAgent.Client.exe.", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
-            RunSc("create " + AgentConfig.ServiceName + " binPath= \"" + serviceExe + "\" start= auto DisplayName= \"Relay MCP Agent\"");
+            RunSc("create " + AgentConfig.ServiceName + " binPath= \"\\\"" + clientExe + "\\\" --service\" start= auto DisplayName= \"Relay MCP Agent\"");
             RunSc("description " + AgentConfig.ServiceName + " Outbound Relay MCP agent for server-side command execution.");
             RefreshStatus();
         }
@@ -166,6 +168,36 @@ namespace RelayAgent.Client
         {
             RunSc("stop " + AgentConfig.ServiceName);
             RefreshStatus();
+        }
+
+        private async void CheckUpdate(object sender, EventArgs e)
+        {
+            await RunUpdateAsync();
+        }
+
+        private async Task RunUpdateAsync()
+        {
+            try
+            {
+                _status.Text = "Checking GitHub release...";
+                var updater = new AutoUpdater();
+                var update = await updater.CheckLatestAsync();
+                var answer = MessageBox.Show("Latest release is " + update.TagName + ". Download and restart this client?", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (answer != DialogResult.Yes)
+                {
+                    RefreshStatus();
+                    return;
+                }
+
+                _status.Text = "Downloading update...";
+                await updater.StageAndRestartAsync(update);
+                Application.Exit();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                RefreshStatus();
+            }
         }
 
         private void RefreshStatus()
@@ -228,4 +260,3 @@ namespace RelayAgent.Client
         }
     }
 }
-

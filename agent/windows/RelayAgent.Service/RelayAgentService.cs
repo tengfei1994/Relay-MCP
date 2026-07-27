@@ -69,7 +69,7 @@ namespace RelayAgent.Service
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine(DateTimeOffset.Now.ToString("o") + " " + ex.Message);
+                    Log("Polling error: " + ex);
                 }
 
                 var delay = Math.Max(2, config.PollSeconds);
@@ -80,7 +80,7 @@ namespace RelayAgent.Service
         private static HttpClient CreateClient(AgentConfig config)
         {
             var client = new HttpClient();
-            client.Timeout = TimeSpan.FromSeconds(60);
+            client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Add("Authorization", "Bearer " + config.Token);
             client.DefaultRequestHeaders.Add("X-Relay-Agent-Id", config.AgentId);
             return client;
@@ -97,7 +97,10 @@ namespace RelayAgent.Service
             });
             using (var content = new StringContent(json, Encoding.UTF8, "application/json"))
             {
-                await client.PostAsync(config.RelayUrl + "/api/agents/heartbeat", content, token);
+                using (var response = await client.PostAsync(config.RelayUrl + "/api/agents/heartbeat", content, token))
+                {
+                    await EnsureSuccessAsync(response, "heartbeat");
+                }
             }
         }
 
@@ -118,9 +121,33 @@ namespace RelayAgent.Service
                     var job = serializer.Deserialize<AgentJob>(body);
                     if (job != null && !string.IsNullOrWhiteSpace(job.jobId))
                     {
-                        await PostEventAsync(client, config, job.jobId, "started", token);
-                        var result = await ExecuteJobAsync(job, token);
-                        await PostResultAsync(client, config, job.jobId, result, token);
+                        Log("Claimed job " + job.jobId + " kind=" + job.kind);
+                        AgentResult result;
+                        try
+                        {
+                            await PostEventAsync(client, config, job.jobId, "started", token);
+                            result = await ExecuteJobAsync(job, token);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log("Job " + job.jobId + " failed before result: " + ex);
+                            result = new AgentResult
+                            {
+                                status = "failed",
+                                exitCode = 1,
+                                stderr = ex.ToString()
+                            };
+                        }
+
+                        try
+                        {
+                            await PostResultAsync(client, config, job.jobId, result, token);
+                            Log("Posted result for job " + job.jobId + " status=" + result.status + " exitCode=" + result.exitCode);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log("Failed to post result for job " + job.jobId + ": " + ex);
+                        }
                     }
                 }
             }
@@ -129,6 +156,10 @@ namespace RelayAgent.Service
         private static async Task<AgentResult> ExecuteJobAsync(AgentJob job, CancellationToken token)
         {
             var isPowerShell = string.Equals(job.kind, "powershell", StringComparison.OrdinalIgnoreCase);
+            if (job.payload == null)
+            {
+                throw new InvalidOperationException("Agent job payload was null.");
+            }
             var command = isPowerShell ? job.payload.script : job.payload.command;
             if (string.IsNullOrWhiteSpace(command))
             {
@@ -195,7 +226,10 @@ namespace RelayAgent.Service
             var url = config.RelayUrl + "/api/agents/" + Uri.EscapeDataString(config.AgentId) + "/jobs/" + Uri.EscapeDataString(jobId) + "/events";
             using (var content = new StringContent(json, Encoding.UTF8, "application/json"))
             {
-                await client.PostAsync(url, content, token);
+                using (var response = await client.PostAsync(url, content, token))
+                {
+                    await EnsureSuccessAsync(response, "job event");
+                }
             }
         }
 
@@ -206,11 +240,36 @@ namespace RelayAgent.Service
             var url = config.RelayUrl + "/api/agents/" + Uri.EscapeDataString(config.AgentId) + "/jobs/" + Uri.EscapeDataString(jobId) + "/result";
             using (var content = new StringContent(json, Encoding.UTF8, "application/json"))
             {
-                await client.PostAsync(url, content, token);
+                using (var response = await client.PostAsync(url, content, token))
+                {
+                    await EnsureSuccessAsync(response, "job result");
+                }
             }
         }
 
-        private sealed class AgentJob
+        private static async Task EnsureSuccessAsync(HttpResponseMessage response, string operation)
+        {
+            if (response.IsSuccessStatusCode)
+            {
+                return;
+            }
+            var body = await response.Content.ReadAsStringAsync();
+            throw new HttpRequestException(operation + " returned " + (int)response.StatusCode + " " + response.ReasonPhrase + ": " + body);
+        }
+
+        private static void Log(string message)
+        {
+            try
+            {
+                System.IO.Directory.CreateDirectory(AgentConfig.ConfigDirectory);
+                System.IO.File.AppendAllText(
+                    System.IO.Path.Combine(AgentConfig.ConfigDirectory, "agent.log"),
+                    DateTimeOffset.Now.ToString("o") + " " + message + Environment.NewLine);
+            }
+            catch { }
+        }
+
+        public sealed class AgentJob
         {
             public string jobId { get; set; }
             public string kind { get; set; }
@@ -218,13 +277,13 @@ namespace RelayAgent.Service
             public int timeoutMs { get; set; }
         }
 
-        private sealed class AgentPayload
+        public sealed class AgentPayload
         {
             public string command { get; set; }
             public string script { get; set; }
         }
 
-        private sealed class AgentResult
+        public sealed class AgentResult
         {
             public string status { get; set; }
             public string message { get; set; }

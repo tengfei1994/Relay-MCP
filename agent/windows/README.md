@@ -10,6 +10,12 @@ The client writes configuration to:
 %ProgramData%\RelayMcpAgent\agent.env
 ```
 
+Service diagnostics are appended to:
+
+```text
+%ProgramData%\RelayMcpAgent\agent.log
+```
+
 ## Build
 
 Run from this folder on a Windows machine with Visual Studio Build Tools:

@@ -2,6 +2,7 @@ using RelayAgent.Shared;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Threading;
@@ -172,51 +173,67 @@ namespace RelayAgent.Service
                 };
             }
 
-            var info = new ProcessStartInfo();
-            if (isPowerShell)
+            string scriptPath = null;
+            try
             {
-                var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(command));
-                info.FileName = "powershell.exe";
-                info.Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + encoded;
-            }
-            else
-            {
-                info.FileName = "cmd.exe";
-                info.Arguments = "/d /s /c " + command;
-            }
-            info.UseShellExecute = false;
-            info.CreateNoWindow = true;
-            info.RedirectStandardOutput = true;
-            info.RedirectStandardError = true;
-
-            using (var process = new Process())
-            {
-                process.StartInfo = info;
-                process.Start();
-                var stdoutTask = process.StandardOutput.ReadToEndAsync();
-                var stderrTask = process.StandardError.ReadToEndAsync();
-                var timeoutMs = Math.Max(1000, job.timeoutMs);
-                var exitTask = Task.Run(() => process.WaitForExit(), token);
-                var finished = await Task.WhenAny(exitTask, Task.Delay(timeoutMs, token));
-                if (finished != exitTask)
+                var info = new ProcessStartInfo();
+                var jobsDirectory = Path.Combine(AgentConfig.ConfigDirectory, "jobs");
+                Directory.CreateDirectory(jobsDirectory);
+                if (isPowerShell)
                 {
-                    try { process.Kill(); } catch { }
+                    scriptPath = Path.Combine(jobsDirectory, "relay-" + Guid.NewGuid().ToString("N") + ".ps1");
+                    File.WriteAllText(scriptPath, command, new UTF8Encoding(true));
+                    info.FileName = "powershell.exe";
+                    info.Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + scriptPath + "\"";
+                }
+                else
+                {
+                    scriptPath = Path.Combine(jobsDirectory, "relay-" + Guid.NewGuid().ToString("N") + ".cmd");
+                    File.WriteAllText(scriptPath, command, Encoding.Default);
+                    info.FileName = "cmd.exe";
+                    info.Arguments = "/d /s /c \"\"" + scriptPath + "\"\"";
+                }
+                info.UseShellExecute = false;
+                info.CreateNoWindow = true;
+                info.RedirectStandardOutput = true;
+                info.RedirectStandardError = true;
+
+                using (var process = new Process())
+                {
+                    process.StartInfo = info;
+                    process.Start();
+                    var stdoutTask = process.StandardOutput.ReadToEndAsync();
+                    var stderrTask = process.StandardError.ReadToEndAsync();
+                    var timeoutMs = Math.Max(1000, job.timeoutMs);
+                    var exitTask = Task.Run(() => process.WaitForExit(), token);
+                    var finished = await Task.WhenAny(exitTask, Task.Delay(timeoutMs, token));
+                    if (finished != exitTask)
+                    {
+                        try { process.Kill(); } catch { }
+                        return new AgentResult
+                        {
+                            status = "failed",
+                            exitCode = 124,
+                            stderr = "Agent command timed out after " + timeoutMs + "ms."
+                        };
+                    }
+
+                    await Task.WhenAll(stdoutTask, stderrTask);
                     return new AgentResult
                     {
-                        status = "failed",
-                        exitCode = 124,
-                        stderr = "Agent command timed out after " + timeoutMs + "ms."
+                        status = process.ExitCode == 0 ? "completed" : "failed",
+                        exitCode = process.ExitCode,
+                        stdout = stdoutTask.Result,
+                        stderr = stderrTask.Result
                     };
                 }
-
-                await Task.WhenAll(stdoutTask, stderrTask);
-                return new AgentResult
+            }
+            finally
+            {
+                if (!string.IsNullOrWhiteSpace(scriptPath))
                 {
-                    status = process.ExitCode == 0 ? "completed" : "failed",
-                    exitCode = process.ExitCode,
-                    stdout = stdoutTask.Result,
-                    stderr = stderrTask.Result
-                };
+                    try { File.Delete(scriptPath); } catch { }
+                }
             }
         }
 

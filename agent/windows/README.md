@@ -69,5 +69,7 @@ POST /api/agents/{agentId}/jobs/{jobId}/result
 ```
 
 These endpoints are the Relay Agent protocol surface. The agent can execute
-queued `cmd.exe` commands and Encoded PowerShell jobs, then returns stdout,
-stderr, and exit code to the Relay server.
+queued `cmd.exe` commands and PowerShell jobs, then returns stdout, stderr, and
+exit code to the Relay server. Payloads are written to short-lived `.cmd` or
+`.ps1` files under `%ProgramData%\RelayMcpAgent\jobs`; PowerShell runs with
+`powershell.exe -File`. This avoids the Windows command-line length limit.

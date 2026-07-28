@@ -40,5 +40,9 @@ test("instance discovery returns a normalized candidate list and keeps the scan 
   assert.match(script, /D:\\Custom\\SM/);
   assert.match(script, /name = \$_.Name/);
   assert.match(script, /displayName = \$_.DisplayName/);
+  assert.match(script, /EntityContext\[-_\]/);
+  assert.match(script, /AttachDbFilename/);
+  assert.match(script, /SELECT name FROM sys\.databases/);
+  assert.match(script, /sampleManagerTableCount/);
   assert.doesNotMatch(script, /Restart-Service|Remove-Item|Copy-Item/);
 });

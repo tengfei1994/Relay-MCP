@@ -183,10 +183,14 @@ if (Test-Path -LiteralPath $root) {
 export async function sampleManagerTableSchema(
   runner: RemoteRunner,
   database: string,
-  table: string
+  table: string,
+  databaseHost = "localhost"
 ): Promise<string> {
   if (!/^[A-Za-z0-9_.-]+$/.test(database)) {
     throw new Error(`Invalid database name: ${database}`);
+  }
+  if (!databaseHost.trim() || /[\r\n";]/.test(databaseHost)) {
+    throw new Error(`Invalid database host: ${databaseHost}`);
   }
   const parts = table.split(".");
   if (parts.length > 2 || parts.some((part) => !/^[A-Za-z_][A-Za-z0-9_$#@]*$/.test(part))) {
@@ -196,7 +200,7 @@ export async function sampleManagerTableSchema(
   const tableName = parts.length === 2 ? parts[1] : parts[0];
   const script = `
 $ErrorActionPreference = "Stop"
-$cn = New-Object System.Data.SqlClient.SqlConnection "Server=localhost;Database=${database};Integrated Security=True;TrustServerCertificate=True"
+$cn = New-Object System.Data.SqlClient.SqlConnection "Server=${databaseHost};Database=${database};Integrated Security=True;TrustServerCertificate=True"
 try {
   $cn.Open()
   $cmd = $cn.CreateCommand()
@@ -287,6 +291,7 @@ export interface SqlOptions {
   includeResultSets?: boolean;
   parameters?: Record<string, SqlParameterValue>;
   identifiers?: Record<string, string>;
+  databaseHost?: string;
 }
 
 export type SqlParameterValue = string | number | boolean | null;
@@ -343,6 +348,7 @@ export async function runSql(
   const maxRows = Math.max(1, Math.min(sqlOptions.maxRows ?? 100, 1000));
   const offset = Math.max(0, Math.trunc(sqlOptions.offset ?? 0));
   const includeResultSets = sqlOptions.includeResultSets ?? false;
+  const databaseHost = (sqlOptions.databaseHost ?? "localhost").trim();
   const finalSql = renderSqlIdentifiers(sql, sqlOptions.identifiers);
   const parameters = validateSqlParameters(sqlOptions.parameters);
   if (!allowMutation && sqlContainsMutation(finalSql)) {
@@ -351,11 +357,14 @@ export async function runSql(
   if (!/^[A-Za-z0-9_.-]+$/.test(database)) {
     throw new Error(`Invalid database name: ${database}`);
   }
+  if (!databaseHost || /[\r\n";]/.test(databaseHost)) {
+    throw new Error(`Invalid database host: ${databaseHost}`);
+  }
   const sqlBase64 = Buffer.from(finalSql, "utf8").toString("base64");
   const parametersBase64 = Buffer.from(JSON.stringify(parameters), "utf8").toString("base64");
   const script = `
 $ErrorActionPreference = "Stop"
-$cs = "Server=localhost;Database=${database};Integrated Security=True;TrustServerCertificate=True"
+$cs = "Server=${databaseHost};Database=${database};Integrated Security=True;TrustServerCertificate=True"
 $cn = New-Object System.Data.SqlClient.SqlConnection $cs
 $cmd = $null
 $parameters = $null
@@ -502,6 +511,7 @@ export interface SqlMutationOptions {
   dryRun?: boolean;
   createBackup?: boolean;
   maxRows?: number;
+  databaseHost?: string;
 }
 
 export async function runSqlMutation(
@@ -571,6 +581,7 @@ export async function runSqlMutation(
     maxRows: options.maxRows ?? 100,
     includeResultSets: true,
     parameters,
+    databaseHost: options.databaseHost,
   });
   let result: unknown = raw;
   try { result = JSON.parse(raw); } catch {}

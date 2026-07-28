@@ -94,6 +94,11 @@ version, Windows services, redacted database target, MSBuild installations and
 .NET SDKs. Review and import candidates before they can be selected by a
 project environment.
 
+Database discovery evaluates every connection-string candidate and local ONLINE
+SQL Server database against SampleManager core tables. LocalDB, attached
+`EntityContext-*`, and OData service metadata databases are retained as
+diagnostic candidates but excluded from LIMS business-database selection.
+
 Project links may bind an environment to one confirmed LIMS instance. Once
 bound, MCP SampleManager tools automatically use that instance's paths,
 database, service list and build profile. A conflicting `instance` or

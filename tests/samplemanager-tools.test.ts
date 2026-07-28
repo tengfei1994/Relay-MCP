@@ -49,6 +49,7 @@ test("structured SQL mutation generates before, backup, update, after, and rollb
     values: { DESCRIPTION: "Updated" },
     where: "IDENTITY = @identity",
     parameters: { identity: "AST284" },
+    databaseHost: "SQL01\\HKJC",
     dryRun: true,
     createBackup: true,
   }));
@@ -63,6 +64,7 @@ test("structured SQL mutation generates before, backup, update, after, and rollb
   assert.match(sql, /ROLLBACK TRANSACTION/);
   assert.equal(result.dryRun, true);
   assert.equal(result.backupPersisted, false);
+  assert.match(executedScript, /Server=SQL01\\HKJC;Database=vgsm/);
 });
 
 test("structured SQL mutation rejects update without a where predicate", async () => {

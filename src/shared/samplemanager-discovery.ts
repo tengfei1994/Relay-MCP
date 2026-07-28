@@ -139,69 +139,152 @@ foreach ($root in @($roots)) {
   $databaseName = ''
   $databaseAuthType = 'unknown'
   $databaseConfigSource = ''
+  $databaseCandidates = @()
   $configRoots = @($exe, (Join-Path $root 'Data'))
   $configFiles = @($configRoots | Where-Object { Test-Path -LiteralPath $_ } |
     ForEach-Object { Get-ChildItem -LiteralPath $_ -File -Recurse -ErrorAction SilentlyContinue |
       Where-Object { $_.Extension -in '.config','.json','.ini','.xml' } |
       Select-Object -First 100 })
   foreach ($file in $configFiles) {
-    if ($databaseName) { break }
     $text = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction SilentlyContinue
     if (-not $text) { continue }
-    $serverMatch = [regex]::Match($text, '(?i)(?:Data Source|Server)\s*=\s*([^;"<]+)')
-    $databaseMatch = [regex]::Match($text, '(?i)(?:Initial Catalog|Database)\s*=\s*([^;"<]+)')
-    if ($databaseMatch.Success) {
-      $databaseName = $databaseMatch.Groups[1].Value.Trim()
-      $databaseHost = if ($serverMatch.Success) { $serverMatch.Groups[1].Value.Trim() } else { '' }
-      $databaseAuthType = if ($text -match '(?i)(Integrated Security\s*=\s*(true|sspi)|Trusted_Connection\s*=\s*true)') { 'windows' } else { 'sql-or-unknown' }
-      $databaseConfigSource = $file.FullName
+    $connectionStrings = @([regex]::Matches($text, '(?i)(?:Data Source|Server)\s*=\s*[^;"<]+(?:;[^"<\r\n]+)*'))
+    foreach ($connectionStringMatch in $connectionStrings) {
+      $connectionText = $connectionStringMatch.Value
+      $serverMatch = [regex]::Match($connectionText, '(?i)(?:Data Source|Server)\s*=\s*([^;"<]+)')
+      $databaseMatch = [regex]::Match($connectionText, '(?i)(?:Initial Catalog|Database)\s*=\s*([^;"<]+)')
+      if (-not $databaseMatch.Success) { continue }
+      $candidateHost = $serverMatch.Groups[1].Value.Trim()
+      $candidateName = $databaseMatch.Groups[1].Value.Trim()
+      $isLocalDb = $candidateHost -match '(?i)\(localdb\)' -or $connectionText -match '(?i)AttachDbFilename\s*='
+      $isEntityContext = $candidateName -match '(?i)^EntityContext[-_]' -or $file.Name -match '(?i)ODataService'
+      $candidate = [ordered]@{
+        host = $candidateHost
+        name = $candidateName
+        authType = if ($connectionText -match '(?i)(Integrated Security\s*=\s*(true|sspi)|Trusted_Connection\s*=\s*true)') { 'windows' } else { 'sql-or-unknown' }
+        source = $file.FullName
+        auxiliary = $isLocalDb -or $isEntityContext
+        auxiliaryReason = if ($isEntityContext) { 'entity-context-or-odata' } elseif ($isLocalDb) { 'localdb-or-attached-file' } else { $null }
+        probeStatus = 'not-probed'
+        tableCount = $null
+        sampleManagerTableCount = 0
+        error = $null
+        score = if ($isLocalDb -or $isEntityContext) { -100 } else { 10 }
+      }
+      $duplicate = $databaseCandidates | Where-Object {
+        $_.host -eq $candidate.host -and $_.name -eq $candidate.name
+      } | Select-Object -First 1
+      if (-not $duplicate) { $databaseCandidates += [pscustomobject]$candidate }
     }
   }
 
-  $databaseProbe = [ordered]@{ status = 'unavailable' }
-  if ($databaseHost -and $databaseName -and $databaseAuthType -eq 'windows') {
+  # Enumerate the local default SQL Server because the LIMS business database
+  # connection is not necessarily present in OData/client configuration files.
+  $masterConnection = $null
+  try {
+    $masterConnection = New-Object System.Data.SqlClient.SqlConnection 'Server=localhost;Database=master;Integrated Security=SSPI;TrustServerCertificate=True;Connection Timeout=5'
+    $masterConnection.Open()
+    $masterCommand = $masterConnection.CreateCommand()
+    $masterCommand.CommandTimeout = 15
+    $masterCommand.CommandText = "SELECT name FROM sys.databases WHERE state_desc = 'ONLINE' AND database_id > 4"
+    $masterReader = $masterCommand.ExecuteReader()
+    while ($masterReader.Read()) {
+      $localDatabaseName = $masterReader.GetString(0)
+      $duplicate = $databaseCandidates | Where-Object {
+        $_.host -eq 'localhost' -and $_.name -eq $localDatabaseName
+      } | Select-Object -First 1
+      if (-not $duplicate) {
+        $databaseCandidates += [pscustomobject][ordered]@{
+          host = 'localhost'
+          name = $localDatabaseName
+          authType = 'windows'
+          source = 'localhost-sys.databases'
+          auxiliary = $localDatabaseName -match '(?i)^EntityContext[-_]'
+          auxiliaryReason = if ($localDatabaseName -match '(?i)^EntityContext[-_]') { 'entity-context' } else { $null }
+          probeStatus = 'not-probed'
+          tableCount = $null
+          sampleManagerTableCount = 0
+          error = $null
+          score = if ($localDatabaseName -match '(?i)^EntityContext[-_]') { -100 } else { 15 }
+        }
+      }
+    }
+    $masterReader.Close()
+  } catch {
+    # Discovery remains useful when the service identity cannot enumerate SQL.
+  } finally {
+    if ($masterConnection) { $masterConnection.Dispose() }
+  }
+
+  # A local default database named after the instance is a useful candidate even
+  # when its connection string is stored outside the files scanned above.
+  if (-not ($databaseCandidates | Where-Object { $_.host -eq 'localhost' -and $_.name -eq $name })) {
+    $databaseCandidates += [pscustomobject][ordered]@{
+      host = 'localhost'
+      name = $name
+      authType = 'windows'
+      source = 'inferred-from-instance-name'
+      auxiliary = $false
+      auxiliaryReason = $null
+      probeStatus = 'not-probed'
+      tableCount = $null
+      sampleManagerTableCount = 0
+      error = $null
+      score = 5
+    }
+  }
+
+  $coreTables = @('VERSION','MASTER_MENU','TASK','FORM','WORKFLOW_NODE','LAB_EXECUTION')
+  foreach ($candidate in $databaseCandidates) {
+    if ($candidate.authType -ne 'windows' -or $candidate.auxiliary) { continue }
     $connection = $null
     try {
-      $connectionString = "Server=$databaseHost;Database=$databaseName;Integrated Security=SSPI;TrustServerCertificate=True;Connection Timeout=5"
+      $connectionString = "Server=$($candidate.host);Database=$($candidate.name);Integrated Security=SSPI;TrustServerCertificate=True;Connection Timeout=5"
       $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
       $connection.Open()
       $command = $connection.CreateCommand()
       $command.CommandTimeout = 15
       $command.CommandText = @'
-SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE
-FROM INFORMATION_SCHEMA.COLUMNS
-ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION
+SELECT TABLE_NAME
+FROM INFORMATION_SCHEMA.TABLES
+WHERE TABLE_TYPE = 'BASE TABLE'
 '@
       $reader = $command.ExecuteReader()
-      $schemaLines = New-Object 'System.Collections.Generic.List[string]'
       $tables = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
       while ($reader.Read()) {
-        $tableKey = "$($reader.GetString(0)).$($reader.GetString(1))"
-        $null = $tables.Add($tableKey)
-        $null = $schemaLines.Add("$tableKey|$($reader.GetString(2))|$($reader.GetString(3))|$($reader.GetString(4))")
+        $null = $tables.Add($reader.GetString(0))
       }
       $reader.Close()
-      $sha = [Security.Cryptography.SHA256]::Create()
-      try {
-        $bytes = [Text.Encoding]::UTF8.GetBytes(($schemaLines -join [Environment]::NewLine))
-        $fingerprint = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
-      } finally {
-        $sha.Dispose()
-      }
-      $databaseProbe = [ordered]@{
-        status = 'verified'
-        tableCount = $tables.Count
-        columnCount = $schemaLines.Count
-        schemaFingerprint = "sha256:$fingerprint"
-      }
+      $coreCount = @($coreTables | Where-Object { $tables.Contains($_) }).Count
+      $candidate.probeStatus = 'verified'
+      $candidate.tableCount = $tables.Count
+      $candidate.sampleManagerTableCount = $coreCount
+      $candidate.score += ($coreCount * 25) + [Math]::Min($tables.Count, 100)
     } catch {
-      $databaseProbe = [ordered]@{
-        status = 'failed'
-        error = $_.Exception.Message
-      }
+      $candidate.probeStatus = 'failed'
+      $candidate.error = $_.Exception.Message
     } finally {
       if ($connection) { $connection.Dispose() }
     }
+  }
+
+  $selectedDatabase = $databaseCandidates |
+    Where-Object { -not $_.auxiliary } |
+    Sort-Object score -Descending |
+    Select-Object -First 1
+  if ($selectedDatabase) {
+    $databaseHost = $selectedDatabase.host
+    $databaseName = $selectedDatabase.name
+    $databaseAuthType = $selectedDatabase.authType
+    $databaseConfigSource = $selectedDatabase.source
+  }
+  $databaseProbe = [ordered]@{
+    status = if ($selectedDatabase) { $selectedDatabase.probeStatus } else { 'unavailable' }
+    tableCount = if ($selectedDatabase) { $selectedDatabase.tableCount } else { $null }
+    sampleManagerTableCount = if ($selectedDatabase) { $selectedDatabase.sampleManagerTableCount } else { 0 }
+    score = if ($selectedDatabase) { $selectedDatabase.score } else { $null }
+    error = if ($selectedDatabase) { $selectedDatabase.error } else { $null }
+    candidates = $databaseCandidates
   }
 
   $buildCandidates = if ($runtimeKind -eq 'dotnet') { @($dotnetCandidates + $msbuildCandidates) } else { @($msbuildCandidates + $dotnetCandidates) }
@@ -209,7 +292,9 @@ ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION
   $warnings = @()
   if (-not $version) { $warnings += 'SampleManager version could not be detected' }
   if ($instanceServices.Count -eq 0) { $warnings += 'No Windows services were confidently associated' }
-  if (-not $databaseName) { $warnings += 'Database target was not found in readable configuration files' }
+  if (-not $databaseName) { $warnings += 'Database target was not found' }
+  elseif ($databaseProbe.sampleManagerTableCount -eq 0) { $warnings += 'Selected database was not verified as a SampleManager LIMS business database' }
+  if (@($databaseCandidates | Where-Object { $_.auxiliary }).Count -gt 0) { $warnings += 'Auxiliary LocalDB/EntityContext databases were excluded from LIMS database selection' }
   if (-not $selected) { $warnings += 'No compatible build tool was detected' }
   $confidence = 40
   if ($version) { $confidence += 20 }

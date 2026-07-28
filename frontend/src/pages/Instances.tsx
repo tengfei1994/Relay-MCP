@@ -172,7 +172,7 @@ export default function InstancesPage() {
                   </p>
                   {candidate.databaseProbe?.status === "verified" && (
                     <p className="text-xs text-green-500 mt-1">
-                      Schema verified: {candidate.databaseProbe.tableCount} tables · {candidate.databaseProbe.columnCount} columns · {candidate.databaseProbe.schemaFingerprint}
+                      Schema verified: {candidate.databaseProbe.tableCount} tables · {candidate.databaseProbe.sampleManagerTableCount ?? 0} SampleManager core tables
                     </p>
                   )}
                   {(candidate.warnings?.length ?? 0) > 0 && (

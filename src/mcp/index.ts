@@ -279,7 +279,12 @@ function createMcpServer(user: McpUser) {
     if (!database) {
       throw new Error("No database is configured for the bound LIMS instance; configure it in the management UI or pass database");
     }
-    return { ...connection, database, configuredInstance: configured };
+    return {
+      ...connection,
+      database,
+      databaseHost: configured?.databaseHost || "localhost",
+      configuredInstance: configured,
+    };
   }
 
   function executionForJob(context?: JobContext) {
@@ -1600,14 +1605,15 @@ else {
     },
     async ({ project: projectName, database, table, environment }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner, database: targetDatabase } = getSampleManagerDatabaseTarget(projectName, environment, database);
-      const text = await sampleManagerTableSchema(runner, targetDatabase, table);
+      const { runner, database: targetDatabase, databaseHost } = getSampleManagerDatabaseTarget(projectName, environment, database);
+      const text = await sampleManagerTableSchema(runner, targetDatabase, table, databaseHost);
       writeAudit({
         userId: user.id,
         username: user.username,
         project: resolvedProjectName,
         tool: "samplemanager_table_schema",
         database: targetDatabase,
+        databaseHost,
         table,
       });
       return { content: [{ type: "text", text }] };
@@ -1631,14 +1637,15 @@ else {
     },
     async ({ project: projectName, database, sql, environment, allowMutation = false, maxRows, offset, includeResultSets, parameters, identifiers }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner, database: targetDatabase } = getSampleManagerDatabaseTarget(projectName, environment, database);
-      const text = await runSql(runner, targetDatabase, sql, { allowMutation, maxRows, offset, includeResultSets, parameters, identifiers });
+      const { runner, database: targetDatabase, databaseHost } = getSampleManagerDatabaseTarget(projectName, environment, database);
+      const text = await runSql(runner, targetDatabase, sql, { allowMutation, maxRows, offset, includeResultSets, parameters, identifiers, databaseHost });
       writeAudit({
         userId: user.id,
         username: user.username,
         project: resolvedProjectName,
         tool: "samplemanager_sql_query",
         database: targetDatabase,
+        databaseHost,
         allowMutation,
         maxRows,
         offset,
@@ -1675,15 +1682,16 @@ else {
         throw new Error(`SQL file '${relPath}' does not exist in project '${resolvedProjectName}'`);
       }
 
-      const { runner, database: targetDatabase } = getSampleManagerDatabaseTarget(projectName, environment, database);
+      const { runner, database: targetDatabase, databaseHost } = getSampleManagerDatabaseTarget(projectName, environment, database);
       const sql = readFileSync(fullPath, "utf8");
-      const text = await runSql(runner, targetDatabase, sql, { allowMutation, maxRows, offset, includeResultSets, parameters, identifiers });
+      const text = await runSql(runner, targetDatabase, sql, { allowMutation, maxRows, offset, includeResultSets, parameters, identifiers, databaseHost });
       writeAudit({
         userId: user.id,
         username: user.username,
         project: resolvedProjectName,
         tool: "samplemanager_sql_execute_file",
         database: targetDatabase,
+        databaseHost,
         path: relPath,
         allowMutation,
         maxRows,
@@ -1929,7 +1937,7 @@ else {
       deploymentId,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner, database: targetDatabase } = getSampleManagerDatabaseTarget(projectName, environment, database);
+      const { runner, database: targetDatabase, databaseHost } = getSampleManagerDatabaseTarget(projectName, environment, database);
       const text = await withDeploymentStep(
         deploymentId,
         resolvedProjectName,
@@ -1943,6 +1951,7 @@ else {
           dryRun,
           createBackup,
           maxRows,
+          databaseHost,
         })
       );
       writeAudit({
@@ -1951,6 +1960,7 @@ else {
         project: resolvedProjectName,
         tool: "samplemanager_sql_mutation",
         database: targetDatabase,
+        databaseHost,
         operation,
         table,
         where,

@@ -18,6 +18,7 @@ export interface ToolCatalogEntry {
 
 export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: "list_projects", category: "project", description: "List projects allowed by the current MCP token." },
+  { name: "project_server_links_list", category: "project", description: "List exact environment keys, server IDs, names, paths, and LIMS instance bindings for project links." },
   { name: "project_create", category: "project", description: "Create a project workspace and optionally link a remote server." },
   { name: "exec_remote", category: "remote-execution", description: "Execute a shell command with timeout and optional async tracking." },
   { name: "exec_remote_powershell", category: "remote-execution", description: "Execute inline encoded PowerShell with text or structured JSON output." },

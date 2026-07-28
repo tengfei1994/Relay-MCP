@@ -22,7 +22,7 @@ Production Servers (any SSH-accessible host)
 
 ## Features
 
-- **MCP Tools**: `exec_remote`, `exec_remote_powershell`, `exec_remote_script`, `deploy`, `fetch_logs`, `restart_service`, `read/write_remote_file`, `download_remote_file`, `list_remote_files`, `read/write_local_file`, `list_projects`, `project_create`
+- **MCP Tools**: `exec_remote`, `exec_remote_powershell`, `exec_remote_script`, `deploy`, `fetch_logs`, `restart_service`, `read/write_remote_file`, `download_remote_file`, `list_remote_files`, `read/write_local_file`, `list_projects`, `project_server_links_list`, `project_create`
 - **Token-saving tools**: compact command/log output, async job tracking, project memory (`context_record_fact`, `context_search`)
 - **MCP token profiles**: create per-agent tokens from the Web UI, allow one agent to access multiple projects, and manually scope the servers it may use
 - **SampleManager tools**: `samplemanager_deployment_start`, `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_table_schema`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_sql_mutation`, `samplemanager_run_command`, `samplemanager_discover_build_tools`, `samplemanager_build_deploy_assembly`, `samplemanager_deployment_status`, `samplemanager_deployment_finish`
@@ -77,7 +77,7 @@ RelayMCP has two capability layers:
 
 | Scenario | Tools |
 |----------|-------|
-| Project selection and creation | `list_projects`, `project_create` |
+| Project selection and creation | `list_projects`, `project_server_links_list`, `project_create` |
 | Remote command execution | `exec_remote`, `exec_remote_powershell`, `exec_remote_script` |
 | Deployment and restart | `deploy`, `restart_service` |
 | Logs and jobs | `fetch_logs`, `job_list`, `job_status` |
@@ -114,10 +114,17 @@ argument summary. Tests fail when a registered tool is missing from the catalog.
 | Category | Command | Description |
 |---|---|---|
 | Project | `list_projects` | 列出当前 MCP token 允许访问的 project。 |
+| Project | `project_server_links_list` | 列出精确 environment key、Server ID/名称、remotePath 和绑定的 LIMS 实例/数据库。 |
 | Project | `project_create` | 创建 Relay workspace，可同时关联服务器和远程目录。 |
 | Remote execution | `exec_remote` | 执行远程 shell 命令，支持真实超时、异步任务、日志和取消。 |
 | Remote execution | `exec_remote_powershell` | 通过 EncodedCommand 执行 inline PowerShell，支持 text/JSON 输出。 |
 | Remote execution | `exec_remote_script` | 写入并执行远程 `.ps1`，按配置清理或保留失败脚本。 |
+
+`exec_remote`, `exec_remote_powershell`, and `exec_remote_script` accept
+`serverId` or `serverName` in addition to `environment`. Explicit server
+selection is checked against both the project's links and the MCP token's
+server scopes. Environment matching is case-insensitive, and routing errors
+include the available environment/server mappings.
 | Remote execution | `deploy` | 更新远程 Git checkout，记录 deployment ID、前后 commit、输出与回滚状态。 |
 | Remote execution | `fetch_logs` | 获取 Windows 文件日志、systemd、PM2 或 Docker 日志，支持时间窗口或 deployment ID。 |
 | Remote execution | `restart_service` | 重启 Windows Service、systemd、PM2 process 或 Docker container。 |
@@ -507,7 +514,7 @@ RelayMCP 服务器（Ubuntu VM）
 
 ## 功能特性
 
-- **MCP 工具**：`exec_remote`（执行命令）、`exec_remote_powershell`、`exec_remote_script`、`deploy`（部署）、`fetch_logs`（获取日志）、`restart_service`（重启服务）、`download_remote_file`（远程文件回传）、远程/本地文件读写、项目列表查询、`project_create`（创建项目）
+- **MCP 工具**：`exec_remote`（执行命令）、`exec_remote_powershell`、`exec_remote_script`、`deploy`（部署）、`fetch_logs`（获取日志）、`restart_service`（重启服务）、`download_remote_file`（远程文件回传）、远程/本地文件读写、项目列表及 Server Link 查询、`project_create`（创建项目）
 - **节省 token 工具**：输出压缩、异步 job、项目事实记忆（`context_record_fact`、`context_search`）
 - **MCP token profile**：在 Web UI 手动生成 agent token，一个 agent 可访问多个 project，但可用 server 必须手动授权
 - **SampleManager 工具**：实例重启、FormsBin 缓存清理、近期错误检索、SQL 查询、SQL 文件执行、SampleManagerCommand 封装
@@ -538,7 +545,7 @@ RelayMCP 的能力分两层：
 
 | 场景 | 工具 |
 |------|------|
-| Project 选择与创建 | `list_projects`, `project_create` |
+| Project 选择与创建 | `list_projects`, `project_server_links_list`, `project_create` |
 | 远程命令执行 | `exec_remote`, `exec_remote_powershell`, `exec_remote_script` |
 | 部署和重启 | `deploy`, `restart_service` |
 | 日志和异步任务 | `fetch_logs`, `job_list`, `job_status` |

@@ -7,6 +7,7 @@ import Database from "better-sqlite3";
 import { ProjectRegistry } from "./project-registry.js";
 import { ensureRemoteSuccess, RemoteRunner } from "../shared/remote-runner.js";
 import { AgentRemoteRunner } from "../shared/agent-remote-runner.js";
+import { selectProjectTarget } from "../shared/project-target-selection.js";
 import { compactText, compactTextWithMetadata, sanitizeStructuredOutput, summarizeExec, summarizeJson } from "../shared/output.js";
 import { cancelJob, getJob, listJobs, startJob, writeAudit, type JobContext } from "../shared/job-store.js";
 import { recordFact, searchFacts } from "../shared/context-store.js";
@@ -165,7 +166,11 @@ function createMcpServer(user: McpUser) {
           needsProjectSelection: true,
           message: "No project selected. Ask the user whether to create a new project or use an existing one, then pass the project name.",
           canCreateProjects: Boolean(user.canCreateProjects),
-          projects: allowedProjects.map((project) => ({ name: project.name, id: project.id })),
+          projects: allowedProjects.map((project) => ({
+            name: project.name,
+            id: project.id,
+            serverLinks: projectLinkSummaries(project.id),
+          })),
         })
       );
     }
@@ -176,32 +181,26 @@ function createMcpServer(user: McpUser) {
     return resolved;
   }
 
-  function getRunner(projectName?: string, environment?: string) {
+  function getRunner(
+    projectName?: string,
+    environment?: string,
+    selector: { serverId?: number; serverName?: string } = {}
+  ) {
     const resolvedProjectName = resolveProjectName(projectName);
-    const resolvedEnvironment = environment || user.defaultEnvironment || "production";
     const project = registry.getProject(user.id, resolvedProjectName);
     if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
 
     const allProjectServers = registry.getProjectServers(project.id);
-    const environmentLinks = allProjectServers.filter((s) => s.environment === resolvedEnvironment);
     const allowedServerIds = listAllowedServerIds();
-    const projectServers = environmentLinks.filter((s) => allowedServerIds.includes(s.server.id));
-    const explicitlyScopedLink = user.projectServerId
-      ? environmentLinks.find((s) => s.id === user.projectServerId)
-      : undefined;
-    const ps = explicitlyScopedLink
-      ? explicitlyScopedLink
-      : user.defaultServerId
-        ? projectServers.find((s) => s.server.id === user.defaultServerId)
-        : projectServers[0];
-    if (!ps) {
-      if (environmentLinks.length > 0) {
-        throw new Error(
-          `Server link exists for project '${resolvedProjectName}' env '${resolvedEnvironment}', but it is not allowed for this MCP token`
-        );
-      }
-      throw new Error(`No server link for project '${resolvedProjectName}' env '${resolvedEnvironment}'`);
-    }
+    const ps = selectProjectTarget(resolvedProjectName, allProjectServers, {
+      environment,
+      defaultEnvironment: user.defaultEnvironment,
+      serverId: selector.serverId,
+      serverName: selector.serverName,
+      projectServerId: user.projectServerId,
+      defaultServerId: user.defaultServerId,
+      allowedServerIds,
+    });
 
     const runner = ps.connectionMode === "agent"
       ? (() => {
@@ -348,13 +347,65 @@ function createMcpServer(user: McpUser) {
     }
   }
 
+  function projectLinkSummaries(projectId: number) {
+    const allowedServerIds = listAllowedServerIds();
+    return registry.getProjectServers(projectId)
+      .filter((link) => allowedServerIds.includes(link.server.id))
+      .map((link) => ({
+        linkId: link.id,
+        serverId: link.server.id,
+        serverName: link.server.name,
+        displayName: link.server.name,
+        environment: link.environment,
+        connectionMode: link.connectionMode,
+        status: link.server.status,
+        host: link.server.host || undefined,
+        agentId: link.server.agentId,
+        remotePath: link.remotePath,
+        limsInstance: link.limsInstance ? {
+          id: link.limsInstance.id,
+          name: link.limsInstance.name,
+          version: link.limsInstance.version,
+          runtimeKind: link.limsInstance.runtimeKind,
+          databaseHost: link.limsInstance.databaseHost,
+          databaseName: link.limsInstance.databaseName,
+        } : undefined,
+      }));
+  }
+
   // ── Tool: list_projects ────────────────────────────────────────────────────
   server.tool("list_projects", "List all projects for the current user", {}, async () => {
-    const projects = listAllowedProjects();
+    const projects = listAllowedProjects().map((project) => ({
+      ...project,
+      serverLinks: projectLinkSummaries(project.id),
+    }));
     return {
       content: [{ type: "text", text: JSON.stringify(projects, null, 2) }],
     };
   });
+
+  server.tool(
+    "project_server_links_list",
+    "List selectable server links for one project or every allowed project, including exact environment keys and bound LIMS instances.",
+    {
+      project: z.string().optional().describe("Optional project name. Omit to list links for every allowed project."),
+    },
+    async ({ project: projectName }) => {
+      const projects = projectName
+        ? [registry.getProject(user.id, resolveProjectName(projectName))].filter(Boolean)
+        : listAllowedProjects();
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson(projects.map((project) => ({
+            projectId: project!.id,
+            projectName: project!.name,
+            serverLinks: projectLinkSummaries(project!.id),
+          }))),
+        }],
+      };
+    }
+  );
 
   server.tool(
     "project_create",
@@ -406,12 +457,15 @@ function createMcpServer(user: McpUser) {
       project: z.string().optional().describe("Project name. Optional when the MCP token has a default project."),
       command: z.string().describe("Shell command to run"),
       environment: z.string().optional().describe("Target environment (default: production)"),
+      serverId: z.number().int().optional().describe("Exact linked server ID. Use project_server_links_list to discover it."),
+      serverName: z.string().optional().describe("Exact linked server display name, matched case-insensitively."),
       timeoutMs: z.number().optional().describe("Command timeout in milliseconds (default 60000)"),
       async: z.boolean().optional().describe("Run as an async job and return a jobId."),
     },
-    async ({ project: projectName, command, environment, timeoutMs = 60000, async = false }) => {
+    async ({ project: projectName, command, environment, serverId, serverName, timeoutMs = 60000, async = false }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { ps, runner } = getRunner(projectName, environment);
+      const { ps, runner } = getRunner(projectName, environment, { serverId, serverName });
+      const targetLabel = ps.server.host || ps.server.agentId || ps.server.name;
       const work = async (context?: JobContext) => {
         const result = await runner.exec(command, timeoutMs, executionForJob(context));
         ensureRemoteSuccess(result);
@@ -420,16 +474,18 @@ function createMcpServer(user: McpUser) {
           username: user.username,
           project: resolvedProjectName,
           tool: "exec_remote",
-          environment: environment ?? "production",
-          host: ps.server.host,
+          environment: ps.environment,
+          serverId: ps.server.id,
+          serverName: ps.server.name,
+          host: targetLabel,
           command,
           async,
           exitCode: result.code,
         });
-        return `[${ps.server.host}]\n${summarizeExec(command, result)}`;
+        return `[${targetLabel} | env=${ps.environment} | server=${ps.server.name}#${ps.server.id}]\n${summarizeExec(command, result)}`;
       };
       if (async) {
-        const job = startJob(user, resolvedProjectName, "exec_remote", { command, environment, timeoutMs }, work);
+        const job = startJob(user, resolvedProjectName, "exec_remote", { command, environment, serverId, serverName, timeoutMs }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
@@ -443,6 +499,8 @@ function createMcpServer(user: McpUser) {
       project: z.string().optional().describe("Project name. Optional when the MCP token has a default project."),
       script: z.string().describe("PowerShell script content to execute"),
       environment: z.string().optional().describe("Target environment (default: production)"),
+      serverId: z.number().int().optional().describe("Exact linked server ID. Use project_server_links_list to discover it."),
+      serverName: z.string().optional().describe("Exact linked server display name, matched case-insensitively."),
       timeoutMs: z.number().optional().describe("Command timeout in milliseconds (default 120000)"),
       outputFormat: z.enum(["text", "json"]).optional().describe("Output format. Use json when the script emits objects through ConvertTo-Json."),
       maxDepth: z.number().int().min(1).max(20).optional().describe("Maximum JSON object depth returned; default 6."),
@@ -454,6 +512,8 @@ function createMcpServer(user: McpUser) {
       project: projectName,
       script,
       environment,
+      serverId,
+      serverName,
       timeoutMs = 120000,
       outputFormat = "text",
       maxDepth,
@@ -462,7 +522,8 @@ function createMcpServer(user: McpUser) {
       async = false,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { ps, runner } = getRunner(projectName, environment);
+      const { ps, runner } = getRunner(projectName, environment, { serverId, serverName });
+      const targetLabel = ps.server.host || ps.server.agentId || ps.server.name;
       const work = async (context?: JobContext) => {
         const result = await runner.execPowerShell(script, timeoutMs, executionForJob(context));
         ensureRemoteSuccess(result);
@@ -471,8 +532,10 @@ function createMcpServer(user: McpUser) {
           username: user.username,
           project: resolvedProjectName,
           tool: "exec_remote_powershell",
-          environment: environment ?? "production",
-          host: ps.server.host,
+          environment: ps.environment,
+          serverId: ps.server.id,
+          serverName: ps.server.name,
+          host: targetLabel,
           async,
           exitCode: result.code,
         });
@@ -485,7 +548,10 @@ function createMcpServer(user: McpUser) {
               maxStringLength,
             });
             return summarizeJson({
-              host: ps.server.host,
+              host: targetLabel,
+              serverId: ps.server.id,
+              serverName: ps.server.name,
+              environment: ps.environment,
               exitCode: result.code,
               output: sanitized.value,
               outputDiagnostics: {
@@ -497,7 +563,10 @@ function createMcpServer(user: McpUser) {
           } catch {
             const compact = compactTextWithMetadata(output);
             return summarizeJson({
-              host: ps.server.host,
+              host: targetLabel,
+              serverId: ps.server.id,
+              serverName: ps.server.name,
+              environment: ps.environment,
               exitCode: result.code,
               outputFormat: "json",
               parseError: "PowerShell output was not valid JSON. End the script with ConvertTo-Json -Depth <n> -Compress.",
@@ -508,11 +577,13 @@ function createMcpServer(user: McpUser) {
             });
           }
         }
-        return `[${ps.server.host}]\n${summarizeExec("powershell -EncodedCommand <script>", result)}`;
+        return `[${targetLabel} | env=${ps.environment} | server=${ps.server.name}#${ps.server.id}]\n${summarizeExec("powershell -EncodedCommand <script>", result)}`;
       };
       if (async) {
         const job = startJob(user, resolvedProjectName, "exec_remote_powershell", {
           environment,
+          serverId,
+          serverName,
           timeoutMs,
           outputFormat,
           maxDepth,
@@ -533,6 +604,8 @@ function createMcpServer(user: McpUser) {
       project: z.string().optional().describe("Project name. Optional when the MCP token has a default project."),
       script: z.string().describe("PowerShell script content to write and execute"),
       environment: z.string().optional().describe("Target environment (default: production)"),
+      serverId: z.number().int().optional().describe("Exact linked server ID. Use project_server_links_list to discover it."),
+      serverName: z.string().optional().describe("Exact linked server display name, matched case-insensitively."),
       remotePath: z.string().optional().describe("Optional absolute remote .ps1 path; defaults to C:\\Windows\\Temp\\relay-mcp-*.ps1"),
       timeoutMs: z.number().optional().describe("Script timeout in milliseconds (default 120000)"),
       cleanup: z.boolean().optional().describe("Remove the remote script after execution. Default true."),
@@ -543,6 +616,8 @@ function createMcpServer(user: McpUser) {
       project: projectName,
       script,
       environment,
+      serverId,
+      serverName,
       remotePath,
       timeoutMs = 120000,
       cleanup = true,
@@ -550,7 +625,8 @@ function createMcpServer(user: McpUser) {
       async = true,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { ps, runner } = getRunner(projectName, environment);
+      const { ps, runner } = getRunner(projectName, environment, { serverId, serverName });
+      const targetLabel = ps.server.host || ps.server.agentId || ps.server.name;
       const work = async (context?: JobContext) => {
         const result = await runner.execPowerShellScript(script, {
           remotePath,
@@ -565,15 +641,17 @@ function createMcpServer(user: McpUser) {
           username: user.username,
           project: resolvedProjectName,
           tool: "exec_remote_script",
-          environment: environment ?? "production",
-          host: ps.server.host,
+          environment: ps.environment,
+          serverId: ps.server.id,
+          serverName: ps.server.name,
+          host: targetLabel,
           remotePath: result.remotePath,
           cleanedUp: result.cleanedUp,
           async,
           exitCode: result.code,
         });
         return [
-          `[${ps.server.host}]`,
+          `[${targetLabel} | env=${ps.environment} | server=${ps.server.name}#${ps.server.id}]`,
           `remotePath=${result.remotePath}`,
           `cleanedUp=${result.cleanedUp}`,
           summarizeExec("powershell -File <remote script>", result),
@@ -581,6 +659,8 @@ function createMcpServer(user: McpUser) {
       };
       const job = startJob(user, resolvedProjectName, "exec_remote_script", {
         environment,
+        serverId,
+        serverName,
         remotePath,
         timeoutMs,
         cleanup,

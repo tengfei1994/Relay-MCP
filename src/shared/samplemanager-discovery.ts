@@ -122,10 +122,18 @@ foreach ($root in @($roots)) {
   }
 
   $instanceServices = @($services | Where-Object {
-    ([string]$_.PathName).IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-    ([string]$_.Name).IndexOf($name, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-    ([string]$_.DisplayName).IndexOf($name, [StringComparison]::OrdinalIgnoreCase) -ge 0
-  })
+      ([string]$_.PathName).IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+      ([string]$_.Name).IndexOf($name, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+      ([string]$_.DisplayName).IndexOf($name, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    } | ForEach-Object {
+      [pscustomobject]@{
+        name = $_.Name
+        displayName = $_.DisplayName
+        state = $_.State
+        startMode = $_.StartMode
+        pathName = $_.PathName
+      }
+    })
 
   $databaseHost = ''
   $databaseName = ''

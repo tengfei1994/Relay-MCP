@@ -6,29 +6,47 @@ import { db } from "../db/index.js";
 import { limsInstances, servers } from "../db/schema.js";
 import { createManagedServerRunner } from "../remote-runner-factory.js";
 
-const ServiceSchema = z.object({
+const nullableText = z.string().nullish().transform((value) => value ?? "");
+const arrayOf = <T extends z.ZodTypeAny>(item: T) =>
+  z.preprocess(
+    (value) => value == null ? [] : Array.isArray(value) ? value : [value],
+    z.array(item)
+  );
+
+const ServiceSchema = z.preprocess((value) => {
+  if (!value || typeof value !== "object") return value;
+  const service = value as Record<string, unknown>;
+  return {
+    ...service,
+    name: service.name ?? service.Name,
+    displayName: service.displayName ?? service.DisplayName,
+    state: service.state ?? service.State,
+    startMode: service.startMode ?? service.StartMode,
+    pathName: service.pathName ?? service.PathName,
+  };
+}, z.object({
   name: z.string().min(1),
-  displayName: z.string().default(""),
-  state: z.string().default(""),
-  startMode: z.string().default(""),
-  pathName: z.string().default(""),
-});
+  displayName: nullableText.default(""),
+  state: nullableText.default(""),
+  startMode: nullableText.default(""),
+  pathName: nullableText.default(""),
+}));
 
 const BuildProfileSchema = z.object({
   kind: z.enum(["msbuild", "dotnet", "unknown"]).default("unknown"),
   selectedPath: z.string().optional().nullable(),
   selectedVersion: z.string().optional().nullable(),
   targetFramework: z.string().optional().nullable(),
-  candidates: z.array(z.object({
+  candidates: arrayOf(z.object({
     kind: z.enum(["msbuild", "dotnet"]),
     path: z.string(),
-    version: z.string(),
+    version: nullableText,
   })).default([]),
 });
 
 const InstanceInputSchema = z.object({
   name: z.string().min(1).max(120),
-  version: z.string().max(120).default(""),
+  version: nullableText.pipe(z.string().max(120)).default(""),
   runtimeKind: z.enum(["framework", "dotnet", "unknown"]).default("unknown"),
   rootPath: z.string().min(1),
   exePath: z.string().min(1),
@@ -37,21 +55,21 @@ const InstanceInputSchema = z.object({
   solutionAssembliesPath: z.string().min(1),
   logfilePath: z.string().min(1),
   dataPath: z.string().min(1),
-  databaseHost: z.string().default(""),
-  databaseName: z.string().default(""),
-  databaseAuthType: z.string().default("unknown"),
-  databaseConfigSource: z.string().default(""),
+  databaseHost: nullableText.default(""),
+  databaseName: nullableText.default(""),
+  databaseAuthType: nullableText.default("unknown"),
+  databaseConfigSource: nullableText.default(""),
   databaseProbe: z.object({
     status: z.enum(["verified", "unavailable", "failed"]),
     tableCount: z.number().int().nonnegative().optional(),
     columnCount: z.number().int().nonnegative().optional(),
-    schemaFingerprint: z.string().optional(),
-    error: z.string().optional(),
+    schemaFingerprint: nullableText.optional(),
+    error: nullableText.optional(),
   }).optional(),
-  services: z.array(ServiceSchema).default([]),
+  services: arrayOf(ServiceSchema).default([]),
   buildProfile: BuildProfileSchema.default({ kind: "unknown", candidates: [] }),
   confidence: z.number().min(0).max(100).optional(),
-  warnings: z.array(z.string()).optional(),
+  warnings: arrayOf(z.string()).optional(),
   status: z.enum(["ready", "needs-review", "unavailable"]).optional(),
 });
 
@@ -154,7 +172,12 @@ export async function instanceRoutes(app: FastifyInstance) {
   app.post("/api/servers/:serverId/instances", { onRequest: [app.authenticate] }, async (req, reply) => {
     const { serverId } = req.params as { serverId: string };
     const body = InstanceInputSchema.safeParse(req.body);
-    if (!body.success) return reply.status(400).send({ error: "Invalid instance", details: body.error.issues });
+    if (!body.success) {
+      const summary = body.error.issues
+        .map((issue) => `${issue.path.join(".") || "instance"}: ${issue.message}`)
+        .join("; ");
+      return reply.status(400).send({ error: `Invalid instance: ${summary}`, details: body.error.issues });
+    }
     const server = db.select().from(servers)
       .where(and(eq(servers.id, Number(serverId)), eq(servers.userId, req.user.id))).get();
     if (!server) return reply.status(404).send({ error: "Server not found" });
@@ -170,7 +193,12 @@ export async function instanceRoutes(app: FastifyInstance) {
   app.put("/api/instances/:id", { onRequest: [app.authenticate] }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const body = InstanceInputSchema.safeParse(req.body);
-    if (!body.success) return reply.status(400).send({ error: "Invalid instance", details: body.error.issues });
+    if (!body.success) {
+      const summary = body.error.issues
+        .map((issue) => `${issue.path.join(".") || "instance"}: ${issue.message}`)
+        .join("; ");
+      return reply.status(400).send({ error: `Invalid instance: ${summary}`, details: body.error.issues });
+    }
     const existing = db.select().from(limsInstances)
       .where(and(eq(limsInstances.id, Number(id)), eq(limsInstances.userId, req.user.id))).get();
     if (!existing) return reply.status(404).send({ error: "Instance not found" });

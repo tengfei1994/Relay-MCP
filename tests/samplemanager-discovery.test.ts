@@ -38,5 +38,7 @@ test("instance discovery returns a normalized candidate list and keeps the scan 
   assert.equal(result.length, 1);
   assert.equal(result[0].databaseName, "VGSM");
   assert.match(script, /D:\\Custom\\SM/);
+  assert.match(script, /name = \$_.Name/);
+  assert.match(script, /displayName = \$_.DisplayName/);
   assert.doesNotMatch(script, /Restart-Service|Remove-Item|Copy-Item/);
 });

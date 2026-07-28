@@ -55,7 +55,8 @@ For foreground diagnostics, run:
 The UI also includes a Check Update button. It compares the current release
 with GitHub and downloads the latest
 `RelayAgent.Client.exe` from the GitHub release page, stops the service,
-replaces the executable, restarts the service, and reopens the UI.
+replaces both the running UI executable and the executable path registered for
+the Windows Service, restarts the service, and reopens the UI.
 
 ## Current Protocol
 

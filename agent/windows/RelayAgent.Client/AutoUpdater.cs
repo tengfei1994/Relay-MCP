@@ -2,6 +2,7 @@ using RelayAgent.Shared;
 using System;
 using System.Diagnostics;
 using System.IO;
+using Microsoft.Win32;
 using System.Net.Http;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -11,7 +12,7 @@ namespace RelayAgent.Client
     public sealed class AutoUpdater
     {
         private const string LatestReleaseApi = "https://api.github.com/repos/tengfei1994/Relay-MCP/releases/latest";
-        public const string CurrentRelease = "v0.3.4";
+        public const string CurrentRelease = "v0.3.5";
 
         public async Task<UpdateInfo> CheckLatestAsync()
         {
@@ -34,6 +35,11 @@ namespace RelayAgent.Client
         public async Task StageAndRestartAsync(UpdateInfo update)
         {
             var currentExe = Process.GetCurrentProcess().MainModule.FileName;
+            var serviceExe = GetServiceExecutablePath();
+            if (string.IsNullOrWhiteSpace(serviceExe))
+            {
+                serviceExe = currentExe;
+            }
             var stageDir = Path.Combine(Path.GetTempPath(), "RelayMcpAgentUpdate");
             Directory.CreateDirectory(stageDir);
             var stagedExe = Path.Combine(stageDir, "RelayAgent.Client.exe");
@@ -47,11 +53,15 @@ namespace RelayAgent.Client
             }
 
             var script = Path.Combine(stageDir, "apply-update.cmd");
+            var copyCurrent = string.Equals(currentExe, serviceExe, StringComparison.OrdinalIgnoreCase)
+                ? ""
+                : "copy /Y \"" + stagedExe + "\" \"" + currentExe + "\" >nul\r\n";
             File.WriteAllText(script,
                 "@echo off\r\n" +
                 "net stop " + AgentConfig.ServiceName + " >nul 2>&1\r\n" +
                 "timeout /t 2 /nobreak >nul\r\n" +
-                "copy /Y \"" + stagedExe + "\" \"" + currentExe + "\" >nul\r\n" +
+                "copy /Y \"" + stagedExe + "\" \"" + serviceExe + "\" >nul\r\n" +
+                copyCurrent +
                 "net start " + AgentConfig.ServiceName + " >nul 2>&1\r\n" +
                 "start \"\" \"" + currentExe + "\"\r\n" +
                 "del \"%~f0\"\r\n");
@@ -60,6 +70,27 @@ namespace RelayAgent.Client
             info.UseShellExecute = false;
             info.CreateNoWindow = true;
             Process.Start(info);
+        }
+
+        private static string GetServiceExecutablePath()
+        {
+            using (var key = Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Services\" + AgentConfig.ServiceName))
+            {
+                var imagePath = key == null ? null : key.GetValue("ImagePath") as string;
+                if (string.IsNullOrWhiteSpace(imagePath))
+                {
+                    return "";
+                }
+                var expanded = Environment.ExpandEnvironmentVariables(imagePath.Trim());
+                if (expanded.StartsWith("\"", StringComparison.Ordinal))
+                {
+                    var closingQuote = expanded.IndexOf('"', 1);
+                    return closingQuote > 1 ? expanded.Substring(1, closingQuote - 1) : "";
+                }
+                var serviceArgument = expanded.IndexOf(" --service", StringComparison.OrdinalIgnoreCase);
+                return (serviceArgument > 0 ? expanded.Substring(0, serviceArgument) : expanded).Trim();
+            }
         }
 
         private static string MatchJsonString(string json, string property)

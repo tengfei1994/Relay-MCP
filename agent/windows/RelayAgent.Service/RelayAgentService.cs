@@ -59,9 +59,10 @@ namespace RelayAgent.Service
         {
             while (!token.IsCancellationRequested)
             {
-                var config = AgentConfig.Load();
+                AgentConfig config = null;
                 try
                 {
+                    config = AgentConfig.Load();
                     config.Validate();
                     using (var client = CreateClient(config))
                     {
@@ -74,7 +75,7 @@ namespace RelayAgent.Service
                     Log("Polling error: " + ex);
                 }
 
-                var delay = Math.Max(2, config.PollSeconds);
+                var delay = Math.Max(2, config == null ? 10 : config.PollSeconds);
                 await Task.Delay(TimeSpan.FromSeconds(delay), token).ContinueWith(_ => { });
             }
         }
@@ -98,8 +99,17 @@ namespace RelayAgent.Service
                 ts = DateTimeOffset.UtcNow.ToString("o")
             });
             using (var content = new StringContent(json, Encoding.UTF8, "application/json"))
+            using (var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                config.RelayUrl + "/api/agents/heartbeat"))
             {
-                using (var response = await client.PostAsync(config.RelayUrl + "/api/agents/heartbeat", content, token))
+                request.Content = content;
+                using (var response = await HttpAuditStore.SendAsync(
+                    client,
+                    request,
+                    config,
+                    "",
+                    token))
                 {
                     await EnsureSuccessAsync(response, "heartbeat");
                 }
@@ -109,7 +119,13 @@ namespace RelayAgent.Service
         private static async Task PollOnceAsync(HttpClient client, AgentConfig config, CancellationToken token)
         {
             var url = config.RelayUrl + "/api/agents/" + Uri.EscapeDataString(config.AgentId) + "/jobs/next";
-            using (var response = await client.GetAsync(url, token))
+            using (var request = new HttpRequestMessage(HttpMethod.Get, url))
+            using (var response = await HttpAuditStore.SendAsync(
+                client,
+                request,
+                config,
+                "",
+                token))
             {
                 if (!response.IsSuccessStatusCode)
                 {
@@ -243,8 +259,15 @@ namespace RelayAgent.Service
             var json = serializer.Serialize(new { level = "info", message = message });
             var url = config.RelayUrl + "/api/agents/" + Uri.EscapeDataString(config.AgentId) + "/jobs/" + Uri.EscapeDataString(jobId) + "/events";
             using (var content = new StringContent(json, Encoding.UTF8, "application/json"))
+            using (var request = new HttpRequestMessage(HttpMethod.Post, url))
             {
-                using (var response = await client.PostAsync(url, content, token))
+                request.Content = content;
+                using (var response = await HttpAuditStore.SendAsync(
+                    client,
+                    request,
+                    config,
+                    jobId,
+                    token))
                 {
                     await EnsureSuccessAsync(response, "job event");
                 }
@@ -265,8 +288,15 @@ namespace RelayAgent.Service
             var json = serializer.Serialize(payload);
             var url = config.RelayUrl + "/api/agents/" + Uri.EscapeDataString(config.AgentId) + "/jobs/" + Uri.EscapeDataString(jobId) + "/result";
             using (var content = new StringContent(json, Encoding.UTF8, "application/json"))
+            using (var request = new HttpRequestMessage(HttpMethod.Post, url))
             {
-                using (var response = await client.PostAsync(url, content, token))
+                request.Content = content;
+                using (var response = await HttpAuditStore.SendAsync(
+                    client,
+                    request,
+                    config,
+                    jobId,
+                    token))
                 {
                     await EnsureSuccessAsync(response, "job result");
                 }
@@ -289,7 +319,7 @@ namespace RelayAgent.Service
             {
                 System.IO.Directory.CreateDirectory(AgentConfig.ConfigDirectory);
                 System.IO.File.AppendAllText(
-                    System.IO.Path.Combine(AgentConfig.ConfigDirectory, "agent.log"),
+                    AgentConfig.AgentLogPath,
                     DateTimeOffset.Now.ToString("o") + " " + message + Environment.NewLine);
             }
             catch { }

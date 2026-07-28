@@ -19,21 +19,29 @@
   <ItemGroup>
     <Reference Include="System" />
     <Reference Include="System.Core" />
+    <Reference Include="System.Data" />
     <Reference Include="System.Drawing" />
     <Reference Include="System.Net.Http" />
+    <Reference Include="System.Security" />
     <Reference Include="System.ServiceProcess" />
     <Reference Include="System.Web.Extensions" />
     <Reference Include="System.Windows.Forms" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="AssemblyInfo.cs" />
     <Compile Include="MainForm.cs" />
     <Compile Include="AutoUpdater.cs" />
+    <Compile Include="DatabaseAccessManager.cs" />
+    <Compile Include="UiTheme.cs" />
     <Compile Include="..\RelayAgent.Service\RelayAgentService.cs">
       <Link>RelayAgentService.cs</Link>
     </Compile>
     <Compile Include="..\RelayAgent.Shared\AgentConfig.cs">
       <Link>AgentConfig.cs</Link>
+    </Compile>
+    <Compile Include="..\RelayAgent.Shared\HttpAuditStore.cs">
+      <Link>HttpAuditStore.cs</Link>
     </Compile>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

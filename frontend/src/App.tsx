@@ -6,6 +6,7 @@ import ProjectsPage from "./pages/Projects";
 import ServersPage from "./pages/Servers";
 import UsersPage from "./pages/Users";
 import TokensPage from "./pages/Tokens";
+import InstancesPage from "./pages/Instances";
 import Layout from "./components/Layout";
 
 interface AuthCtx {
@@ -73,6 +74,7 @@ export default function App() {
           <Route index element={<Navigate to="/projects" replace />} />
           <Route path="projects" element={<ProjectsPage />} />
           <Route path="servers" element={<ServersPage />} />
+          <Route path="instances" element={<InstancesPage />} />
           <Route path="tokens" element={<TokensPage />} />
           <Route path="users" element={user?.isAdmin ? <UsersPage /> : <Navigate to="/projects" replace />} />
         </Route>

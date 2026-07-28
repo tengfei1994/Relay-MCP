@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { projects, servers, projectServers } from "../db/schema.js";
+import { limsInstances, projects, servers, projectServers } from "../db/schema.js";
 import { RemoteRunner } from "../../shared/remote-runner.js";
 import { z } from "zod";
 import { quotePosix, quotePowerShell } from "../../shared/shell-utils.js";
@@ -37,9 +37,15 @@ export async function projectServerRoutes(app: FastifyInstance) {
           serverAgentId: servers.agentId,
           serverStatus: servers.status,
           connectionMode: projectServers.connectionMode,
+          limsInstanceId: projectServers.limsInstanceId,
+          limsInstanceName: limsInstances.name,
+          limsInstanceVersion: limsInstances.version,
+          limsRuntimeKind: limsInstances.runtimeKind,
+          limsDatabaseName: limsInstances.databaseName,
         })
         .from(projectServers)
         .innerJoin(servers, eq(projectServers.serverId, servers.id))
+        .leftJoin(limsInstances, eq(projectServers.limsInstanceId, limsInstances.id))
         .where(eq(projectServers.projectId, Number(id)))
         .all();
 
@@ -60,6 +66,7 @@ export async function projectServerRoutes(app: FastifyInstance) {
         remotePath: z.string().optional(),
         environment: z.string().default("production"),
         connectionMode: z.enum(["ssh", "agent"]).optional(),
+        limsInstanceId: z.number().int().optional().nullable(),
       });
       const body = LinkSchema.safeParse(req.body);
       if (!body.success) return reply.status(400).send({ error: "Invalid input" });
@@ -84,6 +91,14 @@ export async function projectServerRoutes(app: FastifyInstance) {
       }
       if (connectionMode === "agent" && !server.agentId) {
         return reply.status(400).send({ error: "Selected server does not have an Agent ID" });
+      }
+      if (body.data.limsInstanceId) {
+        const instance = db.select().from(limsInstances).where(and(
+          eq(limsInstances.id, body.data.limsInstanceId),
+          eq(limsInstances.serverId, server.id),
+          eq(limsInstances.userId, userId),
+        )).get();
+        if (!instance) return reply.status(400).send({ error: "Selected LIMS instance does not belong to this server" });
       }
 
       // Check for duplicate environment
@@ -125,6 +140,7 @@ export async function projectServerRoutes(app: FastifyInstance) {
           remotePath,
           environment: body.data.environment,
           connectionMode,
+          limsInstanceId: body.data.limsInstanceId ?? null,
         })
         .returning()
         .get();

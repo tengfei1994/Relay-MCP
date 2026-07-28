@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   quoteSqlIdentifier,
   renderSqlIdentifiers,
+  instancePaths,
+  restartSampleManagerInstance,
   runSqlMutation,
   sqlContainsMutation,
 } from "../src/shared/samplemanager-tools.ts";
@@ -72,4 +74,42 @@ test("structured SQL mutation rejects update without a where predicate", async (
     }),
     /where is required/
   );
+});
+
+test("instance paths honor discovered custom roots and directories", () => {
+  const paths = instancePaths({
+    name: "SM22",
+    rootPath: "D:\\LIMS\\SM22",
+    exePath: "D:\\LIMS\\SM22\\Runtime",
+    formsPath: "E:\\SharedForms",
+    formsBinPath: "D:\\Cache\\FormsBin",
+    solutionAssembliesPath: "D:\\LIMS\\SM22\\Assemblies",
+    logfilePath: "E:\\Logs\\SM22",
+    dataPath: "E:\\Data\\SM22",
+  });
+  assert.equal(paths.root, "D:\\LIMS\\SM22");
+  assert.equal(paths.exe, "D:\\LIMS\\SM22\\Runtime");
+  assert.equal(paths.forms, "E:\\SharedForms");
+  assert.equal(paths.solutionAssemblies, "D:\\LIMS\\SM22\\Assemblies");
+  assert.equal(paths.logfile, "E:\\Logs\\SM22");
+});
+
+test("instance restart uses explicit service names and instance-scoped process cleanup", async () => {
+  let script = "";
+  const runner = {
+    execPowerShell: async (value: string) => {
+      script = value;
+      return { stdout: "{}", stderr: "", code: 0 };
+    },
+  } as any;
+  await restartSampleManagerInstance(runner, {
+    name: "SM22",
+    rootPath: "D:\\LIMS\\SM22",
+    services: [{ name: "SM22.Queue" }, { name: "SM22.Server" }],
+  });
+  assert.match(script, /SM22\.Queue/);
+  assert.match(script, /SM22\.Server/);
+  assert.match(script, /D:\\LIMS\\SM22/);
+  assert.doesNotMatch(script, /Get-Process SampleManagerServerHost/);
+  assert.match(script, /Get-CimInstance Win32_Process/);
 });

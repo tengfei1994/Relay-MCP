@@ -10,16 +10,37 @@ function psArray(values: string[]): string {
   return `@(${values.map(psQuote).join(", ")})`;
 }
 
-export function instancePaths(instance: string) {
-  const root = `C:\\Thermo\\SampleManager\\Server\\${instance}`;
+export interface SampleManagerInstanceTarget {
+  name: string;
+  rootPath?: string;
+  exePath?: string;
+  formsPath?: string;
+  formsBinPath?: string;
+  solutionAssembliesPath?: string;
+  logfilePath?: string;
+  dataPath?: string;
+  services?: Array<{ name: string }>;
+}
+
+export type SampleManagerInstanceRef = string | SampleManagerInstanceTarget;
+
+function instanceName(instance: SampleManagerInstanceRef): string {
+  return typeof instance === "string" ? instance : instance.name;
+}
+
+export function instancePaths(instance: SampleManagerInstanceRef) {
+  const name = instanceName(instance);
+  const configured = typeof instance === "string" ? undefined : instance;
+  const root = configured?.rootPath || `C:\\Thermo\\SampleManager\\Server\\${name}`;
+  const exe = configured?.exePath || `${root}\\Exe`;
   return {
     root,
-    exe: `${root}\\Exe`,
-    formsBin: `${root}\\Exe\\FormsBin`,
-    forms: `${root}\\Exe\\Forms`,
-    logfile: `${root}\\Logfile`,
-    data: `${root}\\Data`,
-    solutionAssemblies: `${root}\\Exe\\SolutionAssemblies`,
+    exe,
+    formsBin: configured?.formsBinPath || `${exe}\\FormsBin`,
+    forms: configured?.formsPath || `${exe}\\Forms`,
+    logfile: configured?.logfilePath || `${root}\\Logfile`,
+    data: configured?.dataPath || `${root}\\Data`,
+    solutionAssemblies: configured?.solutionAssembliesPath || `${exe}\\SolutionAssemblies`,
     resourceIcon: `${root}\\Resource\\Icon`,
     relayBackups: `${root}\\RelayBackups`,
   };
@@ -27,27 +48,56 @@ export function instancePaths(instance: string) {
 
 export async function restartSampleManagerInstance(
   runner: RemoteRunner,
-  instance: string,
+  instance: SampleManagerInstanceRef,
   execution: RemoteExecutionOptions = {}
 ): Promise<string> {
-  const suffix = instance.toLowerCase();
+  const name = instanceName(instance);
+  const suffix = name.toLowerCase();
+  const paths = instancePaths(instance);
+  const configuredServices = typeof instance === "string" ? [] : (instance.services ?? []).map((service) => service.name);
+  const serviceNames = configuredServices.length > 0
+    ? configuredServices
+    : [`smptq${suffix}`, `smpSTAT${suffix}`, `smp${suffix}`, `SMDaemon${suffix}`];
   const script = `
-$ErrorActionPreference = "Continue"
-Get-Process SampleManagerServerHost -ErrorAction SilentlyContinue | Stop-Process -Force
-$services = @('smptq${suffix}','smpSTAT${suffix}','smp${suffix}','SMDaemon${suffix}')
-foreach ($svc in $services) {
-  if (Get-Service $svc -ErrorAction SilentlyContinue) {
-    Restart-Service $svc -Force
+$ErrorActionPreference = "Stop"
+$instanceName = ${psQuote(name)}
+$instanceRoot = ${psQuote(paths.root)}
+$services = ${psArray(serviceNames)}
+$existing = @($services | ForEach-Object { Get-Service $_ -ErrorAction SilentlyContinue })
+$stopOrder = @($existing)
+[array]::Reverse($stopOrder)
+foreach ($svc in $stopOrder) {
+  if ($svc.Status -ne 'Stopped') {
+    Stop-Service -Name $svc.Name -Force -ErrorAction Stop
   }
 }
-Get-Service $services -ErrorAction SilentlyContinue | Select-Object Name,Status | Format-Table -AutoSize
+$terminated = @()
+Get-CimInstance Win32_Process -Filter "Name='SampleManagerServerHost.exe'" -ErrorAction SilentlyContinue |
+  ForEach-Object {
+    $belongsToInstance =
+      ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($instanceRoot, [StringComparison]::OrdinalIgnoreCase)) -or
+      ($_.CommandLine -and $_.CommandLine.IndexOf($instanceName, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+    if ($belongsToInstance) {
+      $terminated += $_.ProcessId
+      Invoke-CimMethod -InputObject $_ -MethodName Terminate -ErrorAction SilentlyContinue | Out-Null
+    }
+  }
+foreach ($svc in $existing) {
+  Start-Service -Name $svc.Name -ErrorAction Stop
+}
+[pscustomobject]@{
+  instance = $instanceName
+  configuredServices = $services
+  terminatedProcessIds = $terminated
+  services = @(Get-Service $services -ErrorAction SilentlyContinue | Select-Object Name, Status)
+} | ConvertTo-Json -Depth 4 -Compress
 `;
   const result = await runner.execPowerShell(script, 120000, execution);
   ensureRemoteSuccess(result);
   return compactText(`${result.stdout}\n${result.stderr}`.trim());
 }
 
-export async function clearFormCache(runner: RemoteRunner, instance: string, formName: string): Promise<string> {
+export async function clearFormCache(runner: RemoteRunner, instance: SampleManagerInstanceRef, formName: string): Promise<string> {
   const paths = instancePaths(instance);
   const script = `
 $ErrorActionPreference = "Continue"
@@ -60,7 +110,7 @@ if (Test-Path -LiteralPath $formsBin) {
     Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
   }
 }
-[pscustomobject]@{ Instance=${psQuote(instance)}; Form=$formName; Removed=$removed } | ConvertTo-Json -Compress
+[pscustomobject]@{ Instance=${psQuote(instanceName(instance))}; Form=$formName; Removed=$removed } | ConvertTo-Json -Compress
 `;
   const result = await runner.execPowerShell(script, 30000);
   ensureRemoteSuccess(result);
@@ -69,7 +119,7 @@ if (Test-Path -LiteralPath $formsBin) {
 
 export async function recentErrors(
   runner: RemoteRunner,
-  instance: string,
+  instance: SampleManagerInstanceRef,
   minutes = 30,
   keywords: string[] = ["ERROR", "Exception", "NewPharma", "SampleManager"]
 ): Promise<string> {
@@ -546,13 +596,14 @@ export interface SampleManagerCommandOptions {
 
 export async function runSampleManagerCommand(
   runner: RemoteRunner,
-  instance: string,
+  instance: SampleManagerInstanceRef,
   options: SampleManagerCommandOptions
 ): Promise<string> {
   const paths = instancePaths(instance);
+  const name = instanceName(instance);
   const args = [
     "-instance",
-    instance,
+    name,
     "-username",
     options.username,
     "-task",
@@ -596,7 +647,7 @@ const ALLOWED_SAMPLEMANAGER_UTILITIES = new Set([
 
 export async function runSampleManagerUtility(
   runner: RemoteRunner,
-  instance: string,
+  instance: SampleManagerInstanceRef,
   utility: string,
   options: SampleManagerUtilityOptions = {}
 ): Promise<string> {
@@ -630,13 +681,14 @@ finally {
 
 export async function createEntityDefinition(
   runner: RemoteRunner,
-  instance: string,
+  instance: SampleManagerInstanceRef,
   timeoutMs = 600000,
   execution: RemoteExecutionOptions = {}
 ): Promise<string> {
-  validateSampleManagerIdentifier(instance, "instance");
+  const name = instanceName(instance);
+  validateSampleManagerIdentifier(name, "instance");
   return runSampleManagerUtility(runner, instance, "CreateEntityDefinition.exe", {
-    args: ["-instance", instance],
+    args: ["-instance", name],
     timeoutMs,
     execution,
   });
@@ -644,18 +696,19 @@ export async function createEntityDefinition(
 
 export async function convertSampleManagerTables(
   runner: RemoteRunner,
-  instance: string,
+  instance: SampleManagerInstanceRef,
   tables: string[],
   timeoutMs = 600000,
   execution: RemoteExecutionOptions = {}
 ): Promise<string> {
   if (tables.length === 0) throw new Error("At least one table is required");
+  const name = instanceName(instance);
   const outputs: string[] = [];
   for (const table of tables) {
     validateSampleManagerIdentifier(table, "table name");
     execution.onStdout?.(`Converting table ${table}\n`);
     outputs.push(await runSampleManagerUtility(runner, instance, "convert_table.exe", {
-      args: ["-mode", "convert", "-tables", table, "-noconfirm", "-instance", instance],
+      args: ["-mode", "convert", "-tables", table, "-noconfirm", "-instance", name],
       timeoutMs,
       execution,
     }));
@@ -665,7 +718,7 @@ export async function convertSampleManagerTables(
 
 export async function loadTableLoaderFile(
   runner: RemoteRunner,
-  instance: string,
+  instance: SampleManagerInstanceRef,
   username: string,
   remoteCsvPath: string,
   mode = "overwrite_table",
@@ -784,11 +837,55 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   return compactText(`${result.stdout}\n${result.stderr}`.trim());
 }
 
+export interface SampleManagerBuildProfile {
+  kind?: "msbuild" | "dotnet" | "unknown";
+  selectedPath?: string;
+  selectedVersion?: string;
+  targetFramework?: string;
+}
+
+export async function buildSampleManagerProject(
+  runner: RemoteRunner,
+  projectOrSolutionPath: string,
+  configuration = "Release",
+  explicitToolPath?: string,
+  profile: SampleManagerBuildProfile = {},
+  timeoutMs = 600000,
+  execution: RemoteExecutionOptions = {}
+): Promise<string> {
+  if (profile.kind !== "dotnet") {
+    return buildDotNetProject(
+      runner,
+      projectOrSolutionPath,
+      configuration,
+      explicitToolPath || profile.selectedPath,
+      timeoutMs,
+      execution
+    );
+  }
+  if (!/^[A-Za-z0-9_.-]+$/.test(configuration)) {
+    throw new Error(`Invalid build configuration: ${configuration}`);
+  }
+  const script = `
+$ErrorActionPreference = "Stop"
+$project = ${psQuote(projectOrSolutionPath)}
+if (-not (Test-Path -LiteralPath $project)) { throw "Project or solution not found: $project" }
+$dotnet = ${psQuote(explicitToolPath || profile.selectedPath || "dotnet.exe")}
+$arguments = @("build", $project, "--configuration", ${psQuote(configuration)}, "--nologo")
+${profile.targetFramework ? `$arguments += @("--framework", ${psQuote(profile.targetFramework)})` : ""}
+& $dotnet @arguments
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+`;
+  const result = await runner.execPowerShell(script, timeoutMs, execution);
+  ensureRemoteSuccess(result);
+  return compactText(`${result.stdout}\n${result.stderr}`.trim());
+}
+
 export type SampleManagerDeployArea = "exe" | "solutionAssemblies" | "forms" | "resourceIcon" | "data";
 
 export async function deploySampleManagerFile(
   runner: RemoteRunner,
-  instance: string,
+  instance: SampleManagerInstanceRef,
   sourcePath: string,
   area: SampleManagerDeployArea,
   targetRelativePath: string,

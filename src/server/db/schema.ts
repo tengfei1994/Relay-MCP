@@ -38,6 +38,37 @@ export const servers = sqliteTable("servers", {
   createdAt: text("created_at").default(sql`(datetime('now'))`),
 });
 
+export const limsInstances = sqliteTable("lims_instances", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  serverId: integer("server_id")
+    .notNull()
+    .references(() => servers.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  version: text("version").default(""),
+  runtimeKind: text("runtime_kind").default("unknown"), // framework | dotnet | unknown
+  rootPath: text("root_path").notNull(),
+  exePath: text("exe_path").notNull(),
+  formsPath: text("forms_path").notNull(),
+  formsBinPath: text("forms_bin_path").notNull(),
+  solutionAssembliesPath: text("solution_assemblies_path").notNull(),
+  logfilePath: text("logfile_path").notNull(),
+  dataPath: text("data_path").notNull(),
+  databaseHost: text("database_host").default(""),
+  databaseName: text("database_name").default(""),
+  databaseAuthType: text("database_auth_type").default("unknown"),
+  databaseConfigSource: text("database_config_source").default(""),
+  servicesJson: text("services_json").default("[]"),
+  buildProfileJson: text("build_profile_json").default("{}"),
+  discoveryJson: text("discovery_json").default("{}"),
+  status: text("status").default("ready"), // ready | needs-review | unavailable
+  lastDiscoveredAt: text("last_discovered_at"),
+  createdAt: text("created_at").default(sql`(datetime('now'))`),
+  updatedAt: text("updated_at").default(sql`(datetime('now'))`),
+});
+
 export const projectServers = sqliteTable("project_servers", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   projectId: integer("project_id")
@@ -49,6 +80,7 @@ export const projectServers = sqliteTable("project_servers", {
   remotePath: text("remote_path").notNull(), // deployment target path on server
   environment: text("environment").default("production"),
   connectionMode: text("connection_mode").default("ssh"), // ssh | agent
+  limsInstanceId: integer("lims_instance_id").references(() => limsInstances.id, { onDelete: "set null" }),
 });
 
 export const mcpTokens = sqliteTable("mcp_tokens", {

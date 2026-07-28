@@ -16,7 +16,8 @@ export default function ProjectsPage() {
   const [showServers, setShowServers] = useState(false);
   const [linkedServers, setLinkedServers] = useState<any[]>([]);
   const [allServers, setAllServers] = useState<any[]>([]);
-  const [linkForm, setLinkForm] = useState({ serverId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
+  const [availableInstances, setAvailableInstances] = useState<any[]>([]);
+  const [linkForm, setLinkForm] = useState({ serverId: "", limsInstanceId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
   const [linkError, setLinkError] = useState("");
 
   useEffect(() => {
@@ -73,7 +74,8 @@ export default function ProjectsPage() {
     setSelected(project);
     setShowServers(true);
     setLinkError("");
-    setLinkForm({ serverId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
+    setLinkForm({ serverId: "", limsInstanceId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
+    setAvailableInstances([]);
     const r = await api.listProjectServers(project.id);
     setLinkedServers(r.servers);
   };
@@ -86,10 +88,18 @@ export default function ProjectsPage() {
       return;
     }
     try {
-      await api.linkServer(selected.id, Number(linkForm.serverId), linkForm.remotePath, linkForm.environment, linkForm.connectionMode as "ssh" | "agent");
+      await api.linkServer(
+        selected.id,
+        Number(linkForm.serverId),
+        linkForm.remotePath,
+        linkForm.environment,
+        linkForm.connectionMode as "ssh" | "agent",
+        linkForm.limsInstanceId ? Number(linkForm.limsInstanceId) : undefined
+      );
       const r = await api.listProjectServers(selected.id);
       setLinkedServers(r.servers);
-      setLinkForm({ serverId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
+      setLinkForm({ serverId: "", limsInstanceId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
+      setAvailableInstances([]);
     } catch (err: any) {
       setLinkError(err.message);
     }
@@ -201,6 +211,11 @@ export default function ProjectsPage() {
                           : `${l.serverSshUser}@${l.serverHost}:${l.serverPort}`} · env: {l.environment} · mode: {l.connectionMode ?? "ssh"}
                       </p>
                       <p className="text-xs text-gray-600">path: {l.remotePath || "-"}</p>
+                      <p className="text-xs text-gray-600">
+                        LIMS: {l.limsInstanceName
+                          ? `${l.limsInstanceName} ${l.limsInstanceVersion || ""} · ${l.limsRuntimeKind || "unknown"} · DB ${l.limsDatabaseName || "-"}`
+                          : "not bound"}
+                      </p>
                     </div>
                   </div>
                   <button onClick={() => unlinkServer(l.id)} className="text-gray-600 hover:text-red-400" title="Unlink">
@@ -220,7 +235,11 @@ export default function ProjectsPage() {
                     value={linkForm.serverId}
                     onChange={(e) => {
                       const server = allServers.find((s) => String(s.id) === e.target.value);
-                      setLinkForm((f) => ({ ...f, serverId: e.target.value, connectionMode: server?.connectionMode ?? "ssh" }));
+                      setLinkForm((f) => ({ ...f, serverId: e.target.value, limsInstanceId: "", connectionMode: server?.connectionMode ?? "ssh" }));
+                      setAvailableInstances([]);
+                      if (server) {
+                        api.listInstances(server.id).then((result) => setAvailableInstances(result.instances));
+                      }
                     }}
                     className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                   >
@@ -229,6 +248,25 @@ export default function ProjectsPage() {
                       <option key={s.id} value={s.id}>{s.name} ({(s.connectionMode ?? "ssh") === "agent" ? s.agentId : s.host})</option>
                     ))}
                   </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">LIMS Instance</label>
+                  <select
+                    value={linkForm.limsInstanceId}
+                    onChange={(e) => setLinkForm((f) => ({ ...f, limsInstanceId: e.target.value }))}
+                    disabled={!linkForm.serverId}
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-50"
+                  >
+                    <option value="">No instance binding</option>
+                    {availableInstances.map((instance) => (
+                      <option key={instance.id} value={instance.id}>
+                        {instance.name} ({instance.version || "unknown"} · {instance.runtimeKind} · DB {instance.databaseName || "-"})
+                      </option>
+                    ))}
+                  </select>
+                  {linkForm.serverId && availableInstances.length === 0 && (
+                    <p className="text-xs text-yellow-600 mt-1">No confirmed instances on this server. Scan and import one from LIMS Instances.</p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Connection</label>

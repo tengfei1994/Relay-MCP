@@ -13,7 +13,7 @@ import { recordFact, searchFacts } from "../shared/context-store.js";
 import { finishDeployment, getDeployment, startDeployment, updateDeployment } from "../shared/deployment-store.js";
 import {
   clearFormCache,
-  buildDotNetProject,
+  buildSampleManagerProject,
   convertSampleManagerTables,
   createEntityDefinition,
   deploySampleManagerFile,
@@ -223,6 +223,64 @@ function createMcpServer(user: McpUser) {
           });
         })();
     return { project, ps, runner };
+  }
+
+  function getSampleManagerTarget(
+    projectName?: string,
+    environment?: string,
+    requestedInstance?: string,
+    requestedDatabase?: string
+  ) {
+    const connection = getRunner(projectName, environment);
+    const configured = connection.ps.limsInstance;
+    if (configured && requestedInstance && configured.name.toLowerCase() !== requestedInstance.toLowerCase()) {
+      throw new Error(
+        `Project environment is bound to LIMS instance '${configured.name}', not '${requestedInstance}'`
+      );
+    }
+    if (
+      configured?.databaseName &&
+      requestedDatabase &&
+      configured.databaseName.toLowerCase() !== requestedDatabase.toLowerCase()
+    ) {
+      throw new Error(
+        `LIMS instance '${configured.name}' is configured for database '${configured.databaseName}', not '${requestedDatabase}'`
+      );
+    }
+    const instance = configured ?? requestedInstance;
+    if (!instance) {
+      throw new Error("No LIMS instance is bound to this project environment; select an instance in the management UI or pass instance");
+    }
+    return {
+      ...connection,
+      instance,
+      instanceName: typeof instance === "string" ? instance : instance.name,
+      database: configured?.databaseName || requestedDatabase,
+      configuredInstance: configured,
+    };
+  }
+
+  function getSampleManagerDatabaseTarget(
+    projectName?: string,
+    environment?: string,
+    requestedDatabase?: string
+  ) {
+    const connection = getRunner(projectName, environment);
+    const configured = connection.ps.limsInstance;
+    if (
+      configured?.databaseName &&
+      requestedDatabase &&
+      configured.databaseName.toLowerCase() !== requestedDatabase.toLowerCase()
+    ) {
+      throw new Error(
+        `LIMS instance '${configured.name}' is configured for database '${configured.databaseName}', not '${requestedDatabase}'`
+      );
+    }
+    const database = configured?.databaseName || requestedDatabase;
+    if (!database) {
+      throw new Error("No database is configured for the bound LIMS instance; configure it in the management UI or pass database");
+    }
+    return { ...connection, database, configuredInstance: configured };
   }
 
   function executionForJob(context?: JobContext) {
@@ -1370,13 +1428,13 @@ else {
     "Create a SampleManager deploymentId that correlates SQL, build, deploy, restart, hashes, backups, logs, and rollback evidence.",
     {
       project: z.string().optional(),
-      instance: z.string(),
+      instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       environment: z.string().optional(),
       label: z.string().optional(),
     },
     async ({ project: projectName, instance, environment, label }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { ps } = getRunner(projectName, environment);
+      const { ps, instanceName } = getSampleManagerTarget(projectName, environment, instance);
       const run = startDeployment({
         userId: user.id,
         username: user.username,
@@ -1384,7 +1442,7 @@ else {
         environment: environment ?? "production",
         host: ps.server.host || ps.server.agentId || ps.server.name,
         kind: "samplemanager-assembly",
-        instance,
+        instance: instanceName,
         steps: [],
         artifacts: label ? { label } : {},
         rollbackRequested: false,
@@ -1398,22 +1456,22 @@ else {
     "Restart a SampleManager instance on a linked Windows server and stop stuck client task hosts",
     {
       project: z.string().optional(),
-      instance: z.string().describe("SampleManager instance name, e.g. VGSM"),
+      instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       environment: z.string().optional(),
       deploymentId: z.string().optional(),
       async: z.boolean().optional().describe("Run as an async job and return a jobId"),
     },
     async ({ project: projectName, instance, environment, deploymentId, async = false }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner } = getRunner(projectName, environment);
+      const { runner, instance: target, instanceName } = getSampleManagerTarget(projectName, environment, instance);
       const work = (context?: JobContext) => withDeploymentStep(
         deploymentId,
         resolvedProjectName,
         "restart",
-        () => restartSampleManagerInstance(runner, instance, executionForJob(context))
+        () => restartSampleManagerInstance(runner, target, executionForJob(context))
       );
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_restart_instance", { instance, environment, deploymentId }, work);
+        const job = startJob(user, resolvedProjectName, "samplemanager_restart_instance", { instance: instanceName, environment, deploymentId }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
@@ -1425,13 +1483,13 @@ else {
     "Clear FormsBin cache for one SampleManager form without creating local throwaway scripts",
     {
       project: z.string().optional(),
-      instance: z.string(),
+      instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       formName: z.string(),
       environment: z.string().optional(),
     },
     async ({ project: projectName, instance, formName, environment }) => {
-      const { runner } = getRunner(projectName, environment);
-      return { content: [{ type: "text", text: await clearFormCache(runner, instance, formName) }] };
+      const { runner, instance: target } = getSampleManagerTarget(projectName, environment, instance);
+      return { content: [{ type: "text", text: await clearFormCache(runner, target, formName) }] };
     }
   );
 
@@ -1440,14 +1498,14 @@ else {
     "Search recent SampleManager logs and return a compact error-focused result",
     {
       project: z.string().optional(),
-      instance: z.string(),
+      instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       environment: z.string().optional(),
       minutes: z.number().optional(),
       keywords: z.array(z.string()).optional(),
     },
     async ({ project: projectName, instance, environment, minutes = 30, keywords }) => {
-      const { runner } = getRunner(projectName, environment);
-      return { content: [{ type: "text", text: await recentErrors(runner, instance, minutes, keywords) }] };
+      const { runner, instance: target } = getSampleManagerTarget(projectName, environment, instance);
+      return { content: [{ type: "text", text: await recentErrors(runner, target, minutes, keywords) }] };
     }
   );
 
@@ -1456,20 +1514,20 @@ else {
     "Return SQL Server column, type, primary key, identity, computed, default, and physical mapping metadata for a SampleManager table.",
     {
       project: z.string().optional(),
-      database: z.string().describe("Database name, e.g. vgsm"),
+      database: z.string().optional().describe("Optional when the bound LIMS instance has a configured database."),
       table: z.string().describe("Table name, optionally schema-qualified, e.g. dbo.TEST_INSTRUMENT_USAGE_RECORD"),
       environment: z.string().optional(),
     },
     async ({ project: projectName, database, table, environment }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner } = getRunner(projectName, environment);
-      const text = await sampleManagerTableSchema(runner, database, table);
+      const { runner, database: targetDatabase } = getSampleManagerDatabaseTarget(projectName, environment, database);
+      const text = await sampleManagerTableSchema(runner, targetDatabase, table);
       writeAudit({
         userId: user.id,
         username: user.username,
         project: resolvedProjectName,
         tool: "samplemanager_table_schema",
-        database,
+        database: targetDatabase,
         table,
       });
       return { content: [{ type: "text", text }] };
@@ -1481,7 +1539,7 @@ else {
     "Run a compact SQL query against a SampleManager SQL Server database. Read-only by default.",
     {
       project: z.string().optional(),
-      database: z.string().describe("Database name, e.g. vgsm"),
+      database: z.string().optional().describe("Optional when the bound LIMS instance has a configured database."),
       sql: z.string(),
       environment: z.string().optional(),
       allowMutation: z.boolean().optional(),
@@ -1493,14 +1551,14 @@ else {
     },
     async ({ project: projectName, database, sql, environment, allowMutation = false, maxRows, offset, includeResultSets, parameters, identifiers }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner } = getRunner(projectName, environment);
-      const text = await runSql(runner, database, sql, { allowMutation, maxRows, offset, includeResultSets, parameters, identifiers });
+      const { runner, database: targetDatabase } = getSampleManagerDatabaseTarget(projectName, environment, database);
+      const text = await runSql(runner, targetDatabase, sql, { allowMutation, maxRows, offset, includeResultSets, parameters, identifiers });
       writeAudit({
         userId: user.id,
         username: user.username,
         project: resolvedProjectName,
         tool: "samplemanager_sql_query",
-        database,
+        database: targetDatabase,
         allowMutation,
         maxRows,
         offset,
@@ -1517,7 +1575,7 @@ else {
     "Run a SQL file from the relay project workspace against a SampleManager SQL Server database. Mutations require allowMutation=true.",
     {
       project: z.string().optional(),
-      database: z.string().describe("Database name, e.g. vgsm"),
+      database: z.string().optional().describe("Optional when the bound LIMS instance has a configured database."),
       path: z.string().describe("Relative SQL file path within the relay project workspace"),
       environment: z.string().optional(),
       allowMutation: z.boolean().optional(),
@@ -1537,15 +1595,15 @@ else {
         throw new Error(`SQL file '${relPath}' does not exist in project '${resolvedProjectName}'`);
       }
 
-      const { runner } = getRunner(projectName, environment);
+      const { runner, database: targetDatabase } = getSampleManagerDatabaseTarget(projectName, environment, database);
       const sql = readFileSync(fullPath, "utf8");
-      const text = await runSql(runner, database, sql, { allowMutation, maxRows, offset, includeResultSets, parameters, identifiers });
+      const text = await runSql(runner, targetDatabase, sql, { allowMutation, maxRows, offset, includeResultSets, parameters, identifiers });
       writeAudit({
         userId: user.id,
         username: user.username,
         project: resolvedProjectName,
         tool: "samplemanager_sql_execute_file",
-        database,
+        database: targetDatabase,
         path: relPath,
         allowMutation,
         maxRows,
@@ -1563,7 +1621,7 @@ else {
     "Run SampleManagerCommand.exe from the instance Exe folder with structured arguments.",
     {
       project: z.string().optional(),
-      instance: z.string().describe("SampleManager instance name, e.g. VGSM"),
+      instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       username: z.string().describe("SampleManager username used by SampleManagerCommand.exe"),
       task: z.string().describe("SampleManager command task, e.g. VGL"),
       args: z.array(z.string()).optional().describe("Additional arguments, e.g. ['-report', '$table_loader', '-prompts', '(C:\\\\file.csv,overwrite_table)']"),
@@ -1582,8 +1640,8 @@ else {
       async = false,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner } = getRunner(projectName, environment);
-      const work = (context?: JobContext) => runSampleManagerCommand(runner, instance, {
+      const { runner, instance: target, instanceName } = getSampleManagerTarget(projectName, environment, instance);
+      const work = (context?: JobContext) => runSampleManagerCommand(runner, target, {
         username,
         task,
         args,
@@ -1595,13 +1653,13 @@ else {
         username: user.username,
         project: resolvedProjectName,
         tool: "samplemanager_run_command",
-        instance,
+        instance: instanceName,
         commandUsername: username,
         task,
         async,
       });
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_run_command", { instance, username, task, args, environment }, work);
+        const job = startJob(user, resolvedProjectName, "samplemanager_run_command", { instance: instanceName, username, task, args, environment }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
@@ -1613,23 +1671,23 @@ else {
     "Run CreateEntityDefinition.exe for a SampleManager instance after controlled structure source changes.",
     {
       project: z.string().optional(),
-      instance: z.string(),
+      instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       environment: z.string().optional(),
       timeoutMs: z.number().positive().optional().describe("Default 600000"),
       async: z.boolean().optional().describe("Run as an async job; recommended"),
     },
     async ({ project: projectName, instance, environment, timeoutMs = 600000, async = true }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner } = getRunner(projectName, environment);
+      const { runner, instance: target, instanceName } = getSampleManagerTarget(projectName, environment, instance);
       const work = (context?: JobContext) => createEntityDefinition(
         runner,
-        instance,
+        target,
         timeoutMs,
         executionForJob(context)
       );
-      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_create_entity_definition", instance, async });
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_create_entity_definition", instance: instanceName, async });
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_create_entity_definition", { instance, environment, timeoutMs }, work);
+        const job = startJob(user, resolvedProjectName, "samplemanager_create_entity_definition", { instance: instanceName, environment, timeoutMs }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
@@ -1641,7 +1699,7 @@ else {
     "Run convert_table.exe once per SampleManager table using structured, validated table names.",
     {
       project: z.string().optional(),
-      instance: z.string(),
+      instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       tables: z.array(z.string()).min(1),
       environment: z.string().optional(),
       timeoutMs: z.number().positive().optional().describe("Timeout per table; default 600000"),
@@ -1649,17 +1707,17 @@ else {
     },
     async ({ project: projectName, instance, tables, environment, timeoutMs = 600000, async = true }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner } = getRunner(projectName, environment);
+      const { runner, instance: target, instanceName } = getSampleManagerTarget(projectName, environment, instance);
       const work = (context?: JobContext) => convertSampleManagerTables(
         runner,
-        instance,
+        target,
         tables,
         timeoutMs,
         executionForJob(context)
       );
-      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_convert_tables", instance, tables, async });
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_convert_tables", instance: instanceName, tables, async });
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_convert_tables", { instance, tables, environment, timeoutMs }, work);
+        const job = startJob(user, resolvedProjectName, "samplemanager_convert_tables", { instance: instanceName, tables, environment, timeoutMs }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
@@ -1671,7 +1729,7 @@ else {
     "Load a remote table-loader CSV through SampleManagerCommand.exe and the built-in $table_loader VGL report.",
     {
       project: z.string().optional(),
-      instance: z.string(),
+      instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       username: z.string(),
       remoteCsvPath: z.string(),
       mode: z.string().optional().describe("Table-loader mode; default overwrite_table"),
@@ -1690,19 +1748,19 @@ else {
       async = true,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner } = getRunner(projectName, environment);
+      const { runner, instance: target, instanceName } = getSampleManagerTarget(projectName, environment, instance);
       const work = (context?: JobContext) => loadTableLoaderFile(
         runner,
-        instance,
+        target,
         username,
         remoteCsvPath,
         mode,
         timeoutMs,
         executionForJob(context)
       );
-      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_table_loader", instance, remoteCsvPath, mode, async });
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_table_loader", instance: instanceName, remoteCsvPath, mode, async });
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_table_loader", { instance, username, remoteCsvPath, mode, environment, timeoutMs }, work);
+        const job = startJob(user, resolvedProjectName, "samplemanager_table_loader", { instance: instanceName, username, remoteCsvPath, mode, environment, timeoutMs }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
@@ -1714,7 +1772,7 @@ else {
     "Run an allowlisted SampleManager utility with structured arguments. Use dedicated tools for CreateEntityDefinition and convert_table.",
     {
       project: z.string().optional(),
-      instance: z.string(),
+      instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       utility: z.enum(["FormImport.exe", "BuildFormDefinition.exe", "DeployPackageTask.exe"]),
       args: z.array(z.string()).optional(),
       environment: z.string().optional(),
@@ -1723,15 +1781,15 @@ else {
     },
     async ({ project: projectName, instance, utility, args = [], environment, timeoutMs = 300000, async = true }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner } = getRunner(projectName, environment);
-      const work = (context?: JobContext) => runSampleManagerUtility(runner, instance, utility, {
+      const { runner, instance: target, instanceName } = getSampleManagerTarget(projectName, environment, instance);
+      const work = (context?: JobContext) => runSampleManagerUtility(runner, target, utility, {
         args,
         timeoutMs,
         execution: executionForJob(context),
       });
-      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_run_utility", instance, utility, args, async });
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_run_utility", instance: instanceName, utility, args, async });
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_run_utility", { instance, utility, args, environment, timeoutMs }, work);
+        const job = startJob(user, resolvedProjectName, "samplemanager_run_utility", { instance: instanceName, utility, args, environment, timeoutMs }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
@@ -1764,7 +1822,7 @@ else {
     "Run a structured parameterized SQL mutation with before/after result sets, dry-run rollback, and optional backup table.",
     {
       project: z.string().optional(),
-      database: z.string().describe("Database name, e.g. vgsm"),
+      database: z.string().optional().describe("Optional when the bound LIMS instance has a configured database."),
       operation: z.enum(["insert", "update", "delete"]),
       table: z.string().describe("Schema-qualified table name when possible"),
       values: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
@@ -1791,12 +1849,12 @@ else {
       deploymentId,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner } = getRunner(projectName, environment);
+      const { runner, database: targetDatabase } = getSampleManagerDatabaseTarget(projectName, environment, database);
       const text = await withDeploymentStep(
         deploymentId,
         resolvedProjectName,
         `sql:${operation}:${table}`,
-        () => runSqlMutation(runner, database, {
+        () => runSqlMutation(runner, targetDatabase, {
           operation,
           table,
           values,
@@ -1812,7 +1870,7 @@ else {
         username: user.username,
         project: resolvedProjectName,
         tool: "samplemanager_sql_mutation",
-        database,
+        database: targetDatabase,
         operation,
         table,
         where,
@@ -1849,16 +1907,18 @@ else {
       async = true,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner } = getRunner(projectName, environment);
+      const { runner, ps } = getRunner(projectName, environment);
+      const buildProfile = ps.limsInstance?.buildProfile ?? {};
       const work = (context?: JobContext) => withDeploymentStep(
         deploymentId,
         resolvedProjectName,
         `build:${basename(projectOrSolutionPath)}`,
-        () => buildDotNetProject(
+        () => buildSampleManagerProject(
           runner,
           projectOrSolutionPath,
           configuration,
           msbuildPath,
+          buildProfile,
           timeoutMs,
           executionForJob(context)
         )
@@ -1879,7 +1939,7 @@ else {
       project: z.string().optional(),
       projectOrSolutionPath: z.string(),
       assemblyPath: z.string().describe("Absolute built DLL path on the linked server"),
-      instance: z.string(),
+      instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       targetRelativePath: z.string().optional().describe("Destination under SolutionAssemblies; defaults to assembly filename"),
       configuration: z.string().optional().describe("Default Release"),
       msbuildPath: z.string().optional(),
@@ -1904,7 +1964,9 @@ else {
       async = true,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { ps, runner } = getRunner(projectName, environment);
+      const { ps, runner, instance: instanceTarget, instanceName, configuredInstance } =
+        getSampleManagerTarget(projectName, environment, instance);
+      const buildProfile = configuredInstance?.buildProfile ?? {};
       const target = targetRelativePath ?? basename(assemblyPath);
       const steps: Array<{
         name: string;
@@ -1925,7 +1987,7 @@ else {
         environment: environment ?? "production",
         host: ps.server.host || ps.server.agentId || ps.server.name,
         kind: "samplemanager-assembly",
-        instance,
+        instance: instanceName,
         steps,
         artifacts: { projectOrSolutionPath, assemblyPath, targetRelativePath: target },
         rollbackRequested: rollbackOnFailure,
@@ -1951,11 +2013,12 @@ else {
         let backupPath: string | undefined;
         try {
           setStep("build", "running");
-          const buildOutput = await buildDotNetProject(
+          const buildOutput = await buildSampleManagerProject(
             runner,
             projectOrSolutionPath,
             configuration,
             msbuildPath,
+            buildProfile,
             timeoutMs,
             executionForJob(context)
           );
@@ -1965,7 +2028,7 @@ else {
           setStep("deploy", "running");
           const deployOutput = await deploySampleManagerFile(
             runner,
-            instance,
+            instanceTarget,
             assemblyPath,
             "solutionAssemblies",
             target,
@@ -1993,7 +2056,7 @@ else {
 
           if (restart) {
             setStep("restart", "running");
-            const restartOutput = await restartSampleManagerInstance(runner, instance, executionForJob(context));
+            const restartOutput = await restartSampleManagerInstance(runner, instanceTarget, executionForJob(context));
             output.push(`restart\n${restartOutput}`);
             setStep("restart", "succeeded", compactText(restartOutput, 1500));
           }
@@ -2016,9 +2079,9 @@ else {
           if (rollbackOnFailure && backupPath) {
             rollback = { ...rollback, attempted: true };
             try {
-              const targetPath = `${instancePaths(instance).solutionAssemblies}\\${target}`;
+              const targetPath = `${instancePaths(instanceTarget).solutionAssemblies}\\${target}`;
               await restoreSampleManagerBackup(runner, backupPath, targetPath, executionForJob(context));
-              if (restart) await restartSampleManagerInstance(runner, instance, executionForJob(context));
+              if (restart) await restartSampleManagerInstance(runner, instanceTarget, executionForJob(context));
               setStep("deploy", "rolled-back", `Restored ${backupPath}`);
               rollback = { ...rollback, status: "succeeded" };
             } catch (rollbackError) {
@@ -2046,7 +2109,7 @@ else {
         project: resolvedProjectName,
         tool: "samplemanager_build_deploy_assembly",
         deploymentId: run.id,
-        instance,
+        instance: instanceName,
         assemblyPath,
         target,
         async,
@@ -2056,7 +2119,7 @@ else {
           deploymentId: run.id,
           projectOrSolutionPath,
           assemblyPath,
-          instance,
+          instance: instanceName,
           target,
           configuration,
           environment,
@@ -2119,7 +2182,7 @@ else {
     "Copy a staged remote file into a SampleManager instance area and create a timestamped backup of the replaced file.",
     {
       project: z.string().optional(),
-      instance: z.string(),
+      instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       sourcePath: z.string().describe("Absolute source file path already present on the remote server"),
       area: z.enum(["exe", "solutionAssemblies", "forms", "resourceIcon", "data"]),
       targetRelativePath: z.string(),
@@ -2131,14 +2194,14 @@ else {
     },
     async ({ project: projectName, instance, sourcePath, area, targetRelativePath, backup = true, skipIfUnchanged = true, environment, deploymentId, async = false }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner } = getRunner(projectName, environment);
+      const { runner, instance: target, instanceName } = getSampleManagerTarget(projectName, environment, instance);
       const work = (context?: JobContext) => withDeploymentStep(
         deploymentId,
         resolvedProjectName,
         `deploy:${targetRelativePath}`,
         () => deploySampleManagerFile(
           runner,
-          instance,
+          target,
           sourcePath,
           area,
           targetRelativePath,
@@ -2147,9 +2210,9 @@ else {
           executionForJob(context)
         )
       );
-      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_deploy_file", instance, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, async });
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_deploy_file", instance: instanceName, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, async });
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_deploy_file", { instance, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, environment, deploymentId }, work);
+        const job = startJob(user, resolvedProjectName, "samplemanager_deploy_file", { instance: instanceName, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, environment, deploymentId }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };

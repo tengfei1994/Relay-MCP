@@ -33,6 +33,31 @@ export interface ProjectServer {
   remotePath: string;
   environment: string;
   connectionMode: "ssh" | "agent";
+  limsInstance?: LimsInstanceInfo;
+}
+
+export interface LimsInstanceInfo {
+  id: number;
+  name: string;
+  version: string;
+  runtimeKind: "framework" | "dotnet" | "unknown";
+  rootPath: string;
+  exePath: string;
+  formsPath: string;
+  formsBinPath: string;
+  solutionAssembliesPath: string;
+  logfilePath: string;
+  dataPath: string;
+  databaseHost: string;
+  databaseName: string;
+  databaseAuthType: string;
+  services: Array<{ name: string; displayName?: string; state?: string; startMode?: string; pathName?: string }>;
+  buildProfile: {
+    kind: "msbuild" | "dotnet" | "unknown";
+    selectedPath?: string;
+    selectedVersion?: string;
+    targetFramework?: string;
+  };
 }
 
 export class ProjectRegistry {
@@ -147,9 +172,19 @@ export class ProjectRegistry {
   getProjectServers(projectId: number): ProjectServer[] {
     const rows = this.db
       .prepare(`
-        SELECT s.*, ps.id AS project_server_id, ps.remote_path, ps.environment, ps.connection_mode AS project_connection_mode
+        SELECT s.*, ps.id AS project_server_id, ps.remote_path, ps.environment,
+          ps.connection_mode AS project_connection_mode, ps.lims_instance_id,
+          li.name AS lims_name, li.version AS lims_version, li.runtime_kind AS lims_runtime_kind,
+          li.root_path AS lims_root_path, li.exe_path AS lims_exe_path,
+          li.forms_path AS lims_forms_path, li.forms_bin_path AS lims_forms_bin_path,
+          li.solution_assemblies_path AS lims_solution_assemblies_path,
+          li.logfile_path AS lims_logfile_path, li.data_path AS lims_data_path,
+          li.database_host AS lims_database_host, li.database_name AS lims_database_name,
+          li.database_auth_type AS lims_database_auth_type, li.services_json AS lims_services_json,
+          li.build_profile_json AS lims_build_profile_json
         FROM project_servers ps
         JOIN servers s ON s.id = ps.server_id
+        LEFT JOIN lims_instances li ON li.id = ps.lims_instance_id
         WHERE ps.project_id = ?
       `)
       .all(projectId) as any[];
@@ -171,6 +206,24 @@ export class ProjectRegistry {
       remotePath: r.remote_path,
       environment: r.environment,
       connectionMode: r.project_connection_mode === "agent" || r.connection_mode === "agent" ? "agent" : "ssh",
+      limsInstance: r.lims_instance_id ? {
+        id: r.lims_instance_id,
+        name: r.lims_name,
+        version: r.lims_version ?? "",
+        runtimeKind: r.lims_runtime_kind === "framework" || r.lims_runtime_kind === "dotnet" ? r.lims_runtime_kind : "unknown",
+        rootPath: r.lims_root_path,
+        exePath: r.lims_exe_path,
+        formsPath: r.lims_forms_path,
+        formsBinPath: r.lims_forms_bin_path,
+        solutionAssembliesPath: r.lims_solution_assemblies_path,
+        logfilePath: r.lims_logfile_path,
+        dataPath: r.lims_data_path,
+        databaseHost: r.lims_database_host ?? "",
+        databaseName: r.lims_database_name ?? "",
+        databaseAuthType: r.lims_database_auth_type ?? "unknown",
+        services: JSON.parse(r.lims_services_json ?? "[]"),
+        buildProfile: JSON.parse(r.lims_build_profile_json ?? "{}"),
+      } : undefined,
     }));
   }
 }

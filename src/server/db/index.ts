@@ -61,6 +61,34 @@ export function runMigrations() {
       connection_mode TEXT DEFAULT 'ssh'
     );
 
+    CREATE TABLE IF NOT EXISTS lims_instances (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      version TEXT DEFAULT '',
+      runtime_kind TEXT DEFAULT 'unknown',
+      root_path TEXT NOT NULL,
+      exe_path TEXT NOT NULL,
+      forms_path TEXT NOT NULL,
+      forms_bin_path TEXT NOT NULL,
+      solution_assemblies_path TEXT NOT NULL,
+      logfile_path TEXT NOT NULL,
+      data_path TEXT NOT NULL,
+      database_host TEXT DEFAULT '',
+      database_name TEXT DEFAULT '',
+      database_auth_type TEXT DEFAULT 'unknown',
+      database_config_source TEXT DEFAULT '',
+      services_json TEXT DEFAULT '[]',
+      build_profile_json TEXT DEFAULT '{}',
+      discovery_json TEXT DEFAULT '{}',
+      status TEXT DEFAULT 'ready',
+      last_discovered_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(server_id, name)
+    );
+
     CREATE TABLE IF NOT EXISTS mcp_tokens (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -142,9 +170,11 @@ export function runMigrations() {
   try { sqlite.exec(`ALTER TABLE servers ADD COLUMN connection_mode TEXT DEFAULT 'ssh'`); } catch {}
   try { sqlite.exec(`ALTER TABLE servers ADD COLUMN agent_id TEXT`); } catch {}
   try { sqlite.exec(`ALTER TABLE project_servers ADD COLUMN connection_mode TEXT DEFAULT 'ssh'`); } catch {}
+  try { sqlite.exec(`ALTER TABLE project_servers ADD COLUMN lims_instance_id INTEGER REFERENCES lims_instances(id) ON DELETE SET NULL`); } catch {}
   try { sqlite.exec(`ALTER TABLE mcp_tokens ADD COLUMN default_server_id INTEGER REFERENCES servers(id) ON DELETE SET NULL`); } catch {}
   try { sqlite.exec(`ALTER TABLE mcp_tokens ADD COLUMN allow_all_projects INTEGER DEFAULT 0`); } catch {}
   try { sqlite.exec(`ALTER TABLE mcp_tokens ADD COLUMN can_create_projects INTEGER DEFAULT 0`); } catch {}
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_lims_instances_server ON lims_instances(server_id, name)`);
 
   // Set first user as admin if no admin exists
   const adminExists = sqlite.prepare(`SELECT id FROM users WHERE is_admin = 1 LIMIT 1`).get();

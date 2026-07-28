@@ -86,6 +86,24 @@ RelayMCP has two capability layers:
 | Durable project memory | `context_record_fact`, `context_search` |
 | SampleManager helpers | `samplemanager_deployment_start`, `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_table_schema`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_sql_mutation`, `samplemanager_run_command`, `samplemanager_discover_build_tools`, `samplemanager_build_deploy_assembly`, `samplemanager_deployment_status`, `samplemanager_deployment_finish` |
 
+### Multiple SampleManager instances
+
+The Web UI manages SampleManager instances separately from physical servers. Use
+**LIMS Instances → Scan** for a read-only discovery of instance paths, file
+version, Windows services, redacted database target, MSBuild installations and
+.NET SDKs. Review and import candidates before they can be selected by a
+project environment.
+
+Project links may bind an environment to one confirmed LIMS instance. Once
+bound, MCP SampleManager tools automatically use that instance's paths,
+database, service list and build profile. A conflicting `instance` or
+`database` argument is rejected to prevent cross-instance operations.
+
+The build profile selects `MSBuild.exe` for legacy .NET Framework instances and
+`dotnet build` for modern .NET instances. Service restart is scoped to the
+configured service names and processes whose executable path or command line
+belongs to the selected instance.
+
 ## Complete MCP Command Catalog
 
 The following table is the complete command inventory. The same classification

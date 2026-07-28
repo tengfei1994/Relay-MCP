@@ -55,8 +55,8 @@ export const api = {
   // Project-Server links
   listProjectServers: (projectId: number) =>
     request<{ servers: any[] }>("GET", `/projects/${projectId}/servers`),
-  linkServer: (projectId: number, serverId: number, remotePath: string, environment = "production", connectionMode?: "ssh" | "agent") =>
-    request<{ link: any }>("POST", `/projects/${projectId}/servers`, { serverId, remotePath, environment, connectionMode }),
+  linkServer: (projectId: number, serverId: number, remotePath: string, environment = "production", connectionMode?: "ssh" | "agent", limsInstanceId?: number) =>
+    request<{ link: any }>("POST", `/projects/${projectId}/servers`, { serverId, remotePath, environment, connectionMode, limsInstanceId }),
   unlinkServer: (projectId: number, linkId: number) =>
     request<{ ok: boolean }>("DELETE", `/projects/${projectId}/servers/${linkId}`),
 
@@ -79,6 +79,18 @@ export const api = {
     ),
   deleteServer: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/servers/${id}`),
+  listInstances: (serverId: number) =>
+    request<{ instances: any[] }>("GET", `/servers/${serverId}/instances`),
+  discoverInstances: (serverId: number, rootHints: string[] = []) =>
+    request<{ serverId: number; scannedAt: string; readOnly: boolean; instances: any[] }>(
+      "POST", `/servers/${serverId}/instances/discover`, { rootHints }
+    ),
+  saveInstance: (serverId: number, instance: any) =>
+    request<{ instance: any }>("POST", `/servers/${serverId}/instances`, instance),
+  updateInstance: (id: number, instance: any) =>
+    request<{ instance: any }>("PUT", `/instances/${id}`, instance),
+  deleteInstance: (id: number) =>
+    request<{ ok: boolean }>("DELETE", `/instances/${id}`),
   setupServer: async (
     id: number,
     password: string,

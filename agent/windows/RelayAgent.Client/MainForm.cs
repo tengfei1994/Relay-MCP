@@ -27,6 +27,7 @@ namespace RelayAgent.Client
         private readonly Label _headerVersion = new Label();
         private readonly Label _headerLastSeen = new Label();
         private readonly Label _footerStatus = new Label();
+        private readonly ToolTip _toolTips = new ToolTip();
         private readonly System.Windows.Forms.Timer _refreshTimer =
             new System.Windows.Forms.Timer();
 
@@ -48,6 +49,10 @@ namespace RelayAgent.Client
         private Label _serviceState;
         private Label _servicePath;
         private Label _serviceIdentity;
+        private ModernButton _startServiceButton;
+        private ModernButton _stopServiceButton;
+        private ModernButton _restartServiceButton;
+        private ModernButton _uninstallServiceButton;
 
         private ComboBox _sqlServerBox;
         private ComboBox _databaseBox;
@@ -62,9 +67,12 @@ namespace RelayAgent.Client
         private ComboBox _auditStatusFilter;
         private DataGridView _auditGrid;
         private TextBox _auditDetail;
+        private SectionPanel _auditDetailSection;
 
         private TextBox _agentLog;
         private Label _updateStatus;
+        private CheckBox _logAutoScroll;
+        private ComboBox _logLevelFilter;
 
         public MainForm()
         {
@@ -73,6 +81,8 @@ namespace RelayAgent.Client
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(1120, 720);
             Size = new Size(1320, 840);
+            AutoScaleMode = AutoScaleMode.Dpi;
+            AutoScaleDimensions = new SizeF(96f, 96f);
             BackColor = UiTheme.AppBackground;
             Font = UiTheme.BodyFont;
             DoubleBuffered = true;
@@ -193,9 +203,9 @@ namespace RelayAgent.Client
                 Padding = Padding.Empty,
                 BackColor = UiTheme.AppBackground
             };
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 84));
             main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
 
             main.Controls.Add(BuildHeader(), 0, 0);
 
@@ -239,16 +249,16 @@ namespace RelayAgent.Client
                 Dock = DockStyle.Fill,
                 ColumnCount = 6,
                 RowCount = 1,
-                Padding = new Padding(24, 12, 18, 12),
+                Padding = new Padding(24, 10, 18, 10),
                 BackColor = UiTheme.Surface,
                 Margin = Padding.Empty
             };
             header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
-            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 145));
-            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
-            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
-            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 46));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 154));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 142));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 158));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
             header.Paint += (sender, args) =>
             {
                 using (var pen = new Pen(UiTheme.Border))
@@ -263,7 +273,8 @@ namespace RelayAgent.Client
                 Font = new Font("Segoe UI Semibold", 14f, FontStyle.Bold),
                 ForeColor = UiTheme.Text,
                 Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(0, 2, 0, 2)
             };
             header.Controls.Add(heading, 0, 0);
             header.Controls.Add(BuildHeaderMetric("CONNECTION", _headerConnection), 1, 0);
@@ -271,11 +282,27 @@ namespace RelayAgent.Client
             header.Controls.Add(BuildHeaderMetric("VERSION", _headerVersion), 3, 0);
             header.Controls.Add(BuildHeaderMetric("LAST SEEN", _headerLastSeen), 4, 0);
 
+            var refreshHost = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Padding = new Padding(2),
+                BackColor = Color.Transparent
+            };
             var refresh = UiTheme.CreateButton("", (sender, args) => RefreshAll(), ButtonTone.Ghost, "\uE72C");
-            refresh.Dock = DockStyle.Fill;
+            refresh.AutoSize = false;
+            refresh.Size = new Size(36, 36);
             refresh.MinimumSize = new Size(36, 36);
-            refresh.Margin = new Padding(4);
-            header.Controls.Add(refresh, 5, 0);
+            refresh.Margin = Padding.Empty;
+            refresh.Anchor = AnchorStyles.None;
+            refreshHost.Controls.Add(refresh);
+            refreshHost.Resize += (sender, args) =>
+            {
+                refresh.Location = new Point(
+                    Math.Max(0, (refreshHost.ClientSize.Width - refresh.Width) / 2),
+                    Math.Max(0, (refreshHost.ClientSize.Height - refresh.Height) / 2));
+            };
+            _toolTips.SetToolTip(refresh, "Refresh connection, service, audit, and log status");
+            header.Controls.Add(refreshHost, 5, 0);
             return header;
         }
 
@@ -288,20 +315,22 @@ namespace RelayAgent.Client
                 ColumnCount = 1,
                 Margin = new Padding(8, 0, 8, 0)
             };
-            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
             panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             panel.Controls.Add(new Label
             {
                 Text = caption,
                 Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.BottomLeft,
+                TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = UiTheme.MutedText,
-                Font = new Font("Segoe UI Semibold", 7.5f)
+                Font = new Font("Segoe UI Semibold", 7.5f),
+                Padding = new Padding(0, 2, 0, 2)
             }, 0, 0);
             value.Dock = DockStyle.Fill;
-            value.TextAlign = ContentAlignment.TopLeft;
+            value.TextAlign = ContentAlignment.MiddleLeft;
             value.ForeColor = UiTheme.Text;
             value.Font = UiTheme.BodyFont;
+            value.Padding = new Padding(0, 2, 0, 2);
             value.AutoEllipsis = true;
             panel.Controls.Add(value, 0, 1);
             return panel;
@@ -346,8 +375,8 @@ namespace RelayAgent.Client
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 65));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 128));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 330));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 176));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 354));
             body.Controls.Add(layout);
 
             var readiness = new SectionPanel { Dock = DockStyle.Fill };
@@ -370,44 +399,46 @@ namespace RelayAgent.Client
             layout.SetColumnSpan(readiness, 2);
 
             var summary = CreateSection("Agent summary");
-            var summaryTable = new TableLayoutPanel
+            var summaryList = new Panel
             {
-                Dock = DockStyle.Fill,
-                ColumnCount = 2,
-                RowCount = 5,
-                Padding = new Padding(0, 42, 0, 0)
+                Dock = DockStyle.Top,
+                Height = 184,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                BackColor = Color.Transparent
             };
-            summaryTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
-            summaryTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            AddSummaryRow(summaryTable, 0, "Relay endpoint", () => AgentConfig.MaskRelayUrl(_loadedConfig.RelayUrl));
-            AddSummaryRow(summaryTable, 1, "Agent ID", () => _loadedConfig.AgentId);
-            AddSummaryRow(summaryTable, 2, "Service account", DatabaseAccessManager.GetServiceIdentity);
-            AddSummaryRow(summaryTable, 3, "Polling interval", () => _loadedConfig.PollSeconds + " seconds");
-            AddSummaryRow(summaryTable, 4, "Audit retention", () => _loadedConfig.AuditRetentionDays + " days");
-            summary.Controls.Add(summaryTable);
+            AddSummaryRow(summaryList, 0, "Relay endpoint", () => AgentConfig.MaskRelayUrl(_loadedConfig.RelayUrl));
+            AddSummaryRow(summaryList, 1, "Agent ID", () => _loadedConfig.AgentId);
+            AddSummaryRow(summaryList, 2, "Service account", DatabaseAccessManager.GetServiceIdentity);
+            AddSummaryRow(summaryList, 3, "Polling interval", () => _loadedConfig.PollSeconds + " seconds");
+            AddSummaryRow(summaryList, 4, "Audit retention", () => _loadedConfig.AuditRetentionDays + " days");
+            summary.Controls.Add(summaryList);
             layout.Controls.Add(summary, 0, 1);
 
             var actions = CreateSection("Quick actions");
-            var actionFlow = new FlowLayoutPanel
+            var actionStack = new TableLayoutPanel
             {
-                Dock = DockStyle.Fill,
-                FlowDirection = FlowDirection.TopDown,
-                WrapContents = false,
-                Padding = new Padding(0, 48, 0, 0)
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                ColumnCount = 1,
+                RowCount = 0,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
             };
-            actionFlow.Controls.Add(WideButton("Test relay", "\uE8FA", (sender, args) => TestRelayAsync()));
-            actionFlow.Controls.Add(WideButton("Restart service", "\uE72C", (sender, args) => RestartService()));
-            actionFlow.Controls.Add(WideButton("Check database access", "\uE8B7", (sender, args) =>
+            actionStack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            AddStackButton(actionStack, "Test relay", "\uE8FA", (sender, args) => TestRelayAsync());
+            AddStackButton(actionStack, "Restart service", "\uE72C", (sender, args) => RestartService());
+            AddStackButton(actionStack, "Check database access", "\uE8B7", (sender, args) =>
             {
                 ShowPage("database");
                 TestDatabaseAccessAsync();
-            }));
-            actionFlow.Controls.Add(WideButton("Open request audit", "\uE9D5", (sender, args) =>
+            });
+            AddStackButton(actionStack, "Open request audit", "\uE9D5", (sender, args) =>
             {
                 ShowPage("audit");
                 RefreshAudit();
-            }));
-            actions.Controls.Add(actionFlow);
+            });
+            actions.Controls.Add(actionStack);
             layout.Controls.Add(actions, 1, 1);
 
             return page;
@@ -424,27 +455,38 @@ namespace RelayAgent.Client
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
                 RowCount = 2,
-                Margin = new Padding(column == 0 ? 0 : 8, 8, 8, 8)
+                Margin = new Padding(column == 0 ? 0 : 10, 10, 10, 10)
             };
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
             panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
 
-            var badge = new Label
+            var badgeHost = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 0, 12, 0),
+                BackColor = Color.Transparent
+            };
+            var badge = new StepBadge
             {
                 Text = number,
-                TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
-                ForeColor = UiTheme.Primary,
-                BackColor = UiTheme.PrimarySoft,
-                Dock = DockStyle.Fill,
-                Margin = new Padding(0, 0, 10, 0)
+                Size = new Size(32, 32)
             };
-            panel.Controls.Add(badge, 0, 0);
-            panel.SetRowSpan(badge, 2);
-            panel.Controls.Add(UiTheme.CreateLabel(title, UiTheme.Text, UiTheme.SectionFont), 1, 0);
-            var state = UiTheme.CreateLabel("Checking...", UiTheme.MutedText, UiTheme.SmallFont);
+            badgeHost.Controls.Add(badge);
+            badgeHost.Resize += (sender, args) =>
+            {
+                badge.Location = new Point(
+                    Math.Max(0, (badgeHost.ClientSize.Width - badge.Width) / 2),
+                    Math.Max(0, (badgeHost.ClientSize.Height - badge.Height) / 2));
+            };
+            panel.Controls.Add(badgeHost, 0, 0);
+            panel.SetRowSpan(badgeHost, 2);
+            var titleLabel = UiTheme.CreateLabel(title, UiTheme.Text, UiTheme.SectionFont);
+            titleLabel.Padding = new Padding(0, 2, 0, 2);
+            panel.Controls.Add(titleLabel, 1, 0);
+            var state = UiTheme.CreateLabel("Checking...", UiTheme.MutedText, UiTheme.BodyFont);
+            state.Padding = new Padding(0, 2, 0, 2);
             panel.Controls.Add(state, 1, 1);
             parent.Controls.Add(panel, column, 0);
             return state;
@@ -460,8 +502,8 @@ namespace RelayAgent.Client
 
             var section = CreateSection("Connection configuration");
             section.Dock = DockStyle.Top;
-            section.Height = 455;
-            section.MaximumSize = new Size(820, 455);
+            section.Height = 470;
+            section.MaximumSize = new Size(900, 470);
             body.Controls.Add(section);
 
             var table = new TableLayoutPanel
@@ -469,40 +511,43 @@ namespace RelayAgent.Client
                 Dock = DockStyle.Fill,
                 ColumnCount = 3,
                 RowCount = 7,
-                Padding = new Padding(0, 48, 0, 0)
+                Padding = new Padding(0, 10, 0, 0)
             };
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
             table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             _relayUrlBox = UiTheme.StyleTextBox(new TextBox { Dock = DockStyle.Fill });
             _agentIdBox = UiTheme.StyleTextBox(new TextBox { Dock = DockStyle.Fill });
             _tokenBox = UiTheme.StyleTextBox(new TextBox { Dock = DockStyle.Fill });
-            _pollSeconds = new NumericUpDown
+            _pollSeconds = UiTheme.StyleNumericUpDown(new NumericUpDown
             {
                 Minimum = 2,
                 Maximum = 120,
                 Value = 10,
                 Dock = DockStyle.Left,
                 Width = 120,
-                Font = UiTheme.BodyFont,
-                BorderStyle = BorderStyle.FixedSingle,
-                Margin = new Padding(0, 3, 0, 8)
-            };
+            });
 
             AddField(table, 0, "Relay MCP address", _relayUrlBox);
             AddField(table, 1, "Agent ID", _agentIdBox);
             AddField(table, 2, "Agent token", _tokenBox);
             AddField(table, 3, "Poll interval", _pollSeconds);
-            table.Controls.Add(UiTheme.CreateButton("Replace", ReplaceRelayUrl, ButtonTone.Secondary, "\uE70F"), 2, 0);
-            table.Controls.Add(UiTheme.CreateButton("Replace token", ReplaceToken, ButtonTone.Secondary, "\uE72E"), 2, 2);
+            var replaceUrl = UiTheme.CreateButton("Replace", ReplaceRelayUrl, ButtonTone.Secondary, "\uE70F");
+            replaceUrl.Dock = DockStyle.Fill;
+            replaceUrl.Margin = new Padding(4, 2, 0, 2);
+            table.Controls.Add(replaceUrl, 2, 0);
+            var replaceToken = UiTheme.CreateButton("Replace token", ReplaceToken, ButtonTone.Secondary, "\uE72E");
+            replaceToken.Dock = DockStyle.Fill;
+            replaceToken.Margin = new Padding(4, 2, 0, 2);
+            table.Controls.Add(replaceToken, 2, 2);
 
             var security = new Label
             {
@@ -510,7 +555,8 @@ namespace RelayAgent.Client
                 ForeColor = UiTheme.Success,
                 Font = UiTheme.SmallFont,
                 Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(0, 3, 0, 3)
             };
             table.Controls.Add(security, 1, 4);
             table.SetColumnSpan(security, 2);
@@ -519,7 +565,8 @@ namespace RelayAgent.Client
             {
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false
+                WrapContents = false,
+                Padding = new Padding(0, 2, 0, 2)
             };
             actions.Controls.Add(UiTheme.CreateButton("Save securely", SaveConfiguration, ButtonTone.Primary, "\uE74E"));
             actions.Controls.Add(UiTheme.CreateButton("Test relay", (sender, args) => TestRelayAsync(), ButtonTone.Secondary, "\uE8FA"));
@@ -558,7 +605,7 @@ namespace RelayAgent.Client
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 360));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 390));
             body.Controls.Add(layout);
 
             var details = CreateSection("Windows Service");
@@ -567,15 +614,20 @@ namespace RelayAgent.Client
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
                 RowCount = 4,
-                Padding = new Padding(0, 52, 0, 0)
+                Padding = new Padding(0, 10, 0, 0)
             };
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            for (var i = 0; i < 4; i++)
+            {
+                table.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+            }
             _serviceState = AddValueRow(table, 0, "Status");
             _serviceIdentity = AddValueRow(table, 1, "Running as");
             _servicePath = AddValueRow(table, 2, "Executable");
             var startMode = AddValueRow(table, 3, "Startup");
             startMode.Text = "Automatic";
+            _toolTips.SetToolTip(_servicePath, "The full executable path registered for the Windows Service.");
             details.Controls.Add(table);
             layout.Controls.Add(details, 0, 0);
 
@@ -585,15 +637,25 @@ namespace RelayAgent.Client
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
-                Padding = new Padding(0, 50, 0, 0)
+                Padding = new Padding(0, 38, 0, 0),
+                AutoScroll = true
             };
             flow.Controls.Add(WideButton("Install or update service", "\uE896", InstallService));
-            flow.Controls.Add(WideButton("Start service", "\uE768", StartService));
-            flow.Controls.Add(WideButton("Stop service", "\uE71A", StopService));
-            flow.Controls.Add(WideButton("Restart service", "\uE72C", (sender, args) => RestartService()));
+            _startServiceButton = (ModernButton)WideButton("Start service", "\uE768", StartService);
+            _stopServiceButton = (ModernButton)WideButton("Stop service", "\uE71A", StopService);
+            _restartServiceButton = (ModernButton)WideButton("Restart service", "\uE72C", (sender, args) => RestartService());
+            flow.Controls.Add(_startServiceButton);
+            flow.Controls.Add(_stopServiceButton);
+            flow.Controls.Add(_restartServiceButton);
             var uninstall = WideButton("Uninstall service", "\uE74D", UninstallService);
-            ((ModernButton)uninstall).Tone = ButtonTone.Danger;
-            flow.Controls.Add(uninstall);
+            _uninstallServiceButton = (ModernButton)uninstall;
+            _uninstallServiceButton.Tone = ButtonTone.Danger;
+            _uninstallServiceButton.Margin = new Padding(0, 12, 0, 10);
+            flow.Controls.Add(_uninstallServiceButton);
+            _toolTips.SetToolTip(_startServiceButton, "Start the installed Relay MCP Agent service.");
+            _toolTips.SetToolTip(_stopServiceButton, "Stop the running Relay MCP Agent service.");
+            _toolTips.SetToolTip(_restartServiceButton, "Restart the running Relay MCP Agent service.");
+            _toolTips.SetToolTip(_uninstallServiceButton, "Remove the Relay MCP Agent Windows Service.");
             actions.Controls.Add(flow);
             layout.Controls.Add(actions, 1, 0);
             return page;
@@ -613,9 +675,9 @@ namespace RelayAgent.Client
                 ColumnCount = 2,
                 RowCount = 2
             };
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 220));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 54));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 270));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             body.Controls.Add(layout);
 
@@ -625,10 +687,14 @@ namespace RelayAgent.Client
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
                 RowCount = 4,
-                Padding = new Padding(0, 48, 0, 0)
+                Padding = new Padding(0, 10, 0, 0)
             };
             targetTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
             targetTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            for (var i = 0; i < 4; i++)
+            {
+                targetTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+            }
             _sqlServerBox = UiTheme.StyleComboBox(new ComboBox { Dock = DockStyle.Fill });
             _sqlServerBox.DropDownStyle = ComboBoxStyle.DropDown;
             _databaseBox = UiTheme.StyleComboBox(new ComboBox { Dock = DockStyle.Fill });
@@ -647,7 +713,8 @@ namespace RelayAgent.Client
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
-                Padding = new Padding(0, 48, 0, 0)
+                Padding = new Padding(0, 38, 0, 0),
+                AutoScroll = true
             };
             actionFlow.Controls.Add(WideButton("Detect databases", "\uE721", (sender, args) => DetectDatabasesAsync()));
             actionFlow.Controls.Add(WideButton("Test current access", "\uE8FA", (sender, args) => TestDatabaseAccessAsync()));
@@ -662,7 +729,12 @@ namespace RelayAgent.Client
             _permissionGrid.Columns.Add("Read", "Required for read");
             _permissionGrid.Columns.Add("Write", "Required for write");
             _permissionGrid.Columns.Add("Ddl", "Required for DDL");
-            permissions.Padding = new Padding(18, 54, 18, 18);
+            permissions.Padding = new Padding(18, 50, 18, 18);
+            _permissionGrid.Columns["Permission"].MinimumWidth = 150;
+            _permissionGrid.Columns["Current"].MinimumWidth = 105;
+            _permissionGrid.Columns["Read"].MinimumWidth = 125;
+            _permissionGrid.Columns["Write"].MinimumWidth = 125;
+            _permissionGrid.Columns["Ddl"].MinimumWidth = 120;
             permissions.Controls.Add(_permissionGrid);
             layout.Controls.Add(permissions, 0, 1);
 
@@ -672,14 +744,17 @@ namespace RelayAgent.Client
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
-                Padding = new Padding(0, 48, 0, 0)
+                Padding = new Padding(0, 38, 0, 0),
+                AutoScroll = true
             };
             grantFlow.Controls.Add(WideButton("Grant read access", "\uE72E", (sender, args) =>
                 GrantDatabaseAccessAsync(DatabaseAccessLevel.Read)));
             grantFlow.Controls.Add(WideButton("Grant read/write access", "\uE70F", (sender, args) =>
                 GrantDatabaseAccessAsync(DatabaseAccessLevel.ReadWrite)));
-            grantFlow.Controls.Add(WideButton("Grant DDL access", "\uE713", (sender, args) =>
-                GrantDatabaseAccessAsync(DatabaseAccessLevel.Ddl)));
+            var grantDdl = WideButton("Grant DDL access", "\uE713", (sender, args) =>
+                GrantDatabaseAccessAsync(DatabaseAccessLevel.Ddl));
+            ((ModernButton)grantDdl).Tone = ButtonTone.Danger;
+            grantFlow.Controls.Add(grantDdl);
             var revoke = WideButton("Revoke database access", "\uE74D", (sender, args) => RevokeDatabaseAccessAsync());
             ((ModernButton)revoke).Tone = ButtonTone.Danger;
             grantFlow.Controls.Add(revoke);
@@ -704,49 +779,63 @@ namespace RelayAgent.Client
                 ColumnCount = 1,
                 RowCount = 3
             };
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 118));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 108));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 190));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 174));
             body.Controls.Add(layout);
 
             var filters = new SectionPanel
             {
                 Dock = DockStyle.Fill,
-                Padding = new Padding(14)
+                Padding = new Padding(14, 38, 14, 10)
             };
+            var filterTitle = new Label
+            {
+                Text = "Filters",
+                AutoSize = true,
+                Font = UiTheme.SectionFont,
+                ForeColor = UiTheme.Text,
+                UseMnemonic = false,
+                Location = new Point(14, 10),
+                BackColor = Color.Transparent
+            };
+            filters.Controls.Add(filterTitle);
+            filters.ControlAdded += (sender, args) => filterTitle.BringToFront();
             var filterLayout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 1,
-                RowCount = 2
+                ColumnCount = 2,
+                RowCount = 1
             };
-            filterLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-            filterLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            filterLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+            filterLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
             var settingsFlow = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false
+                WrapContents = false,
+                AutoScroll = true
             };
             var actionFlow = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false
+                WrapContents = false,
+                AutoScroll = true
             };
             _auditEnabled = new CheckBox
             {
                 Text = "Audit enabled",
                 AutoSize = true,
                 Font = UiTheme.BodyFont,
-                Margin = new Padding(4, 9, 18, 0)
+                Margin = new Padding(4, 8, 18, 0)
             };
             _auditPayloads = new CheckBox
             {
                 Text = "Log redacted payloads",
                 AutoSize = true,
                 Font = UiTheme.BodyFont,
-                Margin = new Padding(4, 9, 18, 0)
+                Margin = new Padding(4, 8, 18, 0)
             };
             _auditMethodFilter = UiTheme.StyleComboBox(new ComboBox { Width = 92 });
             _auditMethodFilter.Items.AddRange(new object[] { "All", "GET", "POST" });
@@ -754,14 +843,13 @@ namespace RelayAgent.Client
             _auditStatusFilter = UiTheme.StyleComboBox(new ComboBox { Width = 100 });
             _auditStatusFilter.Items.AddRange(new object[] { "All", "Success", "Failed" });
             _auditStatusFilter.SelectedIndex = 0;
-            _auditRetention = new NumericUpDown
+            _auditRetention = UiTheme.StyleNumericUpDown(new NumericUpDown
             {
                 Minimum = 1,
                 Maximum = 365,
-                Width = 72,
-                Font = UiTheme.BodyFont,
-                Margin = new Padding(4, 5, 12, 0)
-            };
+                Width = 72
+            });
+            _auditRetention.Margin = new Padding(4, 4, 12, 0);
             settingsFlow.Controls.Add(_auditEnabled);
             settingsFlow.Controls.Add(_auditPayloads);
             settingsFlow.Controls.Add(InlineCaption("Retention days"));
@@ -774,7 +862,7 @@ namespace RelayAgent.Client
             actionFlow.Controls.Add(UiTheme.CreateButton("Export", ExportAudit, ButtonTone.Secondary, "\uEDE1"));
             actionFlow.Controls.Add(UiTheme.CreateButton("Clear", ClearAudit, ButtonTone.Danger, "\uE74D"));
             filterLayout.Controls.Add(settingsFlow, 0, 0);
-            filterLayout.Controls.Add(actionFlow, 0, 1);
+            filterLayout.Controls.Add(actionFlow, 1, 0);
             filters.Controls.Add(filterLayout);
             layout.Controls.Add(filters, 0, 0);
 
@@ -799,23 +887,29 @@ namespace RelayAgent.Client
             _auditGrid.Columns["Duration"].FillWeight = 65;
             _auditGrid.Columns["JobId"].FillWeight = 115;
             _auditGrid.Columns["Payload"].FillWeight = 55;
+            _auditGrid.Columns["Endpoint"].MinimumWidth = 190;
+            _auditGrid.Columns["JobId"].MinimumWidth = 120;
+            _auditGrid.Columns["Payload"].MinimumWidth = 70;
             _auditGrid.SelectionChanged += (sender, args) => ShowSelectedAuditDetail();
             gridSection.Controls.Add(_auditGrid);
             layout.Controls.Add(gridSection, 0, 1);
 
             var detail = CreateSection("Selected request");
-            detail.Padding = new Padding(18, 48, 18, 14);
+            _auditDetailSection = detail;
+            detail.Padding = new Padding(18, 50, 18, 18);
             _auditDetail = new TextBox
             {
                 Dock = DockStyle.Fill,
                 Multiline = true,
                 ReadOnly = true,
+                Enabled = false,
                 ScrollBars = ScrollBars.Both,
                 WordWrap = false,
                 Font = new Font("Consolas", 8.5f),
                 BorderStyle = BorderStyle.None,
                 BackColor = Color.FromArgb(250, 250, 251),
-                ForeColor = UiTheme.Text
+                ForeColor = UiTheme.Text,
+                Text = "Select a request to inspect details."
             };
             detail.Controls.Add(_auditDetail);
             layout.Controls.Add(detail, 0, 2);
@@ -849,21 +943,27 @@ namespace RelayAgent.Client
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
-                Padding = new Padding(0, 46, 0, 0)
+                Padding = new Padding(0, 10, 0, 0),
+                AutoScroll = true
             };
             _updateStatus = new Label
             {
                 Text = "Current version " + AutoUpdater.CurrentRelease,
                 AutoSize = false,
                 Width = 260,
-                Height = 36,
+                Height = 40,
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = UiTheme.MutedText,
-                Font = UiTheme.BodyFont
+                Font = UiTheme.BodyFont,
+                Padding = new Padding(0, 2, 0, 2)
             };
             updateFlow.Controls.Add(_updateStatus);
-            updateFlow.Controls.Add(UiTheme.CreateButton("Check update", CheckUpdate, ButtonTone.Primary, "\uE896"));
-            updateFlow.Controls.Add(UiTheme.CreateButton("Open data folder", OpenDataFolder, ButtonTone.Secondary, "\uE838"));
+            var checkUpdate = UiTheme.CreateButton("Check update", CheckUpdate, ButtonTone.Primary, "\uE896");
+            var openDataFolder = UiTheme.CreateButton("Open data folder", OpenDataFolder, ButtonTone.Secondary, "\uE838");
+            updateFlow.Controls.Add(checkUpdate);
+            updateFlow.Controls.Add(openDataFolder);
+            _toolTips.SetToolTip(checkUpdate, "Check GitHub for a newer Relay MCP Agent Client release.");
+            _toolTips.SetToolTip(openDataFolder, "Open the local Relay MCP Agent data folder.");
             update.Controls.Add(updateFlow);
             layout.Controls.Add(update, 0, 0);
 
@@ -895,7 +995,26 @@ namespace RelayAgent.Client
                 FlowDirection = FlowDirection.LeftToRight
             };
             logActions.Controls.Add(UiTheme.CreateButton("Refresh log", (sender, args) => RefreshAgentLog(), ButtonTone.Secondary, "\uE72C"));
-            logActions.Controls.Add(UiTheme.CreateButton("Open log file", OpenAgentLog, ButtonTone.Secondary, "\uE8A5"));
+            var openLog = UiTheme.CreateButton("Open log file", OpenAgentLog, ButtonTone.Secondary, "\uE8A5");
+            logActions.Controls.Add(openLog);
+            _toolTips.SetToolTip(openLog, "Open the full local Agent log file.");
+            _logAutoScroll = new CheckBox
+            {
+                Text = "Auto-scroll",
+                Checked = true,
+                AutoSize = true,
+                Font = UiTheme.SmallFont,
+                Margin = new Padding(8, 10, 12, 0)
+            };
+            logActions.Controls.Add(_logAutoScroll);
+            logActions.Controls.Add(InlineCaption("Level"));
+            _logLevelFilter = UiTheme.StyleComboBox(new ComboBox { Width = 96 });
+            _logLevelFilter.Items.AddRange(new object[] { "All", "Error", "Warning", "Info" });
+            _logLevelFilter.SelectedIndex = 0;
+            _logLevelFilter.SelectedIndexChanged += (sender, args) => RefreshAgentLog();
+            logActions.Controls.Add(_logLevelFilter);
+            logActions.Controls.Add(UiTheme.CreateButton("Clear log", ClearAgentLog, ButtonTone.Danger, "\uE74D"));
+            logActions.Controls.Add(UiTheme.CreateButton("Copy selected", CopySelectedLog, ButtonTone.Secondary, "\uE8C8"));
             logLayout.Controls.Add(logActions, 0, 1);
             log.Controls.Add(logLayout);
             layout.Controls.Add(log, 0, 1);
@@ -922,6 +1041,7 @@ namespace RelayAgent.Client
                 Font = UiTheme.TitleFont,
                 ForeColor = UiTheme.Text,
                 AutoSize = true,
+                UseMnemonic = false,
                 Location = new Point(24, 14)
             });
             header.Controls.Add(new Label
@@ -930,10 +1050,9 @@ namespace RelayAgent.Client
                 Font = UiTheme.BodyFont,
                 ForeColor = UiTheme.MutedText,
                 AutoSize = true,
+                UseMnemonic = false,
                 Location = new Point(26, 50)
             });
-            page.Controls.Add(header);
-
             body = new Panel
             {
                 Dock = DockStyle.Fill,
@@ -942,7 +1061,8 @@ namespace RelayAgent.Client
                 BackColor = UiTheme.AppBackground
             };
             page.Controls.Add(body);
-            body.BringToFront();
+            page.Controls.Add(header);
+            header.BringToFront();
             return page;
         }
 
@@ -950,7 +1070,8 @@ namespace RelayAgent.Client
         {
             var section = new SectionPanel
             {
-                Dock = DockStyle.Fill
+                Dock = DockStyle.Fill,
+                Padding = new Padding(18, 50, 18, 18)
             };
             var titleLabel = new Label
             {
@@ -958,6 +1079,7 @@ namespace RelayAgent.Client
                 AutoSize = true,
                 Font = UiTheme.SectionFont,
                 ForeColor = UiTheme.Text,
+                UseMnemonic = false,
                 Location = new Point(18, 16),
                 BackColor = Color.Transparent
             };
@@ -970,9 +1092,25 @@ namespace RelayAgent.Client
         {
             var button = UiTheme.CreateButton(text, handler, ButtonTone.Secondary, glyph);
             button.Width = 250;
-            button.MinimumSize = new Size(250, 38);
+            button.MinimumSize = new Size(250, 40);
             button.Margin = new Padding(0, 0, 0, 10);
             return button;
+        }
+
+        private void AddStackButton(
+            TableLayoutPanel table,
+            string text,
+            string glyph,
+            EventHandler handler,
+            ButtonTone tone = ButtonTone.Secondary)
+        {
+            var row = table.RowCount++;
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
+            var button = UiTheme.CreateButton(text, handler, tone, glyph);
+            button.Dock = DockStyle.Fill;
+            button.Margin = new Padding(0, 0, 0, 10);
+            button.MinimumSize = new Size(0, 40);
+            table.Controls.Add(button, 0, row);
         }
 
         private Label InlineCaption(string text)
@@ -999,9 +1137,13 @@ namespace RelayAgent.Client
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = UiTheme.MutedText,
-                Font = UiTheme.BodyFont
+                Font = UiTheme.BodyFont,
+                Padding = new Padding(0, 2, 0, 2)
             }, 0, row);
             field.Dock = field is NumericUpDown ? DockStyle.Left : DockStyle.Fill;
+            field.Anchor = field is NumericUpDown
+                ? AnchorStyles.Left
+                : AnchorStyles.Left | AnchorStyles.Right;
             table.Controls.Add(field, 1, row);
         }
 
@@ -1010,20 +1152,38 @@ namespace RelayAgent.Client
             table.Controls.Add(UiTheme.CreateLabel(caption, UiTheme.MutedText), 0, row);
             var value = UiTheme.CreateLabel("", UiTheme.Text);
             value.AutoEllipsis = true;
+            value.Padding = new Padding(0, 2, 0, 2);
             table.Controls.Add(value, 1, row);
             return value;
         }
 
         private void AddSummaryRow(
-            TableLayoutPanel table,
+            Panel table,
             int row,
             string caption,
             Func<string> value)
         {
-            table.Controls.Add(UiTheme.CreateLabel(caption, UiTheme.MutedText), 0, row);
+            const int captionWidth = 170;
+            const int rowHeight = 36;
+            var top = row * rowHeight;
+            var captionLabel = UiTheme.CreateLabel(caption, UiTheme.MutedText);
+            captionLabel.Dock = DockStyle.None;
+            captionLabel.Location = new Point(0, top);
+            captionLabel.Size = new Size(captionWidth, rowHeight);
+            table.Controls.Add(captionLabel);
+
             var label = UiTheme.CreateLabel(value(), UiTheme.Text);
+            label.Dock = DockStyle.None;
+            label.Location = new Point(captionWidth, top);
+            label.Size = new Size(Math.Max(10, table.Width - captionWidth), rowHeight);
             label.Tag = value;
-            table.Controls.Add(label, 1, row);
+            label.Padding = new Padding(0, 2, 0, 2);
+            label.AutoEllipsis = true;
+            table.Resize += (sender, args) =>
+            {
+                label.Width = Math.Max(10, table.ClientSize.Width - captionWidth);
+            };
+            table.Controls.Add(label);
         }
 
         private void ShowPage(string key)
@@ -1406,6 +1566,12 @@ namespace RelayAgent.Client
             row.Cells[1].Style.ForeColor = !current.HasValue
                 ? UiTheme.MutedText
                 : current.Value ? UiTheme.Success : UiTheme.Danger;
+            row.Cells[1].Style.BackColor = !current.HasValue
+                ? UiTheme.WarningSoft
+                : current.Value ? UiTheme.SuccessSoft : UiTheme.DangerSoft;
+            row.Cells[1].ToolTipText = row.Cells[1].Value == null
+                ? ""
+                : Convert.ToString(row.Cells[1].Value);
         }
 
         private void ApplyAuditSettings(object sender, EventArgs e)
@@ -1480,7 +1646,8 @@ namespace RelayAgent.Client
             {
                 if (_auditDetail != null)
                 {
-                    _auditDetail.Text = "";
+                    _auditDetail.Enabled = false;
+                    _auditDetail.Text = "Select a request to inspect details.";
                 }
                 return;
             }
@@ -1488,10 +1655,12 @@ namespace RelayAgent.Client
             var entry = _auditGrid.SelectedRows[0].Tag as HttpAuditEntry;
             if (entry == null)
             {
-                _auditDetail.Text = "";
+                _auditDetail.Enabled = false;
+                _auditDetail.Text = "Select a request to inspect details.";
                 return;
             }
 
+            _auditDetail.Enabled = true;
             var builder = new StringBuilder();
             builder.AppendLine(entry.method + " " + entry.endpoint);
             builder.AppendLine("Status: " + (entry.statusCode.HasValue ? entry.statusCode.Value.ToString() : "Failed"));
@@ -1713,6 +1882,24 @@ namespace RelayAgent.Client
             _serviceState.ForeColor = service == "running" ? UiTheme.Success : UiTheme.Warning;
             _serviceIdentity.Text = DatabaseAccessManager.GetServiceIdentity();
             _servicePath.Text = GetServiceExecutablePath();
+            _toolTips.SetToolTip(_servicePath, _servicePath.Text);
+            var serviceInstalled = service != "not installed";
+            if (_startServiceButton != null)
+            {
+                _startServiceButton.Enabled = serviceInstalled && service != "running";
+            }
+            if (_stopServiceButton != null)
+            {
+                _stopServiceButton.Enabled = service == "running";
+            }
+            if (_restartServiceButton != null)
+            {
+                _restartServiceButton.Enabled = service == "running";
+            }
+            if (_uninstallServiceButton != null)
+            {
+                _uninstallServiceButton.Enabled = serviceInstalled;
+            }
 
             _overviewConnection.Text = configured ? "Configured" : "Action required";
             _overviewConnection.ForeColor = configured ? UiTheme.Success : UiTheme.Warning;
@@ -1726,11 +1913,26 @@ namespace RelayAgent.Client
                 : UiTheme.Warning;
             _overviewAudit.Text = _loadedConfig.AuditEnabled ? "Audit enabled" : "Audit disabled";
             _overviewAudit.ForeColor = _loadedConfig.AuditEnabled ? UiTheme.Success : UiTheme.Warning;
+            RefreshComputedLabels(_pageHost);
 
             _footerStatus.Text =
                 "Service: " + ToTitle(service) +
                 "    |    Audit: " + (_loadedConfig.AuditEnabled ? "Enabled" : "Disabled") +
                 "    |    Local time: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        }
+
+        private void RefreshComputedLabels(Control root)
+        {
+            foreach (Control child in root.Controls)
+            {
+                var label = child as Label;
+                var value = label == null ? null : label.Tag as Func<string>;
+                if (value != null)
+                {
+                    label.Text = value();
+                }
+                RefreshComputedLabels(child);
+            }
         }
 
         private string QueryService()
@@ -1801,21 +2003,67 @@ namespace RelayAgent.Client
             {
                 if (!File.Exists(AgentConfig.AgentLogPath))
                 {
-                    _agentLog.Text = "No Agent log has been written yet.";
+                    _agentLog.Text = "No log entries yet.\r\nThe Agent log file is not available.";
                     return;
                 }
+                var level = _logLevelFilter == null
+                    ? "All"
+                    : Convert.ToString(_logLevelFilter.SelectedItem);
                 var lines = File.ReadLines(AgentConfig.AgentLogPath)
+                    .Where(line => level == "All" ||
+                        line.IndexOf(level, StringComparison.OrdinalIgnoreCase) >= 0)
                     .Reverse()
                     .Take(400)
                     .Reverse();
                 _agentLog.Lines = lines.ToArray();
-                _agentLog.SelectionStart = _agentLog.TextLength;
-                _agentLog.ScrollToCaret();
+                if (_logAutoScroll == null || _logAutoScroll.Checked)
+                {
+                    _agentLog.SelectionStart = _agentLog.TextLength;
+                    _agentLog.ScrollToCaret();
+                }
             }
             catch (Exception ex)
             {
-                _agentLog.Text = ex.Message;
+                _agentLog.Text = "Log file unavailable\r\n" + ex.Message;
             }
+        }
+
+        private void ClearAgentLog(object sender, EventArgs e)
+        {
+            if (MessageBox.Show(
+                    "Clear the local Agent log?",
+                    Text,
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning) != DialogResult.Yes)
+            {
+                return;
+            }
+
+            try
+            {
+                if (File.Exists(AgentConfig.AgentLogPath))
+                {
+                    File.WriteAllText(AgentConfig.AgentLogPath, "");
+                }
+                RefreshAgentLog();
+                SetFooter("Agent log cleared.");
+            }
+            catch (Exception ex)
+            {
+                SetFooter("Unable to clear Agent log: " + ex.Message);
+            }
+        }
+
+        private void CopySelectedLog(object sender, EventArgs e)
+        {
+            if (_agentLog == null || string.IsNullOrEmpty(_agentLog.SelectedText))
+            {
+                SetFooter("Select log text to copy.");
+                return;
+            }
+
+            Clipboard.SetText(_agentLog.SelectedText);
+            SetFooter("Selected log text copied.");
         }
 
         private void OpenDataFolder(object sender, EventArgs e)

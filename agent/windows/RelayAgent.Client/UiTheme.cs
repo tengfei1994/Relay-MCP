@@ -77,12 +77,12 @@ namespace RelayAgent.Client
                 Text = text,
                 Glyph = glyph,
                 Tone = tone,
-                Height = 36,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                MinimumSize = new Size(104, 36),
+                Height = 40,
+                AutoSize = false,
+                Width = CalculateButtonWidth(text, glyph),
+                MinimumSize = new Size(108, 40),
                 Margin = new Padding(0, 0, 10, 0),
-                Padding = new Padding(14, 0, 14, 0),
+                Padding = new Padding(12, 2, 12, 2),
                 Cursor = Cursors.Hand
             };
             if (handler != null)
@@ -106,8 +106,27 @@ namespace RelayAgent.Client
                 TextAlign = alignment,
                 AutoSize = false,
                 Dock = DockStyle.Fill,
+                Padding = new Padding(0, 2, 0, 2),
+                UseMnemonic = false,
                 BackColor = Color.Transparent
             };
+        }
+
+        private static int CalculateButtonWidth(string text, string glyph)
+        {
+            var textSize = TextRenderer.MeasureText(
+                text ?? "",
+                BodyFont,
+                new Size(int.MaxValue, int.MaxValue),
+                TextFormatFlags.NoPadding);
+            var glyphSize = string.IsNullOrWhiteSpace(glyph)
+                ? 0
+                : TextRenderer.MeasureText(
+                    glyph,
+                    GlyphFont,
+                    new Size(int.MaxValue, int.MaxValue),
+                    TextFormatFlags.NoPadding).Width + 7;
+            return Math.Max(108, textSize.Width + glyphSize + 34);
         }
 
         public static TextBox StyleTextBox(TextBox textBox)
@@ -116,7 +135,9 @@ namespace RelayAgent.Client
             textBox.BorderStyle = BorderStyle.FixedSingle;
             textBox.BackColor = Surface;
             textBox.ForeColor = Text;
-            textBox.Margin = new Padding(0, 3, 0, 8);
+            textBox.MinimumSize = new Size(0, 32);
+            textBox.Padding = new Padding(6, 2, 6, 2);
+            textBox.Margin = new Padding(0, 2, 0, 2);
             return textBox;
         }
 
@@ -127,8 +148,22 @@ namespace RelayAgent.Client
             comboBox.FlatStyle = FlatStyle.Flat;
             comboBox.BackColor = Surface;
             comboBox.ForeColor = Text;
-            comboBox.Margin = new Padding(0, 3, 0, 8);
+            comboBox.MinimumSize = new Size(0, 32);
+            comboBox.ItemHeight = 24;
+            comboBox.Margin = new Padding(0, 2, 0, 2);
             return comboBox;
+        }
+
+        public static NumericUpDown StyleNumericUpDown(NumericUpDown numericUpDown)
+        {
+            numericUpDown.Font = BodyFont;
+            numericUpDown.BackColor = Surface;
+            numericUpDown.ForeColor = Text;
+            numericUpDown.BorderStyle = BorderStyle.FixedSingle;
+            numericUpDown.MinimumSize = new Size(0, 32);
+            numericUpDown.Padding = new Padding(6, 2, 6, 2);
+            numericUpDown.Margin = new Padding(0, 2, 0, 2);
+            return numericUpDown;
         }
 
         public static void StyleGrid(DataGridView grid)
@@ -144,18 +179,31 @@ namespace RelayAgent.Client
             grid.MultiSelect = false;
             grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+            grid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None;
             grid.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None;
-            grid.ColumnHeadersHeight = 38;
-            grid.RowTemplate.Height = 34;
+            grid.ColumnHeadersHeight = 42;
+            grid.RowTemplate.Height = 38;
             grid.EnableHeadersVisualStyles = false;
             grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(247, 248, 250);
             grid.ColumnHeadersDefaultCellStyle.ForeColor = MutedText;
             grid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI Semibold", 8.5f);
+            grid.ColumnHeadersDefaultCellStyle.Padding = new Padding(8, 3, 8, 3);
             grid.DefaultCellStyle.BackColor = Surface;
             grid.DefaultCellStyle.ForeColor = Text;
             grid.DefaultCellStyle.Font = SmallFont;
+            grid.DefaultCellStyle.Padding = new Padding(8, 3, 8, 3);
             grid.DefaultCellStyle.SelectionBackColor = PrimarySoft;
             grid.DefaultCellStyle.SelectionForeColor = Text;
+            grid.CellToolTipTextNeeded += (sender, args) =>
+            {
+                if (args.RowIndex < 0 || args.ColumnIndex < 0)
+                {
+                    return;
+                }
+
+                var value = grid.Rows[args.RowIndex].Cells[args.ColumnIndex].Value;
+                args.ToolTipText = value == null ? "" : Convert.ToString(value);
+            };
         }
     }
 
@@ -196,25 +244,50 @@ namespace RelayAgent.Client
             var textRectangle = ClientRectangle;
             if (!string.IsNullOrWhiteSpace(Glyph))
             {
-                var glyphSize = e.Graphics.MeasureString(Glyph, UiTheme.GlyphFont);
-                var textSize = e.Graphics.MeasureString(Text, Font);
+                var glyphSize = TextRenderer.MeasureText(
+                    e.Graphics,
+                    Glyph,
+                    UiTheme.GlyphFont,
+                    new Size(int.MaxValue, int.MaxValue),
+                    TextFormatFlags.NoPadding);
+                var textSize = TextRenderer.MeasureText(
+                    e.Graphics,
+                    Text,
+                    Font,
+                    new Size(int.MaxValue, int.MaxValue),
+                    TextFormatFlags.NoPadding);
                 var totalWidth = glyphSize.Width + 7 + textSize.Width;
-                var startX = (Width - totalWidth) / 2f;
-                using (var brush = new SolidBrush(colors.Item3))
-                {
-                    e.Graphics.DrawString(
-                        Glyph,
-                        UiTheme.GlyphFont,
-                        brush,
-                        startX,
-                        (Height - glyphSize.Height) / 2f);
-                    e.Graphics.DrawString(
-                        Text,
-                        Font,
-                        brush,
-                        startX + glyphSize.Width + 7,
-                        (Height - textSize.Height) / 2f);
-                }
+                var availableWidth = Math.Max(0, Width - Padding.Left - Padding.Right);
+                var startX = Padding.Left + Math.Max(0, (availableWidth - totalWidth) / 2);
+                var glyphRectangle = new Rectangle(
+                    startX,
+                    Padding.Top,
+                    Math.Max(1, glyphSize.Width),
+                    Math.Max(1, Height - Padding.Vertical));
+                var textRectangleWithEllipsis = new Rectangle(
+                    startX + glyphSize.Width + 7,
+                    Padding.Top,
+                    Math.Max(1, Width - startX - glyphSize.Width - 7 - Padding.Right),
+                    Math.Max(1, Height - Padding.Vertical));
+                TextRenderer.DrawText(
+                    e.Graphics,
+                    Glyph,
+                    UiTheme.GlyphFont,
+                    glyphRectangle,
+                    colors.Item3,
+                    TextFormatFlags.HorizontalCenter |
+                    TextFormatFlags.VerticalCenter |
+                    TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(
+                    e.Graphics,
+                    Text,
+                    Font,
+                    textRectangleWithEllipsis,
+                    colors.Item3,
+                    TextFormatFlags.VerticalCenter |
+                    TextFormatFlags.EndEllipsis |
+                    TextFormatFlags.NoPrefix |
+                    TextFormatFlags.NoPadding);
                 return;
             }
 
@@ -227,7 +300,8 @@ namespace RelayAgent.Client
                 TextFormatFlags.HorizontalCenter |
                 TextFormatFlags.VerticalCenter |
                 TextFormatFlags.EndEllipsis |
-                TextFormatFlags.NoPrefix);
+                TextFormatFlags.NoPrefix |
+                TextFormatFlags.NoPadding);
         }
 
         protected override void OnMouseEnter(EventArgs e)
@@ -328,6 +402,50 @@ namespace RelayAgent.Client
         }
     }
 
+    internal sealed class StepBadge : Control
+    {
+        public StepBadge()
+        {
+            Size = new Size(32, 32);
+            MinimumSize = new Size(32, 32);
+            MaximumSize = new Size(32, 32);
+            Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold);
+            ForeColor = UiTheme.Primary;
+            SetStyle(
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw |
+                ControlStyles.SupportsTransparentBackColor |
+                ControlStyles.UserPaint,
+                true);
+            BackColor = Color.Transparent;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            var bounds = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
+            using (var background = new SolidBrush(UiTheme.PrimarySoft))
+            using (var border = new Pen(Color.FromArgb(210, 225, 250)))
+            {
+                e.Graphics.FillEllipse(background, bounds);
+                e.Graphics.DrawEllipse(border, bounds);
+            }
+
+            TextRenderer.DrawText(
+                e.Graphics,
+                Text,
+                Font,
+                ClientRectangle,
+                UiTheme.Primary,
+                TextFormatFlags.HorizontalCenter |
+                TextFormatFlags.VerticalCenter |
+                TextFormatFlags.NoPadding |
+                TextFormatFlags.NoPrefix);
+        }
+    }
+
     internal sealed class NavButton : Button
     {
         private bool _selected;
@@ -387,11 +505,12 @@ namespace RelayAgent.Client
                 e.Graphics,
                 Text,
                 Font,
-                new Rectangle(46, 0, Width - 54, Height),
+                new Rectangle(46, 1, Math.Max(1, Width - 54), Math.Max(1, Height - 2)),
                 Selected ? UiTheme.Primary : UiTheme.Text,
                 TextFormatFlags.VerticalCenter |
                 TextFormatFlags.EndEllipsis |
-                TextFormatFlags.NoPrefix);
+                TextFormatFlags.NoPrefix |
+                TextFormatFlags.NoPadding);
         }
 
         protected override void OnMouseEnter(EventArgs e)

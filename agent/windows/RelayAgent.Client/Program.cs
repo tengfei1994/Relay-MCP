@@ -1,6 +1,6 @@
 using System;
 using System.ServiceProcess;
-using System.Windows.Forms;
+using System.Windows;
 using RelayAgent.Service;
 
 namespace RelayAgent.Client
@@ -22,9 +22,11 @@ namespace RelayAgent.Client
                 return;
             }
 
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainForm());
+            var application = new Application
+            {
+                ShutdownMode = ShutdownMode.OnMainWindowClose
+            };
+            application.Run(new MainWindow());
         }
     }
 }

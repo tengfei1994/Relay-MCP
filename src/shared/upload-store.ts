@@ -8,7 +8,7 @@ const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT ?? "/workspace";
 const STATE_ROOT = process.env.RELAY_STATE_ROOT ?? join(WORKSPACE_ROOT, ".relay-mcp");
 const UPLOAD_ROOT = join(STATE_ROOT, "uploads");
 const DEFAULT_TTL_MS = Number(process.env.RELAY_UPLOAD_TTL_MS ?? 15 * 60 * 1000);
-const DEFAULT_MAX_BYTES = Number(process.env.RELAY_UPLOAD_MAX_BYTES ?? 256 * 1024 * 1024);
+const DEFAULT_MAX_BYTES = Number(process.env.RELAY_UPLOAD_MAX_BYTES ?? 4 * 1024 * 1024 * 1024);
 
 export type UploadStatus = "pending" | "completed" | "failed" | "expired";
 

@@ -57,6 +57,9 @@ declare module "fastify" {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const app = Fastify({ logger: true });
+const RELAY_VERSION = process.env.RELAY_VERSION ?? "0.5.0";
+const RELAY_BUILD_COMMIT = process.env.RELAY_BUILD_COMMIT ?? "development";
+const RELAY_BUILD_TIME = process.env.RELAY_BUILD_TIME ?? "unknown";
 
 // Run DB migrations
 runMigrations();
@@ -110,7 +113,14 @@ await app.register(agentTokenRoutes);
 await app.register(instanceRoutes);
 
 // Health check
-app.get("/api/health", async () => ({ ok: true, ts: new Date().toISOString() }));
+app.get("/api/health", async () => ({
+  ok: true,
+  version: RELAY_VERSION,
+  commit: RELAY_BUILD_COMMIT,
+  buildTime: RELAY_BUILD_TIME,
+  process: "remote-ops-web",
+  ts: new Date().toISOString(),
+}));
 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? "0.0.0.0";

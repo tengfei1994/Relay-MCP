@@ -17,7 +17,7 @@ export interface AgentJob {
   id: string;
   userId: number;
   agentId: string;
-  kind: "exec" | "powershell";
+  kind: "exec" | "powershell" | "artifact-upload";
   payload: Record<string, unknown>;
   timeoutMs: number;
   status: string;

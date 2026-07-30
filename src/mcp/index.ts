@@ -47,8 +47,9 @@ import { createHash } from "crypto";
 import { basename, dirname, join, relative } from "path";
 import { resolveWorkspacePath } from "../shared/workspace-path.js";
 import { quotePosix, quotePowerShell, validateGitRef, validateServiceName } from "../shared/shell-utils.js";
-import { createUploadSession, publicUploadSession } from "../shared/upload-store.js";
+import { createUploadSession, getUploadSession, publicUploadSession } from "../shared/upload-store.js";
 import { createDownloadSession } from "../shared/download-store.js";
+import { getAgentStore } from "../shared/agent-store.js";
 import { TOOL_CATALOG_BY_NAME } from "../shared/tool-catalog.js";
 import "dotenv/config";
 
@@ -133,7 +134,7 @@ function createMcpServer(user: McpUser) {
   const registry = new ProjectRegistry();
   const server = new McpServer({
     name: "remote-ops",
-    version: "1.0.0",
+    version: "0.5.0",
   });
 
   // ── Helper: resolve project + runner ──────────────────────────────────────
@@ -980,23 +981,65 @@ else {
       environment: z.string().optional(),
       overwrite: z.boolean().optional().describe("Replace an existing Relay workspace file. Default false."),
       ttlSeconds: z.number().int().min(60).max(3600).optional().describe("Local download URL lifetime. Default 900 seconds."),
+      timeoutMs: z.number().int().positive().optional().describe("Remote-to-Relay transfer timeout. Default 1800000 milliseconds."),
     },
-    async ({ project: projectName, remotePath, workspacePath: relPath, environment, overwrite = false, ttlSeconds }) => {
+    async ({ project: projectName, remotePath, workspacePath: relPath, environment, overwrite = false, ttlSeconds, timeoutMs = 1_800_000 }) => {
       const { project, ps, runner } = getRunner(projectName, environment);
       const destination = resolveWorkspacePath(project.workspacePath, relPath);
       if (existsSync(destination) && !overwrite) {
         throw new Error(`Relay workspace destination already exists: ${relPath}`);
       }
       mkdirSync(dirname(destination), { recursive: true });
-      const tempPath = `${destination}.relay-download-${Date.now()}.tmp`;
       let bytes: number;
-      try {
-        ({ bytes } = await runner.downloadFile(remotePath, tempPath));
-        if (existsSync(destination)) rmSync(destination, { force: true });
-        renameSync(tempPath, destination);
-      } catch (error) {
-        if (existsSync(tempPath)) rmSync(tempPath, { force: true });
-        throw error;
+      if (ps.connectionMode === "agent") {
+        if (!ps.server.agentId) {
+          throw new Error(`Agent server '${ps.server.name}' has no Agent ID`);
+        }
+        const upload = createUploadSession({
+          userId: user.id,
+          projectId: project.id,
+          project: project.name,
+          path: relPath,
+          maxBytes: Number(process.env.RELAY_ARTIFACT_MAX_BYTES ?? 4 * 1024 * 1024 * 1024),
+          ttlMs: timeoutMs + 60_000,
+        });
+        const agentStore = getAgentStore();
+        agentStore.assertOnline(user.id, ps.server.agentId);
+        const agentJob = agentStore.enqueueJob(
+          user.id,
+          ps.server.agentId,
+          "artifact-upload",
+          {
+            remotePath,
+            uploadPath: `/api/uploads/${upload.session.id}`,
+            uploadToken: upload.token,
+          },
+          timeoutMs
+        );
+        const completed = await agentStore.waitForJob(agentJob.id, timeoutMs);
+        const finalUpload = getUploadSession(upload.session.id);
+        if (completed.status !== "completed" || finalUpload?.status !== "completed") {
+          throw new Error(
+            `Agent artifact transfer failed; jobId=${agentJob.id}; ` +
+            `jobStatus=${completed.status}; uploadStatus=${finalUpload?.status ?? "missing"}; ` +
+            `error=${completed.result?.stderr ?? finalUpload?.error ?? "unknown"}`
+          );
+        }
+        bytes = finalUpload.bytesWritten ?? 0;
+      } else {
+        const tempPath = `${destination}.relay-download-${Date.now()}.tmp`;
+        try {
+          ({ bytes } = await runner.downloadFile(remotePath, tempPath));
+          if (existsSync(destination)) rmSync(destination, { force: true });
+          renameSync(tempPath, destination);
+        } catch (error) {
+          if (existsSync(tempPath)) rmSync(tempPath, { force: true });
+          throw error;
+        }
+      }
+      const staged = statSync(destination);
+      if (!staged.isFile() || staged.size !== bytes) {
+        throw new Error(`Staged artifact size mismatch: reported=${bytes}, actual=${staged.size}`);
       }
       const digest = createHash("sha256");
       for await (const chunk of createReadStream(destination)) digest.update(chunk);
@@ -1006,6 +1049,10 @@ else {
         projectId: project.id,
         project: project.name,
         path: relPath,
+        bytes,
+        sha256,
+        fileName: basename(destination),
+        mtimeMs: staged.mtimeMs,
         ttlMs: ttlSeconds ? ttlSeconds * 1000 : undefined,
       });
       const downloadUrl = `${RELAY_PUBLIC_URL}/api/downloads/${session.id}`;
@@ -1013,14 +1060,21 @@ else {
         content: [{
           type: "text",
           text: summarizeJson({
-            remote: `${ps.server.host}:${remotePath}`,
+            remote: {
+              serverId: ps.server.id,
+              serverName: ps.server.name,
+              connectionMode: ps.connectionMode,
+              path: remotePath.replace(/\\/g, "/"),
+            },
             relayWorkspacePath: relPath,
             bytes,
             sha256,
+            contentType: session.contentType,
+            sessionId: session.id,
             downloadUrl,
             token,
             expiresAt: session.expiresAt,
-            command: `npm run relay-download -- --url ${downloadUrl} --token <token> --file <local-file>`,
+            command: `npm run relay-download -- --url ${downloadUrl} --token <token> --file <local-file> --expected-bytes ${bytes} --expected-sha256 ${sha256}`,
           }),
         }],
       };

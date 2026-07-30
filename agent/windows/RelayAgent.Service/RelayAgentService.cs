@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -83,7 +85,7 @@ namespace RelayAgent.Service
         private static HttpClient CreateClient(AgentConfig config)
         {
             var client = new HttpClient();
-            client.Timeout = TimeSpan.FromMinutes(5);
+            client.Timeout = TimeSpan.FromMinutes(30);
             client.DefaultRequestHeaders.Add("Authorization", "Bearer " + config.Token);
             client.DefaultRequestHeaders.Add("X-Relay-Agent-Id", config.AgentId);
             return client;
@@ -144,7 +146,7 @@ namespace RelayAgent.Service
                         try
                         {
                             await PostEventAsync(client, config, job.jobId, "started", token);
-                            result = await ExecuteJobAsync(job, token);
+                            result = await ExecuteJobAsync(client, config, job, token);
                         }
                         catch (Exception ex)
                         {
@@ -171,8 +173,17 @@ namespace RelayAgent.Service
             }
         }
 
-        private static async Task<AgentResult> ExecuteJobAsync(AgentJob job, CancellationToken token)
+        private static async Task<AgentResult> ExecuteJobAsync(
+            HttpClient client,
+            AgentConfig config,
+            AgentJob job,
+            CancellationToken token)
         {
+            if (string.Equals(job.kind, "artifact-upload", StringComparison.OrdinalIgnoreCase))
+            {
+                return await UploadArtifactAsync(client, config, job, token);
+            }
+
             var isPowerShell = string.Equals(job.kind, "powershell", StringComparison.OrdinalIgnoreCase);
             if (job.payload == null)
             {
@@ -249,6 +260,116 @@ namespace RelayAgent.Service
                 if (!string.IsNullOrWhiteSpace(scriptPath))
                 {
                     try { File.Delete(scriptPath); } catch { }
+                }
+            }
+        }
+
+        private static async Task<AgentResult> UploadArtifactAsync(
+            HttpClient client,
+            AgentConfig config,
+            AgentJob job,
+            CancellationToken token)
+        {
+            if (job.payload == null ||
+                string.IsNullOrWhiteSpace(job.payload.remotePath) ||
+                string.IsNullOrWhiteSpace(job.payload.uploadPath) ||
+                string.IsNullOrWhiteSpace(job.payload.uploadToken))
+            {
+                return new AgentResult
+                {
+                    status = "failed",
+                    exitCode = 2,
+                    stderr = "Artifact upload job is missing remotePath, uploadPath, or uploadToken."
+                };
+            }
+
+            var file = new FileInfo(job.payload.remotePath);
+            if (!file.Exists)
+            {
+                return new AgentResult
+                {
+                    status = "failed",
+                    exitCode = 3,
+                    stderr = "Artifact source file does not exist: " + job.payload.remotePath
+                };
+            }
+
+            string sha256;
+            using (var input = file.OpenRead())
+            using (var hash = SHA256.Create())
+            {
+                sha256 = BitConverter.ToString(hash.ComputeHash(input))
+                    .Replace("-", "")
+                    .ToLowerInvariant();
+            }
+
+            await PostEventAsync(
+                client,
+                config,
+                job.jobId,
+                "artifact_upload_start bytes=" + file.Length + " sha256=" + sha256,
+                token);
+
+            var uploadUrl = job.payload.uploadPath.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                ? job.payload.uploadPath
+                : config.RelayUrl.TrimEnd('/') + "/" + job.payload.uploadPath.TrimStart('/');
+            using (var input = file.OpenRead())
+            using (var content = new StreamContent(input, 1024 * 1024))
+            using (var request = new HttpRequestMessage(HttpMethod.Put, uploadUrl))
+            {
+                content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                content.Headers.ContentLength = file.Length;
+                request.Content = content;
+                request.Headers.Add("X-Relay-Upload-Token", job.payload.uploadToken);
+                using (var response = await client.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    token))
+                {
+                    var body = await response.Content.ReadAsStringAsync();
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        return new AgentResult
+                        {
+                            status = "failed",
+                            exitCode = (int)response.StatusCode,
+                            stderr = "Artifact upload returned " +
+                                (int)response.StatusCode + " " +
+                                response.ReasonPhrase + ": " + body
+                        };
+                    }
+
+                    var serializer = new JavaScriptSerializer();
+                    var envelope = serializer.Deserialize<ArtifactUploadEnvelope>(body);
+                    var uploaded = envelope == null ? null : envelope.upload;
+                    if (uploaded == null ||
+                        uploaded.bytesWritten != file.Length ||
+                        !string.Equals(uploaded.sha256, sha256, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new AgentResult
+                        {
+                            status = "failed",
+                            exitCode = 4,
+                            stderr = "Artifact verification mismatch: localBytes=" +
+                                file.Length + ", relayBytes=" +
+                                (uploaded == null ? -1 : uploaded.bytesWritten) +
+                                ", localSha256=" + sha256 + ", relaySha256=" +
+                                (uploaded == null ? "" : uploaded.sha256)
+                        };
+                    }
+
+                    return new AgentResult
+                    {
+                        status = "completed",
+                        exitCode = 0,
+                        stdout = serializer.Serialize(new
+                        {
+                            artifact = job.payload.remotePath,
+                            bytes = file.Length,
+                            sha256 = sha256,
+                            relayVerified = true
+                        })
+                    };
                 }
             }
         }
@@ -337,6 +458,9 @@ namespace RelayAgent.Service
         {
             public string command { get; set; }
             public string script { get; set; }
+            public string remotePath { get; set; }
+            public string uploadPath { get; set; }
+            public string uploadToken { get; set; }
         }
 
         public sealed class AgentResult
@@ -346,6 +470,17 @@ namespace RelayAgent.Service
             public int exitCode { get; set; }
             public string stdout { get; set; }
             public string stderr { get; set; }
+        }
+
+        public sealed class ArtifactUploadEnvelope
+        {
+            public ArtifactUploadResult upload { get; set; }
+        }
+
+        public sealed class ArtifactUploadResult
+        {
+            public long bytesWritten { get; set; }
+            public string sha256 { get; set; }
         }
     }
 }

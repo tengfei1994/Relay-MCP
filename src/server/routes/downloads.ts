@@ -22,15 +22,85 @@ export async function downloadRoutes(app: FastifyInstance) {
       const filePath = resolveWorkspacePath(project.workspacePath, session.path, { mustExist: true });
       const stat = statSync(filePath);
       if (!stat.isFile()) throw new Error("Download path is not a file");
+      if (stat.size !== session.bytes) {
+        return reply.status(409).send({
+          ok: false,
+          errorCode: "ARTIFACT_SIZE_CHANGED",
+          sessionId: session.id,
+          expectedBytes: session.bytes,
+          actualBytes: stat.size,
+          expectedSha256: session.sha256,
+        });
+      }
+      if (Math.abs(stat.mtimeMs - session.mtimeMs) > 1) {
+        return reply.status(409).send({
+          ok: false,
+          errorCode: "ARTIFACT_CHANGED",
+          sessionId: session.id,
+          expectedBytes: session.bytes,
+          actualBytes: stat.size,
+          expectedSha256: session.sha256,
+        });
+      }
 
+      const rangeHeader = req.headers.range;
+      const range = Array.isArray(rangeHeader) ? rangeHeader[0] : rangeHeader;
+      let start = 0;
+      let end = stat.size > 0 ? stat.size - 1 : 0;
+      let statusCode = 200;
+      if (range && stat.size > 0) {
+        const match = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+        if (!match) {
+          return reply.status(416).header("Content-Range", `bytes */${stat.size}`).send({
+            ok: false,
+            errorCode: "INVALID_RANGE",
+            totalBytes: stat.size,
+          });
+        }
+        if (!match[1] && match[2]) {
+          const suffixLength = Number(match[2]);
+          if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+            return reply.status(416).header("Content-Range", `bytes */${stat.size}`).send({
+              ok: false,
+              errorCode: "RANGE_NOT_SATISFIABLE",
+              totalBytes: stat.size,
+            });
+          }
+          start = Math.max(0, stat.size - suffixLength);
+          end = stat.size - 1;
+        } else {
+          start = match[1] ? Number(match[1]) : 0;
+          end = match[2] ? Number(match[2]) : stat.size - 1;
+        }
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= stat.size) {
+          return reply.status(416).header("Content-Range", `bytes */${stat.size}`).send({
+            ok: false,
+            errorCode: "RANGE_NOT_SATISFIABLE",
+            totalBytes: stat.size,
+          });
+        }
+        end = Math.min(end, stat.size - 1);
+        statusCode = 206;
+      }
+
+      const contentLength = stat.size === 0 ? 0 : end - start + 1;
       reply
-        .header("Content-Type", "application/octet-stream")
-        .header("Content-Length", String(stat.size))
-        .header("Content-Disposition", `attachment; filename="${basename(filePath).replace(/[\r\n"]/g, "")}"`)
-        .send(createReadStream(filePath));
+        .code(statusCode)
+        .header("Content-Type", session.contentType)
+        .header("Content-Length", String(contentLength))
+        .header("Accept-Ranges", "bytes")
+        .header("ETag", `"sha256-${session.sha256}"`)
+        .header("X-Relay-SHA256", session.sha256)
+        .header("X-Relay-Artifact-Bytes", String(session.bytes))
+        .header("X-Relay-Session-Id", session.id)
+        .header("Content-Disposition", `attachment; filename="${(session.fileName || basename(filePath)).replace(/[\r\n"]/g, "")}"`);
+      if (statusCode === 206) {
+        reply.header("Content-Range", `bytes ${start}-${end}/${stat.size}`);
+      }
+      return reply.send(stat.size === 0 ? Buffer.alloc(0) : createReadStream(filePath, { start, end }));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return reply.status(400).send({ error: message });
+      return reply.status(400).send({ ok: false, errorCode: "DOWNLOAD_FAILED", error: message });
     }
   });
 }

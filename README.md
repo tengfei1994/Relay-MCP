@@ -211,20 +211,27 @@ SHA-256, project ownership, path containment, and symlink containment.
 
 ### Remote Binary Download
 
-`download_remote_file` copies a remote file into the Relay project workspace
-through SFTP, calculates its size and SHA-256, and creates a short-lived
-capability URL. Stream it into the local agent workspace without placing binary
-content in MCP JSON:
+`download_remote_file` stages a remote file in the Relay project workspace,
+calculates its size and SHA-256, and creates a short-lived capability URL.
+SSH targets use SFTP. Agent targets use an `artifact-upload` job so the Windows
+Agent streams the file directly to Relay instead of returning Base64 through
+PowerShell stdout or MCP JSON:
 
 ```text
 download_remote_file
-  -> receive downloadUrl + token + sha256
-  -> npm run relay-download -- --url <downloadUrl> --token <token> --file <local-file>
+  -> Agent/SFTP streams into Relay workspace
+  -> receive downloadUrl + token + bytes + sha256
+  -> npm run relay-download -- --url <downloadUrl> --token <token>
+       --file <local-file> --expected-bytes <bytes> --expected-sha256 <sha256>
 ```
 
 The endpoint is `GET /api/downloads/:id` with
-`X-Relay-Download-Token`. Sessions remain bound to the original user, project,
-and workspace path and expire automatically.
+`X-Relay-Download-Token`. It supports HTTP Range requests and returns
+`Accept-Ranges`, `Content-Range`, `X-Relay-Artifact-Bytes`, and
+`X-Relay-SHA256`. The local downloader writes a `.part` file, resumes when
+possible, verifies size and SHA-256, and atomically renames the completed file.
+Sessions remain bound to the original user, project, and workspace path and
+expire automatically.
 
 ### Relevant Environment Variables
 
@@ -232,7 +239,11 @@ and workspace path and expire automatically.
 |---|---|---|
 | `RELAY_PUBLIC_URL` | `http://localhost:<PORT>` | Public Web API base URL returned by upload sessions. |
 | `RELAY_UPLOAD_TTL_MS` | `900000` | Default upload session lifetime. |
-| `RELAY_UPLOAD_MAX_BYTES` | `268435456` | Maximum streamed upload size. |
+| `RELAY_UPLOAD_MAX_BYTES` | `4294967296` | Maximum streamed upload or Agent artifact size. |
+| `RELAY_ARTIFACT_MAX_BYTES` | `4294967296` | Maximum remote file accepted by `download_remote_file` in Agent mode. |
+| `RELAY_VERSION` | `0.5.0` | Version reported by `/api/health`. |
+| `RELAY_BUILD_COMMIT` | `development` | Deployed Git commit reported by `/api/health`. |
+| `RELAY_BUILD_TIME` | `unknown` | Build timestamp reported by `/api/health`. |
 | `RELAY_DOWNLOAD_TTL_MS` | `900000` | Remote-to-local download session lifetime. |
 | `MCP_BINARY_WRITE_LIMIT` | `8388608` | Maximum decoded size for `write_local_binary`. |
 | `RELAY_JOB_LOG_LIMIT` | `200` | Maximum retained log entries per async job. |

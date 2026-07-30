@@ -24,6 +24,7 @@ const CreateUploadSchema = z.object({
   expectedSha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
   ttlSeconds: z.number().int().min(60).max(3600).optional(),
 });
+const MAX_UPLOAD_BODY_BYTES = Number(process.env.RELAY_UPLOAD_MAX_BYTES ?? 4 * 1024 * 1024 * 1024);
 
 export async function uploadRoutes(app: FastifyInstance) {
   if (!app.hasContentTypeParser("application/octet-stream")) {
@@ -80,7 +81,7 @@ export async function uploadRoutes(app: FastifyInstance) {
     }
   );
 
-  app.put("/api/uploads/:id", async (req, reply) => {
+  app.put("/api/uploads/:id", { bodyLimit: MAX_UPLOAD_BODY_BYTES }, async (req, reply) => {
     const id = (req.params as { id: string }).id;
     const tokenHeader = req.headers["x-relay-upload-token"];
     const token = Array.isArray(tokenHeader) ? tokenHeader[0] : tokenHeader;

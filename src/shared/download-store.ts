@@ -15,6 +15,11 @@ export interface DownloadSession {
   projectId: number;
   project: string;
   path: string;
+  bytes: number;
+  sha256: string;
+  contentType: string;
+  fileName: string;
+  mtimeMs: number;
   tokenHash: string;
   createdAt: string;
   expiresAt: string;
@@ -37,6 +42,11 @@ export function createDownloadSession(input: {
   projectId: number;
   project: string;
   path: string;
+  bytes: number;
+  sha256: string;
+  contentType?: string;
+  fileName?: string;
+  mtimeMs: number;
   ttlMs?: number;
 }): { session: DownloadSession; token: string } {
   ensureRoot();
@@ -49,6 +59,11 @@ export function createDownloadSession(input: {
     projectId: input.projectId,
     project: input.project,
     path: input.path,
+    bytes: input.bytes,
+    sha256: input.sha256.toLowerCase(),
+    contentType: input.contentType ?? "application/octet-stream",
+    fileName: input.fileName ?? input.path.split(/[\\/]/).pop() ?? "download.bin",
+    mtimeMs: input.mtimeMs,
     tokenHash: hashToken(token),
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + Math.max(60_000, input.ttlMs ?? DEFAULT_TTL_MS)).toISOString(),

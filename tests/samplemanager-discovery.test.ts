@@ -47,6 +47,7 @@ test("instance discovery returns a normalized candidate list and keeps the scan 
   assert.match(script, /AttachDbFilename/);
   assert.match(script, /function Normalize-LocalSqlServer/);
   assert.match(script, /localhost\\\$\(\$trimmed\.Substring\(2\)\)/);
+  assert.match(script, /\$env:COMPUTERNAME/);
   assert.match(script, /\^MSSQL\\\$\(\.\+\)\$/);
   assert.match(script, /localhost\\\$\(\$matches\[1\]\)/);
   assert.match(script, /foreach \(\$sqlServer in @\(\$sqlServers\)\)/);

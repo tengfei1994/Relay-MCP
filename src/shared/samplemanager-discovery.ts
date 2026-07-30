@@ -65,7 +65,9 @@ $ErrorActionPreference = "Stop"
 $rootHints = ${psArray(rootHints)}
 function Normalize-LocalSqlServer([string]$value) {
   $trimmed = ([string]$value).Trim()
-  if ($trimmed -eq '.' -or $trimmed -ieq '(local)') { return 'localhost' }
+  if ($trimmed -eq '.' -or $trimmed -ieq '(local)' -or
+      $trimmed -ieq $env:COMPUTERNAME -or
+      $trimmed -ieq [Environment]::MachineName) { return 'localhost' }
   if ($trimmed.StartsWith('.\')) { return "localhost\$($trimmed.Substring(2))" }
   return $trimmed
 }

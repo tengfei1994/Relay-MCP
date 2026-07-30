@@ -1,476 +1,159 @@
-# Remote Ops Platform
+# Relay MCP
 
-> A self-hosted remote operations platform that lets any MCP-compatible LLM agent manage remote servers through a controlled relay server.
+> Self-hosted remote operations relay for MCP clients, SSH servers, Windows Agents, and Thermo Scientific SampleManager LIMS.
 
-**中文说明见下方 / Chinese documentation below ↓**
+[![Release](https://img.shields.io/badge/release-v0.5.0-2563eb)](https://github.com/tengfei1994/Relay-MCP/releases/tag/v0.5.0)
+[![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933)](https://nodejs.org/)
+[![License](https://img.shields.io/badge/license-MIT-64748b)](#license)
 
----
+Relay MCP 让 Codex、Claude 等 MCP 客户端通过一台自托管 Relay，按受控的项目、服务器和环境范围执行远程运维与 SampleManager 开发任务。目标服务器既可以使用 SSH，也可以运行仅需出站 HTTP 的 Relay Agent。
 
-## Architecture
+## v0.5.0
 
-```
-LLM Client (Claude, Codex, Cursor, Cline, custom agents)
-      │  MCP over HTTP
-      ▼
-RelayMCP Server (Ubuntu VM)
-  ├── Web UI        :3000  — project & server management
-  └── MCP Server    :3001  — platform-neutral tools for LLM clients
-      │  SSH
-      ▼
-Production Servers (any SSH-accessible host)
-```
+- Agent 通过 `artifact-upload` job 将远程文件流式上传到 Relay，不再把大型二进制塞进 Base64/JSON。
+- 下载接口支持 HTTP Range，本地下载器使用 `.part` 文件断点续传。
+- 文件传输返回并校验字节数和 SHA-256。
+- `/api/health` 返回版本、Git commit 和构建时间，便于确认实际运行版本。
+- 提供单文件 WPF Windows Agent Client，包含服务控制、数据库权限、请求审计、日志和更新管理。
 
-## Features
+Release 与 Windows Agent 下载：
+[v0.5.0](https://github.com/tengfei1994/Relay-MCP/releases/tag/v0.5.0)
 
-- **MCP Tools**: `exec_remote`, `exec_remote_powershell`, `exec_remote_script`, `deploy`, `fetch_logs`, `restart_service`, `read/write_remote_file`, `download_remote_file`, `list_remote_files`, `read/write_local_file`, `list_projects`, `project_server_links_list`, `project_create`
-- **Token-saving tools**: compact command/log output, async job tracking, project memory (`context_record_fact`, `context_search`)
-- **MCP token profiles**: create per-agent tokens from the Web UI, allow one agent to access multiple projects, and manually scope the servers it may use
-- **SampleManager tools**: `samplemanager_deployment_start`, `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_table_schema`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_sql_mutation`, `samplemanager_run_command`, `samplemanager_discover_build_tools`, `samplemanager_build_deploy_assembly`, `samplemanager_deployment_status`, `samplemanager_deployment_finish`
-- **Server Management**: add servers, auto-generate SSH key pairs, push public keys, test connectivity, edit settings
-- **Project Management**: workspace directories per user, link/unlink servers per project per environment
-- **User Management**: admin-only user creation, password reset, admin role toggle
-- **JWT Auth**: token-based authentication for both Web UI and MCP
-
-## Agent Boundary
-
-RelayMCP is designed to keep the LLM client thin:
-
-| Local LLM Agent | RelayMCP Server |
-|-----------------|-----------------|
-| Understands user intent and edits source files | Stores server connections, SSH keys, project/environment mapping |
-| Calls high-level MCP tools | Executes remote commands and playbooks |
-| Reads compact summaries | Compresses logs, SQL output, file listings, and build output |
-| Keeps durable source/docs in the user's repo | Owns temp scripts, staging zips, job logs, audit records, and project facts |
-
-This means one-off local `inspect-*.ps1`, `fix-*.ps1`, and `deploy-*.ps1`
-scripts should gradually become MCP tools or playbooks. Temporary PowerShell or
-Python snippets are generated and cleaned up on the relay/server side instead of
-polluting the local agent workspace.
-
-## Token Efficiency
-
-RelayMCP defaults to returning compact output (`MCP_OUTPUT_LIMIT`, default
-`12000` characters). Long-running operations can use async jobs:
-
-- set `async: true` on `exec_remote`, `exec_remote_powershell`,
-  `exec_remote_script`, and supported SampleManager tools
-- use the returned `jobId` with:
-- `job_list`
-- `job_status`
-
-Project facts can be stored in relay-side memory so future LLM calls do not need
-the full chat history:
-
-- `context_record_fact`
-- `context_search`
-
-## Supported Operation Scenarios
-
-RelayMCP has two capability layers:
-
-1. **First-class MCP tools** for common, repeatable operations.
-2. **Remote command playbooks** executed through `exec_remote`, `read/write_remote_file`,
-   `upload_workspace_file`, `sync_workspace`, and PowerShell/SSH on the target
-   server.
-
-### Built-In MCP Tools
-
-| Scenario | Tools |
-|----------|-------|
-| Project selection and creation | `list_projects`, `project_server_links_list`, `project_create` |
-| Remote command execution | `exec_remote`, `exec_remote_powershell`, `exec_remote_script` |
-| Deployment and restart | `deploy`, `restart_service` |
-| Logs and jobs | `fetch_logs`, `job_list`, `job_status` |
-| Remote files | `read_remote_file`, `download_remote_file`, `write_remote_file`, `list_remote_files`, `patch_remote_file` |
-| Relay-side project workspace | `read_local_file`, `write_local_file`, `upload_workspace_file`, `sync_workspace` |
-| Durable project memory | `context_record_fact`, `context_search` |
-| SampleManager helpers | `samplemanager_deployment_start`, `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_table_schema`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_sql_mutation`, `samplemanager_run_command`, `samplemanager_discover_build_tools`, `samplemanager_build_deploy_assembly`, `samplemanager_deployment_status`, `samplemanager_deployment_finish` |
-
-### Multiple SampleManager instances
-
-The Web UI manages SampleManager instances separately from physical servers. Use
-**LIMS Instances → Scan** for a read-only discovery of instance paths, file
-version, Windows services, redacted database target, MSBuild installations and
-.NET SDKs. Review and import candidates before they can be selected by a
-project environment.
-
-Database discovery evaluates every connection-string candidate and local ONLINE
-SQL Server database against SampleManager core tables. LocalDB, attached
-`EntityContext-*`, and OData service metadata databases are retained as
-diagnostic candidates but excluded from LIMS business-database selection.
-
-Project links may bind an environment to one confirmed LIMS instance. Once
-bound, MCP SampleManager tools automatically use that instance's paths,
-database, service list and build profile. A conflicting `instance` or
-`database` argument is rejected to prevent cross-instance operations.
-
-The build profile selects `MSBuild.exe` for legacy .NET Framework instances and
-`dotnet build` for modern .NET instances. Service restart is scoped to the
-configured service names and processes whose executable path or command line
-belongs to the selected instance.
-
-## Complete MCP Command Catalog
-
-The following table is the complete command inventory. The same classification
-and description are stored in `src/shared/tool-catalog.ts`. Every `tools/call`
-request is written to the Relay audit log with its category and a redacted
-argument summary. Tests fail when a registered tool is missing from the catalog.
-
-| Category | Command | Description |
-|---|---|---|
-| Project | `list_projects` | 列出当前 MCP token 允许访问的 project。 |
-| Project | `project_server_links_list` | 列出精确 environment key、Server ID/名称、remotePath 和绑定的 LIMS 实例/数据库。 |
-| Project | `project_create` | 创建 Relay workspace，可同时关联服务器和远程目录。 |
-| Remote execution | `exec_remote` | 执行远程 shell 命令，支持真实超时、异步任务、日志和取消。 |
-| Remote execution | `exec_remote_powershell` | 通过 EncodedCommand 执行 inline PowerShell，支持 text/JSON 输出。 |
-| Remote execution | `exec_remote_script` | 写入并执行远程 `.ps1`，按配置清理或保留失败脚本。 |
-
-`exec_remote`, `exec_remote_powershell`, and `exec_remote_script` accept
-`serverId` or `serverName` in addition to `environment`. Explicit server
-selection is checked against both the project's links and the MCP token's
-server scopes. Environment matching is case-insensitive, and routing errors
-include the available environment/server mappings.
-| Remote execution | `deploy` | 更新远程 Git checkout，记录 deployment ID、前后 commit、输出与回滚状态。 |
-| Remote execution | `fetch_logs` | 获取 Windows 文件日志、systemd、PM2 或 Docker 日志，支持时间窗口或 deployment ID。 |
-| Remote execution | `restart_service` | 重启 Windows Service、systemd、PM2 process 或 Docker container。 |
-| Remote files | `read_remote_file` | 读取远程文本文件。 |
-| Remote files | `download_remote_file` | 将远程二进制暂存到 Relay workspace，并生成短期本地下载 URL。 |
-| Remote files | `write_remote_file` | 通过 SFTP 写入远程 UTF-8 文本文件。 |
-| Remote files | `list_remote_files` | 列出远程目录内容。 |
-| Remote files | `patch_remote_file` | 将 unified diff 应用到远程文本文件。 |
-| Workspace | `read_local_file` | 读取 Relay project workspace 中的 UTF-8 文件。 |
-| Workspace | `write_local_file` | 写入或追加 workspace 文本文件。 |
-| Workspace | `write_local_binary` | 从 Base64 写入小型二进制；默认上限 8 MB。 |
-| Workspace | `list_workspace_files` | 列出 workspace 内容，可受限递归并限制返回数量。 |
-| Workspace | `workspace_file_stat` | 返回文件类型、大小、时间及可选 SHA-256。 |
-| Workspace | `move_workspace_file` | 在同一 workspace 内移动或重命名文件/目录。 |
-| Workspace | `delete_workspace_file` | 删除文件；目录递归删除必须显式指定。 |
-| Workspace | `create_workspace_upload` | 为本机大文件创建短期流式上传 URL 和 token。 |
-| Workspace | `cleanup_workspace_staging` | 预览或清理 `.relay-staging` 中的过期内容。 |
-| Workspace | `sync_workspace` | 通过 SFTP 同步整个 workspace 到远程目录。 |
-| Workspace | `upload_workspace_file` | 将 workspace 中的单个文件上传到远程服务器，并校验本地/远端 SHA-256。 |
-| Jobs | `job_status` | 查看异步任务状态、结果、错误和最近日志。 |
-| Jobs | `job_list` | 列出当前用户最近的异步任务。 |
-| Jobs | `job_cancel` | 请求取消运行中的任务，并关闭活动 SSH channel。 |
-| Context | `context_record_fact` | 持久记录 project 事实、路径、坑点和约定。 |
-| Context | `context_search` | 搜索 project 长期记忆。 |
-| SampleManager | `samplemanager_restart_instance` | 重启指定 SampleManager instance 的核心服务。 |
-| SampleManager | `samplemanager_clear_form_cache` | 清理指定 form 的 `FormsBin` 编译缓存。 |
-| SampleManager | `samplemanager_recent_errors` | 搜索近期 SampleManager 日志并返回紧凑错误证据。 |
-| SampleManager | `samplemanager_table_schema` | 查询 SQL Server 列、类型、主键、identity、默认值和物理映射。 |
-| SampleManager | `samplemanager_sql_mutation` | 结构化执行 insert/update/delete，支持 dry-run、自动备份及 before/after。 |
-| SampleManager | `samplemanager_sql_query` | 执行参数化 SQL Server 查询，支持标识符转义和结构化错误。 |
-| SampleManager | `samplemanager_sql_execute_file` | 执行参数化 workspace SQL 文件；默认阻止变更语句。 |
-| SampleManager | `samplemanager_run_command` | 使用结构化参数调用 `SampleManagerCommand.exe`。 |
-| SampleManager | `samplemanager_create_entity_definition` | 在 structure 源更新后运行 `CreateEntityDefinition.exe`。 |
-| SampleManager | `samplemanager_convert_tables` | 对每个已校验表名分别运行 `convert_table.exe`。 |
-| SampleManager | `samplemanager_table_loader` | 通过 `SampleManagerCommand.exe` 和 `$table_loader` 加载 CSV。 |
-| SampleManager | `samplemanager_run_utility` | 调用允许列表中的 `FormImport`、`BuildFormDefinition` 或 `DeployPackageTask`。 |
-| SampleManager | `samplemanager_build_dotnet` | 在目标 Windows 服务器使用 MSBuild 构建经典 .NET 项目。 |
-| SampleManager | `samplemanager_discover_build_tools` | 按 VS2022、VS2019、Framework、PATH 顺序发现 MSBuild。 |
-| SampleManager | `samplemanager_build_deploy_assembly` | 编译、哈希、备份、部署、重启并在失败时回滚程序集。 |
-| SampleManager | `samplemanager_deployment_status` | 查询 deploymentId 的阶段、制品、备份和回滚状态。 |
-| SampleManager | `samplemanager_deployment_start` | 创建可供 SQL、build、deploy、restart 共用的 deploymentId。 |
-| SampleManager | `samplemanager_deployment_finish` | 将手动编排的 deploymentId 标记为成功或失败。 |
-| SampleManager | `samplemanager_deploy_file` | 将 staging 文件部署到 instance，并对被替换文件做时间戳备份。 |
-| SampleManager | `samplemanager_restore_backup` | 将指定备份恢复到明确的远程目标文件。 |
-
-### Async Job Behavior
-
-- Long commands should pass `async: true` and an appropriate `timeoutMs`.
-- `job_status` returns the final summary plus bounded stdout/stderr lifecycle
-  logs.
-- `job_cancel` aborts the job and closes the active SSH channel when the
-  underlying operation supports cancellation.
-- Jobs left as `running` during a Relay MCP restart are marked `interrupted` on
-  the next startup instead of remaining permanently stuck.
-
-### Large Binary Upload
-
-MCP JSON is not used to transport large binaries. Create a short-lived upload
-session, then stream the file through the authenticated HTTP upload endpoint:
+## 架构
 
 ```text
-create_workspace_upload
-  -> receive uploadUrl + token
-  -> npm run relay-upload -- --url <uploadUrl> --token <token> --file <local-file>
-  -> workspace_file_stat sha256=true
-  -> upload_workspace_file or sync_workspace
+Codex / Claude / Cursor / custom MCP client
+                    |
+                    | HTTP MCP + MCP Token
+                    v
+        +-----------------------------+
+        | Relay MCP                   |
+        | Web API / UI          :3000 |
+        | MCP endpoint          :3001 |
+        | SQLite + workspace          |
+        +-----------------------------+
+              |                 ^
+         SSH / SFTP             | outbound HTTP polling
+              v                 |
+       SSH target         Relay Agent on Windows
 ```
 
-HTTP endpoints:
+Relay 管理层中的对象彼此独立：
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `POST` | `/api/projects/:id/uploads` | Create an upload session using a normal JWT. |
-| `PUT` | `/api/uploads/:id` | Stream `application/octet-stream` using `X-Relay-Upload-Token`. |
-| `GET` | `/api/uploads/:id` | Inspect upload status using a normal JWT. |
+- **Server**：一台物理机或虚拟机，连接方式为 SSH 或 Agent。
+- **Project**：Relay 工作区和权限边界，可关联多个 Server。
+- **Project Server Link**：Project、Server、environment、remote path 和 LIMS instance 的映射。
+- **LIMS Instance**：某台 Server 上独立的 SampleManager 实例，保存版本、路径、数据库、服务和构建配置。
+- **MCP Token**：授权 Codex 等 MCP 客户端访问哪些 Project 和 Server。
+- **Agent Token**：仅用于一个 Relay Agent 注册、轮询 job 和回传结果，不授予 MCP 客户端权限。
 
-The upload service enforces expiration, maximum bytes, optional expected
-SHA-256, project ownership, path containment, and symlink containment.
+## 核心能力
 
-### Remote Binary Download
+- 项目、服务器、environment 和 token 范围选择。
+- SSH/SFTP 远程执行，或无入站网络权限场景下的 Windows Agent。
+- Encoded PowerShell、脚本上传执行、结构化 JSON 输出和异步 job。
+- Relay workspace 与远端文件的读取、写入、同步、补丁和流式传输。
+- 部署、日志检索、服务重启、执行审计和持久化项目事实。
+- SampleManager 多实例扫描、数据库识别、构建工具发现、SQL、utility、程序集部署和回滚。
+- 大文件上传、断点下载、大小与 SHA-256 完整性验证。
 
-`download_remote_file` stages a remote file in the Relay project workspace,
-calculates its size and SHA-256, and creates a short-lived capability URL.
-SSH targets use SFTP. Agent targets use an `artifact-upload` job so the Windows
-Agent streams the file directly to Relay instead of returning Base64 through
-PowerShell stdout or MCP JSON:
+## 快速部署
 
-```text
-download_remote_file
-  -> Agent/SFTP streams into Relay workspace
-  -> receive downloadUrl + token + bytes + sha256
-  -> npm run relay-download -- --url <downloadUrl> --token <token>
-       --file <local-file> --expected-bytes <bytes> --expected-sha256 <sha256>
-```
-
-The endpoint is `GET /api/downloads/:id` with
-`X-Relay-Download-Token`. It supports HTTP Range requests and returns
-`Accept-Ranges`, `Content-Range`, `X-Relay-Artifact-Bytes`, and
-`X-Relay-SHA256`. The local downloader writes a `.part` file, resumes when
-possible, verifies size and SHA-256, and atomically renames the completed file.
-Sessions remain bound to the original user, project, and workspace path and
-expire automatically.
-
-### Relevant Environment Variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `RELAY_PUBLIC_URL` | `http://localhost:<PORT>` | Public Web API base URL returned by upload sessions. |
-| `RELAY_UPLOAD_TTL_MS` | `900000` | Default upload session lifetime. |
-| `RELAY_UPLOAD_MAX_BYTES` | `4294967296` | Maximum streamed upload or Agent artifact size. |
-| `RELAY_ARTIFACT_MAX_BYTES` | `4294967296` | Maximum remote file accepted by `download_remote_file` in Agent mode. |
-| `RELAY_VERSION` | `0.5.0` | Version reported by `/api/health`. |
-| `RELAY_BUILD_COMMIT` | `development` | Deployed Git commit reported by `/api/health`. |
-| `RELAY_BUILD_TIME` | `unknown` | Build timestamp reported by `/api/health`. |
-| `RELAY_DOWNLOAD_TTL_MS` | `900000` | Remote-to-local download session lifetime. |
-| `MCP_BINARY_WRITE_LIMIT` | `8388608` | Maximum decoded size for `write_local_binary`. |
-| `RELAY_JOB_LOG_LIMIT` | `200` | Maximum retained log entries per async job. |
-| `RELAY_STATE_ROOT` | `<WORKSPACE_ROOT>/.relay-mcp` | Jobs, upload sessions, context and audit state. |
-
-### PowerShell / SSH Operations
-
-For Windows SampleManager servers, RelayMCP can run remote PowerShell via SSH.
-Use `exec_remote_powershell` for inline scripts and `exec_remote_script` for
-longer scripts. Both avoid shell quoting issues with PowerShell variables such
-as `$svc`; `exec_remote_script` writes a temporary `.ps1`, runs it, and removes
-it automatically on success. Command timeouts are enforced by closing the SSH
-channel and connection. PowerShell output cleanup supports both marked CLIXML
-and raw `<Objs>` payloads, and script execution probes Windows capability when
-stored server OS metadata is incorrect.
-
-For object or table output, pass `outputFormat="json"` and end the script with
-`ConvertTo-Json -Depth <n> -Compress`. Relay returns parsed JSON when valid and
-otherwise returns a parse error plus explicit truncation metadata.
-
-`fetch_logs` accepts `since`, `until`, or `deploymentId`. Journald applies the
-time range to log records. Generic file logs are selected by file modification
-time because arbitrary application log lines do not share one timestamp format.
-
-`deploy` creates a durable deployment record under Relay state and returns its
-ID, start/end time, previous and resulting commits, output truncation metadata,
-and rollback state. `rollbackOnFailure` defaults to `false` and must be enabled
-explicitly.
-
-Common playbook operations include:
-
-- create/remove remote staging folders
-- upload generated files by SFTP instead of embedding large file content in chat
-- copy staged files into SampleManager instance folders
-- back up target files before replacement
-- clear form caches such as `FormsBin\<FORM_NAME>.binform*`
-- restart services, IIS app pools, or SampleManager-related processes when required
-- collect recent logs and compact them before returning to the LLM client
-
-Large generated files should normally be written to the relay-side project
-workspace first, then uploaded with `upload_workspace_file` or `sync_workspace`.
-This avoids one-off local `.ps1`/`.py` scripts and reduces token usage.
-
-### SampleManager Command Scenarios
-
-The following SampleManager operations are supported as remote command playbooks.
-They can later be promoted into dedicated MCP tools when they become frequent.
-
-| Scenario | Command Pattern |
-|----------|-----------------|
-| Run VGL report | Prefer `samplemanager_run_command` with `task="VGL"` and structured `args`, or run `SampleManagerCommand.exe -instance <INSTANCE> -username <USER> -task VGL -report '<REPORT_NAME>' -prompts "(...)"` |
-| Load table-loader CSV | Prefer `samplemanager_run_command` with args such as `["-report","$table_loader","-prompts","(C:\path\file.csv,overwrite_table)"]` |
-| Apply structure changes | `CreateEntityDefinition.exe -instance <INSTANCE>` followed by `convert_table.exe -mode convert -tables <TABLE_NAME> -noconfirm -instance <INSTANCE>` |
-| Deploy form XML / form task code | Copy form artifacts, deploy task assemblies if needed, clear targeted `FormsBin` cache |
-| Deploy Report Designer layouts | Upload `.repx`, validate layout loading, run report smoke test |
-| Deploy custom .NET task assemblies | Build with `MSBuild.exe` or `dotnet build`, copy DLL/PDB/config to the target convention, restart affected task hosts |
-| RESOURCE icons | Copy icon files under the instance `Resource\Icon` convention and refresh/reopen clients |
-| SampleManager SQL checks | `samplemanager_sql_query` for compact read-only checks by default, or `samplemanager_sql_execute_file` for SQL stored in the relay project workspace; use `maxRows` and `includeResultSets` to control output size; mutation requires explicit opt-in |
-
-SQL tools support named value parameters and escaped identifier placeholders:
-
-```json
-{
-  "sql": "select {{column}} from {{table}} where STATUS = @status",
-  "identifiers": {
-    "column": "IDENTITY",
-    "table": "dbo.SAMPLE"
-  },
-  "parameters": {
-    "status": "A"
-  }
-}
-```
-
-This executes `select [IDENTITY] from [dbo].[SAMPLE] where STATUS = @status`.
-Failures return the executed SQL template, parameter values, SQL Server error
-number, severity class, state, procedure, and line number. Large results support
-`maxRows` plus zero-based `offset`; responses return `hasMore` and `nextOffset`.
-
-Important rules:
-
-- Run SampleManager command-line utilities from the instance `Exe` folder so DLLs
-  and logical paths resolve correctly.
-- Quote `'$table_loader'` with single quotes in PowerShell; double quotes may
-  expand `$table_loader` as a variable.
-- Table-loader CSV belongs to the `$table_loader` VGL report. Do not send it to
-  `EntityImportTask`, which expects XML entity import content.
-- Structure changes should use SampleManager structure tooling, not direct SQL
-  schema edits.
-- Deployment output should include commands run, files copied, caches cleared,
-  restart impact, and smoke-test results.
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Backend | Node.js · Fastify · SQLite (Drizzle ORM) |
-| MCP Server | @modelcontextprotocol/sdk · Express · HTTP/SSE |
-| Frontend | React · Vite · Tailwind CSS |
-| Process Manager | PM2 |
-| SSH | node-ssh · openssh-client |
-
-## Deployment
-
-### Requirements
-
-- Ubuntu 22.04+ server (RelayMCP)
-- Node.js 20 LTS
-- PM2 (`npm install -g pm2`)
-
-### Steps
+要求：Linux Relay 主机、Node.js 20+、npm 和 PM2。
 
 ```bash
-# 1. Clone the repo on RelayMCP
 git clone https://github.com/tengfei1994/Relay-MCP.git ~/Relay-MCP
 cd ~/Relay-MCP
-
-# 2. Install dependencies
 npm install
-cd frontend && npm install && npm run build && cd ..
-
-# 3. Configure environment
+npm --prefix frontend install
 cp .env.example .env
-# Edit .env: set JWT_SECRET, WORKSPACE_ROOT, SSH_KEYS_DIR
-
-# 4. Build backend
-npx tsc
-
-# 5. Start with PM2
+npm run build
+mkdir -p logs
 pm2 start ecosystem.config.cjs
-pm2 save && pm2 startup
+pm2 save
 ```
 
-### Environment Variables (`.env`)
+至少修改 `.env` 中的 `JWT_SECRET` 和 `RELAY_PUBLIC_URL`。默认 Web 端口是 `3000`，MCP 端口是 `3001`。
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3000` | Web server port |
-| `MCP_PORT` | `3001` | MCP server port |
-| `MCP_OUTPUT_LIMIT` | `12000` | Maximum characters returned by compact tool output |
-| `JWT_SECRET` | *(required)* | Secret for signing JWT tokens |
-| `WORKSPACE_ROOT` | `/workspace` | Root directory for project workspaces |
-| `RELAY_STATE_ROOT` | `/workspace/.relay-mcp` | Job, audit, and project-memory storage |
-| `SSH_KEYS_DIR` | `/workspace/.ssh-keys` | Directory for generated SSH key pairs |
-| `DB_PATH` | `./data/app.db` | SQLite database file path |
+健康检查：
 
-## Connecting MCP Clients
-
-### Claude Desktop (Cowork)
-
-Requires Node.js on the client machine. Add to `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "remote-ops": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote",
-        "http://YOUR_SERVER:3001/mcp?token=YOUR_JWT_TOKEN",
-        "--allow-http"
-      ]
-    }
-  }
-}
+```bash
+curl http://127.0.0.1:3000/api/health
+curl http://127.0.0.1:3001/mcp/health
 ```
 
-### Claude Code CLI
+更新已有部署：
 
-Add to `~/.claude/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "remote-ops": {
-      "url": "http://YOUR_SERVER:3001/mcp?token=YOUR_JWT_TOKEN"
-    }
-  }
-}
+```bash
+cd ~/Relay-MCP
+git pull --ff-only
+npm install
+npm --prefix frontend install
+npm run build
+pm2 restart remote-ops-web remote-ops-mcp --update-env
+pm2 save
 ```
 
-### Other MCP Clients
+## 初始配置
 
-Any client that supports HTTP MCP can connect to:
+打开 `http://<relay-host>:3000`。第一个注册用户自动成为管理员，然后按以下顺序配置：
+
+1. **Servers**：创建 SSH Server，或创建带 `agentId` 的 Agent Server。
+2. **Projects**：独立创建 Project，并按 environment 关联一个或多个 Server。
+3. **LIMS Instances**：对 Agent Server 执行只读扫描，审核候选结果后再导入并绑定到 Project link。
+4. **MCP Tokens**：为 Codex 等客户端创建 token，配置 Project 范围、Allowed Servers 和可选默认目标。
+5. **Agent Tokens**：为每个 Agent 创建独立 token；token 只显示一次。
+
+一个 Project 可以同时关联多台 Server，例如：
+
+| Environment | Server | 用途 |
+|---|---|---|
+| `analysis` | `A-SERVER` | 只读分析、日志和配置核对 |
+| `development` | `B-SERVER` | 编译、部署和测试 |
+| `production` | `PROD-SERVER` | 受控生产操作 |
+
+调用工具前可用 `project_server_links_list` 获取准确的 environment key、server ID/name、remote path 和 LIMS instance 绑定，不需要猜 UI 显示名。
+
+## 连接方式
+
+### SSH
+
+适合 Linux、已有 SSH 管理权限、低延迟交互和通用 SFTP 场景。Relay 保存连接信息和私钥，Project link 保存 environment 与 remote path。
+
+### Relay Agent
+
+适合 Windows 服务器无法开放 SSH/WinRM、只能向公网 Relay 发起 HTTP 请求的场景。Agent 主动轮询工作队列，依次执行命令并回传状态、输出或 artifact。
+
+1. 从 Release 下载 `RelayAgent.Client.exe`。
+2. 在目标 Windows Server 上以管理员身份运行。
+3. 输入 Web API 地址，例如 `https://relay.example.com`，不要填写 `/mcp`。
+4. 输入 Server 中配置的 Agent ID 和对应 Agent Token。
+5. 保存配置，执行 **Install Service**，然后 **Start**。
+
+Relay URL 和 Agent Token 使用 Windows DPAPI `LocalMachine` 范围加密。安装为服务后，界面程序可以关闭，Windows Service 会继续运行。
+
+Agent 配置、日志和审计文件位于：
 
 ```text
-http://YOUR_SERVER:3001/mcp
-Authorization: Bearer YOUR_JWT_TOKEN
+%ProgramData%\RelayMcpAgent\
 ```
 
-Clients that only support local stdio MCP can use `mcp-remote` as a bridge.
+## MCP 客户端
 
-## MCP Token Profiles
+MCP endpoint：
 
-Use the Web UI **Tokens** page to create tokens for local agents. A token is an
-agent profile, not a single-project credential. The intended boundary is:
+```text
+http://<relay-host>:3001/mcp
+Authorization: Bearer <MCP_TOKEN>
+```
 
-| Scope | Behavior |
-|-------|----------|
-| Project access | Allow all current/future projects, or manually select multiple projects |
-| Project creation | Optional capability; when enabled, the agent can call `project_create` |
-| Server access | Always manually selected; remote execution can only use allowed servers |
-| Default project/server | Optional convenience defaults only |
+### Codex
 
-When a token has a default project, MCP tools can omit the `project` argument.
-When there is no default project but the token has access to exactly one project,
-RelayMCP uses that project automatically. When multiple projects are available,
-RelayMCP returns a structured prompt request so the local agent can ask the user
-whether to use an existing project or create a new one.
-
-Server access is stricter by design. Even if a token can create projects freely,
-it cannot use arbitrary remote servers. The token must include the target server
-in its **Allowed Servers** list. `project_create` may create the relay-side
-workspace without a server, or may link to an allowed server and create the
-remote directory when `serverId` and `remotePath` are provided.
-
-Generated tokens are shown once. RelayMCP stores only token metadata and the
-token id so profiles can be revoked without storing the full secret.
-
-### Codex Example
-
-Add the MCP server to `C:\Users\<you>\.codex\config.toml`:
+在 `C:\Users\<you>\.codex\config.toml` 中配置：
 
 ```toml
 [mcp_servers.relay_mcp]
-url = "http://YOUR_SERVER:3001/mcp"
+url = "http://<relay-host>:3001/mcp"
 bearer_token_env_var = "RELAY_MCP_TOKEN"
 startup_timeout_sec = 20
 tool_timeout_sec = 120
@@ -478,211 +161,25 @@ enabled = true
 default_tools_approval_mode = "prompt"
 ```
 
-Then set the token in the user environment and fully restart Codex so the
-process can read the new environment variable:
+设置用户环境变量后完整重启 Codex：
 
 ```powershell
-[Environment]::SetEnvironmentVariable("RELAY_MCP_TOKEN", "YOUR_TOKEN", "User")
+[Environment]::SetEnvironmentVariable("RELAY_MCP_TOKEN", "<MCP_TOKEN>", "User")
 ```
 
-Get your JWT token:
-```bash
-curl -s -X POST http://YOUR_SERVER:3000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"your-user","password":"your-password"}' | python3 -m json.tool
-```
+### 其他客户端
 
-## Windows SSH Notes
-
-For Windows servers (Administrator account), the authorized keys file location is:
-
-```
-C:\ProgramData\ssh\administrators_authorized_keys
-```
-
-Required permissions (others will cause key auth to fail):
-```powershell
-icacls "C:\ProgramData\ssh\administrators_authorized_keys" /inheritance:r
-icacls "C:\ProgramData\ssh\administrators_authorized_keys" /grant "NT AUTHORITY\SYSTEM:(F)"
-icacls "C:\ProgramData\ssh\administrators_authorized_keys" /grant "BUILTIN\Administrators:(F)"
-Restart-Service sshd
-```
-
----
-
-# 远端运维平台
-
-> 一个自托管的远端运维平台，通过 MCP (Model Context Protocol) 让任意兼容 MCP 的 LLM 智能体经由受控中继管理远端服务器。
-
-## 架构说明
-
-```
-LLM 客户端（Claude、Codex、Cursor、Cline、自定义 Agent）
-      │  MCP over HTTP
-      ▼
-RelayMCP 服务器（Ubuntu VM）
-  ├── Web UI        :3000  — 项目与服务器管理界面
-  └── MCP Server    :3001  — 提供平台无关的 MCP 工具
-      │  SSH
-      ▼
-生产服务器（任意可 SSH 访问的主机）
-```
-
-## 功能特性
-
-- **MCP 工具**：`exec_remote`（执行命令）、`exec_remote_powershell`、`exec_remote_script`、`deploy`（部署）、`fetch_logs`（获取日志）、`restart_service`（重启服务）、`download_remote_file`（远程文件回传）、远程/本地文件读写、项目列表及 Server Link 查询、`project_create`（创建项目）
-- **节省 token 工具**：输出压缩、异步 job、项目事实记忆（`context_record_fact`、`context_search`）
-- **MCP token profile**：在 Web UI 手动生成 agent token，一个 agent 可访问多个 project，但可用 server 必须手动授权
-- **SampleManager 工具**：实例重启、FormsBin 缓存清理、近期错误检索、SQL 查询、SQL 文件执行、SampleManagerCommand 封装
-- **服务器管理**：添加服务器、自动生成 SSH 密钥对、一键推送公钥、连通性测试、编辑服务器信息
-- **项目管理**：按用户隔离的工作区目录、支持多环境的项目-服务器关联管理
-- **用户管理**：仅管理员可创建用户、重置密码、管理员权限授予/撤销
-- **JWT 认证**：Web UI 和 MCP 均使用 Token 认证
-
-## 技术栈
-
-| 层级 | 技术 |
-|------|------|
-| 后端 | Node.js · Fastify · SQLite（Drizzle ORM） |
-| MCP 服务 | @modelcontextprotocol/sdk · Express · HTTP/SSE |
-| 前端 | React · Vite · Tailwind CSS |
-| 进程管理 | PM2 |
-| SSH | node-ssh · openssh-client |
-
-## 当前支持的操作场景
-
-RelayMCP 的能力分两层：
-
-1. **已封装 MCP tool**：适合高频、可重复、需要节省 token 的操作。
-2. **远程命令 playbook**：通过 `exec_remote`、远程 PowerShell/SSH、SFTP 文件传输来执行，
-   适合 SampleManager 部署、编译、加载、清缓存等场景。
-
-### 已封装 MCP Tool
-
-| 场景 | 工具 |
-|------|------|
-| Project 选择与创建 | `list_projects`, `project_server_links_list`, `project_create` |
-| 远程命令执行 | `exec_remote`, `exec_remote_powershell`, `exec_remote_script` |
-| 部署和重启 | `deploy`, `restart_service` |
-| 日志和异步任务 | `fetch_logs`, `job_list`, `job_status` |
-| 远程文件 | `read_remote_file`, `download_remote_file`, `write_remote_file`, `list_remote_files`, `patch_remote_file` |
-| Relay 侧 project workspace | `read_local_file`, `write_local_file`, `upload_workspace_file`, `sync_workspace` |
-| 项目长期记忆 | `context_record_fact`, `context_search` |
-| SampleManager 辅助工具 | `samplemanager_deployment_start`, `samplemanager_restart_instance`, `samplemanager_clear_form_cache`, `samplemanager_recent_errors`, `samplemanager_table_schema`, `samplemanager_sql_query`, `samplemanager_sql_execute_file`, `samplemanager_sql_mutation`, `samplemanager_run_command`, `samplemanager_discover_build_tools`, `samplemanager_build_deploy_assembly`, `samplemanager_deployment_status`, `samplemanager_deployment_finish` |
-
-### PowerShell / SSH 能力
-
-对于 Windows SampleManager 服务器，RelayMCP 可以通过 SSH 执行远程 PowerShell。
-内联脚本优先使用 `exec_remote_powershell`，长脚本优先使用
-`exec_remote_script`。这两个工具会避免 PowerShell `$变量` 被外层 shell
-提前展开；`exec_remote_script` 会写入临时 `.ps1`、执行，并在成功后自动清理。
-三个通用远程执行工具都可以传入 `async: true`，立即获得 `jobId`，再通过
-`job_status` 查询长任务结果。`timeoutMs` 现在会真正关闭超时命令的 SSH channel
-和连接；PowerShell 输出清理同时支持带 `#< CLIXML` 标记和直接以 `<Objs>`
-开头的输出。当服务器 OS 元数据配置错误时，脚本执行会先探测真实的 Windows
-能力。
-典型操作包括：
-
-- 创建/清理远程 staging 目录
-- 通过 SFTP 上传文件，避免在对话里传递大文件内容
-- 将 staging 文件复制到 SampleManager instance 目录
-- 替换前备份目标文件
-- 清理指定 form 的 `FormsBin\<FORM_NAME>.binform*` 缓存
-- 按需重启服务、IIS app pool 或 SampleManager 相关进程
-- 收集近期日志，并压缩后返回给本地 LLM agent
-
-大文件或生成物建议先写入 RelayMCP 的 project workspace，再通过
-`upload_workspace_file` 或 `sync_workspace` 上传。这样可以减少本地一次性 `.ps1` /
-`.py` 脚本，也能降低 token 消耗。
-
-### SampleManager 命令场景
-
-以下能力目前通过远程命令 playbook 支持，未来高频场景可以继续封装成专用 MCP tool：
-
-| 场景 | 命令模式 |
-|------|----------|
-| 执行 VGL report | 优先用 `samplemanager_run_command`，传入 `task="VGL"` 和结构化 `args`；也可直接运行 `SampleManagerCommand.exe -instance <INSTANCE> -username <USER> -task VGL -report '<REPORT_NAME>' -prompts "(...)"` |
-| 加载 table-loader CSV | 优先用 `samplemanager_run_command`，args 例如 `["-report","$table_loader","-prompts","(C:\path\file.csv,overwrite_table)"]` |
-| 应用 structure 变更 | `CreateEntityDefinition.exe -instance <INSTANCE>` 后执行 `convert_table.exe -mode convert -tables <TABLE_NAME> -noconfirm -instance <INSTANCE>` |
-| 部署 form XML / form task code | 复制 form 文件，必要时部署 task assembly，并清理对应 `FormsBin` 缓存 |
-| 部署 Report Designer layout | 上传 `.repx`，验证 layout 可加载，并运行 report smoke test |
-| 部署自定义 .NET task assembly | 使用 `MSBuild.exe` 或 `dotnet build` 编译，复制 DLL/PDB/config 到目标约定目录，并重启受影响 task host |
-| RESOURCE icon | 将 icon 文件放到 instance 的 `Resource\Icon` 约定目录，并刷新/重开客户端 |
-| SampleManager SQL 检查 | `samplemanager_sql_query` 默认用于只读检查，`samplemanager_sql_execute_file` 用于执行 relay project workspace 中的 SQL 文件；用 `maxRows` 和 `includeResultSets` 控制输出大小；写入操作必须显式开启 mutation |
-
-SQL 工具支持 `parameters` 参数化值和 `identifiers` 标识符模板。例如
-`select {{column}} from {{table}} where STATUS=@status` 会把 identifier 自动转换为
-`[IDENTITY]`、`[dbo].[SAMPLE]`，值仍通过 `@status` 参数传递。失败结果包含最终 SQL、
-参数、SQL Server 错误号、严重级别、状态、过程名和行号。大结果可用 `maxRows`
-和零起点 `offset` 分页，响应会返回 `hasMore` 与 `nextOffset`。
-
-重要约束：
-
-- SampleManager 命令行工具应在 instance 的 `Exe` 目录下执行，避免 DLL 和 logical path 解析失败。
-- PowerShell 中 `'$table_loader'` 要用单引号；双引号可能把 `$table_loader` 当变量展开。
-- table-loader CSV 应交给 `$table_loader` VGL report，不要交给 `EntityImportTask`。
-- structure 变更应使用 SampleManager structure 工具链，不建议直接 SQL 改 schema。
-- 部署结果应说明执行过的命令、复制的文件、清理的缓存、重启影响和 smoke test 结果。
-
-## 部署步骤
-
-### 环境要求
-
-- Ubuntu 22.04+ 服务器（作为 RelayMCP 中继节点）
-- Node.js 20 LTS
-- PM2（`npm install -g pm2`）
-
-### 部署
-
-```bash
-# 1. 克隆仓库到 RelayMCP 服务器
-git clone https://github.com/tengfei1994/Relay-MCP.git ~/Relay-MCP
-cd ~/Relay-MCP
-
-# 2. 安装依赖
-npm install
-cd frontend && npm install && npm run build && cd ..
-
-# 3. 配置环境变量
-cp .env.example .env
-# 编辑 .env，设置 JWT_SECRET、WORKSPACE_ROOT、SSH_KEYS_DIR
-
-# 4. 编译后端
-npx tsc
-
-# 5. 用 PM2 启动
-pm2 start ecosystem.config.cjs
-pm2 save && pm2 startup
-```
-
-### 环境变量说明（`.env`）
-
-| 变量名 | 默认值 | 说明 |
-|--------|--------|------|
-| `PORT` | `3000` | Web 服务端口 |
-| `MCP_PORT` | `3001` | MCP 服务端口 |
-| `MCP_OUTPUT_LIMIT` | `12000` | 工具返回内容的默认压缩上限 |
-| `JWT_SECRET` | *必填* | JWT 签名密钥 |
-| `WORKSPACE_ROOT` | `/workspace` | 项目工作区根目录 |
-| `RELAY_STATE_ROOT` | `/workspace/.relay-mcp` | job、审计、项目记忆存储目录 |
-| `SSH_KEYS_DIR` | `/workspace/.ssh-keys` | SSH 密钥对存储目录 |
-| `DB_PATH` | `./data/app.db` | SQLite 数据库路径 |
-
-## 连接 MCP 客户端
-
-### Claude Desktop（Cowork）
-
-客户端需安装 Node.js，将以下内容加入 `claude_desktop_config.json`：
+原生支持 HTTP MCP 的客户端直接使用 endpoint 和 Bearer token。只支持 stdio 的客户端可以使用 `mcp-remote`：
 
 ```json
 {
   "mcpServers": {
-    "remote-ops": {
+    "relay-mcp": {
       "command": "npx",
       "args": [
         "-y",
         "mcp-remote",
-        "http://你的服务器:3001/mcp?token=你的JWT令牌",
+        "http://<relay-host>:3001/mcp?token=<MCP_TOKEN>",
         "--allow-http"
       ]
     }
@@ -690,98 +187,212 @@ pm2 save && pm2 startup
 }
 ```
 
-### Claude Code CLI
+生产环境应使用 HTTPS，避免在 URL query 中携带 token，并通过反向代理限制 Web 与 MCP 入口。
 
-加入 `~/.claude/settings.json`：
+## 目标选择
 
-```json
-{
-  "mcpServers": {
-    "remote-ops": {
-      "url": "http://你的服务器:3001/mcp?token=你的JWT令牌"
-    }
-  }
-}
-```
-
-### 其他 MCP 客户端
-
-任意支持 HTTP MCP 的客户端都可以连接：
+远程工具支持 Project 和 environment 选择。一个 Project 有多个 link 时，建议先调用：
 
 ```text
-http://你的服务器:3001/mcp
-Authorization: Bearer 你的JWT令牌
+project_server_links_list(project="HKJC")
 ```
 
-如果客户端只支持本地 stdio MCP，可以用 `mcp-remote` 做桥接。
+然后传入返回的 `environment`，或在支持的工具中使用准确的 server ID/name。Relay 会同时校验：
 
-## MCP Token Profile
+- Project 是否在当前 MCP Token 的允许范围内。
+- Server 是否在 MCP Token 的 **Allowed Servers** 中。
+- Project link 是否存在。
+- Agent 是否在线，或 SSH 是否可连接。
+- SampleManager 操作是否绑定到明确的 LIMS instance。
 
-在 Web UI 的 **Tokens** 页面生成本地 agent 使用的 token。token 是一个 agent
-profile，不是单个 project 的凭证。推荐的边界如下：
+## 文件传输
 
-| 范围 | 行为 |
-|------|------|
-| Project 访问 | 可以允许所有当前/未来 project，也可以手动多选 project |
-| Project 创建 | 可选能力；开启后 agent 可以调用 `project_create` |
-| Server 访问 | 必须手动勾选；远程执行只能使用 token 允许的 server |
-| 默认 project/server | 只是便捷默认值，不代表权限边界 |
+大型二进制不经过 MCP JSON。MCP 只负责创建短期 session，并返回 URL、token、字节数和 SHA-256。
 
-带默认 project 的 token 调用 MCP tool 时可以省略 `project` 参数。如果没有默认
-project，但 token 只允许访问一个 project，RelayMCP 会自动使用该 project。如果
-token 可访问多个 project，RelayMCP 会返回结构化提示，让本地 agent 询问用户是
-选择历史 project 还是新建 project。
+### 本地到远端
 
-Server 访问更严格。即使 token 允许自由创建 project，也不能随意使用任意远程
-server。目标 server 必须在 token 的 **Allowed Servers** 中被手动勾选。`project_create`
-可以只创建 RelayMCP 本地 workspace；如果同时提供 `serverId` 和 `remotePath`，
-则会在被允许的 server 上建立远程目录并关联到 project。
-
-token 明文只显示一次。数据库只保存 token 元数据和 token id，用于列表展示和撤销。
-
-### Codex 示例
-
-在 `C:\Users\<you>\.codex\config.toml` 中加入：
-
-```toml
-[mcp_servers.relay_mcp]
-url = "http://你的服务器:3001/mcp"
-bearer_token_env_var = "RELAY_MCP_TOKEN"
-startup_timeout_sec = 20
-tool_timeout_sec = 120
-enabled = true
-default_tools_approval_mode = "prompt"
+```text
+local file
+  -> create_workspace_upload
+  -> HTTP streaming upload to Relay workspace
+  -> upload_workspace_file
+  -> target server
 ```
 
-然后把 Web UI 生成的 token 写入用户环境变量，并完整重启 Codex：
+创建 session 后可使用：
 
-```powershell
-[Environment]::SetEnvironmentVariable("RELAY_MCP_TOKEN", "你的TOKEN", "User")
-```
-
-获取 JWT 令牌：
 ```bash
-curl -s -X POST http://你的服务器:3000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"用户名","password":"密码"}' | python3 -m json.tool
+npm run relay-upload -- --url <url> --token <token> --file <local-file>
 ```
 
-## Windows 服务器 SSH 说明
+### 远端到本地
 
-Windows（Administrator 账号）的授权密钥文件路径为：
-
-```
-C:\ProgramData\ssh\administrators_authorized_keys
-```
-
-必须设置正确的文件权限（其他权限会导致密钥认证失败）：
-```powershell
-icacls "C:\ProgramData\ssh\administrators_authorized_keys" /inheritance:r
-icacls "C:\ProgramData\ssh\administrators_authorized_keys" /grant "NT AUTHORITY\SYSTEM:(F)"
-icacls "C:\ProgramData\ssh\administrators_authorized_keys" /grant "BUILTIN\Administrators:(F)"
-Restart-Service sshd
+```text
+target server
+  -> SSH/SFTP staging or Agent artifact-upload
+  -> Relay short-lived download
+  -> local .part file
+  -> byte count + SHA-256 verification
 ```
 
-## 许可证 / License
+`download_remote_file` 在 SSH 模式使用 SFTP staging，在 Agent 模式派发 `artifact-upload` job。下载器支持 HTTP Range 和 `.part` 断点续传：
 
-MIT
+```bash
+npm run relay-download -- --url <url> --token <token> \
+  --file <local-file> --expected-bytes <bytes> --expected-sha256 <sha256>
+```
+
+短期 session 过期后需要重新调用 MCP 工具。不要把下载 token 写入源码、日志或长期脚本。
+
+## 异步 Job
+
+长时间命令应设置 `async: true`。工具立即返回 `jobId`，随后使用：
+
+- `job_status`：查看 queued/running/completed/failed、结果、错误和近期日志。
+- `job_list`：列出当前用户的近期 job。
+- `job_cancel`：请求取消仍在运行的 SSH job。
+
+同步调用超时时，优先查询 job 状态，避免重复执行表转换、DLL 部署、清缓存或服务重启等有副作用的操作。
+
+## SampleManager 多实例
+
+同一 Server 可以管理多个 SampleManager 实例，包括不同版本、数据库、Windows Service 和构建工具链。
+
+**LIMS Instances > Scan** 执行只读发现：
+
+- 实例目录、文件版本和 runtime 类型。
+- 实例所属 Windows Service。
+- connection string 候选及数据库证据。
+- Visual Studio MSBuild、Framework MSBuild 和 .NET SDK。
+- 本地 SQL Server 中符合 SampleManager 核心表特征的业务数据库。
+
+扫描会保留 LocalDB、`EntityContext-*` 和 OData 元数据库作为诊断候选，但不会将其优先识别为 LIMS 业务库。候选必须经用户审核并导入，之后才能绑定到 Project link。
+
+绑定后，SampleManager 工具使用该实例的：
+
+- `Exe`、`Server`、`SolutionAssemblies` 等路径。
+- 数据库 host/name/auth 配置。
+- Windows Service 与进程范围。
+- .NET Framework MSBuild 或现代 `dotnet build` profile。
+
+SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备份和 before/after 证据。部署操作可通过 `deploymentId` 关联构建、哈希、备份、SQL、日志、重启和回滚状态。
+
+## MCP 工具目录
+
+下表与 `src/shared/tool-catalog.ts` 保持同步，测试会检查注册工具是否出现在 README 中。
+
+| 分类 | 工具 | 说明 |
+|---|---|---|
+| Project | `list_projects` | 列出当前 MCP Token 可访问的 Project。 |
+| Project | `project_server_links_list` | 列出 Project link、environment、Server 和 LIMS instance 绑定。 |
+| Project | `project_create` | 创建 Project workspace，并可关联允许的 Server。 |
+| Remote execution | `exec_remote` | 执行 shell command，支持超时和异步 job。 |
+| Remote execution | `exec_remote_powershell` | 执行 encoded PowerShell，支持文本或 JSON 输出。 |
+| Remote execution | `exec_remote_script` | 上传并执行 PowerShell 脚本，可选清理。 |
+| Remote execution | `deploy` | 部署远端 Git checkout，并记录 commit、输出和 rollback 状态。 |
+| Remote execution | `fetch_logs` | 按时间窗口或 deployment run 读取日志。 |
+| Remote execution | `restart_service` | 重启 Windows Service、systemd、PM2 或 Docker workload。 |
+| Remote files | `read_remote_file` | 读取远端文本文件。 |
+| Remote files | `download_remote_file` | 将远端二进制流式下载到本地 workspace。 |
+| Remote files | `write_remote_file` | 通过 SFTP 写入远端 UTF-8 文本。 |
+| Remote files | `list_remote_files` | 列出远端目录。 |
+| Remote files | `patch_remote_file` | 对远端文本应用 unified diff。 |
+| Workspace | `read_local_file` | 读取 Relay Project workspace 文本。 |
+| Workspace | `write_local_file` | 写入或追加 Relay workspace 文本。 |
+| Workspace | `write_local_binary` | 将小型 Base64 二进制写入 Relay workspace。 |
+| Workspace | `list_workspace_files` | 有界递归列出 workspace 内容。 |
+| Workspace | `workspace_file_stat` | 查看文件元数据并可计算 SHA-256。 |
+| Workspace | `move_workspace_file` | 移动或重命名 workspace 文件。 |
+| Workspace | `delete_workspace_file` | 删除文件或显式批准的目录树。 |
+| Workspace | `create_workspace_upload` | 创建大型本地文件的短期流式上传 session。 |
+| Workspace | `cleanup_workspace_staging` | 预览或清理旧 `.relay-staging` 内容。 |
+| Workspace | `sync_workspace` | 通过 SFTP 同步 workspace 到远端目录。 |
+| Workspace | `upload_workspace_file` | 上传单个 workspace 文件到远端。 |
+| Jobs | `job_status` | 查询异步 job 的状态、结果、错误和日志。 |
+| Jobs | `job_list` | 列出当前用户的近期 job。 |
+| Jobs | `job_cancel` | 请求取消运行中的 SSH job。 |
+| Context | `context_record_fact` | 保存持久化 Project fact。 |
+| Context | `context_search` | 搜索持久化 Project fact。 |
+| SampleManager | `samplemanager_restart_instance` | 重启指定实例的核心服务。 |
+| SampleManager | `samplemanager_deployment_start` | 创建用于关联多阶段操作的 `deploymentId`。 |
+| SampleManager | `samplemanager_clear_form_cache` | 清理一个 form 的 FormsBin cache。 |
+| SampleManager | `samplemanager_recent_errors` | 按时间范围检索紧凑错误证据。 |
+| SampleManager | `samplemanager_table_schema` | 查询列、键、identity、默认值和物理映射。 |
+| SampleManager | `samplemanager_sql_query` | 执行参数化只读 SQL，并返回详细 SQL Server 错误。 |
+| SampleManager | `samplemanager_sql_execute_file` | 执行 workspace 中的参数化 SQL 文件。 |
+| SampleManager | `samplemanager_sql_mutation` | 执行支持 dry run、备份和 before/after 的 mutation。 |
+| SampleManager | `samplemanager_run_command` | 以结构化参数运行 `SampleManagerCommand.exe`。 |
+| SampleManager | `samplemanager_create_entity_definition` | 运行 `CreateEntityDefinition.exe`。 |
+| SampleManager | `samplemanager_convert_tables` | 对已验证表名分别运行 `convert_table.exe`。 |
+| SampleManager | `samplemanager_table_loader` | 通过内置 `$table_loader` VGL report 导入远端 CSV。 |
+| SampleManager | `samplemanager_run_utility` | 运行与版本匹配的 allowlisted utility。 |
+| SampleManager | `samplemanager_discover_build_tools` | 按优先级发现 VS2022、VS2019、Framework 和 PATH 中的 MSBuild。 |
+| SampleManager | `samplemanager_build_dotnet` | 使用 MSBuild 构建经典 SampleManager .NET solution。 |
+| SampleManager | `samplemanager_build_deploy_assembly` | 构建、哈希、备份、部署、重启并支持程序集回滚。 |
+| SampleManager | `samplemanager_deployment_status` | 查看 deployment 阶段、artifact、hash、backup 和 rollback 状态。 |
+| SampleManager | `samplemanager_deployment_finish` | 将手动编排的 deployment 标记为成功或失败。 |
+| SampleManager | `samplemanager_deploy_file` | 将 staged file 备份后部署到实例目录。 |
+| SampleManager | `samplemanager_restore_backup` | 将指定 backup 恢复到显式 target。 |
+
+## 环境变量
+
+| 变量 | 默认值 | 用途 |
+|---|---|---|
+| `PORT` | `3000` | Web API/UI 端口。 |
+| `MCP_PORT` | `3001` | MCP HTTP endpoint 端口。 |
+| `JWT_SECRET` | 必填 | Web JWT 与 token 签名密钥。 |
+| `MCP_SECRET` | 可选 | MCP 相关独立 secret。 |
+| `MCP_OUTPUT_LIMIT` | `12000` | 工具紧凑输出字符上限。 |
+| `DB_PATH` | `./data/app.db` | SQLite 数据库路径。 |
+| `WORKSPACE_ROOT` | `/workspace` | Project workspace 根目录。 |
+| `RELAY_STATE_ROOT` | `/workspace/.relay-mcp` | job、audit、staging 和 context 状态目录。 |
+| `SSH_KEYS_DIR` | `/workspace/.ssh-keys` | Relay SSH key 目录。 |
+| `RELAY_PUBLIC_URL` | `http://localhost:<PORT>` | 上传/下载 session 返回的公网 Web API base URL。 |
+| `RELAY_UPLOAD_TTL_MS` | `900000` | 上传 session 有效期。 |
+| `RELAY_UPLOAD_MAX_BYTES` | `4294967296` | 流式上传最大字节数。 |
+| `RELAY_ARTIFACT_MAX_BYTES` | `4294967296` | Agent artifact 最大字节数。 |
+| `RELAY_DOWNLOAD_TTL_MS` | `900000` | 下载 session 有效期。 |
+| `RELAY_VERSION` | `0.5.0` | `/api/health` 返回的版本。 |
+| `RELAY_BUILD_COMMIT` | `development` | 部署 commit fingerprint。 |
+| `RELAY_BUILD_TIME` | `unknown` | 构建时间 fingerprint。 |
+
+端口转发场景中，`RELAY_PUBLIC_URL` 必须填写客户端实际可访问的 Web 地址。例如公网 `7230` 转发到内网 `3000` 时：
+
+```dotenv
+RELAY_PUBLIC_URL=http://relay.example.com:7230
+```
+
+MCP 客户端则连接公网 MCP 端口，例如 `http://relay.example.com:7231/mcp`。
+
+## 开发与验证
+
+```bash
+npm install
+npm --prefix frontend install
+npm test
+npm run build
+```
+
+常用开发命令：
+
+```bash
+npm run dev:server
+npm run dev:mcp
+```
+
+技术栈：Node.js、TypeScript、Fastify、Express、MCP SDK、SQLite/Drizzle、React、Vite、Tailwind CSS、PM2、node-ssh，以及 Windows WPF/.NET Agent。
+
+## 安全边界
+
+- MCP Token 与 Agent Token 分离，均可在后台撤销。
+- MCP Token 的 Project 范围与 Allowed Servers 分别校验。
+- Agent 只主动访问 Relay，不需要开放入站 SSH 或 WinRM。
+- Agent Client 使用 DPAPI 加密 Relay URL 和 Agent Token。
+- 请求审计会脱敏 Authorization、token、password、secret、API key 和 connection string。
+- 大型文件使用短期 session；URL/token 过期后不可继续访问。
+- SQL 默认只读；mutation、目录树删除、部署和回滚需要显式调用。
+- 生产环境应使用 HTTPS、强 `JWT_SECRET`、最小权限账号和受限网络入口。
+
+## License
+
+[MIT](LICENSE)

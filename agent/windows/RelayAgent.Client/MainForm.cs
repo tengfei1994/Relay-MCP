@@ -87,8 +87,7 @@ namespace RelayAgent.Client
 
             _loadedConfig = LoadConfigSafely();
             BuildShell();
-            AutoScaleDimensions = new SizeF(96f, 96f);
-            AutoScaleMode = AutoScaleMode.Dpi;
+            AutoScaleMode = AutoScaleMode.None;
             LoadConfigurationIntoView();
             LoadSqlServers();
             ShowPage("overview");
@@ -258,7 +257,7 @@ namespace RelayAgent.Client
             header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 142));
             header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
             header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 158));
-            header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
             header.Paint += (sender, args) =>
             {
                 using (var pen = new Pen(UiTheme.Border))
@@ -292,8 +291,9 @@ namespace RelayAgent.Client
             };
             var refresh = UiTheme.CreateButton("", (sender, args) => RefreshAll(), ButtonTone.Ghost, "\uE72C");
             refresh.AutoSize = false;
-            refresh.Size = new Size(36, 36);
             refresh.MinimumSize = new Size(36, 36);
+            refresh.MaximumSize = new Size(36, 36);
+            refresh.Size = new Size(36, 36);
             refresh.Margin = Padding.Empty;
             refresh.Anchor = AnchorStyles.None;
             refreshHost.Controls.Add(refresh);
@@ -377,25 +377,21 @@ namespace RelayAgent.Client
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 65));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 176));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 354));
             body.Controls.Add(layout);
 
             var readiness = new SectionPanel
             {
-                Dock = DockStyle.Fill,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink
+                Dock = DockStyle.Fill
             };
             var readinessLayout = new TableLayoutPanel
             {
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Fill,
                 ColumnCount = 4,
                 RowCount = 1
             };
-            readinessLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            readinessLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             for (var i = 0; i < 4; i++)
             {
                 readinessLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
@@ -463,23 +459,18 @@ namespace RelayAgent.Client
             var panel = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                MinimumSize = new Size(0, 82),
                 ColumnCount = 2,
                 RowCount = 2,
                 Margin = new Padding(column == 0 ? 0 : 10, 10, 10, 10)
             };
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            panel.RowStyles.Add(new RowStyle(SizeType.Percent, 55));
+            panel.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
 
             var badgeHost = new Panel
             {
                 Dock = DockStyle.Fill,
-                AutoSize = true,
-                MinimumSize = new Size(40, 72),
                 Margin = new Padding(0, 0, 12, 0),
                 BackColor = Color.Transparent
             };

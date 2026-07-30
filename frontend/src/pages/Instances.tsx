@@ -170,6 +170,11 @@ export default function InstancesPage() {
                   <p className="text-xs text-gray-600 mt-1">
                     {candidate.services?.length ?? 0} services · database {candidate.databaseName || "not detected"} · builder {candidate.buildProfile?.kind || "unknown"}
                   </p>
+                  {candidate.databaseConfigSource && (
+                    <p className="text-xs text-gray-600 mt-1 truncate" title={candidate.databaseConfigSource}>
+                      Database source: {candidate.databaseConfigSource}
+                    </p>
+                  )}
                   {candidate.databaseProbe?.status === "verified" && (
                     <p className="text-xs text-green-500 mt-1">
                       Schema verified: {candidate.databaseProbe.tableCount} tables · {candidate.databaseProbe.sampleManagerTableCount ?? 0} SampleManager core tables
@@ -224,6 +229,11 @@ export default function InstancesPage() {
                       <div>
                         <p className="text-xs text-gray-400">{instance.databaseName || "Database not configured"}</p>
                         <p className="text-xs text-gray-600">{instance.databaseHost || instance.databaseAuthType}</p>
+                        {instance.databaseConfigSource && (
+                          <p className="text-xs text-gray-700 truncate max-w-64" title={instance.databaseConfigSource}>
+                            {instance.databaseConfigSource}
+                          </p>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-start gap-2">

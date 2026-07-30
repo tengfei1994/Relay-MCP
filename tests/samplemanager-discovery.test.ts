@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { discoverSampleManagerInstances } from "../src/shared/samplemanager-discovery.ts";
+import {
+  DATABASE_ASSOCIATION_RANK,
+  discoverSampleManagerInstances,
+} from "../src/shared/samplemanager-discovery.ts";
 
 test("instance discovery returns a normalized candidate list and keeps the scan read-only", async () => {
   let script = "";
@@ -44,5 +47,13 @@ test("instance discovery returns a normalized candidate list and keeps the scan 
   assert.match(script, /AttachDbFilename/);
   assert.match(script, /SELECT name FROM sys\.databases/);
   assert.match(script, /sampleManagerTableCount/);
+  assert.match(script, /LabSystems\\\$name\\Setup/);
+  assert.match(script, /sourceKind = 'instance-registry'/);
+  assert.match(script, /sourceKind = 'instance-config'/);
+  assert.match(script, /sourceKind = 'machine-inventory'/);
+  assert.match(script, /Sort-Object @\{Expression = \{ \$_.associationRank \}/);
+  assert.ok(DATABASE_ASSOCIATION_RANK.instanceRegistry > DATABASE_ASSOCIATION_RANK.instanceConfig);
+  assert.ok(DATABASE_ASSOCIATION_RANK.instanceConfig > DATABASE_ASSOCIATION_RANK.machineInventory);
+  assert.ok(DATABASE_ASSOCIATION_RANK.machineInventory > DATABASE_ASSOCIATION_RANK.inferredInstanceName);
   assert.doesNotMatch(script, /Restart-Service|Remove-Item|Copy-Item/);
 });

@@ -72,6 +72,8 @@ const InstanceInputSchema = z.object({
       name: nullableText,
       authType: nullableText,
       source: nullableText,
+      sourceKind: z.enum(["instance-registry", "instance-config", "machine-inventory", "inferred-instance-name"]).optional(),
+      associationRank: z.number().optional(),
       auxiliary: z.boolean().optional(),
       auxiliaryReason: nullableText.optional(),
       probeStatus: nullableText,

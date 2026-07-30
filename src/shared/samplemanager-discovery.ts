@@ -44,6 +44,13 @@ export interface DiscoveredSampleManagerInstance {
   warnings: string[];
 }
 
+export const DATABASE_ASSOCIATION_RANK = {
+  instanceRegistry: 400,
+  instanceConfig: 300,
+  machineInventory: 100,
+  inferredInstanceName: 10,
+} as const;
+
 function psArray(values: string[]): string {
   return `@(${values.map((value) => `'${value.replace(/'/g, "''")}'`).join(",")})`;
 }
@@ -140,6 +147,92 @@ foreach ($root in @($roots)) {
   $databaseAuthType = 'unknown'
   $databaseConfigSource = ''
   $databaseCandidates = @()
+
+  # SampleManager instance creation records the database target under the
+  # instance's LabSystems registry key. This is the strongest association
+  # available on a server that hosts multiple LIMS instances.
+  $registryPaths = @(
+    "HKLM:\SOFTWARE\WOW6432Node\LabSystems\$name\Setup",
+    "HKLM:\SOFTWARE\LabSystems\$name\Setup",
+    "HKLM:\SOFTWARE\WOW6432Node\LabSystems\SampleManager\$name\Setup",
+    "HKLM:\SOFTWARE\LabSystems\SampleManager\$name\Setup",
+    "HKLM:\SOFTWARE\WOW6432Node\LabSystems\Sample Manager\$name\Setup",
+    "HKLM:\SOFTWARE\LabSystems\Sample Manager\$name\Setup"
+  )
+  foreach ($registryPath in $registryPaths) {
+    if (-not (Test-Path -LiteralPath $registryPath)) { continue }
+    $registryValues = Get-ItemProperty -LiteralPath $registryPath -ErrorAction SilentlyContinue
+    if (-not $registryValues) { continue }
+    $properties = @($registryValues.PSObject.Properties | Where-Object {
+      $_.Name -notmatch '^PS(Path|ParentPath|ChildName|Drive|Provider)$'
+    })
+    $registryText = ($properties | ForEach-Object { [string]$_.Value }) -join [Environment]::NewLine
+    $registryConnections = @([regex]::Matches($registryText, '(?i)(?:Data Source|Server)\s*=\s*[^;"<]+(?:;[^"<\r\n]+)*'))
+    foreach ($connectionStringMatch in $registryConnections) {
+      $connectionText = $connectionStringMatch.Value
+      $serverMatch = [regex]::Match($connectionText, '(?i)(?:Data Source|Server)\s*=\s*([^;"<]+)')
+      $databaseMatch = [regex]::Match($connectionText, '(?i)(?:Initial Catalog|Database)\s*=\s*([^;"<]+)')
+      if (-not $databaseMatch.Success) { continue }
+      $candidateHost = $serverMatch.Groups[1].Value.Trim()
+      $candidateName = $databaseMatch.Groups[1].Value.Trim()
+      $isLocalDb = $candidateHost -match '(?i)\(localdb\)' -or $connectionText -match '(?i)AttachDbFilename\s*='
+      $isEntityContext = $candidateName -match '(?i)^EntityContext[-_]'
+      $duplicate = $databaseCandidates | Where-Object {
+        $_.host -eq $candidateHost -and $_.name -eq $candidateName
+      } | Select-Object -First 1
+      if (-not $duplicate) {
+        $databaseCandidates += [pscustomobject][ordered]@{
+          host = $candidateHost
+          name = $candidateName
+          authType = if ($connectionText -match '(?i)(Integrated Security\s*=\s*(true|sspi)|Trusted_Connection\s*=\s*true)') { 'windows' } else { 'sql-or-unknown' }
+          source = $registryPath
+          sourceKind = 'instance-registry'
+          associationRank = ${DATABASE_ASSOCIATION_RANK.instanceRegistry}
+          auxiliary = $isLocalDb -or $isEntityContext
+          auxiliaryReason = if ($isEntityContext) { 'entity-context' } elseif ($isLocalDb) { 'localdb-or-attached-file' } else { $null }
+          probeStatus = 'not-probed'
+          tableCount = $null
+          sampleManagerTableCount = 0
+          error = $null
+          score = if ($isLocalDb -or $isEntityContext) { -100 } else { 10 }
+        }
+      }
+    }
+
+    # Older and encrypted installations may store server and database as
+    # separate registry values instead of a readable ADO connection string.
+    $databaseProperty = $properties | Where-Object {
+      $_.Name -match '(?i)^(mssql)?database(name)?$|^initial.?catalog$'
+    } | Select-Object -First 1
+    $serverProperty = $properties | Where-Object {
+      $_.Name -match '(?i)^(mssql)?server$|^databasehost$|^data.?source$'
+    } | Select-Object -First 1
+    if ($databaseProperty -and [string]$databaseProperty.Value) {
+      $candidateName = ([string]$databaseProperty.Value).Trim()
+      $candidateHost = if ($serverProperty -and [string]$serverProperty.Value) { ([string]$serverProperty.Value).Trim() } else { 'localhost' }
+      $duplicate = $databaseCandidates | Where-Object {
+        $_.host -eq $candidateHost -and $_.name -eq $candidateName
+      } | Select-Object -First 1
+      if (-not $duplicate) {
+        $databaseCandidates += [pscustomobject][ordered]@{
+          host = $candidateHost
+          name = $candidateName
+          authType = 'windows-or-configured'
+          source = "$registryPath\$($databaseProperty.Name)"
+          sourceKind = 'instance-registry'
+          associationRank = ${DATABASE_ASSOCIATION_RANK.instanceRegistry}
+          auxiliary = $candidateName -match '(?i)^EntityContext[-_]'
+          auxiliaryReason = if ($candidateName -match '(?i)^EntityContext[-_]') { 'entity-context' } else { $null }
+          probeStatus = 'not-probed'
+          tableCount = $null
+          sampleManagerTableCount = 0
+          error = $null
+          score = if ($candidateName -match '(?i)^EntityContext[-_]') { -100 } else { 10 }
+        }
+      }
+    }
+  }
+
   $configRoots = @($exe, (Join-Path $root 'Data'))
   $configFiles = @($configRoots | Where-Object { Test-Path -LiteralPath $_ } |
     ForEach-Object { Get-ChildItem -LiteralPath $_ -File -Recurse -ErrorAction SilentlyContinue |
@@ -163,6 +256,8 @@ foreach ($root in @($roots)) {
         name = $candidateName
         authType = if ($connectionText -match '(?i)(Integrated Security\s*=\s*(true|sspi)|Trusted_Connection\s*=\s*true)') { 'windows' } else { 'sql-or-unknown' }
         source = $file.FullName
+        sourceKind = 'instance-config'
+        associationRank = ${DATABASE_ASSOCIATION_RANK.instanceConfig}
         auxiliary = $isLocalDb -or $isEntityContext
         auxiliaryReason = if ($isEntityContext) { 'entity-context-or-odata' } elseif ($isLocalDb) { 'localdb-or-attached-file' } else { $null }
         probeStatus = 'not-probed'
@@ -199,6 +294,8 @@ foreach ($root in @($roots)) {
           name = $localDatabaseName
           authType = 'windows'
           source = 'localhost-sys.databases'
+          sourceKind = 'machine-inventory'
+          associationRank = ${DATABASE_ASSOCIATION_RANK.machineInventory}
           auxiliary = $localDatabaseName -match '(?i)^EntityContext[-_]'
           auxiliaryReason = if ($localDatabaseName -match '(?i)^EntityContext[-_]') { 'entity-context' } else { $null }
           probeStatus = 'not-probed'
@@ -224,6 +321,8 @@ foreach ($root in @($roots)) {
       name = $name
       authType = 'windows'
       source = 'inferred-from-instance-name'
+      sourceKind = 'inferred-instance-name'
+      associationRank = ${DATABASE_ASSOCIATION_RANK.inferredInstanceName}
       auxiliary = $false
       auxiliaryReason = $null
       probeStatus = 'not-probed'
@@ -270,7 +369,7 @@ WHERE TABLE_TYPE = 'BASE TABLE'
 
   $selectedDatabase = $databaseCandidates |
     Where-Object { -not $_.auxiliary } |
-    Sort-Object score -Descending |
+    Sort-Object @{Expression = { $_.associationRank }; Descending = $true}, @{Expression = { $_.sampleManagerTableCount }; Descending = $true}, @{Expression = { $_.score }; Descending = $true} |
     Select-Object -First 1
   if ($selectedDatabase) {
     $databaseHost = $selectedDatabase.host
@@ -294,6 +393,7 @@ WHERE TABLE_TYPE = 'BASE TABLE'
   if ($instanceServices.Count -eq 0) { $warnings += 'No Windows services were confidently associated' }
   if (-not $databaseName) { $warnings += 'Database target was not found' }
   elseif ($databaseProbe.sampleManagerTableCount -eq 0) { $warnings += 'Selected database was not verified as a SampleManager LIMS business database' }
+  if ($selectedDatabase -and $selectedDatabase.sourceKind -notin @('instance-registry','instance-config')) { $warnings += 'Database target came from machine-wide fallback discovery and must be reviewed before import' }
   if (@($databaseCandidates | Where-Object { $_.auxiliary }).Count -gt 0) { $warnings += 'Auxiliary LocalDB/EntityContext databases were excluded from LIMS database selection' }
   if (-not $selected) { $warnings += 'No compatible build tool was detected' }
   $confidence = 40

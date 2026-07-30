@@ -149,6 +149,77 @@ export async function projectServerRoutes(app: FastifyInstance) {
     }
   );
 
+  // Update an existing project-server link, including its LIMS instance binding.
+  app.put(
+    "/api/projects/:projectId/servers/:linkId",
+    { onRequest: [app.authenticate] },
+    async (req, reply) => {
+      const { projectId, linkId } = req.params as { projectId: string; linkId: string };
+      const userId = req.user.id;
+      const LinkSchema = z.object({
+        remotePath: z.string().optional(),
+        environment: z.string().min(1).default("production"),
+        connectionMode: z.enum(["ssh", "agent"]).optional(),
+        limsInstanceId: z.number().int().optional().nullable(),
+      });
+      const body = LinkSchema.safeParse(req.body);
+      if (!body.success) return reply.status(400).send({ error: "Invalid input" });
+
+      const project = db.select().from(projects).where(and(
+        eq(projects.id, Number(projectId)),
+        eq(projects.userId, userId),
+      )).get();
+      if (!project) return reply.status(404).send({ error: "Project not found" });
+
+      const existing = db.select().from(projectServers).where(and(
+        eq(projectServers.id, Number(linkId)),
+        eq(projectServers.projectId, project.id),
+      )).get();
+      if (!existing) return reply.status(404).send({ error: "Server link not found" });
+
+      const server = db.select().from(servers).where(and(
+        eq(servers.id, existing.serverId),
+        eq(servers.userId, userId),
+      )).get();
+      if (!server) return reply.status(404).send({ error: "Server not found" });
+
+      const connectionMode = body.data.connectionMode ?? existing.connectionMode ?? server.connectionMode ?? "ssh";
+      const remotePath = body.data.remotePath?.trim() ?? existing.remotePath ?? "";
+      if (connectionMode === "ssh" && !remotePath) {
+        return reply.status(400).send({ error: "Remote path is required for SSH links" });
+      }
+      if (connectionMode === "agent" && !server.agentId) {
+        return reply.status(400).send({ error: "Selected server does not have an Agent ID" });
+      }
+      if (body.data.limsInstanceId) {
+        const instance = db.select().from(limsInstances).where(and(
+          eq(limsInstances.id, body.data.limsInstanceId),
+          eq(limsInstances.serverId, server.id),
+          eq(limsInstances.userId, userId),
+        )).get();
+        if (!instance) return reply.status(400).send({ error: "Selected LIMS instance does not belong to this server" });
+      }
+
+      const environment = body.data.environment.trim();
+      const duplicate = db.select().from(projectServers).where(and(
+        eq(projectServers.projectId, project.id),
+        eq(projectServers.environment, environment),
+      )).all().find((link) => link.id !== existing.id);
+      if (duplicate) {
+        return reply.status(409).send({ error: `Environment '${environment}' already has a server linked` });
+      }
+
+      const result = db.update(projectServers).set({
+        remotePath,
+        environment,
+        connectionMode,
+        limsInstanceId: body.data.limsInstanceId ?? null,
+      }).where(eq(projectServers.id, existing.id)).returning().get();
+
+      return reply.send({ link: result });
+    }
+  );
+
   // Unlink a server from a project
   app.delete(
     "/api/projects/:projectId/servers/:linkId",

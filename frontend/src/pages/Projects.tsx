@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Plus, Folder, Trash2, ChevronRight, File, Server, Link2, Unlink, Settings } from "lucide-react";
+import { Plus, Folder, Trash2, ChevronRight, File, Server, Link2, Unlink, Settings, Pencil } from "lucide-react";
 import { api } from "../api/client";
 
 export default function ProjectsPage() {
@@ -18,6 +18,7 @@ export default function ProjectsPage() {
   const [allServers, setAllServers] = useState<any[]>([]);
   const [availableInstances, setAvailableInstances] = useState<any[]>([]);
   const [linkForm, setLinkForm] = useState({ serverId: "", limsInstanceId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
+  const [editingLinkId, setEditingLinkId] = useState<number | null>(null);
   const [linkError, setLinkError] = useState("");
 
   useEffect(() => {
@@ -74,6 +75,7 @@ export default function ProjectsPage() {
     setSelected(project);
     setShowServers(true);
     setLinkError("");
+    setEditingLinkId(null);
     setLinkForm({ serverId: "", limsInstanceId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
     setAvailableInstances([]);
     const r = await api.listProjectServers(project.id);
@@ -88,16 +90,26 @@ export default function ProjectsPage() {
       return;
     }
     try {
-      await api.linkServer(
-        selected.id,
-        Number(linkForm.serverId),
-        linkForm.remotePath,
-        linkForm.environment,
-        linkForm.connectionMode as "ssh" | "agent",
-        linkForm.limsInstanceId ? Number(linkForm.limsInstanceId) : undefined
-      );
+      if (editingLinkId) {
+        await api.updateProjectServer(selected.id, editingLinkId, {
+          remotePath: linkForm.remotePath,
+          environment: linkForm.environment,
+          connectionMode: linkForm.connectionMode as "ssh" | "agent",
+          limsInstanceId: linkForm.limsInstanceId ? Number(linkForm.limsInstanceId) : null,
+        });
+      } else {
+        await api.linkServer(
+          selected.id,
+          Number(linkForm.serverId),
+          linkForm.remotePath,
+          linkForm.environment,
+          linkForm.connectionMode as "ssh" | "agent",
+          linkForm.limsInstanceId ? Number(linkForm.limsInstanceId) : undefined
+        );
+      }
       const r = await api.listProjectServers(selected.id);
       setLinkedServers(r.servers);
+      setEditingLinkId(null);
       setLinkForm({ serverId: "", limsInstanceId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
       setAvailableInstances([]);
     } catch (err: any) {
@@ -108,6 +120,27 @@ export default function ProjectsPage() {
   const unlinkServer = async (linkId: number) => {
     await api.unlinkServer(selected.id, linkId);
     setLinkedServers((s) => s.filter((l) => l.id !== linkId));
+  };
+
+  const editServerLink = async (link: any) => {
+    setEditingLinkId(link.id);
+    setLinkError("");
+    setLinkForm({
+      serverId: String(link.serverId),
+      limsInstanceId: link.limsInstanceId ? String(link.limsInstanceId) : "",
+      remotePath: link.remotePath || "",
+      environment: link.environment || "production",
+      connectionMode: link.connectionMode ?? link.serverConnectionMode ?? "ssh",
+    });
+    const result = await api.listInstances(link.serverId);
+    setAvailableInstances(result.instances);
+  };
+
+  const cancelEditServerLink = () => {
+    setEditingLinkId(null);
+    setLinkError("");
+    setLinkForm({ serverId: "", limsInstanceId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
+    setAvailableInstances([]);
   };
 
   const inputCls = "w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500";
@@ -218,21 +251,34 @@ export default function ProjectsPage() {
                       </p>
                     </div>
                   </div>
-                  <button onClick={() => unlinkServer(l.id)} className="text-gray-600 hover:text-red-400" title="Unlink">
-                    <Unlink size={14} />
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <button onClick={() => editServerLink(l)} className="text-gray-600 hover:text-indigo-400" title="Edit link">
+                      <Pencil size={14} />
+                    </button>
+                    <button onClick={() => unlinkServer(l.id)} className="text-gray-600 hover:text-red-400" title="Unlink">
+                      <Unlink size={14} />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
 
             {/* Link form */}
             <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-              <h4 className="text-xs font-medium text-gray-400 mb-3">Link a Server</h4>
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-xs font-medium text-gray-400">{editingLinkId ? "Edit Server Link" : "Link a Server"}</h4>
+                {editingLinkId && (
+                  <button type="button" onClick={cancelEditServerLink} className="text-xs text-gray-500 hover:text-gray-300">
+                    Cancel edit
+                  </button>
+                )}
+              </div>
               <form onSubmit={linkServer} className="space-y-3">
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Server</label>
                   <select
                     value={linkForm.serverId}
+                    disabled={Boolean(editingLinkId)}
                     onChange={(e) => {
                       const server = allServers.find((s) => String(s.id) === e.target.value);
                       setLinkForm((f) => ({ ...f, serverId: e.target.value, limsInstanceId: "", connectionMode: server?.connectionMode ?? "ssh" }));
@@ -299,7 +345,7 @@ export default function ProjectsPage() {
                 </div>
                 {linkError && <p className="text-xs text-red-400">{linkError}</p>}
                 <button type="submit" className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-md">
-                  Link Server
+                  {editingLinkId ? "Save Link" : "Link Server"}
                 </button>
               </form>
             </div>

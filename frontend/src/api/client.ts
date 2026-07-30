@@ -57,6 +57,8 @@ export const api = {
     request<{ servers: any[] }>("GET", `/projects/${projectId}/servers`),
   linkServer: (projectId: number, serverId: number, remotePath: string, environment = "production", connectionMode?: "ssh" | "agent", limsInstanceId?: number) =>
     request<{ link: any }>("POST", `/projects/${projectId}/servers`, { serverId, remotePath, environment, connectionMode, limsInstanceId }),
+  updateProjectServer: (projectId: number, linkId: number, data: { remotePath?: string; environment?: string; connectionMode?: "ssh" | "agent"; limsInstanceId?: number | null }) =>
+    request<{ link: any }>("PUT", `/projects/${projectId}/servers/${linkId}`, data),
   unlinkServer: (projectId: number, linkId: number) =>
     request<{ ok: boolean }>("DELETE", `/projects/${projectId}/servers/${linkId}`),
 

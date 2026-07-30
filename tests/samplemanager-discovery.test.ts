@@ -52,6 +52,9 @@ test("instance discovery returns a normalized candidate list and keeps the scan 
   assert.match(script, /foreach \(\$sqlServer in @\(\$sqlServers\)\)/);
   assert.match(script, /SELECT name FROM sys\.databases/);
   assert.match(script, /sampleManagerTableCount/);
+  assert.match(script, /Probe with the Agent\/SSH Windows identity/);
+  assert.doesNotMatch(script, /if \(\$candidate\.authType -ne 'windows' -or \$candidate\.auxiliary\)/);
+  assert.match(script, /if \(\$databaseProbe\.status -eq 'verified'\)/);
   assert.match(script, /LabSystems\\SampleManager Server\\\$name/);
   assert.match(script, /smp\$ado_connection_string/);
   assert.match(script, /LabSystems\\\$name\\Setup/);

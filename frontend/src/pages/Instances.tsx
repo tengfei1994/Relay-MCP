@@ -168,11 +168,11 @@ export default function InstancesPage() {
                   </div>
                   <p className="text-xs text-gray-500 mt-1 truncate">{candidate.rootPath}</p>
                   <p className="text-xs text-gray-600 mt-1">
-                    {candidate.services?.length ?? 0} services · database {candidate.databaseName || "not detected"} · builder {candidate.buildProfile?.kind || "unknown"}
+                    {candidate.services?.length ?? 0} services · database {candidate.databaseName ? `${candidate.databaseHost || "?"}\\${candidate.databaseName}` : "not detected"} · builder {candidate.buildProfile?.kind || "unknown"}
                   </p>
                   {candidate.databaseConfigSource && (
                     <p className="text-xs text-gray-600 mt-1 truncate" title={candidate.databaseConfigSource}>
-                      Database source: {candidate.databaseConfigSource}
+                      Connection evidence: {candidate.databaseConfigSource}
                     </p>
                   )}
                   {candidate.databaseProbe?.status === "verified" && (

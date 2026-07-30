@@ -377,9 +377,12 @@ foreach ($root in @($roots)) {
 
   $coreTables = @('VERSION','MASTER_MENU','TASK','FORM','WORKFLOW_NODE','LAB_EXECUTION')
   foreach ($candidate in $databaseCandidates) {
-    if ($candidate.authType -ne 'windows' -or $candidate.auxiliary) { continue }
+    if ($candidate.auxiliary) { continue }
     $connection = $null
     try {
+      # Probe with the Agent/SSH Windows identity. This is intentional even
+      # when the stored ADO string uses SQL authentication: the Relay needs
+      # to verify the identity it will actually use for SampleManager tools.
       $connectionString = "Server=$($candidate.host);Database=$($candidate.name);Integrated Security=SSPI;TrustServerCertificate=True;Connection Timeout=5"
       $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
       $connection.Open()
@@ -441,7 +444,7 @@ WHERE TABLE_TYPE = 'BASE TABLE'
   $confidence = 40
   if ($version) { $confidence += 20 }
   if ($instanceServices.Count -gt 0) { $confidence += 20 }
-  if ($databaseName) { $confidence += 10 }
+  if ($databaseProbe.status -eq 'verified') { $confidence += 10 }
   if ($selected) { $confidence += 10 }
 
   $instances += [pscustomobject]@{

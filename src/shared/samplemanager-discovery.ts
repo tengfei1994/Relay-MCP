@@ -63,6 +63,12 @@ export async function discoverSampleManagerInstances(
   const script = String.raw`
 $ErrorActionPreference = "Stop"
 $rootHints = ${psArray(rootHints)}
+function Normalize-LocalSqlServer([string]$value) {
+  $trimmed = ([string]$value).Trim()
+  if ($trimmed -eq '.' -or $trimmed -ieq '(local)') { return 'localhost' }
+  if ($trimmed.StartsWith('.\')) { return "localhost\$($trimmed.Substring(2))" }
+  return $trimmed
+}
 $roots = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 $defaultRoot = 'C:\Thermo\SampleManager\Server'
 if (Test-Path -LiteralPath $defaultRoot) {
@@ -75,11 +81,18 @@ foreach ($hint in $rootHints) {
 
 $services = @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
   Select-Object Name, DisplayName, State, StartMode, PathName)
+$sqlServers = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+$null = $sqlServers.Add('localhost')
 foreach ($service in $services) {
   $path = [string]$service.PathName
   $match = [regex]::Match($path, '(?i)([A-Z]:\\[^"]*?\\SampleManager\\Server\\[^\\"]+)')
   if ($match.Success -and (Test-Path -LiteralPath $match.Groups[1].Value -PathType Container)) {
     $null = $roots.Add((Resolve-Path -LiteralPath $match.Groups[1].Value).Path)
+  }
+  if ([string]$service.Name -match '(?i)^MSSQL\$(.+)$') {
+    $null = $sqlServers.Add("localhost\$($matches[1])")
+  } elseif ([string]$service.Name -eq 'MSSQLSERVER') {
+    $null = $sqlServers.Add('localhost')
   }
 }
 
@@ -152,6 +165,8 @@ foreach ($root in @($roots)) {
   # instance's LabSystems registry key. This is the strongest association
   # available on a server that hosts multiple LIMS instances.
   $registryPaths = @(
+    "HKLM:\SOFTWARE\WOW6432Node\LabSystems\SampleManager Server\$name",
+    "HKLM:\SOFTWARE\LabSystems\SampleManager Server\$name",
     "HKLM:\SOFTWARE\WOW6432Node\LabSystems\$name\Setup",
     "HKLM:\SOFTWARE\LabSystems\$name\Setup",
     "HKLM:\SOFTWARE\WOW6432Node\LabSystems\SampleManager\$name\Setup",
@@ -167,13 +182,29 @@ foreach ($root in @($roots)) {
       $_.Name -notmatch '^PS(Path|ParentPath|ChildName|Drive|Provider)$'
     })
     $registryText = ($properties | ForEach-Object { [string]$_.Value }) -join [Environment]::NewLine
+    $registryConnectionSources = @()
+    $adoConnectionProperty = $properties | Where-Object {
+      $_.Name -ieq 'smp$ado_connection_string'
+    } | Select-Object -First 1
+    if ($adoConnectionProperty -and [string]$adoConnectionProperty.Value) {
+      $registryConnectionSources += [pscustomobject]@{
+        text = [string]$adoConnectionProperty.Value
+        source = $registryPath + '\smp$ado_connection_string'
+      }
+    }
     $registryConnections = @([regex]::Matches($registryText, '(?i)(?:Data Source|Server)\s*=\s*[^;"<]+(?:;[^"<\r\n]+)*'))
     foreach ($connectionStringMatch in $registryConnections) {
-      $connectionText = $connectionStringMatch.Value
+      $registryConnectionSources += [pscustomobject]@{
+        text = $connectionStringMatch.Value
+        source = $registryPath
+      }
+    }
+    foreach ($connectionSource in $registryConnectionSources) {
+      $connectionText = [string]$connectionSource.text
       $serverMatch = [regex]::Match($connectionText, '(?i)(?:Data Source|Server)\s*=\s*([^;"<]+)')
       $databaseMatch = [regex]::Match($connectionText, '(?i)(?:Initial Catalog|Database)\s*=\s*([^;"<]+)')
       if (-not $databaseMatch.Success) { continue }
-      $candidateHost = $serverMatch.Groups[1].Value.Trim()
+      $candidateHost = Normalize-LocalSqlServer $serverMatch.Groups[1].Value
       $candidateName = $databaseMatch.Groups[1].Value.Trim()
       $isLocalDb = $candidateHost -match '(?i)\(localdb\)' -or $connectionText -match '(?i)AttachDbFilename\s*='
       $isEntityContext = $candidateName -match '(?i)^EntityContext[-_]'
@@ -185,7 +216,7 @@ foreach ($root in @($roots)) {
           host = $candidateHost
           name = $candidateName
           authType = if ($connectionText -match '(?i)(Integrated Security\s*=\s*(true|sspi)|Trusted_Connection\s*=\s*true)') { 'windows' } else { 'sql-or-unknown' }
-          source = $registryPath
+          source = $connectionSource.source
           sourceKind = 'instance-registry'
           associationRank = ${DATABASE_ASSOCIATION_RANK.instanceRegistry}
           auxiliary = $isLocalDb -or $isEntityContext
@@ -209,25 +240,31 @@ foreach ($root in @($roots)) {
     } | Select-Object -First 1
     if ($databaseProperty -and [string]$databaseProperty.Value) {
       $candidateName = ([string]$databaseProperty.Value).Trim()
-      $candidateHost = if ($serverProperty -and [string]$serverProperty.Value) { ([string]$serverProperty.Value).Trim() } else { 'localhost' }
-      $duplicate = $databaseCandidates | Where-Object {
-        $_.host -eq $candidateHost -and $_.name -eq $candidateName
-      } | Select-Object -First 1
-      if (-not $duplicate) {
-        $databaseCandidates += [pscustomobject][ordered]@{
-          host = $candidateHost
-          name = $candidateName
-          authType = 'windows-or-configured'
-          source = "$registryPath\$($databaseProperty.Name)"
-          sourceKind = 'instance-registry'
-          associationRank = ${DATABASE_ASSOCIATION_RANK.instanceRegistry}
-          auxiliary = $candidateName -match '(?i)^EntityContext[-_]'
-          auxiliaryReason = if ($candidateName -match '(?i)^EntityContext[-_]') { 'entity-context' } else { $null }
-          probeStatus = 'not-probed'
-          tableCount = $null
-          sampleManagerTableCount = 0
-          error = $null
-          score = if ($candidateName -match '(?i)^EntityContext[-_]') { -100 } else { 10 }
+      $candidateHosts = if ($serverProperty -and [string]$serverProperty.Value) {
+        @(Normalize-LocalSqlServer ([string]$serverProperty.Value))
+      } else {
+        @($sqlServers)
+      }
+      foreach ($candidateHost in $candidateHosts) {
+        $duplicate = $databaseCandidates | Where-Object {
+          $_.host -eq $candidateHost -and $_.name -eq $candidateName
+        } | Select-Object -First 1
+        if (-not $duplicate) {
+          $databaseCandidates += [pscustomobject][ordered]@{
+            host = $candidateHost
+            name = $candidateName
+            authType = 'windows'
+            source = "$registryPath\$($databaseProperty.Name)"
+            sourceKind = 'instance-registry'
+            associationRank = ${DATABASE_ASSOCIATION_RANK.instanceRegistry}
+            auxiliary = $candidateName -match '(?i)^EntityContext[-_]'
+            auxiliaryReason = if ($candidateName -match '(?i)^EntityContext[-_]') { 'entity-context' } else { $null }
+            probeStatus = 'not-probed'
+            tableCount = $null
+            sampleManagerTableCount = 0
+            error = $null
+            score = if ($candidateName -match '(?i)^EntityContext[-_]') { -100 } else { 10 }
+          }
         }
       }
     }
@@ -247,7 +284,7 @@ foreach ($root in @($roots)) {
       $serverMatch = [regex]::Match($connectionText, '(?i)(?:Data Source|Server)\s*=\s*([^;"<]+)')
       $databaseMatch = [regex]::Match($connectionText, '(?i)(?:Initial Catalog|Database)\s*=\s*([^;"<]+)')
       if (-not $databaseMatch.Success) { continue }
-      $candidateHost = $serverMatch.Groups[1].Value.Trim()
+      $candidateHost = Normalize-LocalSqlServer $serverMatch.Groups[1].Value
       $candidateName = $databaseMatch.Groups[1].Value.Trim()
       $isLocalDb = $candidateHost -match '(?i)\(localdb\)' -or $connectionText -match '(?i)AttachDbFilename\s*='
       $isEntityContext = $candidateName -match '(?i)^EntityContext[-_]' -or $file.Name -match '(?i)ODataService'
@@ -273,63 +310,68 @@ foreach ($root in @($roots)) {
     }
   }
 
-  # Enumerate the local default SQL Server because the LIMS business database
-  # connection is not necessarily present in OData/client configuration files.
-  $masterConnection = $null
-  try {
-    $masterConnection = New-Object System.Data.SqlClient.SqlConnection 'Server=localhost;Database=master;Integrated Security=SSPI;TrustServerCertificate=True;Connection Timeout=5'
-    $masterConnection.Open()
-    $masterCommand = $masterConnection.CreateCommand()
-    $masterCommand.CommandTimeout = 15
-    $masterCommand.CommandText = "SELECT name FROM sys.databases WHERE state_desc = 'ONLINE' AND database_id > 4"
-    $masterReader = $masterCommand.ExecuteReader()
-    while ($masterReader.Read()) {
-      $localDatabaseName = $masterReader.GetString(0)
-      $duplicate = $databaseCandidates | Where-Object {
-        $_.host -eq 'localhost' -and $_.name -eq $localDatabaseName
-      } | Select-Object -First 1
-      if (-not $duplicate) {
-        $databaseCandidates += [pscustomobject][ordered]@{
-          host = 'localhost'
-          name = $localDatabaseName
-          authType = 'windows'
-          source = 'localhost-sys.databases'
-          sourceKind = 'machine-inventory'
-          associationRank = ${DATABASE_ASSOCIATION_RANK.machineInventory}
-          auxiliary = $localDatabaseName -match '(?i)^EntityContext[-_]'
-          auxiliaryReason = if ($localDatabaseName -match '(?i)^EntityContext[-_]') { 'entity-context' } else { $null }
-          probeStatus = 'not-probed'
-          tableCount = $null
-          sampleManagerTableCount = 0
-          error = $null
-          score = if ($localDatabaseName -match '(?i)^EntityContext[-_]') { -100 } else { 15 }
+  # Enumerate every installed local SQL Server service, including named
+  # instances such as localhost\SQLEXPRESS.
+  foreach ($sqlServer in @($sqlServers)) {
+    $masterConnection = $null
+    try {
+      $masterConnectionString = "Server=$sqlServer;Database=master;Integrated Security=SSPI;TrustServerCertificate=True;Connection Timeout=5"
+      $masterConnection = New-Object System.Data.SqlClient.SqlConnection $masterConnectionString
+      $masterConnection.Open()
+      $masterCommand = $masterConnection.CreateCommand()
+      $masterCommand.CommandTimeout = 15
+      $masterCommand.CommandText = "SELECT name FROM sys.databases WHERE state_desc = 'ONLINE' AND database_id > 4"
+      $masterReader = $masterCommand.ExecuteReader()
+      while ($masterReader.Read()) {
+        $localDatabaseName = $masterReader.GetString(0)
+        $duplicate = $databaseCandidates | Where-Object {
+          $_.host -eq $sqlServer -and $_.name -eq $localDatabaseName
+        } | Select-Object -First 1
+        if (-not $duplicate) {
+          $databaseCandidates += [pscustomobject][ordered]@{
+            host = $sqlServer
+            name = $localDatabaseName
+            authType = 'windows'
+            source = "$sqlServer-sys.databases"
+            sourceKind = 'machine-inventory'
+            associationRank = ${DATABASE_ASSOCIATION_RANK.machineInventory}
+            auxiliary = $localDatabaseName -match '(?i)^EntityContext[-_]'
+            auxiliaryReason = if ($localDatabaseName -match '(?i)^EntityContext[-_]') { 'entity-context' } else { $null }
+            probeStatus = 'not-probed'
+            tableCount = $null
+            sampleManagerTableCount = 0
+            error = $null
+            score = if ($localDatabaseName -match '(?i)^EntityContext[-_]') { -100 } else { 15 }
+          }
         }
       }
+      $masterReader.Close()
+    } catch {
+      # Continue with the other installed SQL Server instances.
+    } finally {
+      if ($masterConnection) { $masterConnection.Dispose() }
     }
-    $masterReader.Close()
-  } catch {
-    # Discovery remains useful when the service identity cannot enumerate SQL.
-  } finally {
-    if ($masterConnection) { $masterConnection.Dispose() }
   }
 
-  # A local default database named after the instance is a useful candidate even
-  # when its connection string is stored outside the files scanned above.
-  if (-not ($databaseCandidates | Where-Object { $_.host -eq 'localhost' -and $_.name -eq $name })) {
-    $databaseCandidates += [pscustomobject][ordered]@{
-      host = 'localhost'
-      name = $name
-      authType = 'windows'
-      source = 'inferred-from-instance-name'
-      sourceKind = 'inferred-instance-name'
-      associationRank = ${DATABASE_ASSOCIATION_RANK.inferredInstanceName}
-      auxiliary = $false
-      auxiliaryReason = $null
-      probeStatus = 'not-probed'
-      tableCount = $null
-      sampleManagerTableCount = 0
-      error = $null
-      score = 5
+  # Try the instance name on every installed local SQL Server only as a final
+  # fallback when no stronger source exposes the database target.
+  foreach ($sqlServer in @($sqlServers)) {
+    if (-not ($databaseCandidates | Where-Object { $_.host -eq $sqlServer -and $_.name -eq $name })) {
+      $databaseCandidates += [pscustomobject][ordered]@{
+        host = $sqlServer
+        name = $name
+        authType = 'windows'
+        source = "$sqlServer-inferred-from-instance-name"
+        sourceKind = 'inferred-instance-name'
+        associationRank = ${DATABASE_ASSOCIATION_RANK.inferredInstanceName}
+        auxiliary = $false
+        auxiliaryReason = $null
+        probeStatus = 'not-probed'
+        tableCount = $null
+        sampleManagerTableCount = 0
+        error = $null
+        score = 5
+      }
     }
   }
 

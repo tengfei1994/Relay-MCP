@@ -45,8 +45,15 @@ test("instance discovery returns a normalized candidate list and keeps the scan 
   assert.match(script, /displayName = \$_.DisplayName/);
   assert.match(script, /EntityContext\[-_\]/);
   assert.match(script, /AttachDbFilename/);
+  assert.match(script, /function Normalize-LocalSqlServer/);
+  assert.match(script, /localhost\\\$\(\$trimmed\.Substring\(2\)\)/);
+  assert.match(script, /\^MSSQL\\\$\(\.\+\)\$/);
+  assert.match(script, /localhost\\\$\(\$matches\[1\]\)/);
+  assert.match(script, /foreach \(\$sqlServer in @\(\$sqlServers\)\)/);
   assert.match(script, /SELECT name FROM sys\.databases/);
   assert.match(script, /sampleManagerTableCount/);
+  assert.match(script, /LabSystems\\SampleManager Server\\\$name/);
+  assert.match(script, /smp\$ado_connection_string/);
   assert.match(script, /LabSystems\\\$name\\Setup/);
   assert.match(script, /sourceKind = 'instance-registry'/);
   assert.match(script, /sourceKind = 'instance-config'/);

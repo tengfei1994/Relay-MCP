@@ -370,6 +370,22 @@ $cmd = $null
 $parameters = $null
 try {
   $cn.Open()
+  $identityCommand = $cn.CreateCommand()
+  $identityCommand.CommandText = "SELECT SUSER_SNAME(), ORIGINAL_LOGIN(), DB_NAME(), @@SERVERNAME"
+  $identityReader = $identityCommand.ExecuteReader()
+  $connectionInfo = [ordered]@{
+    loginName = $null
+    originalLogin = $null
+    databaseName = $null
+    serverName = $null
+  }
+  if ($identityReader.Read()) {
+    $connectionInfo.loginName = [string]$identityReader.GetValue(0)
+    $connectionInfo.originalLogin = [string]$identityReader.GetValue(1)
+    $connectionInfo.databaseName = [string]$identityReader.GetValue(2)
+    $connectionInfo.serverName = [string]$identityReader.GetValue(3)
+  }
+  $identityReader.Close()
   $cmd = $cn.CreateCommand()
   $cmd.CommandTimeout = 120
   $cmd.CommandText = [System.Text.Encoding]::UTF8.GetString(
@@ -451,6 +467,7 @@ try {
 
   [pscustomobject]@{
     ok = $true
+    connection = [pscustomobject]$connectionInfo
     sql = $cmd.CommandText
     parameters = $parameters
     rows = @($firstRows)

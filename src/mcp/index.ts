@@ -4,6 +4,7 @@ import express from "express";
 import { z } from "zod";
 import jwt from "jsonwebtoken";
 import Database from "better-sqlite3";
+import { randomUUID } from "crypto";
 import { ProjectRegistry } from "./project-registry.js";
 import { ensureRemoteSuccess, RemoteRunner } from "../shared/remote-runner.js";
 import { AgentRemoteRunner } from "../shared/agent-remote-runner.js";
@@ -28,8 +29,10 @@ import {
   runSampleManagerUtility,
   runSql,
   runSqlMutation,
+  sqlContainsMutation,
   sampleManagerTableSchema,
 } from "../shared/samplemanager-tools.js";
+import { persistQueryArtifact } from "../shared/query-artifact-store.js";
 import {
   appendFileSync,
   createReadStream,
@@ -1691,8 +1694,63 @@ else {
     },
     async ({ project: projectName, database, sql, environment, allowMutation = false, maxRows, offset, includeResultSets, parameters, identifiers }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner, database: targetDatabase, databaseHost } = getSampleManagerDatabaseTarget(projectName, environment, database);
+      const target = getSampleManagerDatabaseTarget(projectName, environment, database);
+      const { runner, database: targetDatabase, databaseHost, configuredInstance, ps } = target;
+      const queryId = `query-${Date.now()}-${randomUUID().slice(0, 8)}`;
+      const startedAt = new Date().toISOString();
+      const mutationAttempted = allowMutation && sqlContainsMutation(sql);
+      const provenance = {
+        queryId,
+        project: resolvedProjectName,
+        environment: ps.environment,
+        serverId: ps.server.id,
+        serverName: ps.server.name,
+        connectionMode: ps.connectionMode,
+        agentId: ps.server.agentId,
+        instance: configuredInstance?.name,
+        instanceVersion: configuredInstance?.version,
+        databaseHost,
+        databaseName: targetDatabase,
+        startedAt,
+        readOnly: !allowMutation,
+        mutationAttempted,
+      };
       const text = await runSql(runner, targetDatabase, sql, { allowMutation, maxRows, offset, includeResultSets, parameters, identifiers, databaseHost });
+      const finishedAt = new Date().toISOString();
+      const artifact = persistQueryArtifact({
+        queryId,
+        rawResponse: text,
+        provenance: { ...provenance, finishedAt },
+      });
+      let raw: Record<string, unknown>;
+      try {
+        raw = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        raw = { ok: false, rawResponse: text };
+      }
+      const page = {
+        offset: Number(offset ?? 0),
+        maxRows: Number(maxRows ?? 100),
+        rowCount: raw.rowCount,
+        rowsReturned: raw.rowsReturned,
+        nextOffset: raw.nextOffset,
+        hasMore: raw.hasMore,
+        truncated: raw.truncated,
+        resultSetCount: raw.resultSetCount,
+      };
+      let compactResult: unknown;
+      try {
+        compactResult = JSON.parse(summarizeJson(raw, 7000));
+      } catch {
+        compactResult = { rawResponse: text };
+      }
+      const response = {
+        queryId,
+        provenance: { ...provenance, finishedAt },
+        page,
+        artifact,
+        result: compactResult,
+      };
       writeAudit({
         userId: user.id,
         username: user.username,
@@ -1706,8 +1764,15 @@ else {
         includeResultSets,
         parameterNames: Object.keys(parameters ?? {}),
         identifiers,
+        queryId,
+        startedAt,
+        finishedAt,
+        artifactPath: artifact.path,
+        artifactBytes: artifact.bytes,
+        artifactSha256: artifact.sha256,
+        mutationAttempted,
       });
-      return { content: [{ type: "text", text }] };
+      return { content: [{ type: "text", text: JSON.stringify(response, null, 2) }] };
     }
   );
 

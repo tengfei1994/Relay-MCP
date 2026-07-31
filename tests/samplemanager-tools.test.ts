@@ -6,6 +6,7 @@ import {
   instancePaths,
   restartSampleManagerInstance,
   runSqlMutation,
+  runSql,
   sqlContainsMutation,
 } from "../src/shared/samplemanager-tools.ts";
 
@@ -76,6 +77,43 @@ test("structured SQL mutation rejects update without a where predicate", async (
     }),
     /where is required/
   );
+});
+
+test("SQL query script captures connection identity metadata", async () => {
+  let executedScript = "";
+  const runner = {
+    execPowerShell: async (script: string) => {
+      executedScript = script;
+      return {
+        stdout: JSON.stringify({
+          ok: true,
+          connection: {
+            loginName: "NT AUTHORITY\\SYSTEM",
+            originalLogin: "WORKGROUP\\HOST$",
+            databaseName: "VGSM",
+            serverName: "HOST\\SQLEXPRESS",
+          },
+          rows: [],
+          rowCount: 0,
+          rowsReturned: 0,
+          hasMore: false,
+          nextOffset: null,
+          truncated: false,
+        }),
+        stderr: "",
+        code: 0,
+      };
+    },
+  } as any;
+
+  const result = JSON.parse(await runSql(runner, "VGSM", "SELECT 1", {
+    databaseHost: "localhost\\SQLEXPRESS",
+    maxRows: 10,
+  }));
+  assert.equal(result.connection.loginName, "NT AUTHORITY\\SYSTEM");
+  assert.match(executedScript, /SUSER_SNAME\(\)/);
+  assert.match(executedScript, /ORIGINAL_LOGIN\(\)/);
+  assert.match(executedScript, /@@SERVERNAME/);
 });
 
 test("instance paths honor discovered custom roots and directories", () => {

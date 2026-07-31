@@ -140,6 +140,13 @@ function createMcpServer(user: McpUser) {
     version: "0.5.0",
   });
 
+  const relayRoute = (tool: string, extra: Record<string, unknown> = {}) => ({
+    route: "relay_mcp",
+    tool,
+    transport: "mcp",
+    ...extra,
+  });
+
   // ── Helper: resolve project + runner ──────────────────────────────────────
   function listAllowedProjects() {
     const projects = registry.listScopedProjects(user.id, user.tokenDbId, user.allowAllProjects);
@@ -414,6 +421,24 @@ function createMcpServer(user: McpUser) {
         }],
       };
     }
+  );
+
+  server.tool(
+    "relay_mcp_info",
+    "Return Relay MCP route metadata so clients can verify they are calling the Relay server rather than a local shell.",
+    {},
+    async () => ({
+      content: [{
+        type: "text",
+        text: summarizeJson({
+          ...relayRoute("relay_mcp_info"),
+          namespace: "relay_",
+          version: "0.5.0",
+          transport: "streamable-http",
+          mcpPort: MCP_PORT,
+        }),
+      }],
+    })
   );
 
   server.tool(
@@ -699,6 +724,38 @@ function createMcpServer(user: McpUser) {
       };
     }
   );
+
+  // Explicit Relay aliases avoid collisions with generic host-provided tools.
+  // Reuse the already validated handlers so old MCP clients remain compatible.
+  const registeredTools = (server as any)._registeredTools as Record<string, {
+    inputSchema: unknown;
+    description?: string;
+    annotations?: unknown;
+    handler: (args: any) => Promise<any>;
+  }>;
+  const registerRelayAlias = (sourceName: string, aliasName: string, description: string) => {
+    const source = registeredTools[sourceName];
+    if (!source) throw new Error(`Cannot create Relay alias: source tool '${sourceName}' is not registered`);
+    server.registerTool(aliasName, {
+      description,
+      inputSchema: source.inputSchema as any,
+      annotations: source.annotations as any,
+    }, async (args: any) => {
+      const result = await source.handler(args);
+      const routeText = JSON.stringify(relayRoute(aliasName));
+      if (result?.content?.length && typeof result.content[0]?.text === "string") {
+        return {
+          ...result,
+          content: [{ ...result.content[0], text: `${routeText}\n${result.content[0].text}` }, ...result.content.slice(1)],
+        };
+      }
+      return result;
+    });
+  };
+  registerRelayAlias("exec_remote", "relay_exec_remote", "Execute a shell command through Relay MCP using an explicit Relay tool name.");
+  registerRelayAlias("exec_remote_powershell", "relay_exec_remote_powershell", "Execute PowerShell through Relay MCP using an explicit Relay tool name.");
+  registerRelayAlias("exec_remote_script", "relay_exec_remote_script", "Upload and execute a PowerShell script through Relay MCP using an explicit Relay tool name.");
+  registerRelayAlias("project_server_links_list", "relay_project_server_links_list", "List project server links through Relay MCP using an explicit Relay tool name.");
 
   // ── Tool: deploy ───────────────────────────────────────────────────────────
   server.tool(
@@ -2496,7 +2553,14 @@ app.all("/mcp", async (req, res) => {
 });
 
 app.get("/mcp/health", (_req, res) => {
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    route: "relay_mcp",
+    namespace: "relay_",
+    version: "0.5.0",
+    transport: "streamable-http",
+    mcpPort: MCP_PORT,
+  });
 });
 
 app.listen(MCP_PORT, "0.0.0.0", () => {

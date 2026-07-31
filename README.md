@@ -285,10 +285,15 @@ SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备�
 |---|---|---|
 | Project | `list_projects` | 列出当前 MCP Token 可访问的 Project。 |
 | Project | `project_server_links_list` | 列出 Project link、environment、Server 和 LIMS instance 绑定。 |
+| Project | `relay_mcp_info` | 返回 Relay MCP 路由、命名空间和版本信息。 |
+| Project | `relay_project_server_links_list` | 使用明确的 Relay 命名空间列出 Project links。 |
 | Project | `project_create` | 创建 Project workspace，并可关联允许的 Server。 |
 | Remote execution | `exec_remote` | 执行 shell command，支持超时和异步 job。 |
 | Remote execution | `exec_remote_powershell` | 执行 encoded PowerShell，支持文本或 JSON 输出。 |
 | Remote execution | `exec_remote_script` | 上传并执行 PowerShell 脚本，可选清理。 |
+| Remote execution | `relay_exec_remote` | 使用明确的 Relay 命名空间执行 shell command。 |
+| Remote execution | `relay_exec_remote_powershell` | 使用明确的 Relay 命名空间执行 PowerShell。 |
+| Remote execution | `relay_exec_remote_script` | 使用明确的 Relay 命名空间上传并执行 PowerShell 脚本。 |
 | Remote execution | `deploy` | 部署远端 Git checkout，并记录 commit、输出和 rollback 状态。 |
 | Remote execution | `fetch_logs` | 按时间窗口或 deployment run 读取日志。 |
 | Remote execution | `restart_service` | 重启 Windows Service、systemd、PM2 或 Docker workload。 |

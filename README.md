@@ -303,6 +303,7 @@ SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备�
 | Remote files | `list_remote_files` | 列出远端目录。 |
 | Remote files | `patch_remote_file` | 对远端文本应用 unified diff。 |
 | Workspace | `read_local_file` | 读取 Relay Project workspace 文本。 |
+| Workspace | `workspace_info` | 显示 Relay workspace 根目录和受限文件清单，避免与 Codex 本地路径混淆。 |
 | Workspace | `write_local_file` | 写入或追加 Relay workspace 文本。 |
 | Workspace | `write_local_binary` | 将小型 Base64 二进制写入 Relay workspace。 |
 | Workspace | `list_workspace_files` | 有界递归列出 workspace 内容。 |
@@ -330,6 +331,7 @@ SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备�
 | SampleManager | `samplemanager_create_entity_definition` | 运行 `CreateEntityDefinition.exe`。 |
 | SampleManager | `samplemanager_convert_tables` | 对已验证表名分别运行 `convert_table.exe`。 |
 | SampleManager | `samplemanager_table_loader` | 通过内置 `$table_loader` VGL report 导入远端 CSV。 |
+| SampleManager | `samplemanager_deploy_table_loader_package` | 按 deploymentId 完成 staging、SHA-256 校验、顺序加载和验证。 |
 | SampleManager | `samplemanager_run_utility` | 运行与版本匹配的 allowlisted utility。 |
 | SampleManager | `samplemanager_discover_build_tools` | 按优先级发现 VS2022、VS2019、Framework 和 PATH 中的 MSBuild。 |
 | SampleManager | `samplemanager_build_dotnet` | 使用 MSBuild 构建经典 SampleManager .NET solution。 |

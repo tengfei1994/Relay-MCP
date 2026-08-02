@@ -1193,6 +1193,55 @@ else {
     }
   );
 
+  server.tool(
+    "workspace_info",
+    "Show the Relay workspace root and bounded file listing so callers can distinguish Relay workspace paths from Codex local paths.",
+    {
+      project: z.string().optional(),
+      path: z.string().optional().describe("Relative path inside the Relay workspace; default project root"),
+      maxDepth: z.number().int().min(0).max(5).optional().describe("Maximum directory depth; default 2"),
+      maxEntries: z.number().int().min(1).max(1000).optional().describe("Maximum entries returned; default 200"),
+    },
+    async ({ project: projectName, path: relPath = "", maxDepth = 2, maxEntries = 200 }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const project = registry.getProject(user.id, resolvedProjectName);
+      if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
+      const root = resolveWorkspacePath(project.workspacePath, relPath);
+      const entries: Array<{ path: string; type: "file" | "directory"; bytes?: number; modifiedAt: string }> = [];
+      const visit = (current: string, depth: number) => {
+        if (entries.length >= maxEntries || depth > maxDepth) return;
+        for (const name of readdirSync(current).sort()) {
+          if (entries.length >= maxEntries) break;
+          const fullPath = resolveWorkspacePath(project.workspacePath, relative(project.workspacePath, join(current, name)), { mustExist: true });
+          const stat = statSync(fullPath);
+          const item = {
+            path: relative(project.workspacePath, fullPath).replace(/\\/g, "/"),
+            type: stat.isDirectory() ? "directory" as const : "file" as const,
+            bytes: stat.isFile() ? stat.size : undefined,
+            modifiedAt: stat.mtime.toISOString(),
+          };
+          entries.push(item);
+          if (stat.isDirectory()) visit(fullPath, depth + 1);
+        }
+      };
+      if (existsSync(root) && statSync(root).isDirectory()) visit(root, 0);
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            project: resolvedProjectName,
+            relayWorkspaceRoot: project.workspacePath,
+            requestedPath: relPath || ".",
+            resolvedPath: root,
+            entries,
+            truncated: entries.length >= maxEntries,
+            note: "Codex local absolute paths are not readable by the Relay server; upload them through create_workspace_upload.",
+          }),
+        }],
+      };
+    }
+  );
+
   // ── Tool: sync_workspace ──────────────────────────────────────────────────
   server.tool(
     "sync_workspace",
@@ -1472,8 +1521,11 @@ else {
           text: summarizeJson({
             upload: publicUploadSession(session),
             uploadUrl,
-            token,
-            command: `npm run relay-upload -- --url ${uploadUrl} --token <token> --file <local-file>`,
+            uploadToken: token,
+            headers: { "X-Relay-Upload-Token": token },
+            command: `npm run relay-upload -- --url ${uploadUrl} --token <uploadToken> --file <local-file>`,
+            curl: `curl --fail-with-body -X PUT -H "Content-Type: application/octet-stream" -H "X-Relay-Upload-Token: <uploadToken>" --data-binary "@<local-file>" "${uploadUrl}"`,
+            relayWorkspaceRoot: project.workspacePath,
           }),
         }],
       };
@@ -1998,6 +2050,7 @@ else {
       remoteCsvPath: z.string(),
       mode: z.string().optional().describe("Table-loader mode; default overwrite_table"),
       environment: z.string().optional(),
+      deploymentId: z.string().optional().describe("Correlate upload, load, verification, and audit evidence."),
       timeoutMs: z.number().positive().optional().describe("Default 300000"),
       async: z.boolean().optional().describe("Run as an async job; recommended"),
     },
@@ -2008,24 +2061,143 @@ else {
       remoteCsvPath,
       mode = "overwrite_table",
       environment,
+      deploymentId,
       timeoutMs = 300000,
       async = true,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { runner, instance: target, instanceName } = getSampleManagerTarget(projectName, environment, instance);
-      const work = (context?: JobContext) => loadTableLoaderFile(
-        runner,
-        target,
-        username,
-        remoteCsvPath,
-        mode,
-        timeoutMs,
-        executionForJob(context)
+      const work = (context?: JobContext) => withDeploymentStep(
+        deploymentId,
+        resolvedProjectName,
+        `table-loader:${remoteCsvPath}`,
+        () => loadTableLoaderFile(
+          runner,
+          target,
+          username,
+          remoteCsvPath,
+          mode,
+          timeoutMs,
+          executionForJob(context)
+        )
       );
-      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_table_loader", instance: instanceName, remoteCsvPath, mode, async });
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_table_loader", instance: instanceName, remoteCsvPath, mode, deploymentId, async, mutationAttempted: true, mutationKind: "data" });
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_table_loader", { instance: instanceName, username, remoteCsvPath, mode, environment, timeoutMs }, work);
-        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+        const job = startJob(user, resolvedProjectName, "samplemanager_table_loader", { instance: instanceName, username, remoteCsvPath, mode, environment, deploymentId, timeoutMs }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, deploymentId, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
+    }
+  );
+
+  server.tool(
+    "samplemanager_deploy_table_loader_package",
+    "Upload, hash-verify, preflight, optionally back up, and sequentially load table-loader CSV files under one deploymentId.",
+    {
+      project: z.string().optional(),
+      instance: z.string().optional(),
+      username: z.string(),
+      files: z.array(z.object({
+        workspacePath: z.string().describe("Relative file path in the Relay workspace"),
+        remotePath: z.string().optional().describe("Optional remote path; defaults to the stable Relay staging directory"),
+        mode: z.string().optional().describe("Table-loader mode; default overwrite_table"),
+      })).min(1),
+      environment: z.string().optional(),
+      deploymentId: z.string().optional().describe("Existing deploymentId. If omitted, one is created."),
+      backupSql: z.string().optional().describe("Optional explicit backup SQL supplied by the caller; executed as a mutation and recorded."),
+      verifySql: z.string().optional().describe("Optional verification SQL executed after all loads."),
+      timeoutMs: z.number().positive().optional().describe("Timeout per upload/load step; default 300000"),
+      async: z.boolean().optional().describe("Return a jobId immediately; default true"),
+    },
+    async ({
+      project: projectName,
+      instance,
+      username,
+      files,
+      environment,
+      deploymentId: requestedDeploymentId,
+      backupSql,
+      verifySql,
+      timeoutMs = 300000,
+      async = true,
+    }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { project, ps, runner, instance: target, instanceName } = getSampleManagerTarget(projectName, environment, instance);
+      const run = requestedDeploymentId
+        ? getDeployment(requestedDeploymentId)
+        : startDeployment({
+            userId: user.id,
+            username: user.username,
+            project: resolvedProjectName,
+            environment: ps.environment,
+            host: ps.server.host || ps.server.agentId || ps.server.name,
+            kind: "samplemanager-assembly",
+            instance: instanceName,
+            rollbackRequested: false,
+          });
+      if (!run || run.userId !== user.id || run.project !== resolvedProjectName) {
+        throw new Error(`Deployment '${requestedDeploymentId}' was not found for project '${resolvedProjectName}'`);
+      }
+      const work = async (context?: JobContext) => {
+        try {
+          const results: Array<Record<string, unknown>> = [];
+        const stagingRoot = ps.server.os === "windows"
+          ? `C:\\ProgramData\\RelayMcpAgent\\staging\\${run.id}`
+          : `/var/lib/relay-mcp/staging/${run.id}`;
+        const stage = async (file: typeof files[number], index: number) => {
+          const fullLocal = resolveWorkspacePath(project.workspacePath, file.workspacePath, { mustExist: true });
+          const localStat = statSync(fullLocal);
+          if (!localStat.isFile()) throw new Error(`Workspace path is not a file: ${file.workspacePath}`);
+          const localHash = createHash("sha256");
+          for await (const chunk of createReadStream(fullLocal)) localHash.update(chunk);
+          const localSha256 = localHash.digest("hex");
+          const remotePath = file.remotePath ?? `${stagingRoot}${ps.server.os === "windows" ? "\\" : "/"}${index.toString().padStart(3, "0")}-${basename(fullLocal)}`;
+          if (basename(fullLocal).toLowerCase().endsWith(".csv")) {
+            const sample = readFileSync(fullLocal).subarray(0, Math.min(localStat.size, 64 * 1024));
+            if (sample.includes(0)) throw new Error(`CSV preflight failed: ${file.workspacePath} contains NUL bytes`);
+          }
+          await withDeploymentStep(run.id, resolvedProjectName, `stage:${file.workspacePath}`, async () => {
+            await runner.uploadFile(fullLocal, remotePath);
+            const hashResult = ps.server.os === "windows"
+              ? await runner.execPowerShell(`[Console]::Write((Get-FileHash -LiteralPath ${quotePowerShell(remotePath)} -Algorithm SHA256).Hash.ToLowerInvariant())`, 60000, executionForJob(context))
+              : await runner.exec(`sha256sum -- ${quotePosix(remotePath)} | awk '{print $1}'`, 60000, executionForJob(context));
+            ensureRemoteSuccess(hashResult);
+            const remoteSha256 = hashResult.stdout.trim().toLowerCase();
+            if (remoteSha256 !== localSha256) throw new Error(`SHA-256 mismatch for ${file.workspacePath}: local=${localSha256}, remote=${remoteSha256}`);
+          });
+          return { workspacePath: file.workspacePath, remotePath, bytes: localStat.size, localSha256 };
+        };
+        if (backupSql) {
+          await withDeploymentStep(run.id, resolvedProjectName, "backup", async () => {
+            const result = await runSql(runner, getSampleManagerDatabaseTarget(projectName, environment).database, backupSql, { allowMutation: true, includeResultSets: false, databaseHost: getSampleManagerDatabaseTarget(projectName, environment).databaseHost });
+            writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_deploy_table_loader_package", deploymentId: run.id, mutationAttempted: true, mutationKind: "schema-or-data", phase: "backup" });
+            return result;
+          });
+        }
+        for (let index = 0; index < files.length; index++) {
+          const staged = await stage(files[index], index);
+          const loaded = await withDeploymentStep(run.id, resolvedProjectName, `load:${files[index].workspacePath}`, () => loadTableLoaderFile(runner, target, username, staged.remotePath, files[index].mode ?? "overwrite_table", timeoutMs, executionForJob(context)));
+          results.push({ ...staged, mode: files[index].mode ?? "overwrite_table", load: loaded });
+        }
+        let verification: unknown;
+        if (verifySql) {
+          const dbTarget = getSampleManagerDatabaseTarget(projectName, environment);
+          verification = await withDeploymentStep(run.id, resolvedProjectName, "verify", () => runSql(dbTarget.runner, dbTarget.database, verifySql, { allowMutation: false, includeResultSets: true, databaseHost: dbTarget.databaseHost }));
+        }
+        updateDeployment(run.id, { artifacts: { files: results, stagingRoot, verification, backupSqlProvided: Boolean(backupSql) } });
+        finishDeployment(run.id, { status: "succeeded", rollback: run.rollback, artifacts: { files: results, stagingRoot, verification, backupSqlProvided: Boolean(backupSql) } });
+          return summarizeJson({ deploymentId: run.id, stagingRoot, files: results, verification });
+        } catch (error) {
+          updateDeployment(run.id, {
+            status: "failed",
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        }
+      };
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_deploy_table_loader_package", { instance: instanceName, username, files, environment, deploymentId: run.id, timeoutMs }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, deploymentId: run.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
     }
@@ -2144,6 +2316,9 @@ else {
         parameterNames: Object.keys(parameters ?? {}),
         dryRun,
         createBackup,
+        deploymentId,
+        mutationAttempted: true,
+        mutationKind: dryRun ? "transactional-data" : "data",
       });
       return { content: [{ type: "text", text }] };
     }

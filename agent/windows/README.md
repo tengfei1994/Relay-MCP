@@ -42,7 +42,7 @@ instead of trying to create a duplicate service.
 
 ## Client Pages
 
-The v0.4 client uses a left-navigation operations workspace:
+The v0.5.2 client uses a left-navigation operations workspace:
 
 - Overview: connection, service, database, and audit readiness.
 - Connection: encrypted Relay URL and Agent token configuration.

@@ -3,9 +3,11 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
+using System.Xml;
 
 namespace RelayAgent.Shared
 {
@@ -24,6 +26,7 @@ namespace RelayAgent.Shared
         public int Progress { get; set; }
         public string Message { get; set; }
         public string Log { get; set; }
+        public string InstallAction { get; set; }
     }
 
     public sealed class PlaywrightSuite
@@ -52,6 +55,19 @@ namespace RelayAgent.Shared
         public string Output { get; set; }
         public string ArtifactDirectory { get; set; }
         public string Error { get; set; }
+    }
+
+    public sealed class PlaywrightWebClientCandidate
+    {
+        public string Name { get; set; }
+        public string Url { get; set; }
+        public string Source { get; set; }
+        public string PhysicalPath { get; set; }
+
+        public string DisplayName
+        {
+            get { return Name + " · " + Url; }
+        }
     }
 
     internal sealed class PlaywrightTask
@@ -142,14 +158,26 @@ namespace RelayAgent.Shared
             var chromiumInstalled = Directory.Exists(BrowserCachePath) &&
                                     Directory.EnumerateFiles(BrowserCachePath, "chrome.exe", SearchOption.AllDirectories).Any();
             var previous = LoadRuntimeState();
-            var ready = !string.IsNullOrWhiteSpace(node) &&
+            var hasNode = !string.IsNullOrWhiteSpace(node) && !string.IsNullOrWhiteSpace(npm);
+            var hasPackage = !string.IsNullOrWhiteSpace(playwrightVersion);
+            var ready = hasNode &&
                         !string.IsNullOrWhiteSpace(npm) &&
-                        !string.IsNullOrWhiteSpace(playwrightVersion) &&
+                        hasPackage &&
                         chromiumInstalled;
+            var status = ready
+                ? "ready"
+                : !hasNode ? "needs-node"
+                : !hasPackage ? "needs-playwright"
+                : "needs-browser";
+            var installAction = !hasNode
+                ? "Install Node.js + Playwright"
+                : !hasPackage ? "Install Playwright"
+                : !chromiumInstalled ? "Install Chromium"
+                : "Runtime ready";
             var state = new PlaywrightRuntimeState
             {
                 CheckedAt = DateTimeOffset.Now.ToString("o"),
-                Status = ready ? "ready" : "needs-install",
+                Status = status,
                 NodePath = node ?? "",
                 NodeVersion = nodeVersion,
                 NpmPath = npm ?? "",
@@ -159,9 +187,23 @@ namespace RelayAgent.Shared
                 ChromiumInstalled = chromiumInstalled,
                 ActiveTask = previous.ActiveTask ?? "",
                 Progress = previous.Progress,
-                Message = ready ? "Playwright runtime is ready." : "One or more Playwright dependencies are missing.",
-                Log = previous.Log ?? ""
+                Message = ready
+                    ? "Playwright runtime is ready."
+                    : !hasNode
+                        ? "Node.js LTS is missing. The Agent can download and install it before Playwright."
+                        : !hasPackage
+                            ? "Node.js is ready. Install the Playwright test package next."
+                            : "Playwright is ready. Install and verify Chromium next.",
+                Log = previous.Log ?? "",
+                InstallAction = installAction
             };
+            if (!string.IsNullOrWhiteSpace(previous.ActiveTask) &&
+                string.Equals(previous.Status, "installing", StringComparison.OrdinalIgnoreCase))
+            {
+                state.Status = "installing";
+                state.Message = previous.Message;
+                state.InstallAction = "Installation in progress";
+            }
             if (string.IsNullOrWhiteSpace(state.ActiveTask))
             {
                 state.Progress = ready ? 100 : 0;
@@ -296,6 +338,74 @@ namespace RelayAgent.Shared
                 .ToList();
         }
 
+        public static IList<PlaywrightWebClientCandidate> DiscoverWebClients()
+        {
+            var candidates = new List<PlaywrightWebClientCandidate>();
+            try
+            {
+                var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+                var configPath = Path.Combine(windows, "System32", "inetsrv", "config", "applicationHost.config");
+                if (!File.Exists(configPath))
+                {
+                    return candidates;
+                }
+
+                var document = new XmlDocument();
+                document.Load(configPath);
+                var sites = document.SelectNodes("/configuration/system.applicationHost/sites/site");
+                if (sites == null) return candidates;
+                foreach (XmlNode site in sites)
+                {
+                    var siteName = GetAttribute(site, "name", "IIS site");
+                    var bindings = site.SelectNodes("bindings/binding");
+                    var applications = site.SelectNodes("application");
+                    if (bindings == null || applications == null) continue;
+                    foreach (XmlNode application in applications)
+                    {
+                        var applicationPath = GetAttribute(application, "path", "/");
+                        var virtualDirectory = application.SelectSingleNode("virtualDirectory[@path='/']");
+                        var physicalPath = virtualDirectory == null ? "" : Environment.ExpandEnvironmentVariables(GetAttribute(virtualDirectory, "physicalPath", ""));
+                        foreach (XmlNode binding in bindings)
+                        {
+                            var protocol = GetAttribute(binding, "protocol", "http").ToLowerInvariant();
+                            if (protocol != "http" && protocol != "https") continue;
+                            string host;
+                            string port;
+                            ParseIisBinding(GetAttribute(binding, "bindingInformation", "*:80:"), out host, out port);
+                            var url = protocol + "://" + host;
+                            var defaultPort = protocol == "https" ? "443" : "80";
+                            if (!string.IsNullOrWhiteSpace(port) && port != defaultPort) url += ":" + port;
+                            if (!string.IsNullOrWhiteSpace(applicationPath) && applicationPath != "/")
+                            {
+                                url += "/" + applicationPath.Trim('/');
+                            }
+                            candidates.Add(new PlaywrightWebClientCandidate
+                            {
+                                Name = siteName + (applicationPath == "/" ? "" : " " + applicationPath),
+                                Url = url.TrimEnd('/') + "/",
+                                Source = "IIS binding",
+                                PhysicalPath = physicalPath
+                            });
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Discovery is advisory and must not block manual suite configuration.
+            }
+
+            return candidates
+                .GroupBy(item => item.Url, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .OrderByDescending(item =>
+                    (item.Name + " " + item.PhysicalPath).IndexOf("SampleManager", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    (item.Name + " " + item.PhysicalPath).IndexOf("Thermo", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    (item.Name + " " + item.PhysicalPath).IndexOf("LIMS", StringComparison.OrdinalIgnoreCase) >= 0)
+                .ThenBy(item => item.Name)
+                .ToList();
+        }
+
         public static void ClearArtifacts()
         {
             EnsureDirectories();
@@ -369,7 +479,14 @@ namespace RelayAgent.Shared
             var npm = FindExecutable("npm.cmd");
             if (string.IsNullOrWhiteSpace(node) || string.IsNullOrWhiteSpace(npm))
             {
-                throw new InvalidOperationException("Node.js and npm are required. Install Node.js LTS before installing Playwright.");
+                UpdateProgress(taskId, 8, "Downloading Node.js LTS.", "Node.js is missing. Resolving the latest Windows x64 LTS installer.");
+                InstallNodeLts(taskId, token);
+                node = FindExecutable("node.exe");
+                npm = FindExecutable("npm.cmd");
+                if (string.IsNullOrWhiteSpace(node) || string.IsNullOrWhiteSpace(npm))
+                {
+                    throw new InvalidOperationException("Node.js LTS installation completed but node.exe or npm.cmd could not be found.");
+                }
             }
 
             var packageJson = Path.Combine(RuntimePath, "package.json");
@@ -403,13 +520,15 @@ namespace RelayAgent.Shared
 
             UpdateProgress(taskId, 90, "Verifying Playwright runtime.", browserInstall.Output);
             var state = DetectRuntime();
-            if (state.Status != "ready")
+            if (string.IsNullOrWhiteSpace(state.PlaywrightVersion) || !state.ChromiumInstalled)
             {
                 throw new InvalidOperationException("Playwright installation completed but runtime verification did not pass.");
             }
+            state.Status = "ready";
             state.ActiveTask = "";
             state.Progress = 100;
             state.Message = "Playwright and Chromium are ready.";
+            state.InstallAction = "Runtime ready";
             state.Log = AppendLog(state.Log, "Installation and verification completed.");
             SaveRuntimeState(state);
         }
@@ -510,6 +629,92 @@ test('SampleManager Web Client responds', async ({ page }) => {
                     Retries = 0,
                     Enabled = true
                 });
+            }
+        }
+
+        private static void InstallNodeLts(string taskId, CancellationToken token)
+        {
+            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+            UpdateProgress(taskId, 10, "Downloading Node.js release metadata.", "GET https://nodejs.org/dist/index.json");
+            string version = null;
+            using (var client = new WebClient())
+            {
+                client.Headers.Add(HttpRequestHeader.UserAgent, "RelayAgent.Client");
+                var json = client.DownloadString("https://nodejs.org/dist/index.json");
+                var releases = Serializer.Deserialize<List<Dictionary<string, object>>>(json);
+                if (releases != null)
+                {
+                    foreach (var release in releases)
+                    {
+                        object lts;
+                        object files;
+                        object releaseVersion;
+                        if (!release.TryGetValue("lts", out lts) ||
+                            lts == null ||
+                            string.Equals(Convert.ToString(lts), "false", StringComparison.OrdinalIgnoreCase) ||
+                            !release.TryGetValue("files", out files) ||
+                            !release.TryGetValue("version", out releaseVersion))
+                        {
+                            continue;
+                        }
+                        var availableFiles = files as System.Collections.ArrayList;
+                        if (availableFiles != null &&
+                            availableFiles.Cast<object>().Any(item => string.Equals(Convert.ToString(item), "win-x64-msi", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            version = Convert.ToString(releaseVersion);
+                            break;
+                        }
+                    }
+                }
+                if (string.IsNullOrWhiteSpace(version))
+                {
+                    throw new InvalidOperationException("Unable to resolve a Node.js LTS Windows x64 MSI.");
+                }
+
+                var installer = Path.Combine(Path.GetTempPath(), "relay-node-" + version + "-x64.msi");
+                var url = "https://nodejs.org/dist/" + version + "/node-" + version + "-x64.msi";
+                UpdateProgress(taskId, 12, "Downloading Node.js " + version + ".", "GET " + url);
+                client.DownloadFile(url, installer);
+                try
+                {
+                    UpdateProgress(taskId, 16, "Installing Node.js " + version + ".", "Running silent MSI installation.");
+                    var result = RunProcess(
+                        "msiexec.exe",
+                        "/i \"" + installer + "\" /qn /norestart ALLUSERS=1",
+                        Path.GetTempPath(),
+                        600000,
+                        token);
+                    if (result.ExitCode != 0 && result.ExitCode != 3010)
+                    {
+                        throw new InvalidOperationException("Node.js MSI installation failed with exit code " + result.ExitCode + ": " + result.Output);
+                    }
+                }
+                finally
+                {
+                    try { File.Delete(installer); } catch { }
+                }
+            }
+        }
+
+        private static string GetAttribute(XmlNode node, string name, string fallback)
+        {
+            var attribute = node == null || node.Attributes == null ? null : node.Attributes[name];
+            return attribute == null || string.IsNullOrWhiteSpace(attribute.Value) ? fallback : attribute.Value;
+        }
+
+        private static void ParseIisBinding(string bindingInformation, out string host, out string port)
+        {
+            host = "localhost";
+            port = "";
+            var parts = (bindingInformation ?? "").Split(':');
+            if (parts.Length >= 2) port = parts[parts.Length - 2];
+            if (parts.Length >= 3)
+            {
+                var configuredHost = parts[parts.Length - 1];
+                if (!string.IsNullOrWhiteSpace(configuredHost) && configuredHost != "*")
+                {
+                    host = configuredHost;
+                }
             }
         }
 

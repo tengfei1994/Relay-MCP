@@ -37,6 +37,7 @@ namespace RelayAgent.Client
             PlaywrightSuites = new ObservableCollection<PlaywrightSuite>();
             PlaywrightRuns = new ObservableCollection<PlaywrightRun>();
             PlaywrightArtifacts = new ObservableCollection<FileInfo>();
+            PlaywrightWebClients = new ObservableCollection<PlaywrightWebClientCandidate>();
 
             InitializeComponent();
             DataContext = this;
@@ -93,6 +94,8 @@ namespace RelayAgent.Client
         public ObservableCollection<PlaywrightRun> PlaywrightRuns { get; private set; }
 
         public ObservableCollection<FileInfo> PlaywrightArtifacts { get; private set; }
+
+        public ObservableCollection<PlaywrightWebClientCandidate> PlaywrightWebClients { get; private set; }
 
         private Brush PrimaryBrush
         {
@@ -1021,7 +1024,8 @@ namespace RelayAgent.Client
                     Runtime = PlaywrightManager.DetectRuntime(),
                     Suites = PlaywrightManager.ReadSuites(),
                     Runs = PlaywrightManager.ReadRuns(100),
-                    Artifacts = PlaywrightManager.ReadArtifacts(250)
+                    Artifacts = PlaywrightManager.ReadArtifacts(250),
+                    WebClients = PlaywrightManager.DiscoverWebClients()
                 });
 
                 PlaywrightSuites.Clear();
@@ -1030,6 +1034,15 @@ namespace RelayAgent.Client
                 foreach (var item in snapshot.Runs) PlaywrightRuns.Add(item);
                 PlaywrightArtifacts.Clear();
                 foreach (var item in snapshot.Artifacts) PlaywrightArtifacts.Add(item);
+                var selectedWebClientUrl = (PlaywrightWebClientBox.SelectedItem as PlaywrightWebClientCandidate)?.Url;
+                PlaywrightWebClients.Clear();
+                foreach (var item in snapshot.WebClients) PlaywrightWebClients.Add(item);
+                PlaywrightWebClientBox.ItemsSource = PlaywrightWebClients;
+                if (!string.IsNullOrWhiteSpace(selectedWebClientUrl))
+                {
+                    PlaywrightWebClientBox.SelectedItem = PlaywrightWebClients.FirstOrDefault(item =>
+                        string.Equals(item.Url, selectedWebClientUrl, StringComparison.OrdinalIgnoreCase));
+                }
 
                 var state = snapshot.Runtime;
                 var ready = string.Equals(state.Status, "ready", StringComparison.OrdinalIgnoreCase);
@@ -1056,6 +1069,8 @@ namespace RelayAgent.Client
                 PlaywrightCacheText.Text = state.BrowserCachePath;
                 PlaywrightCacheText.ToolTip = state.BrowserCachePath;
                 PlaywrightInstallMessageText.Text = state.Message ?? "";
+                PlaywrightInstallButton.Content = string.IsNullOrWhiteSpace(state.InstallAction) ? "Install dependencies" : state.InstallAction;
+                PlaywrightInstallButton.IsEnabled = !ready && !installing;
                 PlaywrightInstallTaskText.Text = string.IsNullOrWhiteSpace(state.ActiveTask) ? "No active task" : state.ActiveTask;
                 PlaywrightInstallProgress.Value = Clamp(state.Progress, 0, 100);
                 PlaywrightInstallProgressText.Text = Clamp(state.Progress, 0, 100) + "%";
@@ -1069,10 +1084,16 @@ namespace RelayAgent.Client
             }
         }
 
-        private void QueuePlaywrightInstall_Click(object sender, RoutedEventArgs e)
+        private async void QueuePlaywrightInstall_Click(object sender, RoutedEventArgs e)
         {
             try
             {
+                var state = await Task.Run(() => PlaywrightManager.DetectRuntime());
+                if (string.Equals(state.Status, "ready", StringComparison.OrdinalIgnoreCase))
+                {
+                    SetFooter("Playwright runtime is already ready.");
+                    return;
+                }
                 var taskId = PlaywrightManager.QueueInstall();
                 SetFooter("Playwright installation queued: " + taskId);
                 LogClientAction("Playwright installation queued: " + taskId);
@@ -1097,20 +1118,59 @@ namespace RelayAgent.Client
             PlaywrightSuiteRetriesBox.Text = suite.Retries.ToString();
             PlaywrightSuiteHeadlessCheck.IsChecked = suite.Headless;
             PlaywrightSuiteEnabledCheck.IsChecked = suite.Enabled;
+            PlaywrightWebClientBox.SelectedItem = PlaywrightWebClients.FirstOrDefault(item =>
+                string.Equals(item.Url, suite.BaseUrl, StringComparison.OrdinalIgnoreCase));
         }
 
         private void NewPlaywrightSuite_Click(object sender, RoutedEventArgs e)
         {
             _selectedPlaywrightSuiteId = "";
             PlaywrightSuiteGrid.SelectedItem = null;
-            PlaywrightSuiteNameBox.Text = "";
-            PlaywrightSuiteUrlBox.Text = "http://localhost/";
+            var candidate = PlaywrightWebClients.FirstOrDefault();
+            PlaywrightSuiteNameBox.Text = candidate == null ? "" : candidate.Name + " smoke test";
+            PlaywrightSuiteUrlBox.Text = candidate == null ? "http://localhost/" : candidate.Url;
+            PlaywrightWebClientBox.SelectedItem = candidate;
             PlaywrightSuiteFileBox.Text = "samplemanager-smoke.spec.js";
             PlaywrightSuiteTimeoutBox.Text = "120";
             PlaywrightSuiteRetriesBox.Text = "0";
             PlaywrightSuiteHeadlessCheck.IsChecked = true;
             PlaywrightSuiteEnabledCheck.IsChecked = true;
             PlaywrightSuiteNameBox.Focus();
+        }
+
+        private void PlaywrightWebClientBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            var candidate = PlaywrightWebClientBox.SelectedItem as PlaywrightWebClientCandidate;
+            if (candidate == null) return;
+            PlaywrightSuiteUrlBox.Text = candidate.Url;
+            if (string.IsNullOrWhiteSpace(PlaywrightSuiteNameBox.Text))
+            {
+                PlaywrightSuiteNameBox.Text = candidate.Name + " smoke test";
+            }
+        }
+
+        private async void DiscoverPlaywrightWebClients_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var candidates = await Task.Run(() => PlaywrightManager.DiscoverWebClients());
+                PlaywrightWebClients.Clear();
+                foreach (var candidate in candidates) PlaywrightWebClients.Add(candidate);
+                PlaywrightWebClientBox.ItemsSource = PlaywrightWebClients;
+                if (PlaywrightWebClients.Count > 0)
+                {
+                    PlaywrightWebClientBox.SelectedIndex = 0;
+                    SetFooter("Discovered " + PlaywrightWebClients.Count + " Web Client URL(s) from IIS bindings.");
+                }
+                else
+                {
+                    SetFooter("No IIS Web Client bindings were discovered. Enter the URL manually.");
+                }
+            }
+            catch (Exception ex)
+            {
+                SetFooter("Web Client discovery failed: " + ex.Message);
+            }
         }
 
         private async void SavePlaywrightSuite_Click(object sender, RoutedEventArgs e)

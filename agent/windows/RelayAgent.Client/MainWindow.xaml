@@ -207,6 +207,49 @@
             <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
+
+        <Style x:Key="PlaywrightTabControlStyle" TargetType="TabControl">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+        </Style>
+
+        <Style x:Key="PlaywrightTabItemStyle" TargetType="TabItem">
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0,0,0,2"/>
+            <Setter Property="Padding" Value="16,11"/>
+            <Setter Property="Margin" Value="0,0,4,0"/>
+            <Setter Property="FontWeight" Value="Normal"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="TabBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="5,5,0,0"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="TabBorder" Property="Background" Value="#F1F4F8"/>
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="TabBorder" Property="Background" Value="{StaticResource PrimarySoftBrush}"/>
+                                <Setter TargetName="TabBorder" Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                                <Setter Property="Foreground" Value="{StaticResource PrimaryBrush}"/>
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid>
@@ -283,7 +326,7 @@
                     </Button>
                 </StackPanel>
 
-                <TextBlock Grid.Row="2" Text="v0.5.1" Foreground="{StaticResource MutedBrush}" FontSize="12"
+                <TextBlock Grid.Row="2" Text="v0.5.2" Foreground="{StaticResource MutedBrush}" FontSize="12"
                            Margin="28,0,0,18" VerticalAlignment="Bottom"/>
             </Grid>
         </Border>
@@ -317,7 +360,7 @@
                     </StackPanel>
                     <StackPanel Grid.Column="3" VerticalAlignment="Center">
                         <TextBlock Text="VERSION" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
-                        <TextBlock Text="v0.5.1" Margin="0,5,0,0"/>
+                        <TextBlock Text="v0.5.2" Margin="0,5,0,0"/>
                     </StackPanel>
                     <StackPanel Grid.Column="4" VerticalAlignment="Center">
                         <TextBlock Text="LAST SEEN" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
@@ -697,11 +740,13 @@
                         </StackPanel>
                         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
                             <Button Style="{StaticResource BaseButtonStyle}" Margin="0,0,10,0" Click="RefreshPlaywright_Click">Check runtime</Button>
-                            <Button Style="{StaticResource PrimaryButtonStyle}" Click="QueuePlaywrightInstall_Click">Install dependencies</Button>
+                            <Button x:Name="PlaywrightInstallButton" Style="{StaticResource PrimaryButtonStyle}" Click="QueuePlaywrightInstall_Click">Install dependencies</Button>
                         </StackPanel>
                     </Grid>
 
-                    <TabControl Grid.Row="1" x:Name="PlaywrightTabs" Background="Transparent" BorderBrush="{StaticResource BorderBrush}">
+                    <TabControl Grid.Row="1" x:Name="PlaywrightTabs"
+                                Style="{StaticResource PlaywrightTabControlStyle}"
+                                ItemContainerStyle="{StaticResource PlaywrightTabItemStyle}">
                         <TabItem Header="Overview">
                             <ScrollViewer VerticalScrollBarVisibility="Auto">
                                 <StackPanel Margin="16">
@@ -754,8 +799,8 @@
 
                         <TabItem Header="Runtime">
                             <Grid Margin="16">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="360"/></Grid.ColumnDefinitions>
-                                <Border Style="{StaticResource CardStyle}" Margin="0,0,14,0">
+                                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,14">
                                     <StackPanel>
                                         <TextBlock Text="Dependencies" Style="{StaticResource SectionTitleStyle}"/>
                                         <Grid>
@@ -780,22 +825,29 @@
                                         </Grid>
                                     </StackPanel>
                                 </Border>
-                                <Border Grid.Column="1" Style="{StaticResource CardStyle}">
+                                <Border Grid.Row="1" Style="{StaticResource CardStyle}">
                                     <Grid>
-                                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                                        <TextBlock Text="Installation" Style="{StaticResource SectionTitleStyle}"/>
-                                        <TextBlock Grid.Row="1" x:Name="PlaywrightInstallMessageText" Text="Runtime has not been checked." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,0,0,12"/>
-                                        <StackPanel Grid.Row="2">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="310"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                        <StackPanel Margin="0,0,22,0">
+                                            <TextBlock Text="Installation" Style="{StaticResource SectionTitleStyle}"/>
+                                            <TextBlock x:Name="PlaywrightInstallMessageText" Text="Runtime has not been checked." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,0,0,18"/>
                                             <ProgressBar x:Name="PlaywrightInstallProgress" Height="9" Minimum="0" Maximum="100"/>
-                                            <DockPanel Margin="0,8,0,12">
+                                            <DockPanel Margin="0,8,0,18">
                                                 <TextBlock x:Name="PlaywrightInstallTaskText" Foreground="{StaticResource MutedBrush}"/>
                                                 <TextBlock x:Name="PlaywrightInstallProgressText" HorizontalAlignment="Right"/>
                                             </DockPanel>
+                                            <TextBlock Text="Installation flow" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                            <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}"
+                                                       Text="If Node.js is missing, the Agent downloads and silently installs the latest Windows x64 LTS MSI. It then installs @playwright/test, Chromium, and verifies the service-owned browser cache."/>
                                         </StackPanel>
-                                        <TextBox Grid.Row="3" x:Name="PlaywrightRuntimeLogBox" IsReadOnly="True" AcceptsReturn="True"
+                                        <Grid Grid.Column="1">
+                                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                            <TextBlock Text="Installation log" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                                            <TextBox Grid.Row="1" x:Name="PlaywrightRuntimeLogBox" IsReadOnly="True" AcceptsReturn="True"
                                                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                                                  TextWrapping="NoWrap" FontFamily="Consolas" FontSize="12"
-                                                 MinHeight="250" Background="#FBFCFE"/>
+                                                 MinHeight="280" Background="#FBFCFE"/>
+                                        </Grid>
                                     </Grid>
                                 </Border>
                             </Grid>
@@ -803,7 +855,7 @@
 
                         <TabItem Header="Test suites">
                             <Grid Margin="16">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="350"/></Grid.ColumnDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="410"/></Grid.ColumnDefinitions>
                                 <Border Style="{StaticResource CardStyle}" Margin="0,0,14,0" Padding="12">
                                     <DataGrid x:Name="PlaywrightSuiteGrid" ItemsSource="{Binding PlaywrightSuites}" SelectionChanged="PlaywrightSuiteGrid_SelectionChanged">
                                         <DataGrid.Columns>
@@ -827,7 +879,20 @@
                                         <TextBlock Text="Name" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,5"/>
                                         <TextBox x:Name="PlaywrightSuiteNameBox" Margin="0,0,0,12"/>
                                         <TextBlock Text="Web Client URL" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,5"/>
-                                        <TextBox x:Name="PlaywrightSuiteUrlBox" Margin="0,0,0,12"/>
+                                        <Grid Margin="0,0,0,8">
+                                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="44"/></Grid.ColumnDefinitions>
+                                            <ComboBox x:Name="PlaywrightWebClientBox"
+                                                      DisplayMemberPath="DisplayName"
+                                                      SelectionChanged="PlaywrightWebClientBox_SelectionChanged"/>
+                                            <Button Grid.Column="1" Style="{StaticResource IconButtonStyle}"
+                                                    ToolTip="Discover Web Client URLs from local IIS bindings"
+                                                    Click="DiscoverPlaywrightWebClients_Click">
+                                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE721;" FontSize="16"/>
+                                            </Button>
+                                        </Grid>
+                                        <TextBox x:Name="PlaywrightSuiteUrlBox" Margin="0,0,0,4"/>
+                                        <TextBlock Text="Discovered from IIS site bindings; the URL remains editable."
+                                                   Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,0,0,12"/>
                                         <TextBlock Text="Test file" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,5"/>
                                         <TextBox x:Name="PlaywrightSuiteFileBox" Margin="0,0,0,12"/>
                                         <Grid Margin="0,0,0,12">
@@ -919,7 +984,7 @@
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <StackPanel VerticalAlignment="Center">
                                 <TextBlock Text="Client update" FontSize="16" FontWeight="SemiBold"/>
-                                <TextBlock x:Name="UpdateStatusText" Text="Current version v0.5.1" Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0"/>
+                                <TextBlock x:Name="UpdateStatusText" Text="Current version v0.5.2" Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" Orientation="Horizontal">
                                 <Button Style="{StaticResource PrimaryButtonStyle}" Margin="0,0,10,0" Click="CheckUpdate_Click">Check update</Button>

@@ -269,6 +269,12 @@
                             <TextBlock Text="Request Audit"/>
                         </StackPanel>
                     </Button>
+                    <Button x:Name="PlaywrightNav" Tag="PlaywrightPage" Style="{StaticResource NavButtonStyle}" Click="Navigation_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE7C3;" FontSize="16" Width="30"/>
+                            <TextBlock Text="Playwright"/>
+                        </StackPanel>
+                    </Button>
                     <Button x:Name="DiagnosticsNav" Tag="DiagnosticsPage" Style="{StaticResource NavButtonStyle}" Click="Navigation_Click">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE9D9;" FontSize="16" Width="30"/>
@@ -277,7 +283,7 @@
                     </Button>
                 </StackPanel>
 
-                <TextBlock Grid.Row="2" Text="v0.5.0" Foreground="{StaticResource MutedBrush}" FontSize="12"
+                <TextBlock Grid.Row="2" Text="v0.5.1" Foreground="{StaticResource MutedBrush}" FontSize="12"
                            Margin="28,0,0,18" VerticalAlignment="Bottom"/>
             </Grid>
         </Border>
@@ -311,7 +317,7 @@
                     </StackPanel>
                     <StackPanel Grid.Column="3" VerticalAlignment="Center">
                         <TextBlock Text="VERSION" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
-                        <TextBlock Text="v0.5.0" Margin="0,5,0,0"/>
+                        <TextBlock Text="v0.5.1" Margin="0,5,0,0"/>
                     </StackPanel>
                     <StackPanel Grid.Column="4" VerticalAlignment="Center">
                         <TextBlock Text="LAST SEEN" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
@@ -676,6 +682,230 @@
                     </Border>
                 </Grid>
 
+                <!-- Playwright -->
+                <Grid x:Name="PlaywrightPage" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <Grid Grid.Row="0" Margin="0,0,0,16">
+                        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="Playwright" FontSize="28" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"/>
+                            <TextBlock Text="Install the browser runtime and manage SampleManager Web Client tests."
+                                       Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
+                            <Button Style="{StaticResource BaseButtonStyle}" Margin="0,0,10,0" Click="RefreshPlaywright_Click">Check runtime</Button>
+                            <Button Style="{StaticResource PrimaryButtonStyle}" Click="QueuePlaywrightInstall_Click">Install dependencies</Button>
+                        </StackPanel>
+                    </Grid>
+
+                    <TabControl Grid.Row="1" x:Name="PlaywrightTabs" Background="Transparent" BorderBrush="{StaticResource BorderBrush}">
+                        <TabItem Header="Overview">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Margin="16">
+                                    <UniformGrid Columns="3" Margin="0,0,0,16">
+                                        <Border Style="{StaticResource CardStyle}" Margin="0,0,10,0" Padding="18">
+                                            <StackPanel>
+                                                <TextBlock Text="Runtime" Foreground="{StaticResource MutedBrush}"/>
+                                                <TextBlock x:Name="PlaywrightOverviewRuntimeText" Text="Not checked" FontSize="18" FontWeight="SemiBold" Margin="0,9,0,0"/>
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Style="{StaticResource CardStyle}" Margin="5,0" Padding="18">
+                                            <StackPanel>
+                                                <TextBlock Text="Last run" Foreground="{StaticResource MutedBrush}"/>
+                                                <TextBlock x:Name="PlaywrightOverviewLastRunText" Text="No runs yet" FontSize="18" FontWeight="SemiBold" Margin="0,9,0,0" TextTrimming="CharacterEllipsis"/>
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Style="{StaticResource CardStyle}" Margin="10,0,0,0" Padding="18">
+                                            <StackPanel>
+                                                <TextBlock Text="Artifacts" Foreground="{StaticResource MutedBrush}"/>
+                                                <TextBlock x:Name="PlaywrightOverviewArtifactsText" Text="0 files" FontSize="18" FontWeight="SemiBold" Margin="0,9,0,0"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </UniformGrid>
+                                    <Border Style="{StaticResource CardStyle}">
+                                        <StackPanel>
+                                            <TextBlock Text="Runtime summary" Style="{StaticResource SectionTitleStyle}"/>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="130"/></Grid.ColumnDefinitions>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="44"/><RowDefinition Height="44"/><RowDefinition Height="44"/><RowDefinition Height="44"/>
+                                                </Grid.RowDefinitions>
+                                                <TextBlock Text="Node.js" Style="{StaticResource FieldLabelStyle}"/>
+                                                <TextBlock x:Name="PlaywrightOverviewNodeText" Grid.Column="1" VerticalAlignment="Center"/>
+                                                <TextBlock x:Name="PlaywrightOverviewNodeStatusText" Grid.Column="2" VerticalAlignment="Center"/>
+                                                <TextBlock Text="Playwright" Grid.Row="1" Style="{StaticResource FieldLabelStyle}"/>
+                                                <TextBlock x:Name="PlaywrightOverviewPackageText" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center"/>
+                                                <TextBlock x:Name="PlaywrightOverviewPackageStatusText" Grid.Row="1" Grid.Column="2" VerticalAlignment="Center"/>
+                                                <TextBlock Text="Chromium" Grid.Row="2" Style="{StaticResource FieldLabelStyle}"/>
+                                                <TextBlock x:Name="PlaywrightOverviewBrowserText" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock x:Name="PlaywrightOverviewBrowserStatusText" Grid.Row="2" Grid.Column="2" VerticalAlignment="Center"/>
+                                                <TextBlock Text="Service account" Grid.Row="3" Style="{StaticResource FieldLabelStyle}"/>
+                                                <TextBlock Grid.Row="3" Grid.Column="1" Text="NT AUTHORITY\SYSTEM" VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Row="3" Grid.Column="2" Text="Background execution" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
+                                            </Grid>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
+
+                        <TabItem Header="Runtime">
+                            <Grid Margin="16">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="360"/></Grid.ColumnDefinitions>
+                                <Border Style="{StaticResource CardStyle}" Margin="0,0,14,0">
+                                    <StackPanel>
+                                        <TextBlock Text="Dependencies" Style="{StaticResource SectionTitleStyle}"/>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="160"/><ColumnDefinition/><ColumnDefinition Width="110"/></Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="52"/><RowDefinition Height="52"/><RowDefinition Height="52"/><RowDefinition Height="52"/><RowDefinition Height="52"/>
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Text="Node.js" Style="{StaticResource FieldLabelStyle}"/>
+                                            <TextBlock x:Name="PlaywrightNodeText" Grid.Column="1" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock x:Name="PlaywrightNodeStatusText" Grid.Column="2" VerticalAlignment="Center"/>
+                                            <TextBlock Text="npm" Grid.Row="1" Style="{StaticResource FieldLabelStyle}"/>
+                                            <TextBlock x:Name="PlaywrightNpmText" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock x:Name="PlaywrightNpmStatusText" Grid.Row="1" Grid.Column="2" VerticalAlignment="Center"/>
+                                            <TextBlock Text="Playwright package" Grid.Row="2" Style="{StaticResource FieldLabelStyle}"/>
+                                            <TextBlock x:Name="PlaywrightPackageText" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center"/>
+                                            <TextBlock x:Name="PlaywrightPackageStatusText" Grid.Row="2" Grid.Column="2" VerticalAlignment="Center"/>
+                                            <TextBlock Text="Chromium" Grid.Row="3" Style="{StaticResource FieldLabelStyle}"/>
+                                            <TextBlock x:Name="PlaywrightChromiumText" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock x:Name="PlaywrightChromiumStatusText" Grid.Row="3" Grid.Column="2" VerticalAlignment="Center"/>
+                                            <TextBlock Text="Browser cache" Grid.Row="4" Style="{StaticResource FieldLabelStyle}"/>
+                                            <TextBlock x:Name="PlaywrightCacheText" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="1" Style="{StaticResource CardStyle}">
+                                    <Grid>
+                                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                        <TextBlock Text="Installation" Style="{StaticResource SectionTitleStyle}"/>
+                                        <TextBlock Grid.Row="1" x:Name="PlaywrightInstallMessageText" Text="Runtime has not been checked." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                                        <StackPanel Grid.Row="2">
+                                            <ProgressBar x:Name="PlaywrightInstallProgress" Height="9" Minimum="0" Maximum="100"/>
+                                            <DockPanel Margin="0,8,0,12">
+                                                <TextBlock x:Name="PlaywrightInstallTaskText" Foreground="{StaticResource MutedBrush}"/>
+                                                <TextBlock x:Name="PlaywrightInstallProgressText" HorizontalAlignment="Right"/>
+                                            </DockPanel>
+                                        </StackPanel>
+                                        <TextBox Grid.Row="3" x:Name="PlaywrightRuntimeLogBox" IsReadOnly="True" AcceptsReturn="True"
+                                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                                                 TextWrapping="NoWrap" FontFamily="Consolas" FontSize="12"
+                                                 MinHeight="250" Background="#FBFCFE"/>
+                                    </Grid>
+                                </Border>
+                            </Grid>
+                        </TabItem>
+
+                        <TabItem Header="Test suites">
+                            <Grid Margin="16">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="350"/></Grid.ColumnDefinitions>
+                                <Border Style="{StaticResource CardStyle}" Margin="0,0,14,0" Padding="12">
+                                    <DataGrid x:Name="PlaywrightSuiteGrid" ItemsSource="{Binding PlaywrightSuites}" SelectionChanged="PlaywrightSuiteGrid_SelectionChanged">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Suite" Binding="{Binding Name}" Width="2*"/>
+                                            <DataGridTextColumn Header="Web Client URL" Binding="{Binding BaseUrl}" Width="2*"/>
+                                            <DataGridTextColumn Header="Test file" Binding="{Binding TestFile}" Width="1.5*"/>
+                                            <DataGridCheckBoxColumn Header="Enabled" Binding="{Binding Enabled}" Width="75"/>
+                                            <DataGridTemplateColumn Header="" Width="80">
+                                                <DataGridTemplateColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <Button Style="{StaticResource BaseButtonStyle}" MinWidth="62" Height="30" Padding="8,0" Content="Run" Tag="{Binding Id}" Click="RunPlaywrightSuite_Click"/>
+                                                    </DataTemplate>
+                                                </DataGridTemplateColumn.CellTemplate>
+                                            </DataGridTemplateColumn>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </Border>
+                                <Border Grid.Column="1" Style="{StaticResource CardStyle}">
+                                    <StackPanel>
+                                        <TextBlock Text="Suite details" Style="{StaticResource SectionTitleStyle}"/>
+                                        <TextBlock Text="Name" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,5"/>
+                                        <TextBox x:Name="PlaywrightSuiteNameBox" Margin="0,0,0,12"/>
+                                        <TextBlock Text="Web Client URL" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,5"/>
+                                        <TextBox x:Name="PlaywrightSuiteUrlBox" Margin="0,0,0,12"/>
+                                        <TextBlock Text="Test file" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,5"/>
+                                        <TextBox x:Name="PlaywrightSuiteFileBox" Margin="0,0,0,12"/>
+                                        <Grid Margin="0,0,0,12">
+                                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                            <StackPanel Margin="0,0,6,0">
+                                                <TextBlock Text="Timeout seconds" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,5"/>
+                                                <TextBox x:Name="PlaywrightSuiteTimeoutBox" Text="120" PreviewTextInput="NumericOnly_PreviewTextInput"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Margin="6,0,0,0">
+                                                <TextBlock Text="Retries" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,5"/>
+                                                <TextBox x:Name="PlaywrightSuiteRetriesBox" Text="0" PreviewTextInput="NumericOnly_PreviewTextInput"/>
+                                            </StackPanel>
+                                        </Grid>
+                                        <CheckBox x:Name="PlaywrightSuiteHeadlessCheck" Content="Headless browser" IsChecked="True" Margin="0,0,0,10"/>
+                                        <CheckBox x:Name="PlaywrightSuiteEnabledCheck" Content="Suite enabled" IsChecked="True" Margin="0,0,0,18"/>
+                                        <Button Style="{StaticResource PrimaryButtonStyle}" Margin="0,0,0,10" Click="SavePlaywrightSuite_Click">Save suite</Button>
+                                        <UniformGrid Columns="2">
+                                            <Button Style="{StaticResource BaseButtonStyle}" Margin="0,0,5,0" Click="NewPlaywrightSuite_Click">New</Button>
+                                            <Button Style="{StaticResource DangerButtonStyle}" Margin="5,0,0,0" Click="DeletePlaywrightSuite_Click">Delete</Button>
+                                        </UniformGrid>
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                        </TabItem>
+
+                        <TabItem Header="Test runs">
+                            <Grid Margin="16">
+                                <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="210"/></Grid.RowDefinitions>
+                                <Border Style="{StaticResource CardStyle}" Padding="12" Margin="0,0,0,14">
+                                    <DataGrid x:Name="PlaywrightRunGrid" ItemsSource="{Binding PlaywrightRuns}" SelectionChanged="PlaywrightRunGrid_SelectionChanged">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Run ID" Binding="{Binding Id}" Width="1.4*"/>
+                                            <DataGridTextColumn Header="Suite" Binding="{Binding SuiteName}" Width="1.7*"/>
+                                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="90"/>
+                                            <DataGridTextColumn Header="Started" Binding="{Binding StartedAt}" Width="160"/>
+                                            <DataGridTextColumn Header="Duration" Binding="{Binding DurationMs}" Width="100"/>
+                                            <DataGridTextColumn Header="Exit" Binding="{Binding ExitCode}" Width="70"/>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </Border>
+                                <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="16">
+                                    <Grid>
+                                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                        <TextBlock Text="Selected run" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                                        <TextBox x:Name="PlaywrightRunDetailBox" Grid.Row="1" IsReadOnly="True" AcceptsReturn="True"
+                                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                                                 TextWrapping="NoWrap" FontFamily="Consolas" FontSize="12"
+                                                 Text="Select a run to inspect details." Background="#FBFCFE"/>
+                                    </Grid>
+                                </Border>
+                            </Grid>
+                        </TabItem>
+
+                        <TabItem Header="Artifacts">
+                            <Grid Margin="16">
+                                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                <DockPanel Margin="0,0,0,12">
+                                    <TextBlock Text="Failure screenshots, traces, logs, and test output." Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
+                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                                        <Button Style="{StaticResource BaseButtonStyle}" Margin="0,0,10,0" Click="OpenPlaywrightFolder_Click">Open folder</Button>
+                                        <Button Style="{StaticResource DangerButtonStyle}" Click="ClearPlaywrightArtifacts_Click">Clear artifacts</Button>
+                                    </StackPanel>
+                                </DockPanel>
+                                <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="12">
+                                    <DataGrid x:Name="PlaywrightArtifactGrid" ItemsSource="{Binding PlaywrightArtifacts}">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="File" Binding="{Binding Name}" Width="2*"/>
+                                            <DataGridTextColumn Header="Directory" Binding="{Binding DirectoryName}" Width="3*"/>
+                                            <DataGridTextColumn Header="Size" Binding="{Binding Length}" Width="100"/>
+                                            <DataGridTextColumn Header="Modified" Binding="{Binding LastWriteTime}" Width="160"/>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </Border>
+                            </Grid>
+                        </TabItem>
+                    </TabControl>
+                </Grid>
+
                 <!-- Diagnostics -->
                 <Grid x:Name="DiagnosticsPage" Visibility="Collapsed">
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
@@ -689,7 +919,7 @@
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <StackPanel VerticalAlignment="Center">
                                 <TextBlock Text="Client update" FontSize="16" FontWeight="SemiBold"/>
-                                <TextBlock x:Name="UpdateStatusText" Text="Current version v0.5.0" Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0"/>
+                                <TextBlock x:Name="UpdateStatusText" Text="Current version v0.5.1" Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" Orientation="Horizontal">
                                 <Button Style="{StaticResource PrimaryButtonStyle}" Margin="0,0,10,0" Click="CheckUpdate_Click">Check update</Button>

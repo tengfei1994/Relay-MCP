@@ -28,11 +28,15 @@ namespace RelayAgent.Client
         private string _configurationLoadError;
         private DatabasePermissionState _lastDatabaseState;
         private bool _initialized;
+        private string _selectedPlaywrightSuiteId;
 
         public MainWindow()
         {
             PermissionRows = new ObservableCollection<PermissionRow>();
             AuditRows = new ObservableCollection<AuditRow>();
+            PlaywrightSuites = new ObservableCollection<PlaywrightSuite>();
+            PlaywrightRuns = new ObservableCollection<PlaywrightRun>();
+            PlaywrightArtifacts = new ObservableCollection<FileInfo>();
 
             InitializeComponent();
             DataContext = this;
@@ -44,6 +48,7 @@ namespace RelayAgent.Client
                 { "ServicePage", ServicePage },
                 { "DatabasePage", DatabasePage },
                 { "AuditPage", AuditPage },
+                { "PlaywrightPage", PlaywrightPage },
                 { "DiagnosticsPage", DiagnosticsPage }
             };
             _navigation = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase)
@@ -53,6 +58,7 @@ namespace RelayAgent.Client
                 { "ServicePage", ServiceNav },
                 { "DatabasePage", DatabaseNav },
                 { "AuditPage", AuditNav },
+                { "PlaywrightPage", PlaywrightNav },
                 { "DiagnosticsPage", DiagnosticsNav }
             };
 
@@ -81,6 +87,12 @@ namespace RelayAgent.Client
         public ObservableCollection<PermissionRow> PermissionRows { get; private set; }
 
         public ObservableCollection<AuditRow> AuditRows { get; private set; }
+
+        public ObservableCollection<PlaywrightSuite> PlaywrightSuites { get; private set; }
+
+        public ObservableCollection<PlaywrightRun> PlaywrightRuns { get; private set; }
+
+        public ObservableCollection<FileInfo> PlaywrightArtifacts { get; private set; }
 
         private Brush PrimaryBrush
         {
@@ -161,6 +173,10 @@ namespace RelayAgent.Client
             if (pageName.Equals("AuditPage", StringComparison.OrdinalIgnoreCase))
             {
                 RefreshAudit();
+            }
+            else if (pageName.Equals("PlaywrightPage", StringComparison.OrdinalIgnoreCase))
+            {
+                _ = RefreshPlaywrightAsync();
             }
             else if (pageName.Equals("DiagnosticsPage", StringComparison.OrdinalIgnoreCase))
             {
@@ -987,6 +1003,220 @@ namespace RelayAgent.Client
             RefreshRuntimeStatus();
             RefreshAudit();
             RefreshAgentLog();
+            _ = RefreshPlaywrightAsync();
+        }
+
+        private async void RefreshPlaywright_Click(object sender, RoutedEventArgs e)
+        {
+            await RefreshPlaywrightAsync();
+            SetFooter("Playwright runtime refreshed.");
+        }
+
+        private async Task RefreshPlaywrightAsync()
+        {
+            try
+            {
+                var snapshot = await Task.Run(() => new
+                {
+                    Runtime = PlaywrightManager.DetectRuntime(),
+                    Suites = PlaywrightManager.ReadSuites(),
+                    Runs = PlaywrightManager.ReadRuns(100),
+                    Artifacts = PlaywrightManager.ReadArtifacts(250)
+                });
+
+                PlaywrightSuites.Clear();
+                foreach (var item in snapshot.Suites) PlaywrightSuites.Add(item);
+                PlaywrightRuns.Clear();
+                foreach (var item in snapshot.Runs) PlaywrightRuns.Add(item);
+                PlaywrightArtifacts.Clear();
+                foreach (var item in snapshot.Artifacts) PlaywrightArtifacts.Add(item);
+
+                var state = snapshot.Runtime;
+                var ready = string.Equals(state.Status, "ready", StringComparison.OrdinalIgnoreCase);
+                var installing = string.Equals(state.Status, "installing", StringComparison.OrdinalIgnoreCase);
+                SetStatusText(PlaywrightOverviewRuntimeText, ready ? "Ready" : installing ? "Installing" : ToTitle(state.Status), ready);
+                PlaywrightOverviewNodeText.Text = string.IsNullOrWhiteSpace(state.NodeVersion) ? "Not installed" : state.NodeVersion + " · " + state.NodePath;
+                SetStatusText(PlaywrightOverviewNodeStatusText, string.IsNullOrWhiteSpace(state.NodePath) ? "Missing" : "Installed", !string.IsNullOrWhiteSpace(state.NodePath));
+                PlaywrightOverviewPackageText.Text = string.IsNullOrWhiteSpace(state.PlaywrightVersion) ? "Not installed" : state.PlaywrightVersion;
+                SetStatusText(PlaywrightOverviewPackageStatusText, string.IsNullOrWhiteSpace(state.PlaywrightVersion) ? "Missing" : "Installed", !string.IsNullOrWhiteSpace(state.PlaywrightVersion));
+                PlaywrightOverviewBrowserText.Text = state.BrowserCachePath;
+                SetStatusText(PlaywrightOverviewBrowserStatusText, state.ChromiumInstalled ? "Verified" : "Missing", state.ChromiumInstalled);
+                var lastRun = snapshot.Runs.FirstOrDefault();
+                PlaywrightOverviewLastRunText.Text = lastRun == null ? "No runs yet" : lastRun.SuiteName + " · " + ToTitle(lastRun.Status);
+                PlaywrightOverviewArtifactsText.Text = snapshot.Artifacts.Count + " files";
+
+                PlaywrightNodeText.Text = string.IsNullOrWhiteSpace(state.NodePath) ? "Node.js was not found" : state.NodeVersion + " · " + state.NodePath;
+                SetStatusText(PlaywrightNodeStatusText, string.IsNullOrWhiteSpace(state.NodePath) ? "Missing" : "Ready", !string.IsNullOrWhiteSpace(state.NodePath));
+                PlaywrightNpmText.Text = string.IsNullOrWhiteSpace(state.NpmPath) ? "npm was not found" : state.NpmVersion + " · " + state.NpmPath;
+                SetStatusText(PlaywrightNpmStatusText, string.IsNullOrWhiteSpace(state.NpmPath) ? "Missing" : "Ready", !string.IsNullOrWhiteSpace(state.NpmPath));
+                PlaywrightPackageText.Text = string.IsNullOrWhiteSpace(state.PlaywrightVersion) ? "Not installed" : state.PlaywrightVersion;
+                SetStatusText(PlaywrightPackageStatusText, string.IsNullOrWhiteSpace(state.PlaywrightVersion) ? "Missing" : "Ready", !string.IsNullOrWhiteSpace(state.PlaywrightVersion));
+                PlaywrightChromiumText.Text = state.ChromiumInstalled ? "Chromium browser installed" : "Chromium browser is missing";
+                SetStatusText(PlaywrightChromiumStatusText, state.ChromiumInstalled ? "Ready" : "Missing", state.ChromiumInstalled);
+                PlaywrightCacheText.Text = state.BrowserCachePath;
+                PlaywrightCacheText.ToolTip = state.BrowserCachePath;
+                PlaywrightInstallMessageText.Text = state.Message ?? "";
+                PlaywrightInstallTaskText.Text = string.IsNullOrWhiteSpace(state.ActiveTask) ? "No active task" : state.ActiveTask;
+                PlaywrightInstallProgress.Value = Clamp(state.Progress, 0, 100);
+                PlaywrightInstallProgressText.Text = Clamp(state.Progress, 0, 100) + "%";
+                PlaywrightRuntimeLogBox.Text = string.IsNullOrWhiteSpace(state.Log) ? "No Playwright runtime activity yet." : state.Log;
+                PlaywrightRuntimeLogBox.ScrollToEnd();
+            }
+            catch (Exception ex)
+            {
+                PlaywrightInstallMessageText.Text = ex.Message;
+                PlaywrightRuntimeLogBox.Text = ex.ToString();
+            }
+        }
+
+        private void QueuePlaywrightInstall_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var taskId = PlaywrightManager.QueueInstall();
+                SetFooter("Playwright installation queued: " + taskId);
+                LogClientAction("Playwright installation queued: " + taskId);
+                PlaywrightTabs.SelectedIndex = 1;
+                _ = RefreshPlaywrightAsync();
+            }
+            catch (Exception ex)
+            {
+                SetFooter("Unable to queue Playwright installation: " + ex.Message);
+            }
+        }
+
+        private void PlaywrightSuiteGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            var suite = PlaywrightSuiteGrid.SelectedItem as PlaywrightSuite;
+            if (suite == null) return;
+            _selectedPlaywrightSuiteId = suite.Id;
+            PlaywrightSuiteNameBox.Text = suite.Name;
+            PlaywrightSuiteUrlBox.Text = suite.BaseUrl;
+            PlaywrightSuiteFileBox.Text = suite.TestFile;
+            PlaywrightSuiteTimeoutBox.Text = suite.TimeoutSeconds.ToString();
+            PlaywrightSuiteRetriesBox.Text = suite.Retries.ToString();
+            PlaywrightSuiteHeadlessCheck.IsChecked = suite.Headless;
+            PlaywrightSuiteEnabledCheck.IsChecked = suite.Enabled;
+        }
+
+        private void NewPlaywrightSuite_Click(object sender, RoutedEventArgs e)
+        {
+            _selectedPlaywrightSuiteId = "";
+            PlaywrightSuiteGrid.SelectedItem = null;
+            PlaywrightSuiteNameBox.Text = "";
+            PlaywrightSuiteUrlBox.Text = "http://localhost/";
+            PlaywrightSuiteFileBox.Text = "samplemanager-smoke.spec.js";
+            PlaywrightSuiteTimeoutBox.Text = "120";
+            PlaywrightSuiteRetriesBox.Text = "0";
+            PlaywrightSuiteHeadlessCheck.IsChecked = true;
+            PlaywrightSuiteEnabledCheck.IsChecked = true;
+            PlaywrightSuiteNameBox.Focus();
+        }
+
+        private async void SavePlaywrightSuite_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var suite = new PlaywrightSuite
+                {
+                    Id = _selectedPlaywrightSuiteId,
+                    Name = PlaywrightSuiteNameBox.Text.Trim(),
+                    BaseUrl = PlaywrightSuiteUrlBox.Text.Trim(),
+                    TestFile = PlaywrightSuiteFileBox.Text.Trim(),
+                    TimeoutSeconds = ReadInteger(PlaywrightSuiteTimeoutBox.Text, 120, 10, 3600),
+                    Retries = ReadInteger(PlaywrightSuiteRetriesBox.Text, 0, 0, 5),
+                    Headless = PlaywrightSuiteHeadlessCheck.IsChecked == true,
+                    Enabled = PlaywrightSuiteEnabledCheck.IsChecked == true
+                };
+                var saved = PlaywrightManager.SaveSuite(suite);
+                _selectedPlaywrightSuiteId = saved.Id;
+                await RefreshPlaywrightAsync();
+                SetFooter("Playwright suite saved.");
+            }
+            catch (Exception ex)
+            {
+                SetFooter("Unable to save Playwright suite: " + ex.Message);
+            }
+        }
+
+        private async void DeletePlaywrightSuite_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(_selectedPlaywrightSuiteId))
+            {
+                SetFooter("Select a Playwright suite to delete.");
+                return;
+            }
+            if (MessageBox.Show(this, "Delete the selected Playwright suite?", Title, MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            {
+                return;
+            }
+            PlaywrightManager.DeleteSuite(_selectedPlaywrightSuiteId);
+            NewPlaywrightSuite_Click(sender, e);
+            await RefreshPlaywrightAsync();
+            SetFooter("Playwright suite deleted.");
+        }
+
+        private async void RunPlaywrightSuite_Click(object sender, RoutedEventArgs e)
+        {
+            var button = sender as Button;
+            var suiteId = button == null ? "" : Convert.ToString(button.Tag);
+            try
+            {
+                var taskId = PlaywrightManager.QueueRun(suiteId);
+                SetFooter("Playwright test queued: " + taskId);
+                LogClientAction("Playwright test queued: " + taskId);
+                PlaywrightTabs.SelectedIndex = 3;
+                await RefreshPlaywrightAsync();
+            }
+            catch (Exception ex)
+            {
+                SetFooter("Unable to queue Playwright test: " + ex.Message);
+            }
+        }
+
+        private void PlaywrightRunGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            var run = PlaywrightRunGrid.SelectedItem as PlaywrightRun;
+            if (run == null)
+            {
+                PlaywrightRunDetailBox.Text = "Select a run to inspect details.";
+                return;
+            }
+            PlaywrightRunDetailBox.Text =
+                "Run ID: " + run.Id + Environment.NewLine +
+                "Suite: " + run.SuiteName + Environment.NewLine +
+                "Status: " + run.Status + Environment.NewLine +
+                "Started: " + run.StartedAt + Environment.NewLine +
+                "Finished: " + run.FinishedAt + Environment.NewLine +
+                "Duration: " + run.DurationMs + " ms" + Environment.NewLine +
+                "Exit code: " + run.ExitCode + Environment.NewLine +
+                "Artifacts: " + run.ArtifactDirectory + Environment.NewLine +
+                (string.IsNullOrWhiteSpace(run.Error) ? "" : "Error: " + run.Error + Environment.NewLine) +
+                Environment.NewLine + (run.Output ?? "");
+        }
+
+        private void OpenPlaywrightFolder_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                Directory.CreateDirectory(PlaywrightManager.RootPath);
+                Process.Start("explorer.exe", "\"" + PlaywrightManager.RootPath + "\"");
+            }
+            catch (Exception ex)
+            {
+                SetFooter("Unable to open Playwright folder: " + ex.Message);
+            }
+        }
+
+        private async void ClearPlaywrightArtifacts_Click(object sender, RoutedEventArgs e)
+        {
+            if (MessageBox.Show(this, "Delete all Playwright artifacts?", Title, MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            {
+                return;
+            }
+            PlaywrightManager.ClearArtifacts();
+            await RefreshPlaywrightAsync();
+            SetFooter("Playwright artifacts cleared.");
         }
 
         private void RefreshRuntimeStatus()
@@ -1058,6 +1288,11 @@ namespace RelayAgent.Client
                 "    |    Audit: " +
                 (_loadedConfig.AuditEnabled ? "Enabled" : "Disabled") +
                 "    |    Local time: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+
+            if (PlaywrightPage.Visibility == Visibility.Visible)
+            {
+                _ = RefreshPlaywrightAsync();
+            }
         }
 
         private void SetStatusText(TextBlock control, string value, bool success)

@@ -18,6 +18,8 @@ namespace RelayAgent.Service
     {
         private CancellationTokenSource _cts;
         private Task _worker;
+        private static readonly object PlaywrightWorkerLock = new object();
+        private static Task _playwrightWorker;
 
         public RelayAgentService()
         {
@@ -61,6 +63,7 @@ namespace RelayAgent.Service
         {
             while (!token.IsCancellationRequested)
             {
+                EnsurePlaywrightWorker(token);
                 AgentConfig config = null;
                 try
                 {
@@ -79,6 +82,28 @@ namespace RelayAgent.Service
 
                 var delay = Math.Max(2, config == null ? 10 : config.PollSeconds);
                 await Task.Delay(TimeSpan.FromSeconds(delay), token).ContinueWith(_ => { });
+            }
+        }
+
+        private static void EnsurePlaywrightWorker(CancellationToken token)
+        {
+            lock (PlaywrightWorkerLock)
+            {
+                if (_playwrightWorker != null && !_playwrightWorker.IsCompleted)
+                {
+                    return;
+                }
+                _playwrightWorker = Task.Run(() =>
+                {
+                    try
+                    {
+                        PlaywrightManager.ProcessNextTask(token);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log("Playwright worker error: " + ex);
+                    }
+                }, token);
             }
         }
 

@@ -2,7 +2,7 @@
 
 This folder contains a small Windows Agent package:
 
-- `RelayAgent.Client.exe`: one-file WinForms UI and Windows Service host.
+- `RelayAgent.Client.exe`: one-file WPF UI and Windows Service host.
 
 The client writes configuration to:
 
@@ -50,7 +50,24 @@ The v0.4 client uses a left-navigation operations workspace:
 - Database Access: discover local SQL Server databases, test the service
   identity, and grant or revoke read, read/write, or DDL permissions.
 - Request Audit: filter, inspect, export, and clear audited Relay HTTP calls.
+- Playwright: detect and install Node/Playwright/Chromium dependencies, manage
+  SampleManager Web Client test suites, queue background test runs, and inspect
+  artifacts.
 - Updates & Logs: update the single-file client and inspect `agent.log`.
+
+## Playwright
+
+The Playwright page stores its service-owned runtime under:
+
+```text
+%ProgramData%\RelayMcpAgent\playwright
+```
+
+The UI creates local installation and test jobs. The Windows Service processes
+those jobs independently, so installation and tests continue after the Client
+window closes. Node.js LTS must be installed first; the Agent installs
+`@playwright/test` and Chromium into the service-owned runtime and browser
+cache.
 
 ## Secure Configuration
 

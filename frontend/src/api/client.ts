@@ -43,6 +43,8 @@ export const api = {
   // Projects
   listProjects: () =>
     request<{ projects: any[] }>("GET", "/projects"),
+  listTools: () =>
+    request<{ tools: any[]; categories: any[] }>("GET", "/tools"),
   createProject: (name: string, description?: string) =>
     request<{ project: any }>("POST", "/projects", { name, description }),
   deleteProject: (id: number) =>

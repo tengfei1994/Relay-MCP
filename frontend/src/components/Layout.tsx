@@ -1,5 +1,5 @@
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
-import { FolderOpen, Server, LogOut, Users, KeyRound, Boxes } from "lucide-react";
+import { FolderOpen, Server, LogOut, Users, KeyRound, Boxes, TerminalSquare } from "lucide-react";
 import { useAuth } from "../App";
 
 export default function Layout() {
@@ -40,6 +40,10 @@ export default function Layout() {
           <NavLink to="/instances" className={navCls}>
             <Boxes size={15} />
             LIMS Instances
+          </NavLink>
+          <NavLink to="/tools" className={navCls}>
+            <TerminalSquare size={15} />
+            MCP Tools
           </NavLink>
           <NavLink to="/tokens" className={navCls}>
             <KeyRound size={15} />

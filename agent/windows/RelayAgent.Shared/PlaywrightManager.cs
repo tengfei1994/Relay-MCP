@@ -772,18 +772,26 @@ test('SampleManager Web Client responds', async ({ page }) => {
         private static string FindExecutable(string name)
         {
             var path = Environment.GetEnvironmentVariable("PATH") ?? "";
+            var candidates = new List<string>();
             foreach (var directory in path.Split(Path.PathSeparator))
             {
                 try
                 {
                     var candidate = Path.Combine(directory.Trim(), name);
-                    if (File.Exists(candidate)) return candidate;
+                    candidates.Add(candidate);
                 }
                 catch { }
             }
-            var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-            var nodeCandidate = Path.Combine(programFiles, "nodejs", name);
-            return File.Exists(nodeCandidate) ? nodeCandidate : "";
+            candidates.Add(Path.Combine(Environment.GetEnvironmentVariable("ProgramW6432") ?? "", "nodejs", name));
+            candidates.Add(Path.Combine(Environment.GetEnvironmentVariable("ProgramFiles") ?? "", "nodejs", name));
+            candidates.Add(Path.Combine(Environment.GetEnvironmentVariable("ProgramFiles(x86)") ?? "", "nodejs", name));
+            candidates.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "nodejs", name));
+            candidates.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "nodejs", name));
+            candidates.Add(Path.Combine(@"C:\Program Files", "nodejs", name));
+            return candidates
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault(File.Exists) ?? "";
         }
 
         private static ProcessResult RunProcess(

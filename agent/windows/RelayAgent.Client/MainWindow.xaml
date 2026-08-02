@@ -326,7 +326,7 @@
                     </Button>
                 </StackPanel>
 
-                <TextBlock Grid.Row="2" Text="v0.5.2" Foreground="{StaticResource MutedBrush}" FontSize="12"
+                <TextBlock Grid.Row="2" Text="v0.5.3" Foreground="{StaticResource MutedBrush}" FontSize="12"
                            Margin="28,0,0,18" VerticalAlignment="Bottom"/>
             </Grid>
         </Border>
@@ -360,7 +360,7 @@
                     </StackPanel>
                     <StackPanel Grid.Column="3" VerticalAlignment="Center">
                         <TextBlock Text="VERSION" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
-                        <TextBlock Text="v0.5.2" Margin="0,5,0,0"/>
+                        <TextBlock Text="v0.5.3" Margin="0,5,0,0"/>
                     </StackPanel>
                     <StackPanel Grid.Column="4" VerticalAlignment="Center">
                         <TextBlock Text="LAST SEEN" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
@@ -984,7 +984,7 @@
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <StackPanel VerticalAlignment="Center">
                                 <TextBlock Text="Client update" FontSize="16" FontWeight="SemiBold"/>
-                                <TextBlock x:Name="UpdateStatusText" Text="Current version v0.5.2" Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0"/>
+                                <TextBlock x:Name="UpdateStatusText" Text="Current version v0.5.3" Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" Orientation="Horizontal">
                                 <Button Style="{StaticResource PrimaryButtonStyle}" Margin="0,0,10,0" Click="CheckUpdate_Click">Check update</Button>

@@ -1160,7 +1160,11 @@ namespace RelayAgent.Client
                 if (PlaywrightWebClients.Count > 0)
                 {
                     PlaywrightWebClientBox.SelectedIndex = 0;
-                    SetFooter("Discovered " + PlaywrightWebClients.Count + " Web Client URL(s) from IIS bindings.");
+                    var first = PlaywrightWebClients[0];
+                    SetFooter(
+                        "Discovered " + PlaywrightWebClients.Count +
+                        " Web Client URL(s). " + first.Name + " -> " +
+                        first.Url + " from " + first.Evidence + ".");
                 }
                 else
                 {

@@ -12,7 +12,7 @@ namespace RelayAgent.Client
     public sealed class AutoUpdater
     {
         private const string LatestReleaseApi = "https://api.github.com/repos/tengfei1994/Relay-MCP/releases/latest";
-        public const string CurrentRelease = "v0.5.3";
+        public const string CurrentRelease = "v0.6";
 
         public async Task<UpdateInfo> CheckLatestAsync()
         {

@@ -63,10 +63,27 @@ namespace RelayAgent.Shared
         public string Url { get; set; }
         public string Source { get; set; }
         public string PhysicalPath { get; set; }
+        public string ConfigPath { get; set; }
+        public string SiteName { get; set; }
+        public string Protocol { get; set; }
+        public string BindingInformation { get; set; }
+        public string Port { get; set; }
+        public string Host { get; set; }
+        public string ApplicationPath { get; set; }
 
         public string DisplayName
         {
             get { return Name + " · " + Url; }
+        }
+
+        public string Evidence
+        {
+            get
+            {
+                var source = string.IsNullOrWhiteSpace(Source) ? "IIS" : Source;
+                var binding = string.IsNullOrWhiteSpace(BindingInformation) ? "" : " (" + BindingInformation + ")";
+                return source + binding;
+            }
         }
     }
 
@@ -341,69 +358,52 @@ namespace RelayAgent.Shared
         public static IList<PlaywrightWebClientCandidate> DiscoverWebClients()
         {
             var candidates = new List<PlaywrightWebClientCandidate>();
-            try
+            foreach (var configPath in GetIisConfigPaths())
             {
-                var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-                var configPath = Path.Combine(windows, "System32", "inetsrv", "config", "applicationHost.config");
-                if (!File.Exists(configPath))
+                if (!File.Exists(configPath)) continue;
+                try
                 {
-                    return candidates;
+                    candidates.AddRange(DiscoverWebClientsFromConfig(
+                        configPath,
+                        "IIS applicationHost.config"));
+                }
+                catch
+                {
+                    // A 32-bit process can see a redirected path or lack access to one IIS view.
                 }
 
-                var document = new XmlDocument();
-                document.Load(configPath);
-                var sites = document.SelectNodes("/configuration/system.applicationHost/sites/site");
-                if (sites == null) return candidates;
-                foreach (XmlNode site in sites)
+                if (candidates.Count > 0)
                 {
-                    var siteName = GetAttribute(site, "name", "IIS site");
-                    var bindings = site.SelectNodes("bindings/binding");
-                    var applications = site.SelectNodes("application");
-                    if (bindings == null || applications == null) continue;
-                    foreach (XmlNode application in applications)
-                    {
-                        var applicationPath = GetAttribute(application, "path", "/");
-                        var virtualDirectory = application.SelectSingleNode("virtualDirectory[@path='/']");
-                        var physicalPath = virtualDirectory == null ? "" : Environment.ExpandEnvironmentVariables(GetAttribute(virtualDirectory, "physicalPath", ""));
-                        foreach (XmlNode binding in bindings)
-                        {
-                            var protocol = GetAttribute(binding, "protocol", "http").ToLowerInvariant();
-                            if (protocol != "http" && protocol != "https") continue;
-                            string host;
-                            string port;
-                            ParseIisBinding(GetAttribute(binding, "bindingInformation", "*:80:"), out host, out port);
-                            var url = protocol + "://" + host;
-                            var defaultPort = protocol == "https" ? "443" : "80";
-                            if (!string.IsNullOrWhiteSpace(port) && port != defaultPort) url += ":" + port;
-                            if (!string.IsNullOrWhiteSpace(applicationPath) && applicationPath != "/")
-                            {
-                                url += "/" + applicationPath.Trim('/');
-                            }
-                            candidates.Add(new PlaywrightWebClientCandidate
-                            {
-                                Name = siteName + (applicationPath == "/" ? "" : " " + applicationPath),
-                                Url = url.TrimEnd('/') + "/",
-                                Source = "IIS binding",
-                                PhysicalPath = physicalPath
-                            });
-                        }
-                    }
+                    break;
                 }
+            }
+
+            if (candidates.Count == 0)
+            {
+                candidates.AddRange(DiscoverWebClientsFromAppCmd());
+            }
+
+            return SortWebClientCandidates(candidates);
+        }
+
+        // Public overload keeps discovery testable with an applicationHost.config fixture.
+        public static IList<PlaywrightWebClientCandidate> DiscoverWebClients(string configPath)
+        {
+            if (string.IsNullOrWhiteSpace(configPath) || !File.Exists(configPath))
+            {
+                return new List<PlaywrightWebClientCandidate>();
+            }
+
+            try
+            {
+                return SortWebClientCandidates(DiscoverWebClientsFromConfig(
+                    configPath,
+                    "IIS applicationHost.config"));
             }
             catch
             {
-                // Discovery is advisory and must not block manual suite configuration.
+                return new List<PlaywrightWebClientCandidate>();
             }
-
-            return candidates
-                .GroupBy(item => item.Url, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
-                .OrderByDescending(item =>
-                    (item.Name + " " + item.PhysicalPath).IndexOf("SampleManager", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    (item.Name + " " + item.PhysicalPath).IndexOf("Thermo", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    (item.Name + " " + item.PhysicalPath).IndexOf("LIMS", StringComparison.OrdinalIgnoreCase) >= 0)
-                .ThenBy(item => item.Name)
-                .ToList();
         }
 
         public static void ClearArtifacts()
@@ -702,6 +702,211 @@ test('SampleManager Web Client responds', async ({ page }) => {
             return attribute == null || string.IsNullOrWhiteSpace(attribute.Value) ? fallback : attribute.Value;
         }
 
+        private static IList<PlaywrightWebClientCandidate> DiscoverWebClientsFromConfig(
+            string configPath,
+            string source)
+        {
+            var document = new XmlDocument();
+            document.Load(configPath);
+            return ParseWebClientDocument(document, source, configPath);
+        }
+
+        private static IList<PlaywrightWebClientCandidate> DiscoverWebClientsFromAppCmd()
+        {
+            var executable = FindIisExecutable("appcmd.exe");
+            if (string.IsNullOrWhiteSpace(executable))
+            {
+                return new List<PlaywrightWebClientCandidate>();
+            }
+
+            try
+            {
+                var result = RunProcess(
+                    executable,
+                    "list site /config /xml",
+                    Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                    30000,
+                    null);
+                if (result.ExitCode != 0 || string.IsNullOrWhiteSpace(result.Output))
+                {
+                    return new List<PlaywrightWebClientCandidate>();
+                }
+
+                var document = new XmlDocument();
+                document.LoadXml(result.Output);
+                return ParseWebClientDocument(document, "IIS appcmd", executable);
+            }
+            catch
+            {
+                return new List<PlaywrightWebClientCandidate>();
+            }
+        }
+
+        private static IList<PlaywrightWebClientCandidate> ParseWebClientDocument(
+            XmlDocument document,
+            string source,
+            string evidencePath)
+        {
+            var candidates = new List<PlaywrightWebClientCandidate>();
+            var sites = document.SelectNodes("//site");
+            if (sites == null) return candidates;
+
+            foreach (XmlNode site in sites)
+            {
+                var siteName = GetAttribute(site, "name", "IIS site");
+                var bindings = site.SelectNodes("bindings/binding");
+                var applications = site.SelectNodes("application");
+                if (bindings == null || bindings.Count == 0) continue;
+
+                if (applications == null || applications.Count == 0)
+                {
+                    AddWebClientBindings(
+                        candidates,
+                        siteName,
+                        "/",
+                        "",
+                        bindings,
+                        source,
+                        evidencePath);
+                    continue;
+                }
+
+                foreach (XmlNode application in applications)
+                {
+                    var applicationPath = GetAttribute(application, "path", "/");
+                    var virtualDirectory = application.SelectSingleNode("virtualDirectory[@path='/']");
+                    var physicalPath = virtualDirectory == null
+                        ? ""
+                        : Environment.ExpandEnvironmentVariables(
+                            GetAttribute(virtualDirectory, "physicalPath", ""));
+                    AddWebClientBindings(
+                        candidates,
+                        siteName,
+                        applicationPath,
+                        physicalPath,
+                        bindings,
+                        source,
+                        evidencePath);
+                }
+            }
+
+            return candidates;
+        }
+
+        private static void AddWebClientBindings(
+            IList<PlaywrightWebClientCandidate> candidates,
+            string siteName,
+            string applicationPath,
+            string physicalPath,
+            XmlNodeList bindings,
+            string source,
+            string evidencePath)
+        {
+            foreach (XmlNode binding in bindings)
+            {
+                var protocol = GetAttribute(binding, "protocol", "http").ToLowerInvariant();
+                if (protocol != "http" && protocol != "https") continue;
+
+                var bindingInformation = GetAttribute(binding, "bindingInformation", "*:80:");
+                string host;
+                string port;
+                ParseIisBinding(bindingInformation, out host, out port);
+                var url = BuildWebClientUrl(protocol, host, port, applicationPath);
+                candidates.Add(new PlaywrightWebClientCandidate
+                {
+                    Name = siteName + (applicationPath == "/" ? "" : " " + applicationPath),
+                    Url = url,
+                    Source = source,
+                    PhysicalPath = physicalPath,
+                    ConfigPath = evidencePath,
+                    SiteName = siteName,
+                    Protocol = protocol,
+                    BindingInformation = bindingInformation,
+                    Port = port,
+                    Host = host,
+                    ApplicationPath = applicationPath
+                });
+            }
+        }
+
+        private static string BuildWebClientUrl(
+            string protocol,
+            string host,
+            string port,
+            string applicationPath)
+        {
+            var url = protocol + "://" + (string.IsNullOrWhiteSpace(host) ? "localhost" : host);
+            var defaultPort = protocol == "https" ? "443" : "80";
+            if (!string.IsNullOrWhiteSpace(port) && port != defaultPort)
+            {
+                url += ":" + port;
+            }
+            if (!string.IsNullOrWhiteSpace(applicationPath) && applicationPath != "/")
+            {
+                url += "/" + applicationPath.Trim('/');
+            }
+            return url.TrimEnd('/') + "/";
+        }
+
+        private static IList<PlaywrightWebClientCandidate> SortWebClientCandidates(
+            IEnumerable<PlaywrightWebClientCandidate> candidates)
+        {
+            return candidates
+                .Where(item => item != null && !string.IsNullOrWhiteSpace(item.Url))
+                .GroupBy(item => item.Url, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group
+                    .OrderByDescending(item => IsPreferredWebClient(item))
+                    .ThenBy(item => item.Source)
+                    .First())
+                .OrderByDescending(IsPreferredWebClient)
+                .ThenBy(item => item.Name)
+                .ThenBy(item => item.Url)
+                .ToList();
+        }
+
+        private static bool IsPreferredWebClient(PlaywrightWebClientCandidate candidate)
+        {
+            var text = (candidate.Name ?? "") + " " + (candidate.PhysicalPath ?? "");
+            return text.IndexOf("SampleManager", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   text.IndexOf("Thermo", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   text.IndexOf("LIMS", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static IEnumerable<string> GetIisConfigPaths()
+        {
+            var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            if (string.IsNullOrWhiteSpace(windows))
+            {
+                windows = Environment.GetEnvironmentVariable("windir") ?? @"C:\Windows";
+            }
+
+            var paths = new[]
+            {
+                Path.Combine(windows, "Sysnative", "inetsrv", "config", "applicationHost.config"),
+                Path.Combine(windows, "System32", "inetsrv", "config", "applicationHost.config"),
+                Path.Combine(windows, "SysWOW64", "inetsrv", "config", "applicationHost.config")
+            };
+            return paths.Distinct(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static string FindIisExecutable(string name)
+        {
+            var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            if (string.IsNullOrWhiteSpace(windows))
+            {
+                windows = Environment.GetEnvironmentVariable("windir") ?? @"C:\Windows";
+            }
+
+            return new[]
+            {
+                Path.Combine(windows, "Sysnative", "inetsrv", name),
+                Path.Combine(windows, "System32", "inetsrv", name),
+                Path.Combine(windows, "SysWOW64", "inetsrv", name)
+            }
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(File.Exists) ?? "";
+        }
+
         private static void ParseIisBinding(string bindingInformation, out string host, out string port)
         {
             host = "localhost";
@@ -711,7 +916,9 @@ test('SampleManager Web Client responds', async ({ page }) => {
             if (parts.Length >= 3)
             {
                 var configuredHost = parts[parts.Length - 1];
-                if (!string.IsNullOrWhiteSpace(configuredHost) && configuredHost != "*")
+                if (!string.IsNullOrWhiteSpace(configuredHost) &&
+                    configuredHost != "*" &&
+                    configuredHost != "+")
                 {
                     host = configuredHost;
                 }

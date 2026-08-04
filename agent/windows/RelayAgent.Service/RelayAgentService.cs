@@ -209,6 +209,11 @@ namespace RelayAgent.Service
                 return await UploadArtifactAsync(client, config, job, token);
             }
 
+            if (string.Equals(job.kind, "playwright", StringComparison.OrdinalIgnoreCase))
+            {
+                return await ExecutePlaywrightJobAsync(client, config, job, token);
+            }
+
             var isPowerShell = string.Equals(job.kind, "powershell", StringComparison.OrdinalIgnoreCase);
             if (job.payload == null)
             {
@@ -287,6 +292,109 @@ namespace RelayAgent.Service
                     try { File.Delete(scriptPath); } catch { }
                 }
             }
+        }
+
+        private static async Task<AgentResult> ExecutePlaywrightJobAsync(
+            HttpClient client,
+            AgentConfig config,
+            AgentJob job,
+            CancellationToken token)
+        {
+            if (job.payload == null || string.IsNullOrWhiteSpace(job.payload.action))
+            {
+                return new AgentResult
+                {
+                    status = "failed",
+                    exitCode = 2,
+                    message = "Playwright job payload must contain an action."
+                };
+            }
+
+            var action = job.payload.action.Trim().ToLowerInvariant();
+            var serializer = new JavaScriptSerializer
+            {
+                MaxJsonLength = int.MaxValue,
+                RecursionLimit = 64
+            };
+
+            await PostEventAsync(client, config, job.jobId, "playwright_action=" + action, token);
+            switch (action)
+            {
+                case "runtime_status":
+                    return JsonResult(serializer.Serialize(PlaywrightManager.DetectRuntime()));
+
+                case "suite_list":
+                    return JsonResult(serializer.Serialize(PlaywrightManager.ReadSuites()));
+
+                case "suite_upload":
+                    var suite = PlaywrightManager.SaveUploadedSuite(
+                        job.payload.suiteJson,
+                        job.payload.testFileBase64,
+                        job.payload.expectedSha256);
+                    return JsonResult(serializer.Serialize(new
+                    {
+                        suite,
+                        testFileSha256 = job.payload.expectedSha256
+                    }));
+
+                case "run_suite":
+                    var dispatch = PlaywrightManager.QueueRunDetailed(
+                        job.payload.suiteId,
+                        job.payload.requestedRunId);
+                    return JsonResult(serializer.Serialize(dispatch));
+
+                case "run_status":
+                    var run = PlaywrightManager.ReadRun(job.payload.runId);
+                    if (run == null)
+                    {
+                        return new AgentResult
+                        {
+                            status = "failed",
+                            exitCode = 404,
+                            message = "Playwright run was not found: " + job.payload.runId
+                        };
+                    }
+                    return JsonResult(serializer.Serialize(run));
+
+                case "artifact_list":
+                    return JsonResult(serializer.Serialize(
+                        PlaywrightManager.ReadArtifactMetadata(job.payload.maximum <= 0 ? 250 : job.payload.maximum)));
+
+                case "artifact_download":
+                    var artifactPath = PlaywrightManager.ResolveArtifactPath(job.payload.artifactPath);
+                    var uploadJob = new AgentJob
+                    {
+                        jobId = job.jobId,
+                        kind = "artifact-upload",
+                        payload = new AgentPayload
+                        {
+                            remotePath = artifactPath,
+                            uploadPath = job.payload.uploadPath,
+                            uploadToken = job.payload.uploadToken
+                        },
+                        timeoutMs = job.timeoutMs
+                    };
+                    return await UploadArtifactAsync(client, config, uploadJob, token);
+
+                default:
+                    return new AgentResult
+                    {
+                        status = "failed",
+                        exitCode = 2,
+                        message = "Unsupported Playwright action: " + action
+                    };
+            }
+        }
+
+        private static AgentResult JsonResult(string json)
+        {
+            return new AgentResult
+            {
+                status = "completed",
+                exitCode = 0,
+                stdout = json ?? "{}",
+                stderr = ""
+            };
         }
 
         private static async Task<AgentResult> UploadArtifactAsync(
@@ -481,11 +589,20 @@ namespace RelayAgent.Service
 
         public sealed class AgentPayload
         {
+            public string action { get; set; }
             public string command { get; set; }
             public string script { get; set; }
             public string remotePath { get; set; }
             public string uploadPath { get; set; }
             public string uploadToken { get; set; }
+            public string suiteId { get; set; }
+            public string suiteJson { get; set; }
+            public string testFileBase64 { get; set; }
+            public string expectedSha256 { get; set; }
+            public string requestedRunId { get; set; }
+            public string runId { get; set; }
+            public int maximum { get; set; }
+            public string artifactPath { get; set; }
         }
 
         public sealed class AgentResult

@@ -17,7 +17,7 @@ export interface AgentJob {
   id: string;
   userId: number;
   agentId: string;
-  kind: "exec" | "powershell" | "artifact-upload";
+  kind: "exec" | "powershell" | "artifact-upload" | "playwright";
   payload: Record<string, unknown>;
   timeoutMs: number;
   status: string;
@@ -180,7 +180,12 @@ export class AgentStore {
     `).run(status, new Date().toISOString(), jobId);
   }
 
-  async waitForJob(jobId: string, timeoutMs: number, signal?: AbortSignal): Promise<AgentJob> {
+  async waitForJob(
+    jobId: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+    onUpdate?: (job: AgentJob) => void
+  ): Promise<AgentJob> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (signal?.aborted) {
@@ -189,6 +194,7 @@ export class AgentStore {
       }
       const job = this.getJob(jobId);
       if (!job) throw new Error(`Agent job '${jobId}' disappeared`);
+      onUpdate?.(job);
       if (job.status === "completed" || job.status === "failed") return job;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }

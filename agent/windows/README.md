@@ -69,6 +69,21 @@ window closes. Node.js LTS must be installed first; the Agent installs
 `@playwright/test` and Chromium into the service-owned runtime and browser
 cache.
 
+The Relay MCP can also control this same runtime through a dedicated
+`kind=playwright` Agent job. The MCP tools do not invoke PowerShell:
+
+- `playwright_runtime_status` reads runtime readiness.
+- `playwright_suite_list` and `playwright_suite_upload` manage suite metadata
+  and UTF-8 test files with SHA-256 verification.
+- `playwright_run_suite` creates a formal queued run record under `runs`.
+- `playwright_run_status` reads that record after the service worker starts or
+  completes the test.
+- `playwright_artifact_list` and `playwright_artifact_download` list and
+  stream bounded test artifacts through Relay with byte/hash verification.
+
+The Client and MCP share the same service-owned files, so a run queued from
+either surface appears in the Client's Test Runs page.
+
 ## Secure Configuration
 
 Relay URL and Agent token values are encrypted with Windows DPAPI using
@@ -160,7 +175,9 @@ POST /api/agents/{agentId}/jobs/{jobId}/result
 ```
 
 These endpoints are the Relay Agent protocol surface. The agent can execute
-queued `cmd.exe` commands and PowerShell jobs, then returns stdout, stderr, and
-exit code to the Relay server. Payloads are written to short-lived `.cmd` or
-`.ps1` files under `%ProgramData%\RelayMcpAgent\jobs`; PowerShell runs with
-`powershell.exe -File`. This avoids the Windows command-line length limit.
+queued `cmd.exe` commands and PowerShell jobs, process dedicated Playwright
+actions, and upload binary artifacts. Payloads for shell work are written to
+short-lived `.cmd` or `.ps1` files under `%ProgramData%\RelayMcpAgent\jobs`;
+PowerShell runs with `powershell.exe -File`. Playwright work uses the
+service-owned runtime and queue directly, avoiding command-line quoting and
+length limits.

@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
@@ -48,6 +49,7 @@ namespace RelayAgent.Shared
         public string SuiteId { get; set; }
         public string SuiteName { get; set; }
         public string Status { get; set; }
+        public string QueuedAt { get; set; }
         public string StartedAt { get; set; }
         public string FinishedAt { get; set; }
         public long DurationMs { get; set; }
@@ -55,6 +57,22 @@ namespace RelayAgent.Shared
         public string Output { get; set; }
         public string ArtifactDirectory { get; set; }
         public string Error { get; set; }
+    }
+
+    public sealed class PlaywrightDispatch
+    {
+        public string TaskId { get; set; }
+        public string RunId { get; set; }
+        public string SuiteId { get; set; }
+        public string Status { get; set; }
+    }
+
+    public sealed class PlaywrightArtifact
+    {
+        public string Name { get; set; }
+        public string RelativePath { get; set; }
+        public long Bytes { get; set; }
+        public string LastWriteTime { get; set; }
     }
 
     public sealed class PlaywrightWebClientCandidate
@@ -92,6 +110,7 @@ namespace RelayAgent.Shared
         public string Id { get; set; }
         public string Kind { get; set; }
         public string SuiteId { get; set; }
+        public string RunId { get; set; }
         public string CreatedAt { get; set; }
     }
 
@@ -242,6 +261,11 @@ namespace RelayAgent.Shared
 
         public static string QueueRun(string suiteId)
         {
+            return QueueRunDetailed(suiteId, null).TaskId;
+        }
+
+        public static PlaywrightDispatch QueueRunDetailed(string suiteId, string requestedRunId)
+        {
             var suite = ReadSuites().FirstOrDefault(item => item.Id == suiteId);
             if (suite == null)
             {
@@ -251,13 +275,35 @@ namespace RelayAgent.Shared
             {
                 throw new InvalidOperationException("Playwright suite is disabled.");
             }
-            return QueueTask(new PlaywrightTask
+            EnsureDirectories();
+            var runId = string.IsNullOrWhiteSpace(requestedRunId)
+                ? "run-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + "-" + Guid.NewGuid().ToString("N").Substring(0, 6)
+                : requestedRunId;
+            var queuedAt = DateTimeOffset.Now.ToString("o");
+            SaveRun(new PlaywrightRun
+            {
+                Id = runId,
+                SuiteId = suite.Id,
+                SuiteName = suite.Name,
+                Status = "queued",
+                QueuedAt = queuedAt,
+                ArtifactDirectory = Path.Combine(ArtifactsPath, runId)
+            });
+            var taskId = QueueTask(new PlaywrightTask
             {
                 Id = "pw-run-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 Kind = "run",
                 SuiteId = suiteId,
+                RunId = runId,
                 CreatedAt = DateTimeOffset.UtcNow.ToString("o")
             });
+            return new PlaywrightDispatch
+            {
+                TaskId = taskId,
+                RunId = runId,
+                SuiteId = suite.Id,
+                Status = "queued"
+            };
         }
 
         public static IList<PlaywrightSuite> ReadSuites()
@@ -345,6 +391,19 @@ namespace RelayAgent.Shared
                 .ToList();
         }
 
+        public static PlaywrightRun ReadRun(string runId)
+        {
+            if (string.IsNullOrWhiteSpace(runId)) return null;
+            EnsureDirectories();
+            var path = Path.Combine(RunsPath, runId + ".json");
+            var fullRunsPath = Path.GetFullPath(RunsPath) + Path.DirectorySeparatorChar;
+            if (!Path.GetFullPath(path).StartsWith(fullRunsPath, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Run ID resolves outside the Playwright runs directory.");
+            }
+            return ReadJson<PlaywrightRun>(path);
+        }
+
         public static IList<FileInfo> ReadArtifacts(int maximum)
         {
             EnsureDirectories();
@@ -353,6 +412,73 @@ namespace RelayAgent.Shared
                 .OrderByDescending(file => file.LastWriteTimeUtc)
                 .Take(Math.Max(1, maximum))
                 .ToList();
+        }
+
+        public static IList<PlaywrightArtifact> ReadArtifactMetadata(int maximum)
+        {
+            EnsureDirectories();
+            var fullArtifactsPath = Path.GetFullPath(ArtifactsPath) + Path.DirectorySeparatorChar;
+            return Directory.EnumerateFiles(ArtifactsPath, "*", SearchOption.AllDirectories)
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .Take(Math.Max(1, maximum))
+                .Select(file => new PlaywrightArtifact
+                {
+                    Name = file.Name,
+                    RelativePath = file.FullName.Substring(fullArtifactsPath.Length).Replace(Path.DirectorySeparatorChar, '/'),
+                    Bytes = file.Length,
+                    LastWriteTime = file.LastWriteTimeUtc.ToString("o")
+                })
+                .ToList();
+        }
+
+        public static string ResolveArtifactPath(string relativePath)
+        {
+            if (string.IsNullOrWhiteSpace(relativePath))
+            {
+                throw new InvalidOperationException("Artifact path is required.");
+            }
+            EnsureDirectories();
+            var fullArtifactsPath = Path.GetFullPath(ArtifactsPath) + Path.DirectorySeparatorChar;
+            var candidate = Path.GetFullPath(Path.Combine(ArtifactsPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+            if (!candidate.StartsWith(fullArtifactsPath, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Artifact path resolves outside the Playwright artifacts directory.");
+            }
+            if (!File.Exists(candidate))
+            {
+                throw new FileNotFoundException("Playwright artifact was not found.", relativePath);
+            }
+            return candidate;
+        }
+
+        public static PlaywrightSuite SaveUploadedSuite(string suiteJson, string testFileBase64, string expectedSha256)
+        {
+            if (string.IsNullOrWhiteSpace(suiteJson))
+            {
+                throw new InvalidOperationException("Suite metadata is required.");
+            }
+            if (string.IsNullOrWhiteSpace(testFileBase64))
+            {
+                throw new InvalidOperationException("Playwright test file content is required.");
+            }
+            var suite = Serializer.Deserialize<PlaywrightSuite>(suiteJson);
+            if (suite == null) throw new InvalidOperationException("Suite metadata could not be parsed.");
+            var bytes = Convert.FromBase64String(testFileBase64);
+            using (var hash = SHA256.Create())
+            {
+                var actual = BitConverter.ToString(hash.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+                if (!string.IsNullOrWhiteSpace(expectedSha256) &&
+                    !string.Equals(actual, expectedSha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("Playwright test file SHA-256 mismatch: expected " + expectedSha256 + ", received " + actual);
+                }
+            }
+            var saved = SaveSuite(suite);
+            var testPath = Path.GetFullPath(Path.Combine(TestsPath, saved.TestFile));
+            Directory.CreateDirectory(Path.GetDirectoryName(testPath));
+            File.WriteAllBytes(testPath, bytes);
+            return saved;
         }
 
         public static IList<PlaywrightWebClientCandidate> DiscoverWebClients()
@@ -440,9 +566,10 @@ namespace RelayAgent.Shared
                 return false;
             }
 
+            PlaywrightTask task = null;
             try
             {
-                var task = ReadJson<PlaywrightTask>(runningFile);
+                task = ReadJson<PlaywrightTask>(runningFile);
                 if (task == null) throw new InvalidOperationException("Playwright task could not be read.");
                 if (task.Kind == "install")
                 {
@@ -456,6 +583,10 @@ namespace RelayAgent.Shared
             }
             catch (Exception ex)
             {
+                if (task != null && task.Kind == "run" && !string.IsNullOrWhiteSpace(task.RunId))
+                {
+                    MarkRunFailed(task.RunId, ex);
+                }
                 var state = LoadRuntimeState();
                 state.ActiveTask = "";
                 state.Progress = 0;
@@ -468,6 +599,24 @@ namespace RelayAgent.Shared
             finally
             {
                 try { File.Delete(runningFile); } catch { }
+            }
+        }
+
+        private static void MarkRunFailed(string runId, Exception error)
+        {
+            try
+            {
+                var run = ReadRun(runId);
+                if (run == null) return;
+                run.Status = "failed";
+                run.ExitCode = 1;
+                run.Error = error == null ? "Playwright task failed." : error.Message;
+                run.FinishedAt = DateTimeOffset.Now.ToString("o");
+                SaveRun(run);
+            }
+            catch
+            {
+                // Preserve the original task failure; the runtime log contains the diagnostic.
             }
         }
 
@@ -543,15 +692,26 @@ namespace RelayAgent.Shared
                 throw new InvalidOperationException("Playwright runtime is not ready.");
             }
 
-            var run = new PlaywrightRun
+            var run = string.IsNullOrWhiteSpace(task.RunId) ? null : ReadRun(task.RunId);
+            if (run == null)
             {
-                Id = "run-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                SuiteId = suite.Id,
-                SuiteName = suite.Name,
-                Status = "running",
-                StartedAt = DateTimeOffset.Now.ToString("o"),
-                ArtifactDirectory = Path.Combine(ArtifactsPath, task.Id)
-            };
+                run = new PlaywrightRun
+                {
+                    Id = "run-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + "-" + Guid.NewGuid().ToString("N").Substring(0, 6),
+                    SuiteId = suite.Id,
+                    SuiteName = suite.Name,
+                    QueuedAt = DateTimeOffset.Now.ToString("o"),
+                    ArtifactDirectory = Path.Combine(ArtifactsPath, task.Id)
+                };
+            }
+            run.SuiteId = suite.Id;
+            run.SuiteName = suite.Name;
+            run.Status = "running";
+            run.StartedAt = DateTimeOffset.Now.ToString("o");
+            if (string.IsNullOrWhiteSpace(run.ArtifactDirectory))
+            {
+                run.ArtifactDirectory = Path.Combine(ArtifactsPath, task.Id);
+            }
             Directory.CreateDirectory(run.ArtifactDirectory);
             SaveRun(run);
 

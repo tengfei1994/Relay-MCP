@@ -60,6 +60,7 @@ const MCP_PORT = Number(process.env.MCP_PORT ?? 3001);
 const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-in-production";
 const DB_PATH = process.env.DB_PATH ?? "./data/app.db";
 const RELAY_PUBLIC_URL = (process.env.RELAY_PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 3000}`).replace(/\/$/, "");
+const RELAY_MCP_VERSION = process.env.RELAY_MCP_VERSION ?? "0.5.0";
 
 interface McpUser {
   id: number;
@@ -137,7 +138,7 @@ function createMcpServer(user: McpUser) {
   const registry = new ProjectRegistry();
   const server = new McpServer({
     name: "remote-ops",
-    version: "0.5.0",
+    version: RELAY_MCP_VERSION,
   });
 
   const relayRoute = (tool: string, extra: Record<string, unknown> = {}) => ({
@@ -233,6 +234,50 @@ function createMcpServer(user: McpUser) {
           });
         })();
     return { project, ps, runner };
+  }
+
+  function getPlaywrightRunner(
+    projectName?: string,
+    environment?: string,
+    selector: { serverId?: number; serverName?: string } = {}
+  ) {
+    const connection = getRunner(projectName, environment, selector);
+    if (!(connection.runner instanceof AgentRemoteRunner)) {
+      throw new Error(
+        `Playwright tools require an Agent connection for project '${connection.project.name}' environment '${connection.ps.environment}'. ` +
+        `Selected server '${connection.ps.server.name}' uses ${connection.ps.connectionMode}.`
+      );
+    }
+    return {
+      ...connection,
+      runner: connection.runner as AgentRemoteRunner,
+    };
+  }
+
+  async function dispatchPlaywright(
+    runner: AgentRemoteRunner,
+    payload: Record<string, unknown>,
+    timeoutMs: number,
+    context?: JobContext
+  ) {
+    const result = await runner.dispatchPlaywright(payload, timeoutMs, executionForJob(context));
+    ensureRemoteSuccess(result);
+    const text = result.stdout.trim();
+    if (!text) return {};
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      throw new Error(`Agent Playwright returned invalid JSON: ${compactText(text, 4000)}`);
+    }
+  }
+
+  function playwrightSelectors() {
+    return {
+      project: z.string().optional().describe("Project name. Optional when the MCP token has a default project."),
+      environment: z.string().optional().describe("Exact project environment key."),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server name."),
+    };
   }
 
   function getSampleManagerTarget(
@@ -433,12 +478,118 @@ function createMcpServer(user: McpUser) {
         text: summarizeJson({
           ...relayRoute("relay_mcp_info"),
           namespace: "relay_",
-          version: "0.5.0",
+          version: RELAY_MCP_VERSION,
           transport: "streamable-http",
           mcpPort: MCP_PORT,
+          preferredTools: {
+            routeCheck: "relay_route_check",
+            projectLinks: "relay_project_server_links_list",
+            powershell: "relay_exec_remote_powershell",
+            script: "relay_exec_remote_script",
+            playwrightRuntime: "playwright_runtime_status",
+            playwrightRun: "playwright_run_suite",
+            playwrightRunStatus: "playwright_run_status",
+            jobStatus: "job_status",
+            jobList: "job_list",
+          },
+          legacyAliases: {
+            exec_remote: "relay_exec_remote",
+            exec_remote_powershell: "relay_exec_remote_powershell",
+            exec_remote_script: "relay_exec_remote_script",
+            project_server_links_list: "relay_project_server_links_list",
+          },
         }),
       }],
     })
+  );
+
+  server.tool(
+    "relay_core_tools",
+    "Return the stable preferred Relay MCP tools and legacy aliases. This tool is read-only and does not contact a remote server.",
+    {},
+    async () => ({
+      content: [{
+        type: "text",
+        text: summarizeJson({
+          ...relayRoute("relay_core_tools"),
+          readOnly: true,
+          instruction: "Use the preferred relay_* names below for new calls. Do not route remote work through a local shell.",
+          preferredTools: {
+            routeCheck: "relay_route_check",
+            projectLinks: "relay_project_server_links_list",
+            powershell: "relay_exec_remote_powershell",
+            script: "relay_exec_remote_script",
+            playwrightRuntime: "playwright_runtime_status",
+            playwrightRun: "playwright_run_suite",
+            playwrightRunStatus: "playwright_run_status",
+            jobStatus: "job_status",
+            jobList: "job_list",
+          },
+          legacyAliases: {
+            exec_remote: "relay_exec_remote",
+            exec_remote_powershell: "relay_exec_remote_powershell",
+            exec_remote_script: "relay_exec_remote_script",
+            project_server_links_list: "relay_project_server_links_list",
+          },
+        }),
+      }],
+    })
+  );
+
+  server.tool(
+    "relay_route_check",
+    "Check that the request is being handled by Relay MCP and optionally resolve a project/server target without executing a remote command.",
+    {
+      project: z.string().optional().describe("Optional project name."),
+      environment: z.string().optional().describe("Optional exact environment key."),
+      serverId: z.number().int().optional().describe("Optional exact linked server ID."),
+      serverName: z.string().optional().describe("Optional exact linked server name."),
+    },
+    async ({ project: projectName, environment, serverId, serverName }) => {
+      const projects = listAllowedProjects();
+      const result: Record<string, unknown> = {
+        ...relayRoute("relay_route_check"),
+        readOnly: true,
+        remoteExecutionAttempted: false,
+        mcpServerVersion: RELAY_MCP_VERSION,
+        mcpPort: MCP_PORT,
+        user: user.username,
+        projects: projects.map((project) => ({
+          id: project.id,
+          name: project.name,
+          serverLinks: projectLinkSummaries(project.id),
+        })),
+        selected: null,
+      };
+
+      if (projectName || environment || serverId !== undefined || serverName) {
+        try {
+          const resolvedProjectName = resolveProjectName(projectName);
+          const { ps } = getRunner(resolvedProjectName, environment, { serverId, serverName });
+          result.selected = {
+            project: resolvedProjectName,
+            environment: ps.environment,
+            serverId: ps.server.id,
+            serverName: ps.server.name,
+            connectionMode: ps.connectionMode,
+            status: ps.server.status,
+            agentId: ps.server.agentId,
+            limsInstance: ps.limsInstance ? {
+              id: ps.limsInstance.id,
+              name: ps.limsInstance.name,
+              version: ps.limsInstance.version,
+              runtimeKind: ps.limsInstance.runtimeKind,
+              databaseHost: ps.limsInstance.databaseHost,
+              databaseName: ps.limsInstance.databaseName,
+            } : undefined,
+          };
+        } catch (error) {
+          result.selectionError = error instanceof Error ? error.message : String(error);
+        }
+      }
+
+      return { content: [{ type: "text", text: summarizeJson(result) }] };
+    }
   );
 
   server.tool(
@@ -486,7 +637,7 @@ function createMcpServer(user: McpUser) {
   // ── Tool: exec_remote ──────────────────────────────────────────────────────
   server.tool(
     "exec_remote",
-    "Execute a shell command on the remote server for a project",
+    "LEGACY compatibility tool. Prefer relay_exec_remote for new calls; this tool still executes through Relay MCP.",
     {
       project: z.string().optional().describe("Project name. Optional when the MCP token has a default project."),
       command: z.string().describe("Shell command to run"),
@@ -520,15 +671,26 @@ function createMcpServer(user: McpUser) {
       };
       if (async) {
         const job = startJob(user, resolvedProjectName, "exec_remote", { command, environment, serverId, serverName, timeoutMs }, work);
-        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+        return {
+          content: [{
+            type: "text",
+            text: summarizeJson({
+              ...relayRoute("exec_remote"),
+              legacyCompatibility: true,
+              dispatch: "queued",
+              jobId: job.id,
+              status: job.status,
+            }),
+          }],
+        };
       }
-      return { content: [{ type: "text", text: await work() }] };
+      return { content: [{ type: "text", text: `${JSON.stringify(relayRoute("exec_remote"))}\n${await work()}` }] };
     }
   );
 
   server.tool(
     "exec_remote_powershell",
-    "Execute PowerShell on a linked Windows remote server using EncodedCommand, avoiding shell quoting issues with $ variables. Supports structured JSON output.",
+    "LEGACY compatibility tool. Prefer relay_exec_remote_powershell for new calls; this tool still executes through Relay MCP using EncodedCommand.",
     {
       project: z.string().optional().describe("Project name. Optional when the MCP token has a default project."),
       script: z.string().describe("PowerShell script content to execute"),
@@ -625,15 +787,26 @@ function createMcpServer(user: McpUser) {
           maxStringLength,
           scriptLength: script.length,
         }, work);
-        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+        return {
+          content: [{
+            type: "text",
+            text: summarizeJson({
+              ...relayRoute("exec_remote_powershell"),
+              legacyCompatibility: true,
+              dispatch: "queued",
+              jobId: job.id,
+              status: job.status,
+            }),
+          }],
+        };
       }
-      return { content: [{ type: "text", text: await work() }] };
+      return { content: [{ type: "text", text: `${JSON.stringify(relayRoute("exec_remote_powershell"))}\n${await work()}` }] };
     }
   );
 
   server.tool(
     "exec_remote_script",
-    "Write a PowerShell script to a linked Windows remote server, execute it, and clean it up automatically on success.",
+    "LEGACY compatibility tool. Prefer relay_exec_remote_script for new calls; this tool still executes through Relay MCP.",
     {
       project: z.string().optional().describe("Project name. Optional when the MCP token has a default project."),
       script: z.string().describe("PowerShell script content to write and execute"),
@@ -702,11 +875,27 @@ function createMcpServer(user: McpUser) {
         scriptLength: script.length,
       }, work);
       if (async) {
-        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+        return {
+          content: [{
+            type: "text",
+            text: summarizeJson({
+              ...relayRoute("exec_remote_script"),
+              legacyCompatibility: true,
+              dispatch: "queued",
+              jobId: job.id,
+              status: job.status,
+            }),
+          }],
+        };
       }
       const completed = await waitForTrackedJob(job.id, Math.min(90000, Math.max(1000, timeoutMs)));
       if (completed?.status === "succeeded") {
-        return { content: [{ type: "text", text: completed.summary ?? summarizeJson(completed) }] };
+        return {
+          content: [{
+            type: "text",
+            text: `${JSON.stringify(relayRoute("exec_remote_script"))}\n${completed.summary ?? summarizeJson(completed)}`,
+          }],
+        };
       }
       if (completed && completed.status !== "running") {
         return { content: [{ type: "text", text: summarizeJson(completed) }] };
@@ -715,9 +904,11 @@ function createMcpServer(user: McpUser) {
         content: [{
           type: "text",
           text: summarizeJson({
+            ...relayRoute("exec_remote_script"),
             jobId: job.id,
             status: completed?.status ?? "running",
             phase: completed?.phase,
+            dispatch: "tracked",
             message: "Synchronous wait limit reached; the tracked job continues. Use job_status.",
           }),
         }],
@@ -752,10 +943,401 @@ function createMcpServer(user: McpUser) {
       return result;
     });
   };
-  registerRelayAlias("exec_remote", "relay_exec_remote", "Execute a shell command through Relay MCP using an explicit Relay tool name.");
-  registerRelayAlias("exec_remote_powershell", "relay_exec_remote_powershell", "Execute PowerShell through Relay MCP using an explicit Relay tool name.");
-  registerRelayAlias("exec_remote_script", "relay_exec_remote_script", "Upload and execute a PowerShell script through Relay MCP using an explicit Relay tool name.");
-  registerRelayAlias("project_server_links_list", "relay_project_server_links_list", "List project server links through Relay MCP using an explicit Relay tool name.");
+  registerRelayAlias("exec_remote", "relay_exec_remote", "PREFERRED: execute a shell command through Relay MCP on the selected linked server.");
+  registerRelayAlias("exec_remote_powershell", "relay_exec_remote_powershell", "PREFERRED: execute EncodedCommand PowerShell through Relay MCP on the selected linked server.");
+  registerRelayAlias("exec_remote_script", "relay_exec_remote_script", "PREFERRED: upload and execute a PowerShell script through Relay MCP on the selected linked server.");
+  registerRelayAlias("project_server_links_list", "relay_project_server_links_list", "PREFERRED: list selectable project server links through Relay MCP.");
+
+  // ── Tools: dedicated Playwright control plane ─────────────────────────────
+  server.tool(
+    "playwright_runtime_status",
+    "Inspect the Agent-owned Node.js, Playwright, Chromium, cache, and installation state without using remote PowerShell.",
+    {
+      ...playwrightSelectors(),
+      timeoutMs: z.number().int().positive().optional().describe("Agent dispatch timeout; default 30000."),
+    },
+    async ({ project: projectName, environment, serverId, serverName, timeoutMs = 30000 }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { ps, runner } = getPlaywrightRunner(projectName, environment, { serverId, serverName });
+      const runtime = await dispatchPlaywright(runner, { action: "runtime_status" }, timeoutMs);
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            ...relayRoute("playwright_runtime_status"),
+            project: resolvedProjectName,
+            environment: ps.environment,
+            serverId: ps.server.id,
+            serverName: ps.server.name,
+            connectionMode: ps.connectionMode,
+            runtime,
+          }),
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "playwright_suite_list",
+    "List Playwright suites stored by the selected Relay Agent. This reads the Agent Playwright store directly.",
+    {
+      ...playwrightSelectors(),
+      timeoutMs: z.number().int().positive().optional().describe("Agent dispatch timeout; default 30000."),
+    },
+    async ({ project: projectName, environment, serverId, serverName, timeoutMs = 30000 }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { ps, runner } = getPlaywrightRunner(projectName, environment, { serverId, serverName });
+      const suites = await dispatchPlaywright(runner, { action: "suite_list" }, timeoutMs);
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            ...relayRoute("playwright_suite_list"),
+            project: resolvedProjectName,
+            environment: ps.environment,
+            serverId: ps.server.id,
+            serverName: ps.server.name,
+            suites,
+          }),
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "playwright_suite_upload",
+    "Upload a Playwright test file and suite metadata to the selected Agent with a SHA-256 gate. The Agent writes the file into its service-owned Playwright tests directory.",
+    {
+      ...playwrightSelectors(),
+      suite: z.object({
+        id: z.string().max(160).optional(),
+        name: z.string().min(1).max(200),
+        baseUrl: z.string().url(),
+        testFile: z.string().min(1).max(240),
+        headless: z.boolean().optional().default(true),
+        timeoutSeconds: z.number().int().min(10).max(3600).optional().default(120),
+        retries: z.number().int().min(0).max(5).optional().default(0),
+        enabled: z.boolean().optional().default(true),
+      }),
+      testFileContent: z.string().min(1).max(5_000_000).describe("UTF-8 Playwright test source."),
+      sha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional().describe("Expected SHA-256 of the UTF-8 test source. If omitted, Relay calculates it."),
+      timeoutMs: z.number().int().positive().optional().describe("Agent dispatch timeout; default 120000."),
+    },
+    async ({
+      project: projectName,
+      environment,
+      serverId,
+      serverName,
+      suite,
+      testFileContent,
+      sha256,
+      timeoutMs = 120000,
+    }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { ps, runner } = getPlaywrightRunner(projectName, environment, { serverId, serverName });
+      const bytes = Buffer.from(testFileContent, "utf8");
+      const calculatedSha256 = createHash("sha256").update(bytes).digest("hex");
+      if (sha256 && sha256.toLowerCase() !== calculatedSha256) {
+        throw new Error(`Playwright test file SHA-256 mismatch: expected ${sha256.toLowerCase()}, calculated ${calculatedSha256}`);
+      }
+      const result = await dispatchPlaywright(
+        runner,
+        {
+          action: "suite_upload",
+          suiteJson: JSON.stringify(suite),
+          testFileBase64: bytes.toString("base64"),
+          expectedSha256: calculatedSha256,
+        },
+        timeoutMs
+      );
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        project: resolvedProjectName,
+        tool: "playwright_suite_upload",
+        environment: ps.environment,
+        serverId: ps.server.id,
+        serverName: ps.server.name,
+        testFile: suite.testFile,
+        bytes: bytes.length,
+        sha256: calculatedSha256,
+      });
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            ...relayRoute("playwright_suite_upload"),
+            project: resolvedProjectName,
+            environment: ps.environment,
+            serverId: ps.server.id,
+            serverName: ps.server.name,
+            bytes: bytes.length,
+            sha256: calculatedSha256,
+            suite: (result as any).suite,
+            agentVerified: true,
+          }),
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "playwright_run_suite",
+    "Queue a dedicated Playwright test run on the selected Agent. It creates a formal run record for the Agent Client Test Runs page; it does not execute through PowerShell.",
+    {
+      ...playwrightSelectors(),
+      suiteId: z.string().min(1).max(160),
+      timeoutMs: z.number().int().positive().optional().describe("Agent queue dispatch timeout; default 120000."),
+    },
+    async ({ project: projectName, environment, serverId, serverName, suiteId, timeoutMs = 120000 }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { ps, runner } = getPlaywrightRunner(projectName, environment, { serverId, serverName });
+      const requestedRunId = `run-${Date.now()}-${randomUUID().slice(0, 8)}`;
+      const job = startJob(
+        user,
+        resolvedProjectName,
+        "playwright_run_suite",
+        { environment, serverId, serverName, suiteId, timeoutMs, requestedRunId },
+        async (context) => {
+          const result = await dispatchPlaywright(
+            runner,
+            { action: "run_suite", suiteId, requestedRunId },
+            timeoutMs,
+            context
+          );
+          writeAudit({
+            userId: user.id,
+            username: user.username,
+            project: resolvedProjectName,
+            tool: "playwright_run_suite",
+            environment: ps.environment,
+            serverId: ps.server.id,
+            serverName: ps.server.name,
+            suiteId,
+            runId: requestedRunId,
+          });
+          return summarizeJson({
+            ...relayRoute("playwright_run_suite"),
+            project: resolvedProjectName,
+            environment: ps.environment,
+            serverId: ps.server.id,
+            serverName: ps.server.name,
+            suiteId,
+            runId: requestedRunId,
+            status: "queued",
+            agentDispatch: result,
+          });
+        }
+      );
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            ...relayRoute("playwright_run_suite"),
+            project: resolvedProjectName,
+            environment: ps.environment,
+            serverId: ps.server.id,
+            serverName: ps.server.name,
+            jobId: job.id,
+            runId: requestedRunId,
+            suiteId,
+            status: "queued",
+            message: "Dedicated Playwright run queued. Use playwright_run_status for the formal run record and job_status for dispatch diagnostics.",
+          }),
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "playwright_run_status",
+    "Read the formal Playwright run record created by the Agent, including pass/fail state, output, duration, and artifact directory.",
+    {
+      ...playwrightSelectors(),
+      runId: z.string().min(1).max(200),
+      timeoutMs: z.number().int().positive().optional().describe("Agent dispatch timeout; default 30000."),
+    },
+    async ({ project: projectName, environment, serverId, serverName, runId, timeoutMs = 30000 }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { ps, runner } = getPlaywrightRunner(projectName, environment, { serverId, serverName });
+      const run = await dispatchPlaywright(runner, { action: "run_status", runId }, timeoutMs);
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            ...relayRoute("playwright_run_status"),
+            project: resolvedProjectName,
+            environment: ps.environment,
+            serverId: ps.server.id,
+            serverName: ps.server.name,
+            run,
+          }),
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "playwright_artifact_list",
+    "List bounded Playwright artifact metadata on the selected Agent without returning the binary contents.",
+    {
+      ...playwrightSelectors(),
+      maximum: z.number().int().min(1).max(5000).optional().describe("Maximum artifacts to list; default 250."),
+      timeoutMs: z.number().int().positive().optional().describe("Agent dispatch timeout; default 30000."),
+    },
+    async ({ project: projectName, environment, serverId, serverName, maximum = 250, timeoutMs = 30000 }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { ps, runner } = getPlaywrightRunner(projectName, environment, { serverId, serverName });
+      const artifacts = await dispatchPlaywright(runner, { action: "artifact_list", maximum }, timeoutMs);
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            ...relayRoute("playwright_artifact_list"),
+            project: resolvedProjectName,
+            environment: ps.environment,
+            serverId: ps.server.id,
+            serverName: ps.server.name,
+            artifacts,
+          }),
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "playwright_artifact_download",
+    "Stream a Playwright artifact from the Agent through Relay into the project workspace with byte and SHA-256 verification, then return a short-lived download URL.",
+    {
+      ...playwrightSelectors(),
+      artifactPath: z.string().min(1).describe("Relative path returned by playwright_artifact_list."),
+      workspacePath: z.string().min(1).describe("Relative destination path in the Relay project workspace."),
+      overwrite: z.boolean().optional().describe("Replace an existing workspace file. Default false."),
+      ttlSeconds: z.number().int().min(60).max(3600).optional().describe("Download URL lifetime; default 900 seconds."),
+      timeoutMs: z.number().int().positive().optional().describe("Agent transfer timeout; default 1800000."),
+      async: z.boolean().optional().describe("Return a Relay job immediately; default true."),
+    },
+    async ({
+      project: projectName,
+      environment,
+      serverId,
+      serverName,
+      artifactPath,
+      workspacePath,
+      overwrite = false,
+      ttlSeconds,
+      timeoutMs = 1_800_000,
+      async = true,
+    }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { project, ps, runner } = getPlaywrightRunner(projectName, environment, { serverId, serverName });
+      const destination = resolveWorkspacePath(project.workspacePath, workspacePath);
+      if (existsSync(destination) && !overwrite) {
+        throw new Error(`Relay workspace destination already exists: ${workspacePath}`);
+      }
+      const work = async (context?: JobContext) => {
+        mkdirSync(dirname(destination), { recursive: true });
+        const upload = createUploadSession({
+          userId: user.id,
+          projectId: project.id,
+          project: project.name,
+          path: workspacePath,
+          maxBytes: Number(process.env.RELAY_ARTIFACT_MAX_BYTES ?? 4 * 1024 * 1024 * 1024),
+          ttlMs: timeoutMs + 60_000,
+        });
+        const result = await dispatchPlaywright(
+          runner,
+          {
+            action: "artifact_download",
+            artifactPath,
+            uploadPath: `/api/uploads/${upload.session.id}`,
+            uploadToken: upload.token,
+          },
+          timeoutMs,
+          context
+        );
+        const finalUpload = getUploadSession(upload.session.id);
+        if (finalUpload?.status !== "completed") {
+          throw new Error(
+            `Playwright artifact upload did not complete; uploadStatus=${finalUpload?.status ?? "missing"}; ` +
+            `error=${finalUpload?.error ?? "unknown"}`
+          );
+        }
+        const staged = statSync(destination);
+        const digest = createHash("sha256");
+        for await (const chunk of createReadStream(destination)) digest.update(chunk);
+        const sha256 = digest.digest("hex");
+        if (staged.size !== finalUpload.bytesWritten || sha256 !== finalUpload.sha256) {
+          throw new Error(
+            `Playwright artifact verification mismatch: bytes=${staged.size}/${finalUpload.bytesWritten}, sha256=${sha256}/${finalUpload.sha256}`
+          );
+        }
+        const download = createDownloadSession({
+          userId: user.id,
+          projectId: project.id,
+          project: project.name,
+          path: workspacePath,
+          bytes: staged.size,
+          sha256,
+          fileName: basename(destination),
+          mtimeMs: staged.mtimeMs,
+          ttlMs: ttlSeconds ? ttlSeconds * 1000 : undefined,
+        });
+        const downloadUrl = `${RELAY_PUBLIC_URL}/api/downloads/${download.session.id}`;
+        return summarizeJson({
+          ...relayRoute("playwright_artifact_download"),
+          project: resolvedProjectName,
+          environment: ps.environment,
+          serverId: ps.server.id,
+          serverName: ps.server.name,
+          artifactPath,
+          relayWorkspacePath: workspacePath,
+          bytes: staged.size,
+          sha256,
+          sessionId: download.session.id,
+          downloadUrl,
+          token: download.token,
+          expiresAt: download.session.expiresAt,
+          agentResult: result,
+        });
+      };
+      const job = startJob(
+        user,
+        resolvedProjectName,
+        "playwright_artifact_download",
+        { environment, serverId, serverName, artifactPath, workspacePath, overwrite, timeoutMs, async },
+        work
+      );
+      if (async) {
+        return {
+          content: [{
+            type: "text",
+            text: summarizeJson({
+              ...relayRoute("playwright_artifact_download"),
+              jobId: job.id,
+              status: job.status,
+              artifactPath,
+              relayWorkspacePath: workspacePath,
+              message: "Artifact transfer queued. Use job_status to retrieve the verified download URL.",
+            }),
+          }],
+        };
+      }
+      const completed = await waitForTrackedJob(job.id, Math.min(timeoutMs, 1_800_000));
+      return {
+        content: [{
+          type: "text",
+          text: summarizeJson({
+            ...relayRoute("playwright_artifact_download"),
+            jobId: job.id,
+            status: completed?.status ?? "running",
+            summary: completed?.summary,
+            error: completed?.error,
+          }),
+        }],
+      };
+    }
+  );
 
   // ── Tool: deploy ───────────────────────────────────────────────────────────
   server.tool(
@@ -1608,6 +2190,16 @@ else {
           : job.status === "cancelled" ? "Cancelled"
           : job.phase === "not_started" ? "NotStarted"
           : "Running",
+        dispatchState:
+          job.status === "unknown" || job.phase === "unknown" ? "remote_completion_unknown"
+          : job.phase === "agent_claimed" ? "agent_claimed"
+          : job.phase === "waiting_agent" ? "waiting_agent"
+          : job.phase === "queued" ? "queued"
+          : job.phase === "connecting" ? "connecting"
+          : job.status === "succeeded" ? "completed"
+          : job.status === "failed" ? "remote_or_relay_failed"
+          : job.status,
+        agentClaimedAt: job.logs?.find((entry) => entry.message === "phase=agent_claimed")?.at,
         logs: job.logs?.slice(-40),
         summary: job.summary ? compactTextWithMetadata(job.summary, 6000) : undefined,
       };

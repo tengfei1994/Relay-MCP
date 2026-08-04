@@ -9,6 +9,7 @@ import {
   type RemoteExecutionOptions,
 } from "./remote-runner.js";
 import { getAgentStore } from "./agent-store.js";
+import type { AgentJob } from "./agent-store.js";
 
 export class AgentRemoteRunner extends RemoteRunner {
   constructor(
@@ -35,6 +36,19 @@ export class AgentRemoteRunner extends RemoteRunner {
   override async execPowerShellScript(script: string, options: PowerShellScriptOptions = {}): Promise<PowerShellScriptResult> {
     const result = await this.execPowerShell(script, options.timeout ?? 120000, options.execution);
     return { ...result, remotePath: options.remotePath ?? "(agent:inline)", cleanedUp: true };
+  }
+
+  async dispatchPlaywright(
+    payload: Record<string, unknown>,
+    timeout = 120000,
+    options: RemoteExecutionOptions = {}
+  ): Promise<ExecResult> {
+    const result = await this.dispatch("playwright", payload, timeout, options);
+    return {
+      ...result,
+      stdout: cleanPowerShellText(result.stdout),
+      stderr: cleanPowerShellText(result.stderr),
+    };
   }
 
   override isWindows(): boolean {
@@ -99,7 +113,7 @@ if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
   }
 
   private async dispatch(
-    kind: "exec" | "powershell",
+    kind: AgentJob["kind"],
     payload: Record<string, unknown>,
     timeoutMs: number,
     options: RemoteExecutionOptions
@@ -110,7 +124,13 @@ if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
     options.onPhase?.("queued");
     const job = store.enqueueJob(this.userId, this.agentId, kind, payload, timeoutMs);
     options.onPhase?.("waiting_agent");
-    const completed = await store.waitForJob(job.id, timeoutMs, options.signal);
+    let reportedClaim = false;
+    const completed = await store.waitForJob(job.id, timeoutMs, options.signal, (current) => {
+      if (current.claimedAt && !reportedClaim) {
+        reportedClaim = true;
+        options.onPhase?.("agent_claimed");
+      }
+    });
     const result = completed.result ?? { status: completed.status };
     if (result.stdout) options.onStdout?.(result.stdout);
     if (result.stderr) options.onStderr?.(result.stderr);

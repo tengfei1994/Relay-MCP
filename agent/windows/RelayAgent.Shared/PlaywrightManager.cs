@@ -720,8 +720,26 @@ namespace RelayAgent.Shared
             {
                 throw new FileNotFoundException("Playwright test file was not found.", testFile);
             }
+            var safeSuiteId = new string((suite.Id ?? "suite")
+                .Select(character => char.IsLetterOrDigit(character) || character == '-' || character == '_'
+                    ? character
+                    : '_')
+                .ToArray());
+            if (string.IsNullOrWhiteSpace(safeSuiteId))
+            {
+                safeSuiteId = "suite";
+            }
+            var stagedRelativeTestFile = Path.Combine(
+                "suite-tests",
+                safeSuiteId,
+                Path.GetFileName(testFile));
+            var stagedTestFile = Path.Combine(RuntimePath, stagedRelativeTestFile);
+            Directory.CreateDirectory(Path.GetDirectoryName(stagedTestFile));
+            File.Copy(testFile, stagedTestFile, true);
+
             var npx = FindExecutable("npx.cmd");
-            var args = "playwright test \"" + testFile + "\" --reporter=line --workers=1 --output=\"" +
+            var testFilter = stagedRelativeTestFile.Replace(Path.DirectorySeparatorChar, '/');
+            var args = "playwright test \"" + testFilter + "\" --reporter=line --workers=1 --output=\"" +
                        run.ArtifactDirectory + "\" --timeout=" + (suite.TimeoutSeconds * 1000) +
                        " --retries=" + suite.Retries;
             if (!suite.Headless)

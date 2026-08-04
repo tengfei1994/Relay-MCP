@@ -20,10 +20,11 @@ type Tool = {
   lifecycle: "preferred" | "standard" | "legacy";
 };
 
-const categoryOrder = ["project", "remote-execution", "remote-files", "workspace", "jobs", "context", "samplemanager"];
+const categoryOrder = ["project", "remote-execution", "playwright", "remote-files", "workspace", "jobs", "context", "samplemanager"];
 const categoryLabels: Record<string, string> = {
   project: "Project",
   "remote-execution": "Remote execution",
+  playwright: "Playwright",
   "remote-files": "Remote files",
   workspace: "Workspace",
   jobs: "Jobs",

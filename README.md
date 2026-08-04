@@ -296,13 +296,13 @@ SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备�
 | Remote execution | `relay_exec_remote` | 首选 Relay 命名空间 shell command 工具。 |
 | Remote execution | `relay_exec_remote_powershell` | 首选 Relay 命名空间 encoded PowerShell 工具。 |
 | Remote execution | `relay_exec_remote_script` | 首选 Relay 命名空间 PowerShell 脚本工具。 |
-| Remote execution | `playwright_runtime_status` | 读取 Agent 管理的 Node.js、Playwright、Chromium 和缓存状态。 |
-| Remote execution | `playwright_suite_list` | 列出选定 Agent 保存的 Playwright suite。 |
-| Remote execution | `playwright_suite_upload` | 上传 Playwright 测试文件和 suite 元数据，并校验 SHA-256。 |
-| Remote execution | `playwright_run_suite` | 通过专用 Agent 协议排队正式 Playwright 测试。 |
-| Jobs | `playwright_run_status` | 读取 Agent 生成的正式 Playwright run 记录。 |
-| Remote files | `playwright_artifact_list` | 列出 Agent 上的 Playwright artifact 元数据。 |
-| Remote files | `playwright_artifact_download` | 将 Playwright artifact 校验后传回 Relay workspace。 |
+| Playwright | `playwright_runtime_status` | 读取 Agent 管理的 Node.js、Playwright、Chromium 和缓存状态。 |
+| Playwright | `playwright_suite_list` | 列出选定 Agent 保存的 Playwright suite。 |
+| Playwright | `playwright_suite_upload` | 上传 Playwright 测试文件和 suite 元数据，并校验 SHA-256。 |
+| Playwright | `playwright_run_suite` | 通过专用 Agent 协议排队正式 Playwright 测试。 |
+| Playwright | `playwright_run_status` | 读取 Agent 生成的正式 Playwright run 记录。 |
+| Playwright | `playwright_artifact_list` | 列出 Agent 上的 Playwright artifact 元数据。 |
+| Playwright | `playwright_artifact_download` | 将 Playwright artifact 校验后传回 Relay workspace。 |
 | Remote execution | `deploy` | 部署远端 Git checkout，并记录 commit、输出和 rollback 状态。 |
 | Remote execution | `fetch_logs` | 按时间窗口或 deployment run 读取日志。 |
 | Remote execution | `restart_service` | 重启 Windows Service、systemd、PM2 或 Docker workload。 |

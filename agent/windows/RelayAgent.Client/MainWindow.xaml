@@ -1167,7 +1167,7 @@
                             </Grid.RowDefinitions>
                             <StackPanel VerticalAlignment="Center">
                                 <TextBlock Text="Client update" Style="{StaticResource SectionTitleStyle}" Margin="0,0,0,4"/>
-                                <TextBlock x:Name="UpdateStatusText" Text="Current version v0.6.2" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
+                                <TextBlock x:Name="UpdateStatusText" Text="Current version v0.7.0" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
                             </StackPanel>
                             <WrapPanel x:Name="DiagnosticsUpdateActions" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center">
                                 <Button Style="{StaticResource PrimaryButtonStyle}" Click="CheckUpdate_Click">Check update</Button>

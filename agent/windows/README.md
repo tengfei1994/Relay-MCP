@@ -41,7 +41,8 @@ For repeatable UI layout QA, build the client and run:
 ```
 
 The script renders every main page and Playwright tab at 1240 x 820,
-980 x 760, and 900 x 700 without requiring interactive window automation.
+1060 x 680, 980 x 760, and 900 x 700 without requiring interactive window
+automation. It also verifies minimize-to-tray and restore behavior.
 If the normal output exe is currently running, `build.ps1` writes the new
 binary to `RelayAgent.Client.next.exe`.
 

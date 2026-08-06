@@ -16,6 +16,8 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Drawing = System.Drawing;
+using Forms = System.Windows.Forms;
 
 namespace RelayAgent.Client
 {
@@ -29,6 +31,10 @@ namespace RelayAgent.Client
         private DatabasePermissionState _lastDatabaseState;
         private bool _initialized;
         private string _selectedPlaywrightSuiteId;
+        private Forms.NotifyIcon _trayIcon;
+        private Drawing.Icon _trayIconImage;
+        private WindowState _windowStateBeforeMinimize = WindowState.Normal;
+        private bool _trayHintShown;
 
         public MainWindow()
         {
@@ -40,6 +46,8 @@ namespace RelayAgent.Client
             PlaywrightWebClients = new ObservableCollection<PlaywrightWebClientCandidate>();
 
             InitializeComponent();
+            ConfigureInitialWindowSize();
+            InitializeTrayIcon();
             DataContext = this;
 
             _pages = new Dictionary<string, FrameworkElement>(StringComparer.OrdinalIgnoreCase)
@@ -66,6 +74,7 @@ namespace RelayAgent.Client
             AuditMethodFilter.SelectedIndex = 0;
             AuditStatusFilter.SelectedIndex = 0;
             LogLevelFilter.SelectedIndex = 0;
+            UpdateStatusText.Text = "Current version " + AutoUpdater.CurrentRelease;
 
             _loadedConfig = LoadConfigSafely();
             LoadConfigurationIntoView();
@@ -82,7 +91,14 @@ namespace RelayAgent.Client
             };
             _refreshTimer.Tick += delegate { RefreshRuntimeStatus(); };
             _refreshTimer.Start();
-            Closed += delegate { _refreshTimer.Stop(); };
+            Closed += delegate
+            {
+                _refreshTimer.Stop();
+                DisposeTrayIcon();
+            };
+            Loaded += delegate { UpdateResponsiveLayout(); };
+            SizeChanged += delegate { UpdateResponsiveLayout(); };
+            StateChanged += MainWindow_StateChanged;
         }
 
         public ObservableCollection<PermissionRow> PermissionRows { get; private set; }
@@ -142,11 +158,497 @@ namespace RelayAgent.Client
             get { return (Brush)FindResource("MutedBrush"); }
         }
 
+        private void ConfigureInitialWindowSize()
+        {
+            var workArea = SystemParameters.WorkArea;
+
+            // WPF sizes use device-independent pixels. A fixed 1240 x 820 window
+            // can therefore occupy nearly the full work area on a high-DPI host.
+            MinWidth = Math.Min(MinWidth, Math.Max(760, workArea.Width - 32));
+            MinHeight = Math.Min(MinHeight, Math.Max(600, workArea.Height - 32));
+            Width = Math.Max(MinWidth, Math.Min(1240, workArea.Width * 0.82));
+            Height = Math.Max(MinHeight, Math.Min(820, workArea.Height * 0.84));
+        }
+
+        private void InitializeTrayIcon()
+        {
+            try
+            {
+                var processModule = Process.GetCurrentProcess().MainModule;
+                var executablePath = processModule == null ? "" : processModule.FileName;
+                if (!string.IsNullOrWhiteSpace(executablePath))
+                {
+                    _trayIconImage = Drawing.Icon.ExtractAssociatedIcon(executablePath);
+                }
+
+                var menu = new Forms.ContextMenuStrip();
+                var openItem = new Forms.ToolStripMenuItem("Open Relay MCP Agent Client");
+                openItem.Click += delegate { RestoreFromTray(); };
+                menu.Items.Add(openItem);
+                menu.Items.Add(new Forms.ToolStripSeparator());
+
+                var exitItem = new Forms.ToolStripMenuItem("Exit");
+                exitItem.Click += delegate
+                {
+                    Dispatcher.BeginInvoke(new Action(Close));
+                };
+                menu.Items.Add(exitItem);
+
+                _trayIcon = new Forms.NotifyIcon
+                {
+                    Text = "Relay MCP Agent Client",
+                    Icon = _trayIconImage ?? Drawing.SystemIcons.Application,
+                    ContextMenuStrip = menu,
+                    Visible = false
+                };
+                _trayIcon.DoubleClick += delegate { RestoreFromTray(); };
+                _trayIcon.MouseClick += delegate(object sender, Forms.MouseEventArgs e)
+                {
+                    if (e.Button == Forms.MouseButtons.Left)
+                    {
+                        RestoreFromTray();
+                    }
+                };
+            }
+            catch
+            {
+                DisposeTrayIcon();
+            }
+        }
+
+        private void MainWindow_StateChanged(object sender, EventArgs e)
+        {
+            if (WindowState != WindowState.Minimized)
+            {
+                _windowStateBeforeMinimize = WindowState;
+                return;
+            }
+
+            if (_trayIcon == null)
+            {
+                return;
+            }
+
+            _trayIcon.Visible = true;
+            ShowInTaskbar = false;
+            Hide();
+
+            if (!_trayHintShown)
+            {
+                _trayIcon.ShowBalloonTip(
+                    2500,
+                    "Relay MCP Agent Client",
+                    "The client is still running in the notification area.",
+                    Forms.ToolTipIcon.Info);
+                _trayHintShown = true;
+            }
+        }
+
+        private void RestoreFromTray()
+        {
+            Dispatcher.BeginInvoke(new Action(delegate
+            {
+                ShowInTaskbar = true;
+                Show();
+                WindowState = _windowStateBeforeMinimize == WindowState.Minimized
+                    ? WindowState.Normal
+                    : _windowStateBeforeMinimize;
+                Activate();
+
+                if (_trayIcon != null)
+                {
+                    _trayIcon.Visible = false;
+                }
+            }));
+        }
+
+        private void DisposeTrayIcon()
+        {
+            if (_trayIcon != null)
+            {
+                _trayIcon.Visible = false;
+                if (_trayIcon.ContextMenuStrip != null)
+                {
+                    _trayIcon.ContextMenuStrip.Dispose();
+                }
+                _trayIcon.Dispose();
+                _trayIcon = null;
+            }
+
+            if (_trayIconImage != null)
+            {
+                _trayIconImage.Dispose();
+                _trayIconImage = null;
+            }
+        }
+
         private void Navigation_Click(object sender, RoutedEventArgs e)
         {
             var button = sender as Button;
             var pageName = button == null ? "" : Convert.ToString(button.Tag);
             ShowPage(pageName);
+        }
+
+        private void UpdateResponsiveLayout()
+        {
+            var width = PageHost == null || PageHost.ActualWidth <= 0
+                ? ActualWidth
+                : PageHost.ActualWidth;
+            var compactShell = ActualWidth < 1120;
+
+            SetSidebarLayout(compactShell);
+            PageHost.Margin = compactShell
+                ? new Thickness(16, 16, 14, 14)
+                : new Thickness(24, 20, 22, 18);
+            SetConnectionLayout(width < 900);
+
+            SetSidePanelLayout(
+                OverviewDetailsGrid,
+                OverviewQuickActionsPanel,
+                width < 900,
+                new GridLength(2, GridUnitType.Star),
+                new GridLength(1, GridUnitType.Star));
+            SetSidePanelLayout(
+                ServiceLayoutGrid,
+                ServiceActionsPanel,
+                width < 1060,
+                new GridLength(2, GridUnitType.Star),
+                new GridLength(1, GridUnitType.Star));
+            SetDatabaseLayout(width < 1180);
+            SetPlaywrightRuntimeLayout(width < 1060);
+            SetPlaywrightSuitesLayout(width < 1240);
+
+            var stackToolbars = width < 1050;
+            SetToolbarLayout(AuditToolbarGrid, AuditFilterActionsPanel, stackToolbars);
+            SetToolbarLayout(PlaywrightHeaderGrid, PlaywrightHeaderActions, width < 760);
+            SetToolbarLayout(
+                PlaywrightArtifactsHeaderGrid,
+                PlaywrightArtifactsActions,
+                width < 760);
+            SetToolbarLayout(
+                DiagnosticsUpdateGrid,
+                DiagnosticsUpdateActions,
+                width < 760);
+        }
+
+        private void SetSidebarLayout(bool compact)
+        {
+            if (SidebarColumn == null || _navigation == null)
+            {
+                return;
+            }
+
+            SidebarColumn.Width = new GridLength(compact ? 72 : 208);
+            SidebarInfoPanel.Visibility = compact
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+            SidebarSubtitleText.Visibility = compact
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+            SidebarTitleText.Text = compact ? "R" : "Relay MCP";
+            SidebarTitleText.HorizontalAlignment = compact
+                ? HorizontalAlignment.Center
+                : HorizontalAlignment.Left;
+            SidebarBrandPanel.Margin = compact
+                ? new Thickness(8, 22, 8, 20)
+                : new Thickness(22, 24, 18, 22);
+
+            foreach (var button in _navigation.Values)
+            {
+                var content = button.Content as StackPanel;
+                var label = content != null && content.Children.Count > 1
+                    ? content.Children[1] as TextBlock
+                    : null;
+                if (label != null)
+                {
+                    label.Visibility = compact
+                        ? Visibility.Collapsed
+                        : Visibility.Visible;
+                    button.ToolTip = compact ? label.Text : null;
+                }
+
+                button.HorizontalContentAlignment = compact
+                    ? HorizontalAlignment.Center
+                    : HorizontalAlignment.Left;
+                button.Padding = compact
+                    ? new Thickness(0)
+                    : new Thickness(14, 0, 14, 0);
+                button.Margin = compact
+                    ? new Thickness(8, 2, 8, 2)
+                    : new Thickness(10, 2, 10, 2);
+            }
+        }
+
+        private void SetConnectionLayout(bool stacked)
+        {
+            if (ConnectionFieldsGrid == null ||
+                ConnectionFieldsGrid.ColumnDefinitions.Count < 3)
+            {
+                return;
+            }
+
+            if (stacked)
+            {
+                ConnectionFieldsGrid.ColumnDefinitions[0].Width =
+                    new GridLength(1, GridUnitType.Star);
+                ConnectionFieldsGrid.ColumnDefinitions[1].Width = GridLength.Auto;
+                ConnectionFieldsGrid.ColumnDefinitions[2].Width = new GridLength(0);
+
+                PlaceInGrid(RelayUrlLabel, 0, 0, 2);
+                PlaceInGrid(RelayUrlBox, 1, 0);
+                PlaceInGrid(ReplaceRelayUrlButton, 1, 1);
+                PlaceInGrid(AgentIdLabel, 2, 0, 2);
+                PlaceInGrid(AgentIdBox, 3, 0, 2);
+                PlaceInGrid(AgentTokenLabel, 4, 0, 2);
+                PlaceInGrid(AgentTokenBox, 5, 0);
+                PlaceInGrid(ReplaceAgentTokenButton, 5, 1);
+                PlaceInGrid(PollIntervalLabel, 6, 0, 2);
+                PlaceInGrid(PollIntervalPanel, 7, 0, 2);
+                ConnectionNoticeBorder.Margin = new Thickness(0, 18, 0, 0);
+                ConnectionActionsPanel.Margin = new Thickness(0, 18, 0, 0);
+                return;
+            }
+
+            ConnectionFieldsGrid.ColumnDefinitions[0].Width = new GridLength(160);
+            ConnectionFieldsGrid.ColumnDefinitions[1].Width =
+                new GridLength(1, GridUnitType.Star);
+            ConnectionFieldsGrid.ColumnDefinitions[2].Width = GridLength.Auto;
+
+            PlaceInGrid(RelayUrlLabel, 0, 0);
+            PlaceInGrid(RelayUrlBox, 0, 1);
+            PlaceInGrid(ReplaceRelayUrlButton, 0, 2);
+            PlaceInGrid(AgentIdLabel, 1, 0);
+            PlaceInGrid(AgentIdBox, 1, 1);
+            PlaceInGrid(AgentTokenLabel, 2, 0);
+            PlaceInGrid(AgentTokenBox, 2, 1);
+            PlaceInGrid(ReplaceAgentTokenButton, 2, 2);
+            PlaceInGrid(PollIntervalLabel, 3, 0);
+            PlaceInGrid(PollIntervalPanel, 3, 1);
+            ConnectionNoticeBorder.Margin = new Thickness(160, 18, 0, 0);
+            ConnectionActionsPanel.Margin = new Thickness(160, 18, 0, 0);
+        }
+
+        private static void PlaceInGrid(
+            FrameworkElement element,
+            int row,
+            int column,
+            int columnSpan = 1)
+        {
+            if (element == null)
+            {
+                return;
+            }
+            Grid.SetRow(element, row);
+            Grid.SetColumn(element, column);
+            Grid.SetColumnSpan(element, columnSpan);
+        }
+
+        private static void SetToolbarLayout(
+            Grid grid,
+            FrameworkElement actions,
+            bool stacked)
+        {
+            if (grid == null ||
+                actions == null ||
+                grid.ColumnDefinitions.Count < 2 ||
+                grid.RowDefinitions.Count < 2)
+            {
+                return;
+            }
+
+            if (stacked)
+            {
+                grid.ColumnDefinitions[0].Width =
+                    new GridLength(1, GridUnitType.Star);
+                grid.ColumnDefinitions[1].Width = new GridLength(0);
+                Grid.SetColumn(actions, 0);
+                Grid.SetRow(actions, 1);
+                actions.HorizontalAlignment = HorizontalAlignment.Left;
+                actions.Margin = new Thickness(0, 8, 0, 0);
+                return;
+            }
+
+            grid.ColumnDefinitions[0].Width =
+                new GridLength(1, GridUnitType.Star);
+            grid.ColumnDefinitions[1].Width = GridLength.Auto;
+            Grid.SetColumn(actions, 1);
+            Grid.SetRow(actions, 0);
+            actions.HorizontalAlignment = HorizontalAlignment.Right;
+            actions.Margin = new Thickness(0);
+        }
+
+        private static void SetSidePanelLayout(
+            Grid grid,
+            FrameworkElement sidePanel,
+            bool stacked,
+            GridLength primaryWidth,
+            GridLength sideWidth)
+        {
+            if (grid == null ||
+                sidePanel == null ||
+                grid.ColumnDefinitions.Count < 3 ||
+                grid.RowDefinitions.Count < 2)
+            {
+                return;
+            }
+
+            if (stacked)
+            {
+                grid.ColumnDefinitions[0].Width = new GridLength(1, GridUnitType.Star);
+                grid.ColumnDefinitions[1].Width = new GridLength(0);
+                grid.ColumnDefinitions[2].Width = new GridLength(0);
+                Grid.SetColumn(sidePanel, 0);
+                Grid.SetRow(sidePanel, 1);
+                sidePanel.Margin = new Thickness(0, 14, 0, 0);
+                return;
+            }
+
+            grid.ColumnDefinitions[0].Width = primaryWidth;
+            grid.ColumnDefinitions[1].Width = new GridLength(14);
+            grid.ColumnDefinitions[2].Width = sideWidth;
+            Grid.SetColumn(sidePanel, 2);
+            Grid.SetRow(sidePanel, 0);
+            sidePanel.Margin = new Thickness(0);
+        }
+
+        private void SetPlaywrightRuntimeLayout(bool stacked)
+        {
+            if (PlaywrightRuntimeLayoutGrid == null ||
+                PlaywrightRuntimeLogPanel == null ||
+                PlaywrightRuntimeLayoutGrid.ColumnDefinitions.Count < 3 ||
+                PlaywrightRuntimePageGrid == null ||
+                PlaywrightRuntimeScroller == null)
+            {
+                return;
+            }
+
+            if (stacked)
+            {
+                PlaywrightRuntimeScroller.VerticalScrollBarVisibility =
+                    ScrollBarVisibility.Auto;
+                PlaywrightRuntimePageGrid.RowDefinitions[2].Height =
+                    GridLength.Auto;
+                PlaywrightRuntimeLayoutGrid.RowDefinitions[0].Height =
+                    GridLength.Auto;
+                PlaywrightRuntimeLayoutGrid.RowDefinitions[1].Height =
+                    GridLength.Auto;
+                PlaywrightRuntimeLayoutGrid.ColumnDefinitions[0].Width =
+                    new GridLength(1, GridUnitType.Star);
+                PlaywrightRuntimeLayoutGrid.ColumnDefinitions[1].Width =
+                    new GridLength(0);
+                PlaywrightRuntimeLayoutGrid.ColumnDefinitions[2].Width =
+                    new GridLength(0);
+                PlaywrightRuntimeSplitter.Visibility = Visibility.Collapsed;
+                Grid.SetColumn(PlaywrightRuntimeLogPanel, 0);
+                Grid.SetRow(PlaywrightRuntimeLogPanel, 1);
+                PlaywrightRuntimeLogPanel.Margin = new Thickness(0, 14, 0, 0);
+                return;
+            }
+
+            PlaywrightRuntimeScroller.VerticalScrollBarVisibility =
+                ScrollBarVisibility.Disabled;
+            PlaywrightRuntimePageGrid.RowDefinitions[2].Height =
+                new GridLength(1, GridUnitType.Star);
+            PlaywrightRuntimeLayoutGrid.RowDefinitions[0].Height =
+                GridLength.Auto;
+            PlaywrightRuntimeLayoutGrid.RowDefinitions[1].Height =
+                new GridLength(1, GridUnitType.Star);
+            PlaywrightRuntimeLayoutGrid.ColumnDefinitions[0].Width =
+                new GridLength(300);
+            PlaywrightRuntimeLayoutGrid.ColumnDefinitions[1].Width =
+                new GridLength(12);
+            PlaywrightRuntimeLayoutGrid.ColumnDefinitions[2].Width =
+                new GridLength(1, GridUnitType.Star);
+            PlaywrightRuntimeSplitter.Visibility = Visibility.Visible;
+            Grid.SetColumn(PlaywrightRuntimeLogPanel, 2);
+            Grid.SetRow(PlaywrightRuntimeLogPanel, 0);
+            PlaywrightRuntimeLogPanel.Margin = new Thickness(0);
+        }
+
+        private void SetDatabaseLayout(bool stacked)
+        {
+            if (DatabaseLayoutGrid == null ||
+                DatabaseTargetPanel == null ||
+                DatabasePermissionPanel == null ||
+                DatabaseActionsPanel == null ||
+                DatabaseLayoutGrid.ColumnDefinitions.Count < 3 ||
+                DatabaseLayoutGrid.RowDefinitions.Count < 3)
+            {
+                return;
+            }
+
+            if (stacked)
+            {
+                DatabaseLayoutGrid.ColumnDefinitions[0].Width =
+                    new GridLength(1, GridUnitType.Star);
+                DatabaseLayoutGrid.ColumnDefinitions[1].Width = new GridLength(0);
+                DatabaseLayoutGrid.ColumnDefinitions[2].Width = new GridLength(0);
+
+                PlaceInGrid(DatabaseTargetPanel, 0, 0);
+                PlaceInGrid(DatabaseActionsPanel, 1, 0);
+                PlaceInGrid(DatabasePermissionPanel, 2, 0);
+                Grid.SetRowSpan(DatabaseActionsPanel, 1);
+                DatabaseTargetPanel.Margin = new Thickness(0);
+                DatabaseActionsPanel.Margin = new Thickness(0);
+                DatabasePermissionPanel.Margin = new Thickness(0);
+                return;
+            }
+
+            DatabaseLayoutGrid.ColumnDefinitions[0].Width =
+                new GridLength(2, GridUnitType.Star);
+            DatabaseLayoutGrid.ColumnDefinitions[1].Width = new GridLength(14);
+            DatabaseLayoutGrid.ColumnDefinitions[2].Width =
+                new GridLength(1, GridUnitType.Star);
+
+            PlaceInGrid(DatabaseTargetPanel, 0, 0);
+            PlaceInGrid(DatabasePermissionPanel, 1, 0);
+            PlaceInGrid(DatabaseActionsPanel, 0, 2);
+            Grid.SetRowSpan(DatabaseActionsPanel, 2);
+            DatabaseTargetPanel.Margin = new Thickness(0, 0, 0, 16);
+            DatabaseActionsPanel.Margin = new Thickness(0, 0, 0, 16);
+            DatabasePermissionPanel.Margin = new Thickness(0);
+        }
+
+        private void SetPlaywrightSuitesLayout(bool stacked)
+        {
+            if (PlaywrightSuitesLayoutGrid == null ||
+                PlaywrightSuiteDetailsPanel == null ||
+                PlaywrightSuitesScroller == null ||
+                PlaywrightSuitesLayoutGrid.ColumnDefinitions.Count < 3 ||
+                PlaywrightSuitesLayoutGrid.RowDefinitions.Count < 2)
+            {
+                return;
+            }
+
+            PlaywrightSuitesLayoutGrid.ColumnDefinitions[2].MinWidth =
+                stacked ? 0 : 320;
+
+            SetSidePanelLayout(
+                PlaywrightSuitesLayoutGrid,
+                PlaywrightSuiteDetailsPanel,
+                stacked,
+                new GridLength(1, GridUnitType.Star),
+                new GridLength(390));
+
+            if (stacked)
+            {
+                PlaywrightSuitesScroller.VerticalScrollBarVisibility =
+                    ScrollBarVisibility.Auto;
+                PlaywrightSuitesLayoutGrid.RowDefinitions[0].Height =
+                    GridLength.Auto;
+                PlaywrightSuitesLayoutGrid.RowDefinitions[1].Height =
+                    GridLength.Auto;
+                PlaywrightSuiteGrid.MinHeight = 280;
+                return;
+            }
+
+            PlaywrightSuitesScroller.VerticalScrollBarVisibility =
+                ScrollBarVisibility.Disabled;
+            PlaywrightSuitesLayoutGrid.RowDefinitions[0].Height =
+                new GridLength(1, GridUnitType.Star);
+            PlaywrightSuitesLayoutGrid.RowDefinitions[1].Height =
+                GridLength.Auto;
+            PlaywrightSuiteGrid.MinHeight = 0;
         }
 
         private void ShowPage(string pageName)
@@ -726,6 +1228,7 @@ namespace RelayAgent.Client
         {
             DatabaseResultText.Text = message;
             DatabaseResultText.Foreground = foreground;
+            DatabaseResultText.Background = ResolveStatusBackground(foreground);
         }
 
         private void AuditFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -812,7 +1315,7 @@ namespace RelayAgent.Client
             var entry = row == null ? null : row.Entry;
             if (entry == null)
             {
-                AuditDetailBox.IsEnabled = false;
+                AuditDetailBox.IsEnabled = true;
                 AuditDetailBox.Text = "Select a request to inspect details.";
                 return;
             }
@@ -1363,6 +1866,24 @@ namespace RelayAgent.Client
         {
             control.Text = value;
             control.Foreground = success ? SuccessBrush : WarningBrush;
+            control.Background = success ? SuccessSoftBrush : WarningSoftBrush;
+        }
+
+        private Brush ResolveStatusBackground(Brush foreground)
+        {
+            if (foreground == SuccessBrush)
+            {
+                return SuccessSoftBrush;
+            }
+            if (foreground == DangerBrush)
+            {
+                return DangerSoftBrush;
+            }
+            if (foreground == WarningBrush)
+            {
+                return WarningSoftBrush;
+            }
+            return (Brush)FindResource("SurfaceAltBrush");
         }
 
         private string QueryService()
@@ -1555,39 +2076,5 @@ namespace RelayAgent.Client
             return char.ToUpperInvariant(value[0]) + value.Substring(1);
         }
 
-        public sealed class PermissionRow
-        {
-            public string Permission { get; set; }
-            public string Current { get; set; }
-            public string Read { get; set; }
-            public string Write { get; set; }
-            public string Ddl { get; set; }
-            public Brush StatusForeground { get; set; }
-            public Brush StatusBackground { get; set; }
-        }
-
-        public sealed class AuditRow
-        {
-            public string Time { get; set; }
-            public string Method { get; set; }
-            public string Endpoint { get; set; }
-            public string Status { get; set; }
-            public string Duration { get; set; }
-            public string JobId { get; set; }
-            public string Payload { get; set; }
-            public HttpAuditEntry Entry { get; set; }
-        }
-
-        private sealed class ProcessResult
-        {
-            public ProcessResult(int exitCode, string output)
-            {
-                ExitCode = exitCode;
-                Output = output;
-            }
-
-            public int ExitCode { get; private set; }
-            public string Output { get; private set; }
-        }
     }
 }

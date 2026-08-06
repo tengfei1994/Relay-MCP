@@ -26,6 +26,7 @@
     <Reference Include="System.Security" />
     <Reference Include="System.ServiceProcess" />
     <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Xml" />
     <Reference Include="System.Xaml" />
     <Reference Include="WindowsBase" />
@@ -35,11 +36,15 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="AssemblyInfo.cs" />
+    <Compile Include="Controls\TerminalTextBox.cs" />
+    <Compile Include="Infrastructure\ProcessResult.cs" />
     <Compile Include="MainWindow.xaml.cs">
       <DependentUpon>MainWindow.xaml</DependentUpon>
     </Compile>
     <Compile Include="AutoUpdater.cs" />
     <Compile Include="DatabaseAccessManager.cs" />
+    <Compile Include="ViewModels\AuditRow.cs" />
+    <Compile Include="ViewModels\PermissionRow.cs" />
     <Compile Include="..\RelayAgent.Service\RelayAgentService.cs">
       <Link>RelayAgentService.cs</Link>
     </Compile>

@@ -4,6 +4,10 @@ This folder contains a small Windows Agent package:
 
 - `RelayAgent.Client.exe`: one-file WPF UI and Windows Service host.
 
+Minimizing the client sends it to the Windows notification area. Click or
+double-click the tray icon to restore it, or use the tray menu to exit the UI.
+The installed Windows Service continues independently when the UI exits.
+
 The client writes configuration to:
 
 ```text
@@ -30,6 +34,17 @@ The output is written to:
 agent\windows\out
 ```
 
+For repeatable UI layout QA, build the client and run:
+
+```powershell
+.\render-ui-qa.ps1
+```
+
+The script renders every main page and Playwright tab at 1240 x 820,
+980 x 760, and 900 x 700 without requiring interactive window automation.
+If the normal output exe is currently running, `build.ps1` writes the new
+binary to `RelayAgent.Client.next.exe`.
+
 Copy `RelayAgent.Client.exe` to the target server. Start it normally to open the UI, enter:
 
 - Relay URL, for example `http://ftd1994.mycloudnas.com:7230`
@@ -42,18 +57,20 @@ instead of trying to create a duplicate service.
 
 ## Client Pages
 
-The v0.5.3 client uses a left-navigation operations workspace:
+The current client uses a left-navigation WPF operations workspace:
 
 - Overview: connection, service, database, and audit readiness.
 - Connection: encrypted Relay URL and Agent token configuration.
 - Service Control: install, update, start, stop, restart, and uninstall.
 - Database Access: discover local SQL Server databases, test the service
   identity, and grant or revoke read, read/write, or DDL permissions.
-- Request Audit: filter, inspect, export, and clear audited Relay HTTP calls.
+- Request Audit: filter, inspect, search, export, and clear audited Relay HTTP
+  calls.
 - Playwright: detect and install Node/Playwright/Chromium dependencies, manage
   SampleManager Web Client test suites, queue background test runs, and inspect
   artifacts.
-- Updates & Logs: update the single-file client and inspect `agent.log`.
+- Updates & Logs: update the single-file client and inspect `agent.log` in a
+  searchable, zoomable terminal-style output panel.
 
 ## Playwright
 

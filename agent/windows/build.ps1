@@ -30,7 +30,17 @@ if (-not $msbuildPath) {
 & $msbuildPath (Join-Path $root "RelayAgent.Client\RelayAgent.Client.csproj") /p:Configuration=Release /nologo
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Copy-Item (Join-Path $root "RelayAgent.Client\bin\Release\RelayAgent.Client.exe") $out -Force
+$sourceExe = Join-Path $root "RelayAgent.Client\bin\Release\RelayAgent.Client.exe"
+$destinationExe = Join-Path $out "RelayAgent.Client.exe"
+try {
+  Copy-Item $sourceExe $destinationExe -Force
+}
+catch {
+  $fallbackExe = Join-Path $out "RelayAgent.Client.next.exe"
+  Copy-Item $sourceExe $fallbackExe -Force
+  Write-Warning "RelayAgent.Client.exe is running and could not be replaced."
+  Write-Warning "The new build was written to $fallbackExe"
+}
 
 Write-Host "Built Relay Agent package:"
 Get-ChildItem $out

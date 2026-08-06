@@ -1,44 +1,109 @@
 <Window x:Class="RelayAgent.Client.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:RelayAgent.Client.Controls"
         Title="Relay MCP Agent Client"
-        Width="1280"
+        Width="1240"
         Height="820"
-        MinWidth="1080"
-        MinHeight="700"
+        MinWidth="900"
+        MinHeight="680"
         WindowStartupLocation="CenterScreen"
-        Background="#F5F7FA"
+        Background="{DynamicResource AppBackgroundBrush}"
         FontFamily="Segoe UI"
         FontSize="14"
         UseLayoutRounding="True"
-        SnapsToDevicePixels="True">
+        SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Display">
     <Window.Resources>
+        <SolidColorBrush x:Key="AppBackgroundBrush" Color="#F4F6FA"/>
+        <SolidColorBrush x:Key="SidebarBrush" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="SurfaceBrush" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="SurfaceAltBrush" Color="#F8FAFC"/>
         <SolidColorBrush x:Key="PrimaryBrush" Color="#2563EB"/>
         <SolidColorBrush x:Key="PrimaryHoverBrush" Color="#1D4ED8"/>
         <SolidColorBrush x:Key="PrimarySoftBrush" Color="#EAF1FF"/>
         <SolidColorBrush x:Key="TextBrush" Color="#172033"/>
         <SolidColorBrush x:Key="MutedBrush" Color="#667085"/>
-        <SolidColorBrush x:Key="BorderBrush" Color="#DDE2EA"/>
-        <SolidColorBrush x:Key="SurfaceBrush" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="BorderBrush" Color="#DDE3EC"/>
         <SolidColorBrush x:Key="SuccessBrush" Color="#168554"/>
         <SolidColorBrush x:Key="SuccessSoftBrush" Color="#EAF8F0"/>
         <SolidColorBrush x:Key="WarningBrush" Color="#B76A08"/>
         <SolidColorBrush x:Key="WarningSoftBrush" Color="#FFF5E4"/>
         <SolidColorBrush x:Key="DangerBrush" Color="#C73535"/>
         <SolidColorBrush x:Key="DangerSoftBrush" Color="#FDEEEE"/>
+        <SolidColorBrush x:Key="TerminalBrush" Color="#0F172A"/>
+        <SolidColorBrush x:Key="TerminalBorderBrush" Color="#334155"/>
 
-        <Style x:Key="CardStyle" TargetType="Border">
+        <Style x:Key="PageTitleStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="27"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Setter Property="LineHeight" Value="36"/>
+            <Setter Property="Margin" Value="0,0,0,4"/>
+        </Style>
+
+        <Style x:Key="PageSubtitleStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+            <Setter Property="LineHeight" Value="24"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+
+        <Style x:Key="SectionTitleStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="16"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Setter Property="LineHeight" Value="26"/>
+            <Setter Property="Margin" Value="0,0,0,14"/>
+        </Style>
+
+        <Style x:Key="FieldLabelStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="LineHeight" Value="24"/>
+            <Setter Property="Margin" Value="0,0,12,0"/>
+        </Style>
+
+        <Style x:Key="ValueTextStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="LineHeight" Value="24"/>
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+        </Style>
+
+        <Style x:Key="StatusTextStyle" TargetType="TextBlock">
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Padding" Value="10,5"/>
+            <Setter Property="Background" Value="{StaticResource SurfaceAltBrush}"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="LineHeight" Value="20"/>
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+        </Style>
+
+        <Style x:Key="MetricCardStyle" TargetType="Border">
             <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
             <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="6"/>
-            <Setter Property="Padding" Value="22"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="18"/>
+            <Setter Property="Margin" Value="0,0,14,14"/>
+            <Setter Property="MinWidth" Value="200"/>
+            <Setter Property="MinHeight" Value="112"/>
+        </Style>
+
+        <Style x:Key="SectionStyle" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="20"/>
+            <Setter Property="Margin" Value="0,0,0,16"/>
         </Style>
 
         <Style x:Key="NavButtonStyle" TargetType="Button">
-            <Setter Property="Height" Value="48"/>
-            <Setter Property="Margin" Value="12,2"/>
-            <Setter Property="Padding" Value="16,0"/>
+            <Setter Property="MinHeight" Value="46"/>
+            <Setter Property="Margin" Value="10,2"/>
+            <Setter Property="Padding" Value="14,0"/>
             <Setter Property="HorizontalContentAlignment" Value="Left"/>
             <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
@@ -52,10 +117,10 @@
                         <Border Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="0,4,4,0"
+                                CornerRadius="0,6,6,0"
                                 Padding="{TemplateBinding Padding}">
-                            <ContentPresenter VerticalAlignment="Center"
-                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"/>
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -68,15 +133,17 @@
         </Style>
 
         <Style x:Key="BaseButtonStyle" TargetType="Button">
-            <Setter Property="Height" Value="40"/>
-            <Setter Property="MinWidth" Value="108"/>
-            <Setter Property="Padding" Value="16,0"/>
+            <Setter Property="MinHeight" Value="38"/>
+            <Setter Property="MinWidth" Value="104"/>
+            <Setter Property="Padding" Value="14,6"/>
+            <Setter Property="Margin" Value="0,0,8,8"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Background" Value="White"/>
             <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
             <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -84,19 +151,19 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="5"
+                                CornerRadius="6"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonBorder" Property="Background" Value="#F3F5F8"/>
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="#F3F6FA"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="ButtonBorder" Property="Background" Value="#F2F3F5"/>
-                                <Setter Property="Foreground" Value="#A0A6B0"/>
-                                <Setter Property="Opacity" Value="0.75"/>
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="#F2F4F7"/>
+                                <Setter Property="Foreground" Value="#98A2B3"/>
+                                <Setter Property="Opacity" Value="0.76"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -115,13 +182,15 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="5"
+                                CornerRadius="6"
                                 Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="ButtonBorder" Property="Background" Value="{StaticResource PrimaryHoverBrush}"/>
+                                <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="{StaticResource PrimaryHoverBrush}"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="ButtonBorder" Property="Background" Value="#AFC7F6"/>
@@ -136,44 +205,43 @@
         <Style x:Key="DangerButtonStyle" TargetType="Button" BasedOn="{StaticResource BaseButtonStyle}">
             <Setter Property="Foreground" Value="{StaticResource DangerBrush}"/>
             <Setter Property="BorderBrush" Value="#E8A6A6"/>
-            <Setter Property="Background" Value="White"/>
         </Style>
 
         <Style x:Key="IconButtonStyle" TargetType="Button" BasedOn="{StaticResource BaseButtonStyle}">
-            <Setter Property="Width" Value="40"/>
-            <Setter Property="MinWidth" Value="40"/>
+            <Setter Property="MinWidth" Value="38"/>
+            <Setter Property="Width" Value="38"/>
             <Setter Property="Padding" Value="0"/>
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="BorderBrush" Value="Transparent"/>
         </Style>
 
         <Style TargetType="TextBox">
-            <Setter Property="Height" Value="38"/>
-            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="MinHeight" Value="38"/>
+            <Setter Property="Padding" Value="10,7"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="Background" Value="White"/>
             <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-            <Setter Property="BorderBrush" Value="#C9D0DA"/>
+            <Setter Property="BorderBrush" Value="#C9D2DD"/>
             <Setter Property="BorderThickness" Value="1"/>
         </Style>
 
         <Style TargetType="PasswordBox">
-            <Setter Property="Height" Value="38"/>
-            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="MinHeight" Value="38"/>
+            <Setter Property="Padding" Value="10,7"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="Background" Value="White"/>
             <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-            <Setter Property="BorderBrush" Value="#C9D0DA"/>
+            <Setter Property="BorderBrush" Value="#C9D2DD"/>
             <Setter Property="BorderThickness" Value="1"/>
         </Style>
 
         <Style TargetType="ComboBox">
-            <Setter Property="Height" Value="38"/>
-            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="MinHeight" Value="38"/>
+            <Setter Property="Padding" Value="8,5"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
 
         <Style TargetType="CheckBox">
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Padding" Value="0,3"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
         </Style>
@@ -185,8 +253,8 @@
             <Setter Property="HorizontalGridLinesBrush" Value="{StaticResource BorderBrush}"/>
             <Setter Property="VerticalGridLinesBrush" Value="Transparent"/>
             <Setter Property="RowHeaderWidth" Value="0"/>
-            <Setter Property="RowHeight" Value="38"/>
-            <Setter Property="ColumnHeaderHeight" Value="40"/>
+            <Setter Property="RowHeight" Value="40"/>
+            <Setter Property="ColumnHeaderHeight" Value="42"/>
             <Setter Property="CanUserAddRows" Value="False"/>
             <Setter Property="CanUserDeleteRows" Value="False"/>
             <Setter Property="CanUserResizeRows" Value="False"/>
@@ -194,18 +262,8 @@
             <Setter Property="SelectionUnit" Value="FullRow"/>
             <Setter Property="HeadersVisibility" Value="Column"/>
             <Setter Property="AutoGenerateColumns" Value="False"/>
-        </Style>
-
-        <Style x:Key="SectionTitleStyle" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="16"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-            <Setter Property="Margin" Value="0,0,0,18"/>
-        </Style>
-
-        <Style x:Key="FieldLabelStyle" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
-            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="EnableRowVirtualization" Value="True"/>
+            <Setter Property="EnableColumnVirtualization" Value="True"/>
         </Style>
 
         <Style x:Key="PlaywrightTabControlStyle" TargetType="TabControl">
@@ -217,579 +275,611 @@
         <Style x:Key="PlaywrightTabItemStyle" TargetType="TabItem">
             <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="BorderBrush" Value="Transparent"/>
-            <Setter Property="BorderThickness" Value="0,0,0,2"/>
-            <Setter Property="Padding" Value="16,11"/>
-            <Setter Property="Margin" Value="0,0,4,0"/>
-            <Setter Property="FontWeight" Value="Normal"/>
-            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="TabItem">
-                        <Border x:Name="TabBorder"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="5,5,0,0"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="TabBorder" Property="Background" Value="#F1F4F8"/>
-                                <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-                            </Trigger>
-                            <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="TabBorder" Property="Background" Value="{StaticResource PrimarySoftBrush}"/>
-                                <Setter TargetName="TabBorder" Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
-                                <Setter Property="Foreground" Value="{StaticResource PrimaryBrush}"/>
-                                <Setter Property="FontWeight" Value="SemiBold"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
+            <Setter Property="Padding" Value="16,10"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
         </Style>
     </Window.Resources>
 
     <Grid>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="224"/>
+            <ColumnDefinition x:Name="SidebarColumn" Width="208" MinWidth="72"/>
             <ColumnDefinition Width="*"/>
         </Grid.ColumnDefinitions>
 
-        <Border Grid.Column="0" Background="#FBFCFE" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,1,0">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="126"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="56"/>
-                </Grid.RowDefinitions>
+        <Border Grid.Column="0"
+                Background="{StaticResource SidebarBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="0,0,1,0">
+            <DockPanel LastChildFill="True">
+                <StackPanel x:Name="SidebarBrandPanel" DockPanel.Dock="Top" Margin="22,24,18,22">
+                    <TextBlock x:Name="SidebarTitleText" Text="Relay MCP" FontSize="22" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" LineHeight="30"/>
+                    <TextBlock x:Name="SidebarSubtitleText" Text="Agent Client" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
+                </StackPanel>
 
-                <Grid Margin="28,28,20,18">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="48"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <Border Width="44" Height="44" Background="{StaticResource PrimaryBrush}" CornerRadius="3">
-                        <TextBlock Text="R" Foreground="White" FontSize="22" FontWeight="SemiBold"
-                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                    </Border>
-                    <StackPanel Grid.Column="1" Margin="14,2,0,0">
-                        <TextBlock Text="Relay MCP" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"/>
-                        <TextBlock Text="Agent Client" FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,2,0,0"/>
+                <Border x:Name="SidebarInfoPanel" DockPanel.Dock="Bottom" Margin="16,16,16,20" Padding="12" Background="{StaticResource SurfaceAltBrush}" CornerRadius="8">
+                    <StackPanel>
+                        <TextBlock Text="Service-owned execution" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" LineHeight="23"/>
+                        <TextBlock Text="Config and tokens are protected with DPAPI LocalMachine."
+                                   Foreground="{StaticResource MutedBrush}"
+                                   TextWrapping="Wrap"
+                                   LineHeight="21"
+                                   Margin="0,4,0,0"/>
                     </StackPanel>
-                </Grid>
+                </Border>
 
-                <StackPanel Grid.Row="1">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                <StackPanel>
                     <Button x:Name="OverviewNav" Tag="OverviewPage" Style="{StaticResource NavButtonStyle}" Click="Navigation_Click">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE80F;" FontSize="16" Width="30"/>
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE80F;" Width="26"/>
                             <TextBlock Text="Overview"/>
                         </StackPanel>
                     </Button>
                     <Button x:Name="ConnectionNav" Tag="ConnectionPage" Style="{StaticResource NavButtonStyle}" Click="Navigation_Click">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE774;" FontSize="16" Width="30"/>
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE774;" Width="26"/>
                             <TextBlock Text="Connection"/>
                         </StackPanel>
                     </Button>
                     <Button x:Name="ServiceNav" Tag="ServicePage" Style="{StaticResource NavButtonStyle}" Click="Navigation_Click">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE713;" FontSize="16" Width="30"/>
-                            <TextBlock Text="Service Control"/>
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE7EF;" Width="26"/>
+                            <TextBlock Text="Service"/>
                         </StackPanel>
                     </Button>
                     <Button x:Name="DatabaseNav" Tag="DatabasePage" Style="{StaticResource NavButtonStyle}" Click="Navigation_Click">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8B7;" FontSize="16" Width="30"/>
-                            <TextBlock Text="Database Access"/>
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8E5;" Width="26"/>
+                            <TextBlock Text="Database"/>
                         </StackPanel>
                     </Button>
                     <Button x:Name="AuditNav" Tag="AuditPage" Style="{StaticResource NavButtonStyle}" Click="Navigation_Click">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE9D5;" FontSize="16" Width="30"/>
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE9D5;" Width="26"/>
                             <TextBlock Text="Request Audit"/>
                         </StackPanel>
                     </Button>
                     <Button x:Name="PlaywrightNav" Tag="PlaywrightPage" Style="{StaticResource NavButtonStyle}" Click="Navigation_Click">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE7C3;" FontSize="16" Width="30"/>
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE7C3;" Width="26"/>
                             <TextBlock Text="Playwright"/>
                         </StackPanel>
                     </Button>
                     <Button x:Name="DiagnosticsNav" Tag="DiagnosticsPage" Style="{StaticResource NavButtonStyle}" Click="Navigation_Click">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE9D9;" FontSize="16" Width="30"/>
-                            <TextBlock Text="Updates &amp; Logs"/>
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE946;" Width="26"/>
+                            <TextBlock Text="Diagnostics"/>
                         </StackPanel>
                     </Button>
                 </StackPanel>
-
-                <TextBlock Grid.Row="2" Text="v0.6.2" Foreground="{StaticResource MutedBrush}" FontSize="12"
-                           Margin="28,0,0,18" VerticalAlignment="Bottom"/>
-            </Grid>
+                </ScrollViewer>
+            </DockPanel>
         </Border>
 
         <Grid Grid.Column="1">
             <Grid.RowDefinitions>
-                <RowDefinition Height="82"/>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
-                <RowDefinition Height="36"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <Border Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1">
-                <Grid Margin="30,0,22,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="145"/>
-                        <ColumnDefinition Width="130"/>
-                        <ColumnDefinition Width="105"/>
-                        <ColumnDefinition Width="145"/>
-                        <ColumnDefinition Width="44"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="Agent operations" FontSize="19" FontWeight="SemiBold"
-                               Foreground="{StaticResource TextBrush}" VerticalAlignment="Center"/>
-                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                        <TextBlock Text="CONNECTION" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
-                        <TextBlock x:Name="HeaderConnectionText" Text="Not configured" Margin="0,5,0,0"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="2" VerticalAlignment="Center">
-                        <TextBlock Text="SERVICE" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
-                        <TextBlock x:Name="HeaderServiceText" Text="Not installed" Margin="0,5,0,0"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="3" VerticalAlignment="Center">
-                        <TextBlock Text="VERSION" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
-                        <TextBlock Text="v0.6.2" Margin="0,5,0,0"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="4" VerticalAlignment="Center">
-                        <TextBlock Text="LAST SEEN" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
-                        <TextBlock x:Name="HeaderLastSeenText" Text="No heartbeat" Margin="0,5,0,0" TextTrimming="CharacterEllipsis"/>
-                    </StackPanel>
-                    <Button Grid.Column="5" Style="{StaticResource IconButtonStyle}" ToolTip="Refresh status" Click="RefreshAll_Click">
-                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72C;" FontSize="17"/>
-                    </Button>
-                </Grid>
+            <Border Grid.Row="0"
+                    Background="{StaticResource SurfaceBrush}"
+                    BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="0,0,0,1"
+                    Padding="26,18,22,18">
+                <StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="Agent operations" FontSize="24" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" LineHeight="32"/>
+                            <TextBlock Text="Configure, operate, audit, and test the Relay Agent from one local console."
+                                       Foreground="{StaticResource MutedBrush}"
+                                       TextWrapping="Wrap"
+                                       LineHeight="22"/>
+                        </StackPanel>
+                        <Button Grid.Column="1" Style="{StaticResource IconButtonStyle}" ToolTip="Refresh status" Click="RefreshAll_Click" Margin="16,4,0,4">
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72C;" FontSize="15"/>
+                        </Button>
+                    </Grid>
+                    <WrapPanel Margin="0,14,0,0">
+                        <Border Margin="0,0,10,10" Padding="12,8" Background="{StaticResource SurfaceAltBrush}" CornerRadius="8" MinWidth="122">
+                            <StackPanel>
+                                <TextBlock Text="Connection" Foreground="{StaticResource MutedBrush}" FontSize="12" LineHeight="18"/>
+                                <TextBlock x:Name="HeaderConnectionText" Text="Not configured" Style="{StaticResource StatusTextStyle}" Margin="0,2,0,0"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Margin="0,0,10,10" Padding="12,8" Background="{StaticResource SurfaceAltBrush}" CornerRadius="8" MinWidth="116">
+                            <StackPanel>
+                                <TextBlock Text="Service" Foreground="{StaticResource MutedBrush}" FontSize="12" LineHeight="18"/>
+                                <TextBlock x:Name="HeaderServiceText" Text="Not installed" Style="{StaticResource StatusTextStyle}" Margin="0,2,0,0"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Margin="0,0,10,10" Padding="12,8" Background="{StaticResource SurfaceAltBrush}" CornerRadius="8" MinWidth="142">
+                            <StackPanel>
+                                <TextBlock Text="Last heartbeat" Foreground="{StaticResource MutedBrush}" FontSize="12" LineHeight="18"/>
+                                <TextBlock x:Name="HeaderLastSeenText" Text="No heartbeat" Style="{StaticResource ValueTextStyle}" Margin="0,6,0,0"/>
+                            </StackPanel>
+                        </Border>
+                    </WrapPanel>
+                </StackPanel>
             </Border>
 
-            <Grid Grid.Row="1" x:Name="PageHost" Margin="30,22,22,20">
-                <!-- Overview -->
-                <ScrollViewer x:Name="OverviewPage" VerticalScrollBarVisibility="Auto">
+            <Grid Grid.Row="1" x:Name="PageHost" Margin="24,20,22,18">
+                <ScrollViewer x:Name="OverviewPage" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel>
-                        <TextBlock Text="Overview" FontSize="28" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"/>
-                        <TextBlock Text="Connection, service, database, and audit readiness at a glance."
-                                   Foreground="{StaticResource MutedBrush}" Margin="0,5,0,22"/>
+                        <TextBlock Text="Overview" Style="{StaticResource PageTitleStyle}"/>
+                        <TextBlock Text="A quick view of the Agent connection, Windows Service state, database access, and request audit."
+                                   Style="{StaticResource PageSubtitleStyle}" Margin="0,0,0,18"/>
 
-                        <Border Style="{StaticResource CardStyle}" Padding="18">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition/>
-                                    <ColumnDefinition/>
-                                    <ColumnDefinition/>
-                                    <ColumnDefinition/>
-                                </Grid.ColumnDefinitions>
-                                <Grid Grid.Column="0" Margin="8">
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="42"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                                    <Border Width="32" Height="32" CornerRadius="16" Background="{StaticResource PrimarySoftBrush}">
-                                        <TextBlock Text="1" Foreground="{StaticResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                    </Border>
-                                    <StackPanel Grid.Column="1">
-                                        <TextBlock Text="Connect Relay" FontWeight="SemiBold"/>
-                                        <TextBlock x:Name="OverviewConnectionText" Text="Action required" Foreground="{StaticResource WarningBrush}" Margin="0,5,0,0"/>
-                                    </StackPanel>
-                                </Grid>
-                                <Grid Grid.Column="1" Margin="8">
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="42"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                                    <Border Width="32" Height="32" CornerRadius="16" Background="{StaticResource PrimarySoftBrush}">
-                                        <TextBlock Text="2" Foreground="{StaticResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                    </Border>
-                                    <StackPanel Grid.Column="1">
-                                        <TextBlock Text="Install Service" FontWeight="SemiBold"/>
-                                        <TextBlock x:Name="OverviewServiceText" Text="Not installed" Foreground="{StaticResource WarningBrush}" Margin="0,5,0,0"/>
-                                    </StackPanel>
-                                </Grid>
-                                <Grid Grid.Column="2" Margin="8">
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="42"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                                    <Border Width="32" Height="32" CornerRadius="16" Background="{StaticResource PrimarySoftBrush}">
-                                        <TextBlock Text="3" Foreground="{StaticResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                    </Border>
-                                    <StackPanel Grid.Column="1">
-                                        <TextBlock Text="Database Access" FontWeight="SemiBold"/>
-                                        <TextBlock x:Name="OverviewDatabaseText" Text="Not checked" Foreground="{StaticResource WarningBrush}" Margin="0,5,0,0"/>
-                                    </StackPanel>
-                                </Grid>
-                                <Grid Grid.Column="3" Margin="8">
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="42"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                                    <Border Width="32" Height="32" CornerRadius="16" Background="{StaticResource PrimarySoftBrush}">
-                                        <TextBlock Text="4" Foreground="{StaticResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                    </Border>
-                                    <StackPanel Grid.Column="1">
-                                        <TextBlock Text="Verify Agent" FontWeight="SemiBold"/>
-                                        <TextBlock x:Name="OverviewAuditText" Text="Audit enabled" Foreground="{StaticResource SuccessBrush}" Margin="0,5,0,0"/>
-                                    </StackPanel>
-                                </Grid>
-                            </Grid>
-                        </Border>
-
-                        <Grid Margin="0,16,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="320"/>
-                            </Grid.ColumnDefinitions>
-                            <Border Style="{StaticResource CardStyle}" Margin="0,0,16,0" VerticalAlignment="Top">
+                        <WrapPanel>
+                            <Border Style="{StaticResource MetricCardStyle}">
                                 <StackPanel>
-                                    <TextBlock Text="Agent summary" Style="{StaticResource SectionTitleStyle}"/>
+                                    <TextBlock Text="Connection" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
+                                    <TextBlock x:Name="OverviewConnectionText" Text="Action required" Style="{StaticResource StatusTextStyle}" Margin="0,10,0,0"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource MetricCardStyle}">
+                                <StackPanel>
+                                    <TextBlock Text="Windows Service" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
+                                    <TextBlock x:Name="OverviewServiceText" Text="Not installed" Style="{StaticResource StatusTextStyle}" Margin="0,10,0,0"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource MetricCardStyle}">
+                                <StackPanel>
+                                    <TextBlock Text="Database Access" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
+                                    <TextBlock x:Name="OverviewDatabaseText" Text="Not checked" Style="{StaticResource StatusTextStyle}" Margin="0,10,0,0"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource MetricCardStyle}">
+                                <StackPanel>
+                                    <TextBlock Text="Request Audit" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
+                                    <TextBlock x:Name="OverviewAuditText" Text="Audit enabled" Style="{StaticResource StatusTextStyle}" Margin="0,10,0,0"/>
+                                </StackPanel>
+                            </Border>
+                        </WrapPanel>
+
+                        <Grid x:Name="OverviewDetailsGrid">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="2*"/>
+                                <ColumnDefinition Width="14"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <Border Style="{StaticResource SectionStyle}">
+                                <StackPanel>
+                                    <TextBlock Text="Configuration summary" Style="{StaticResource SectionTitleStyle}"/>
                                     <Grid>
-                                        <Grid.ColumnDefinitions><ColumnDefinition Width="180"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="160"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
                                         <Grid.RowDefinitions>
-                                            <RowDefinition Height="38"/><RowDefinition Height="38"/><RowDefinition Height="38"/>
-                                            <RowDefinition Height="38"/><RowDefinition Height="38"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
-                                        <TextBlock Text="Relay endpoint" Style="{StaticResource FieldLabelStyle}"/>
-                                        <TextBlock x:Name="SummaryRelayText" Grid.Column="1" VerticalAlignment="Center"/>
-                                        <TextBlock Text="Agent ID" Grid.Row="1" Style="{StaticResource FieldLabelStyle}"/>
-                                        <TextBlock x:Name="SummaryAgentIdText" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center"/>
-                                        <TextBlock Text="Service account" Grid.Row="2" Style="{StaticResource FieldLabelStyle}"/>
-                                        <TextBlock x:Name="SummaryServiceAccountText" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center"/>
-                                        <TextBlock Text="Polling interval" Grid.Row="3" Style="{StaticResource FieldLabelStyle}"/>
-                                        <TextBlock x:Name="SummaryPollText" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center"/>
+                                        <TextBlock Text="Relay URL" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,10"/>
+                                        <TextBlock x:Name="SummaryRelayText" Grid.Column="1" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,10"/>
+                                        <TextBlock Text="Agent ID" Grid.Row="1" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,10"/>
+                                        <TextBlock x:Name="SummaryAgentIdText" Grid.Row="1" Grid.Column="1" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,10"/>
+                                        <TextBlock Text="Service account" Grid.Row="2" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,10"/>
+                                        <TextBlock x:Name="SummaryServiceAccountText" Grid.Row="2" Grid.Column="1" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,10"/>
+                                        <TextBlock Text="Poll interval" Grid.Row="3" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,10"/>
+                                        <TextBlock x:Name="SummaryPollText" Grid.Row="3" Grid.Column="1" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,10"/>
                                         <TextBlock Text="Audit retention" Grid.Row="4" Style="{StaticResource FieldLabelStyle}"/>
-                                        <TextBlock x:Name="SummaryAuditText" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SummaryAuditText" Grid.Row="4" Grid.Column="1" Style="{StaticResource ValueTextStyle}"/>
                                     </Grid>
                                 </StackPanel>
                             </Border>
-                            <Border Grid.Column="1" Style="{StaticResource CardStyle}" VerticalAlignment="Top">
+
+                            <Border x:Name="OverviewQuickActionsPanel" Grid.Column="2" Style="{StaticResource SectionStyle}">
                                 <StackPanel>
                                     <TextBlock Text="Quick actions" Style="{StaticResource SectionTitleStyle}"/>
-                                    <Button Style="{StaticResource BaseButtonStyle}" Margin="0,0,0,10" Click="TestRelay_Click">
-                                        <StackPanel Orientation="Horizontal">
-                                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8FA;" Margin="0,0,9,0"/>
-                                            <TextBlock Text="Test relay"/>
-                                        </StackPanel>
-                                    </Button>
-                                    <Button Style="{StaticResource BaseButtonStyle}" Margin="0,0,0,10" Click="RestartService_Click">
-                                        <StackPanel Orientation="Horizontal">
-                                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72C;" Margin="0,0,9,0"/>
-                                            <TextBlock Text="Restart service"/>
-                                        </StackPanel>
-                                    </Button>
-                                    <Button Style="{StaticResource BaseButtonStyle}" Margin="0,0,0,10" Click="OpenDatabasePage_Click">
-                                        <StackPanel Orientation="Horizontal">
-                                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8B7;" Margin="0,0,9,0"/>
-                                            <TextBlock Text="Check database access"/>
-                                        </StackPanel>
-                                    </Button>
-                                    <Button Style="{StaticResource BaseButtonStyle}" Click="OpenAuditPage_Click">
-                                        <StackPanel Orientation="Horizontal">
-                                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE9D5;" Margin="0,0,9,0"/>
-                                            <TextBlock Text="Open request audit"/>
-                                        </StackPanel>
-                                    </Button>
+                                    <WrapPanel>
+                                        <Button Style="{StaticResource BaseButtonStyle}" Click="TestRelay_Click">Test relay</Button>
+                                        <Button Style="{StaticResource BaseButtonStyle}" Click="RestartService_Click">Restart service</Button>
+                                        <Button Style="{StaticResource BaseButtonStyle}" Click="OpenDatabasePage_Click">Check database</Button>
+                                        <Button Style="{StaticResource BaseButtonStyle}" Click="OpenAuditPage_Click">Open audit</Button>
+                                    </WrapPanel>
                                 </StackPanel>
                             </Border>
                         </Grid>
                     </StackPanel>
                 </ScrollViewer>
 
-                <!-- Connection -->
-                <ScrollViewer x:Name="ConnectionPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                <ScrollViewer x:Name="ConnectionPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel>
-                        <TextBlock Text="Secure connection" FontSize="28" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"/>
-                        <TextBlock Text="Relay credentials are encrypted locally and never shown in plaintext after save."
-                                   Foreground="{StaticResource MutedBrush}" Margin="0,5,0,22"/>
-                        <Border Style="{StaticResource CardStyle}" MaxWidth="900" HorizontalAlignment="Left">
+                        <TextBlock Text="Connection" Style="{StaticResource PageTitleStyle}"/>
+                        <TextBlock Text="Set the Relay endpoint, Agent token, and polling cadence used by the Windows Service."
+                                   Style="{StaticResource PageSubtitleStyle}" Margin="0,0,0,18"/>
+                        <Border Style="{StaticResource SectionStyle}">
                             <StackPanel>
                                 <TextBlock Text="Connection configuration" Style="{StaticResource SectionTitleStyle}"/>
-                                <Grid>
+                                <Grid x:Name="ConnectionFieldsGrid">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="160"/>
                                         <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="140"/>
+                                        <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
                                     <Grid.RowDefinitions>
-                                        <RowDefinition Height="54"/><RowDefinition Height="54"/><RowDefinition Height="54"/>
-                                        <RowDefinition Height="54"/><RowDefinition Height="48"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
-                                    <TextBlock Text="Relay MCP address" Style="{StaticResource FieldLabelStyle}"/>
-                                    <TextBox x:Name="RelayUrlBox" Grid.Column="1" VerticalAlignment="Center"/>
-                                    <Button Grid.Column="2" Style="{StaticResource BaseButtonStyle}" Margin="8,7,0,7" Click="ReplaceRelayUrl_Click">Replace</Button>
-                                    <TextBlock Text="Agent ID" Grid.Row="1" Style="{StaticResource FieldLabelStyle}"/>
-                                    <TextBox x:Name="AgentIdBox" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center"/>
-                                    <TextBlock Text="Agent token" Grid.Row="2" Style="{StaticResource FieldLabelStyle}"/>
-                                    <PasswordBox x:Name="AgentTokenBox" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center"/>
-                                    <Button Grid.Row="2" Grid.Column="2" Style="{StaticResource BaseButtonStyle}" Margin="8,7,0,7" Click="ReplaceToken_Click">Replace token</Button>
-                                    <TextBlock Text="Poll interval" Grid.Row="3" Style="{StaticResource FieldLabelStyle}"/>
-                                    <Grid Grid.Row="3" Grid.Column="1" Width="160" HorizontalAlignment="Left">
-                                        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="64"/></Grid.ColumnDefinitions>
-                                        <TextBox x:Name="PollSecondsBox" Text="10" PreviewTextInput="NumericOnly_PreviewTextInput"/>
-                                        <TextBlock Grid.Column="1" Text="seconds" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="10,0,0,0"/>
-                                    </Grid>
-                                    <TextBlock Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2"
-                                               Text="Protected with Windows DPAPI (LocalMachine) and restricted file permissions."
-                                               Foreground="{StaticResource SuccessBrush}" VerticalAlignment="Center"/>
+
+                                    <TextBlock x:Name="RelayUrlLabel" Text="Relay URL" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,12"/>
+                                    <TextBox x:Name="RelayUrlBox" Grid.Column="1" Margin="0,0,0,12"/>
+                                    <Button x:Name="ReplaceRelayUrlButton" Grid.Column="2" Style="{StaticResource BaseButtonStyle}" Margin="8,0,0,12" Click="ReplaceRelayUrl_Click">Replace</Button>
+
+                                    <TextBlock x:Name="AgentIdLabel" Text="Agent ID" Grid.Row="1" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,12"/>
+                                    <TextBox x:Name="AgentIdBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,12"/>
+
+                                    <TextBlock x:Name="AgentTokenLabel" Text="Agent Token" Grid.Row="2" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,12"/>
+                                    <PasswordBox x:Name="AgentTokenBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,12"/>
+                                    <Button x:Name="ReplaceAgentTokenButton" Grid.Row="2" Grid.Column="2" Style="{StaticResource BaseButtonStyle}" Margin="8,0,0,12" Click="ReplaceToken_Click">Replace token</Button>
+
+                                    <TextBlock x:Name="PollIntervalLabel" Text="Poll interval" Grid.Row="3" Style="{StaticResource FieldLabelStyle}"/>
+                                    <StackPanel x:Name="PollIntervalPanel" Grid.Row="3" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBox x:Name="PollSecondsBox" Width="86" Text="10" PreviewTextInput="NumericOnly_PreviewTextInput"/>
+                                        <TextBlock Text="seconds" Style="{StaticResource FieldLabelStyle}" Margin="10,0,0,0"/>
+                                    </StackPanel>
                                 </Grid>
-                                <StackPanel Orientation="Horizontal" Margin="160,18,0,0">
-                                    <Button Style="{StaticResource PrimaryButtonStyle}" Margin="0,0,10,0" Click="SaveConfiguration_Click">Save securely</Button>
-                                    <Button Style="{StaticResource BaseButtonStyle}" Click="TestRelay_Click">Test relay</Button>
-                                </StackPanel>
-                                <Border x:Name="ConnectionNoticeBorder" Margin="160,18,0,0" Padding="12,9" Background="#F3F5F8" CornerRadius="4">
-                                    <TextBlock x:Name="ConnectionNoticeText" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"/>
+
+                                <Border x:Name="ConnectionNoticeBorder" Margin="160,18,0,0" Padding="12,10" Background="{StaticResource SurfaceAltBrush}" CornerRadius="6">
+                                    <TextBlock x:Name="ConnectionNoticeText" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" LineHeight="22"/>
                                 </Border>
+
+                                <WrapPanel x:Name="ConnectionActionsPanel" Margin="160,18,0,0">
+                                    <Button Style="{StaticResource PrimaryButtonStyle}" Click="SaveConfiguration_Click">Save securely</Button>
+                                    <Button Style="{StaticResource BaseButtonStyle}" Click="TestRelay_Click">Test relay</Button>
+                                </WrapPanel>
                             </StackPanel>
                         </Border>
                     </StackPanel>
                 </ScrollViewer>
 
-                <!-- Service -->
-                <ScrollViewer x:Name="ServicePage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                <ScrollViewer x:Name="ServicePage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel>
-                        <TextBlock Text="Service control" FontSize="28" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"/>
-                        <TextBlock Text="Install, update, start, and inspect the Windows Service that runs the Agent."
-                                   Foreground="{StaticResource MutedBrush}" Margin="0,5,0,22"/>
-                        <Grid>
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="390"/></Grid.ColumnDefinitions>
-                            <Border Style="{StaticResource CardStyle}" Margin="0,0,16,0">
+                        <TextBlock Text="Windows Service" Style="{StaticResource PageTitleStyle}"/>
+                        <TextBlock Text="Install, update, and control the background Relay MCP Agent service."
+                                   Style="{StaticResource PageSubtitleStyle}" Margin="0,0,0,18"/>
+                        <Grid x:Name="ServiceLayoutGrid">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="2*"/>
+                                <ColumnDefinition Width="14"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Border Style="{StaticResource SectionStyle}">
                                 <StackPanel>
-                                    <TextBlock Text="Windows Service" Style="{StaticResource SectionTitleStyle}"/>
+                                    <TextBlock Text="Service information" Style="{StaticResource SectionTitleStyle}"/>
                                     <Grid>
-                                        <Grid.ColumnDefinitions><ColumnDefinition Width="160"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="150"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
                                         <Grid.RowDefinitions>
-                                            <RowDefinition Height="48"/><RowDefinition Height="48"/>
-                                            <RowDefinition Height="66"/><RowDefinition Height="48"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
-                                        <TextBlock Text="Status" Style="{StaticResource FieldLabelStyle}"/>
-                                        <TextBlock x:Name="ServiceStateText" Grid.Column="1" VerticalAlignment="Center"/>
-                                        <TextBlock Text="Running as" Grid.Row="1" Style="{StaticResource FieldLabelStyle}"/>
-                                        <TextBlock x:Name="ServiceIdentityText" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center"/>
+                                        <TextBlock Text="Status" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,12"/>
+                                        <TextBlock x:Name="ServiceStateText" Grid.Column="1" Grid.ColumnSpan="2" Style="{StaticResource StatusTextStyle}" Margin="0,0,0,12"/>
+                                        <TextBlock Text="Run as" Grid.Row="1" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,12"/>
+                                        <TextBlock x:Name="ServiceIdentityText" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,12"/>
                                         <TextBlock Text="Executable" Grid.Row="2" Style="{StaticResource FieldLabelStyle}"/>
-                                        <Grid Grid.Row="2" Grid.Column="1">
-                                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="42"/></Grid.ColumnDefinitions>
-                                            <TextBlock x:Name="ServicePathText" TextWrapping="Wrap" VerticalAlignment="Center"/>
-                                            <Button Grid.Column="1" Style="{StaticResource IconButtonStyle}" ToolTip="Copy executable path" Click="CopyServicePath_Click">
-                                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8C8;"/>
-                                            </Button>
-                                        </Grid>
-                                        <TextBlock Text="Startup" Grid.Row="3" Style="{StaticResource FieldLabelStyle}"/>
-                                        <TextBlock Grid.Row="3" Grid.Column="1" Text="Automatic" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="ServicePathText" Grid.Row="2" Grid.Column="1" Style="{StaticResource ValueTextStyle}" TextWrapping="NoWrap"/>
+                                        <Button Grid.Row="2" Grid.Column="2" Style="{StaticResource IconButtonStyle}" ToolTip="Copy executable path" Click="CopyServicePath_Click" Margin="8,0,0,0">
+                                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8C8;" FontSize="14"/>
+                                        </Button>
                                     </Grid>
                                 </StackPanel>
                             </Border>
-                            <Border Grid.Column="1" Style="{StaticResource CardStyle}">
+
+                            <Border x:Name="ServiceActionsPanel" Grid.Column="2" Style="{StaticResource SectionStyle}">
                                 <StackPanel>
                                     <TextBlock Text="Service actions" Style="{StaticResource SectionTitleStyle}"/>
-                                    <Button Style="{StaticResource PrimaryButtonStyle}" Margin="0,0,0,14" Click="InstallService_Click">Install or update service</Button>
-                                    <UniformGrid Columns="3" Margin="0,0,0,18">
-                                        <Button x:Name="StartServiceButton" Style="{StaticResource BaseButtonStyle}" Margin="0,0,6,0" Click="StartService_Click">Start</Button>
-                                        <Button x:Name="StopServiceButton" Style="{StaticResource BaseButtonStyle}" Margin="3,0" Click="StopService_Click">Stop</Button>
-                                        <Button x:Name="RestartServiceButton" Style="{StaticResource BaseButtonStyle}" Margin="6,0,0,0" Click="RestartService_Click">Restart</Button>
-                                    </UniformGrid>
-                                    <Border Height="1" Background="{StaticResource BorderBrush}" Margin="0,0,0,18"/>
-                                    <Button x:Name="UninstallServiceButton" Style="{StaticResource DangerButtonStyle}" Click="UninstallService_Click">Uninstall service</Button>
+                                    <WrapPanel>
+                                        <Button Style="{StaticResource PrimaryButtonStyle}" Click="InstallService_Click">Install or update</Button>
+                                        <Button x:Name="StartServiceButton" Style="{StaticResource BaseButtonStyle}" Click="StartService_Click">Start</Button>
+                                        <Button x:Name="StopServiceButton" Style="{StaticResource BaseButtonStyle}" Click="StopService_Click">Stop</Button>
+                                        <Button x:Name="RestartServiceButton" Style="{StaticResource BaseButtonStyle}" Click="RestartService_Click">Restart</Button>
+                                    </WrapPanel>
+                                    <Border Margin="0,10,0,0" Padding="12" Background="{StaticResource DangerSoftBrush}" CornerRadius="8">
+                                        <StackPanel>
+                                            <TextBlock Text="Danger zone" FontWeight="SemiBold" Foreground="{StaticResource DangerBrush}" LineHeight="24"/>
+                                            <TextBlock Text="Remove the Windows Service registration while keeping local configuration files."
+                                                       Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" LineHeight="21" Margin="0,2,0,10"/>
+                                            <Button x:Name="UninstallServiceButton" Style="{StaticResource DangerButtonStyle}" Click="UninstallService_Click">Uninstall service</Button>
+                                        </StackPanel>
+                                    </Border>
                                 </StackPanel>
                             </Border>
                         </Grid>
                     </StackPanel>
                 </ScrollViewer>
 
-                <!-- Database -->
-                <ScrollViewer x:Name="DatabasePage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                <ScrollViewer x:Name="DatabasePage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel>
-                        <TextBlock Text="Database access" FontSize="28" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"/>
-                        <TextBlock Text="Detect SampleManager databases and grant the Agent service identity only the permissions it needs."
-                                   Foreground="{StaticResource MutedBrush}" Margin="0,5,0,22"/>
-                        <Grid>
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="390"/></Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                            <Border Style="{StaticResource CardStyle}" Margin="0,0,16,16" VerticalAlignment="Top">
-                                <StackPanel>
-                                    <TextBlock Text="Target" Style="{StaticResource SectionTitleStyle}"/>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions><ColumnDefinition Width="145"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="50"/><RowDefinition Height="50"/>
-                                            <RowDefinition Height="50"/><RowDefinition Height="50"/>
-                                        </Grid.RowDefinitions>
-                                        <TextBlock Text="SQL Server" Style="{StaticResource FieldLabelStyle}"/>
-                                        <ComboBox x:Name="SqlServerBox" Grid.Column="1" IsEditable="True"/>
-                                        <TextBlock Text="Database" Grid.Row="1" Style="{StaticResource FieldLabelStyle}"/>
-                                        <ComboBox x:Name="DatabaseBox" Grid.Row="1" Grid.Column="1"/>
-                                        <TextBlock Text="Service identity" Grid.Row="2" Style="{StaticResource FieldLabelStyle}"/>
-                                        <TextBlock x:Name="DatabaseIdentityText" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center"/>
-                                        <TextBlock Text="Current result" Grid.Row="3" Style="{StaticResource FieldLabelStyle}"/>
-                                        <TextBlock x:Name="DatabaseResultText" Grid.Row="3" Grid.Column="1" Text="Not checked" VerticalAlignment="Center"/>
-                                    </Grid>
-                                </StackPanel>
-                            </Border>
-                            <Border Grid.Column="1" Style="{StaticResource CardStyle}" Margin="0,0,0,16" VerticalAlignment="Top">
-                                <StackPanel>
-                                    <TextBlock Text="Discovery &amp; verification" Style="{StaticResource SectionTitleStyle}"/>
-                                    <Button Style="{StaticResource PrimaryButtonStyle}" Margin="0,0,0,10" Click="DetectDatabases_Click">Detect databases</Button>
-                                    <Button Style="{StaticResource BaseButtonStyle}" Click="TestDatabaseAccess_Click">Test current access</Button>
-                                </StackPanel>
-                            </Border>
-                            <Border Grid.Row="1" Style="{StaticResource CardStyle}" Margin="0,0,16,0">
-                                <StackPanel>
-                                    <TextBlock Text="Permission evidence" Style="{StaticResource SectionTitleStyle}"/>
-                                    <DataGrid x:Name="PermissionGrid" Height="280" ItemsSource="{Binding PermissionRows}">
-                                        <DataGrid.Columns>
-                                            <DataGridTextColumn Header="Permission" Binding="{Binding Permission}" Width="1.4*"/>
-                                            <DataGridTemplateColumn Header="Current" Width="1.1*">
-                                                <DataGridTemplateColumn.CellTemplate>
-                                                    <DataTemplate>
-                                                        <Border Background="{Binding StatusBackground}" CornerRadius="3" Padding="7,3" HorizontalAlignment="Left">
-                                                            <TextBlock Text="{Binding Current}" Foreground="{Binding StatusForeground}"/>
-                                                        </Border>
-                                                    </DataTemplate>
-                                                </DataGridTemplateColumn.CellTemplate>
-                                            </DataGridTemplateColumn>
-                                            <DataGridTextColumn Header="Read" Binding="{Binding Read}" Width="*"/>
-                                            <DataGridTextColumn Header="Write" Binding="{Binding Write}" Width="*"/>
-                                            <DataGridTextColumn Header="DDL" Binding="{Binding Ddl}" Width="*"/>
-                                        </DataGrid.Columns>
-                                    </DataGrid>
-                                </StackPanel>
-                            </Border>
-                            <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource CardStyle}">
+                        <TextBlock Text="Database Access" Style="{StaticResource PageTitleStyle}"/>
+                        <TextBlock Text="Discover SQL targets and verify the service account permissions used by MCP database tools."
+                                   Style="{StaticResource PageSubtitleStyle}" Margin="0,0,0,18"/>
+                        <Grid x:Name="DatabaseLayoutGrid">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="2*"/>
+                                <ColumnDefinition Width="14"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                                <Border x:Name="DatabaseTargetPanel" Style="{StaticResource SectionStyle}">
+                                    <StackPanel>
+                                        <TextBlock Text="Target" Style="{StaticResource SectionTitleStyle}"/>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="150"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Text="SQL Server" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,12"/>
+                                            <ComboBox x:Name="SqlServerBox" Grid.Column="1" IsEditable="True" Margin="0,0,0,12"/>
+                                            <TextBlock Text="Database" Grid.Row="1" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,12"/>
+                                            <ComboBox x:Name="DatabaseBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,12"/>
+                                            <TextBlock Text="Service identity" Grid.Row="2" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,12"/>
+                                            <TextBlock x:Name="DatabaseIdentityText" Grid.Row="2" Grid.Column="1" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,12"/>
+                                            <TextBlock Text="Result" Grid.Row="3" Style="{StaticResource FieldLabelStyle}"/>
+                                            <TextBlock x:Name="DatabaseResultText" Grid.Row="3" Grid.Column="1" Text="Not checked" Style="{StaticResource StatusTextStyle}"/>
+                                        </Grid>
+                                        <WrapPanel Margin="150,18,0,0">
+                                            <Button Style="{StaticResource PrimaryButtonStyle}" Click="DetectDatabases_Click">Detect databases</Button>
+                                            <Button Style="{StaticResource BaseButtonStyle}" Click="TestDatabaseAccess_Click">Test current access</Button>
+                                        </WrapPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border x:Name="DatabasePermissionPanel" Grid.Row="1" Style="{StaticResource SectionStyle}">
+                                    <StackPanel>
+                                        <TextBlock Text="Permission evidence" Style="{StaticResource SectionTitleStyle}"/>
+                                        <DataGrid x:Name="PermissionGrid" MinHeight="300" ItemsSource="{Binding PermissionRows}">
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn Header="Permission" Binding="{Binding Permission}" Width="1.4*" MinWidth="150"/>
+                                                <DataGridTemplateColumn Header="Current" Width="1.2*" MinWidth="130">
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <Border Background="{Binding StatusBackground}" CornerRadius="10" Padding="9,3" HorizontalAlignment="Left">
+                                                                <TextBlock Text="{Binding Current}" Foreground="{Binding StatusForeground}" FontWeight="SemiBold"/>
+                                                            </Border>
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
+                                                <DataGridTextColumn Header="Read" Binding="{Binding Read}" Width="*" MinWidth="110"/>
+                                                <DataGridTextColumn Header="Write" Binding="{Binding Write}" Width="*" MinWidth="110"/>
+                                                <DataGridTextColumn Header="DDL" Binding="{Binding Ddl}" Width="*" MinWidth="110"/>
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </StackPanel>
+                                </Border>
+
+                            <Border x:Name="DatabaseActionsPanel" Grid.Column="2" Grid.RowSpan="2" Style="{StaticResource SectionStyle}">
                                 <StackPanel>
                                     <TextBlock Text="Access actions" Style="{StaticResource SectionTitleStyle}"/>
-                                    <Button Style="{StaticResource BaseButtonStyle}" Margin="0,0,0,10" Click="GrantRead_Click">Grant read access</Button>
-                                    <Button Style="{StaticResource BaseButtonStyle}" Margin="0,0,0,18" Click="GrantReadWrite_Click">Grant read/write access</Button>
-                                    <Border Height="1" Background="{StaticResource BorderBrush}" Margin="0,0,0,18"/>
-                                    <Button Style="{StaticResource DangerButtonStyle}" Margin="0,0,0,10" Click="GrantDdl_Click">Grant DDL access</Button>
-                                    <Button Style="{StaticResource DangerButtonStyle}" Click="RevokeDatabaseAccess_Click">Revoke database access</Button>
+                                    <WrapPanel>
+                                        <Button Style="{StaticResource BaseButtonStyle}" Click="GrantRead_Click">Grant read access</Button>
+                                        <Button Style="{StaticResource BaseButtonStyle}" Click="GrantReadWrite_Click">Grant read/write access</Button>
+                                    </WrapPanel>
+                                    <Border Margin="0,12,0,0" Padding="12" Background="{StaticResource DangerSoftBrush}" CornerRadius="8">
+                                        <StackPanel>
+                                            <TextBlock Text="High-risk access" FontWeight="SemiBold" Foreground="{StaticResource DangerBrush}" LineHeight="24"/>
+                                            <TextBlock Text="DDL and revoke operations change the service account's database rights."
+                                                       Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" LineHeight="21" Margin="0,2,0,10"/>
+                                            <WrapPanel>
+                                                <Button Style="{StaticResource DangerButtonStyle}" Click="GrantDdl_Click">Grant DDL access</Button>
+                                                <Button Style="{StaticResource DangerButtonStyle}" Click="RevokeDatabaseAccess_Click">Revoke database access</Button>
+                                            </WrapPanel>
+                                        </StackPanel>
+                                    </Border>
                                 </StackPanel>
                             </Border>
                         </Grid>
                     </StackPanel>
                 </ScrollViewer>
 
-                <!-- Audit -->
-                <Grid x:Name="AuditPage" Visibility="Collapsed">
-                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="156"/></Grid.RowDefinitions>
+                <ScrollViewer x:Name="AuditPage"
+                              Visibility="Collapsed"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                <Grid x:Name="AuditPageGrid" MinHeight="650">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*" MinHeight="150"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="0.72*" MinHeight="180"/>
+                    </Grid.RowDefinitions>
                     <StackPanel>
-                        <TextBlock Text="Request audit" FontSize="28" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"/>
-                        <TextBlock Text="Every audited Relay GET and POST request. Credentials are always redacted."
-                                   Foreground="{StaticResource MutedBrush}" Margin="0,5,0,18"/>
+                        <TextBlock Text="Request Audit" Style="{StaticResource PageTitleStyle}"/>
+                        <TextBlock Text="Inspect the local Agent request log, filter by method and status, and export redacted evidence."
+                                   Style="{StaticResource PageSubtitleStyle}" Margin="0,0,0,18"/>
                     </StackPanel>
-                    <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="16" Margin="0,0,0,14">
-                        <Grid>
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                <CheckBox x:Name="AuditEnabledCheck" Content="Audit enabled" Margin="0,0,18,0"/>
-                                <CheckBox x:Name="AuditPayloadsCheck" Content="Log redacted payloads" Margin="0,0,18,0"/>
-                                <TextBlock Text="Retention" Style="{StaticResource FieldLabelStyle}" Margin="0,0,7,0"/>
-                                <TextBox x:Name="AuditRetentionBox" Width="58" Text="14" PreviewTextInput="NumericOnly_PreviewTextInput" Margin="0,0,0,0"/>
-                            </StackPanel>
-                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                                <TextBlock Text="Method" Style="{StaticResource FieldLabelStyle}" Margin="18,0,7,0"/>
-                                <ComboBox x:Name="AuditMethodFilter" Width="88" Margin="0,0,12,0" SelectionChanged="AuditFilter_SelectionChanged">
+                    <Border Grid.Row="1" Style="{StaticResource SectionStyle}" Padding="16">
+                        <Grid x:Name="AuditToolbarGrid">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <WrapPanel x:Name="AuditSettingsPanel" VerticalAlignment="Center">
+                                <CheckBox x:Name="AuditEnabledCheck" Content="Audit enabled" Margin="0,0,18,8"/>
+                                <CheckBox x:Name="AuditPayloadsCheck" Content="Log redacted payloads" Margin="0,0,18,8"/>
+                                <TextBlock Text="Retention" Style="{StaticResource FieldLabelStyle}" Margin="0,0,8,8"/>
+                                <TextBox x:Name="AuditRetentionBox" Width="70" Text="14" PreviewTextInput="NumericOnly_PreviewTextInput" Margin="0,0,18,8"/>
+                            </WrapPanel>
+                            <WrapPanel x:Name="AuditFilterActionsPanel" Grid.Column="1" HorizontalAlignment="Right">
+                                <TextBlock Text="Method" Style="{StaticResource FieldLabelStyle}" Margin="0,0,8,8"/>
+                                <ComboBox x:Name="AuditMethodFilter" Width="98" SelectionChanged="AuditFilter_SelectionChanged" Margin="0,0,12,8">
                                     <ComboBoxItem Content="All"/><ComboBoxItem Content="GET"/><ComboBoxItem Content="POST"/>
                                 </ComboBox>
-                                <TextBlock Text="Status" Style="{StaticResource FieldLabelStyle}" Margin="0,0,7,0"/>
-                                <ComboBox x:Name="AuditStatusFilter" Width="98" Margin="0,0,12,0" SelectionChanged="AuditFilter_SelectionChanged">
-                                    <ComboBoxItem Content="All"/><ComboBoxItem Content="Success"/><ComboBoxItem Content="Failed"/>
+                                <TextBlock Text="Status" Style="{StaticResource FieldLabelStyle}" Margin="0,0,8,8"/>
+                                <ComboBox x:Name="AuditStatusFilter" Width="112" SelectionChanged="AuditFilter_SelectionChanged" Margin="0,0,12,8">
+                                    <ComboBoxItem Content="All"/><ComboBoxItem Content="2xx"/><ComboBoxItem Content="4xx"/><ComboBoxItem Content="5xx"/>
                                 </ComboBox>
-                                <Button Style="{StaticResource PrimaryButtonStyle}" Margin="0,0,8,0" Click="ApplyAuditSettings_Click">Apply</Button>
-                                <Button Style="{StaticResource BaseButtonStyle}" Margin="0,0,8,0" Click="ExportAudit_Click">Export</Button>
+                                <Button Style="{StaticResource PrimaryButtonStyle}" Click="ApplyAuditSettings_Click">Apply</Button>
+                                <Button Style="{StaticResource BaseButtonStyle}" Click="ExportAudit_Click">Export</Button>
                                 <Button Style="{StaticResource DangerButtonStyle}" Click="ClearAudit_Click">Clear</Button>
-                            </StackPanel>
+                            </WrapPanel>
                         </Grid>
                     </Border>
-                    <Border Grid.Row="2" Style="{StaticResource CardStyle}" Padding="10" Margin="0,0,0,14">
+
+                    <Border Grid.Row="2" Style="{StaticResource SectionStyle}" Padding="12">
                         <Grid>
                             <DataGrid x:Name="AuditGrid" ItemsSource="{Binding AuditRows}" SelectionChanged="AuditGrid_SelectionChanged">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Time" Binding="{Binding Time}" Width="155"/>
-                                    <DataGridTextColumn Header="Method" Binding="{Binding Method}" Width="75"/>
-                                    <DataGridTextColumn Header="Endpoint" Binding="{Binding Endpoint}" Width="3*"/>
-                                    <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="80"/>
-                                    <DataGridTextColumn Header="Duration" Binding="{Binding Duration}" Width="95"/>
-                                    <DataGridTextColumn Header="Job ID" Binding="{Binding JobId}" Width="1.5*"/>
-                                    <DataGridTextColumn Header="Payload" Binding="{Binding Payload}" Width="80"/>
+                                    <DataGridTextColumn Header="Time" Binding="{Binding Time}" Width="150" MinWidth="140"/>
+                                    <DataGridTextColumn Header="Method" Binding="{Binding Method}" Width="86" MinWidth="80"/>
+                                    <DataGridTextColumn Header="Endpoint" Binding="{Binding Endpoint}" Width="3*" MinWidth="260"/>
+                                    <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="94" MinWidth="86"/>
+                                    <DataGridTextColumn Header="Duration" Binding="{Binding Duration}" Width="110" MinWidth="100"/>
+                                    <DataGridTextColumn Header="Job ID" Binding="{Binding JobId}" Width="2*" MinWidth="220"/>
                                 </DataGrid.Columns>
                             </DataGrid>
-                            <TextBlock x:Name="AuditEmptyText" Text="No audited requests yet." Foreground="{StaticResource MutedBrush}"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="AuditEmptyText" Text="No audited requests yet."
+                                       Foreground="{StaticResource MutedBrush}"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       Visibility="Collapsed"/>
                         </Grid>
                     </Border>
-                    <Border Grid.Row="3" Style="{StaticResource CardStyle}" Padding="16">
+
+                    <GridSplitter Grid.Row="3"
+                                  Height="10"
+                                  HorizontalAlignment="Stretch"
+                                  Background="Transparent"/>
+
+                    <Border Grid.Row="4" Style="{StaticResource SectionStyle}" Padding="16" Margin="0">
                         <Grid>
-                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                            <TextBlock Text="Selected request" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                            <TextBox x:Name="AuditDetailBox" Grid.Row="1" IsReadOnly="True" AcceptsReturn="True"
-                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                                     TextWrapping="NoWrap" FontFamily="Consolas" FontSize="12"
-                                     VerticalAlignment="Stretch" Background="#FBFCFE"
-                                     Text="Select a request to inspect details."/>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="Selected request" Style="{StaticResource SectionTitleStyle}"/>
+                            <controls:TerminalTextBox x:Name="AuditDetailBox" Grid.Row="1"
+                                                      Text="Select a request to inspect details."
+                                                      MinHeight="170"/>
                         </Grid>
                     </Border>
                 </Grid>
+                </ScrollViewer>
 
-                <!-- Playwright -->
                 <Grid x:Name="PlaywrightPage" Visibility="Collapsed">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
-                    <Grid Grid.Row="0" Margin="0,0,0,16">
-                        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <Grid x:Name="PlaywrightHeaderGrid">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
                         <StackPanel>
-                            <TextBlock Text="Playwright" FontSize="28" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"/>
-                            <TextBlock Text="Install the browser runtime and manage SampleManager Web Client tests."
-                                       Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0"/>
+                            <TextBlock Text="Playwright" Style="{StaticResource PageTitleStyle}"/>
+                            <TextBlock Text="Manage browser automation runtime, IIS Web Client discovery, suites, runs, and artifacts on the Agent host."
+                                       Style="{StaticResource PageSubtitleStyle}" Margin="0,0,0,18"/>
                         </StackPanel>
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
-                            <Button Style="{StaticResource BaseButtonStyle}" Margin="0,0,10,0" Click="RefreshPlaywright_Click">Check runtime</Button>
+                        <WrapPanel x:Name="PlaywrightHeaderActions" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Top">
+                            <Button Style="{StaticResource BaseButtonStyle}" Click="RefreshPlaywright_Click">Check runtime</Button>
                             <Button x:Name="PlaywrightInstallButton" Style="{StaticResource PrimaryButtonStyle}" Click="QueuePlaywrightInstall_Click">Install dependencies</Button>
-                        </StackPanel>
+                        </WrapPanel>
                     </Grid>
 
-                    <TabControl Grid.Row="1" x:Name="PlaywrightTabs"
+                    <TabControl Grid.Row="1"
+                                x:Name="PlaywrightTabs"
                                 Style="{StaticResource PlaywrightTabControlStyle}"
                                 ItemContainerStyle="{StaticResource PlaywrightTabItemStyle}">
                         <TabItem Header="Overview">
                             <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                <StackPanel Margin="16">
-                                    <UniformGrid Columns="3" Margin="0,0,0,16">
-                                        <Border Style="{StaticResource CardStyle}" Margin="0,0,10,0" Padding="18">
+                                <StackPanel Margin="0,16,0,0">
+                                    <WrapPanel>
+                                        <Border Style="{StaticResource MetricCardStyle}">
                                             <StackPanel>
-                                                <TextBlock Text="Runtime" Foreground="{StaticResource MutedBrush}"/>
-                                                <TextBlock x:Name="PlaywrightOverviewRuntimeText" Text="Not checked" FontSize="18" FontWeight="SemiBold" Margin="0,9,0,0"/>
+                                                <TextBlock Text="Runtime" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
+                                                <TextBlock x:Name="PlaywrightOverviewRuntimeText" Text="Not checked" Style="{StaticResource StatusTextStyle}" Margin="0,10,0,0"/>
                                             </StackPanel>
                                         </Border>
-                                        <Border Style="{StaticResource CardStyle}" Margin="5,0" Padding="18">
+                                        <Border Style="{StaticResource MetricCardStyle}">
                                             <StackPanel>
-                                                <TextBlock Text="Last run" Foreground="{StaticResource MutedBrush}"/>
-                                                <TextBlock x:Name="PlaywrightOverviewLastRunText" Text="No runs yet" FontSize="18" FontWeight="SemiBold" Margin="0,9,0,0" TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Text="Last run" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
+                                                <TextBlock x:Name="PlaywrightOverviewLastRunText" Text="No runs yet" Style="{StaticResource ValueTextStyle}" FontSize="18" FontWeight="SemiBold" Margin="0,13,0,0"/>
                                             </StackPanel>
                                         </Border>
-                                        <Border Style="{StaticResource CardStyle}" Margin="10,0,0,0" Padding="18">
+                                        <Border Style="{StaticResource MetricCardStyle}">
                                             <StackPanel>
-                                                <TextBlock Text="Artifacts" Foreground="{StaticResource MutedBrush}"/>
-                                                <TextBlock x:Name="PlaywrightOverviewArtifactsText" Text="0 files" FontSize="18" FontWeight="SemiBold" Margin="0,9,0,0"/>
+                                                <TextBlock Text="Artifacts" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
+                                                <TextBlock x:Name="PlaywrightOverviewArtifactsText" Text="0 files" Style="{StaticResource ValueTextStyle}" FontSize="18" FontWeight="SemiBold" Margin="0,13,0,0"/>
                                             </StackPanel>
                                         </Border>
-                                    </UniformGrid>
-                                    <Border Style="{StaticResource CardStyle}">
+                                    </WrapPanel>
+                                    <Border Style="{StaticResource SectionStyle}">
                                         <StackPanel>
-                                            <TextBlock Text="Runtime summary" Style="{StaticResource SectionTitleStyle}"/>
+                                            <TextBlock Text="Runtime evidence" Style="{StaticResource SectionTitleStyle}"/>
                                             <Grid>
-                                                <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="130"/></Grid.ColumnDefinitions>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="150"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="130"/>
+                                                </Grid.ColumnDefinitions>
                                                 <Grid.RowDefinitions>
-                                                    <RowDefinition Height="44"/><RowDefinition Height="44"/><RowDefinition Height="44"/><RowDefinition Height="44"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
                                                 </Grid.RowDefinitions>
-                                                <TextBlock Text="Node.js" Style="{StaticResource FieldLabelStyle}"/>
-                                                <TextBlock x:Name="PlaywrightOverviewNodeText" Grid.Column="1" VerticalAlignment="Center"/>
-                                                <TextBlock x:Name="PlaywrightOverviewNodeStatusText" Grid.Column="2" VerticalAlignment="Center"/>
-                                                <TextBlock Text="Playwright" Grid.Row="1" Style="{StaticResource FieldLabelStyle}"/>
-                                                <TextBlock x:Name="PlaywrightOverviewPackageText" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center"/>
-                                                <TextBlock x:Name="PlaywrightOverviewPackageStatusText" Grid.Row="1" Grid.Column="2" VerticalAlignment="Center"/>
-                                                <TextBlock Text="Chromium" Grid.Row="2" Style="{StaticResource FieldLabelStyle}"/>
-                                                <TextBlock x:Name="PlaywrightOverviewBrowserText" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                                                <TextBlock x:Name="PlaywrightOverviewBrowserStatusText" Grid.Row="2" Grid.Column="2" VerticalAlignment="Center"/>
+                                                <TextBlock Text="Node.js" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,12"/>
+                                                <TextBlock x:Name="PlaywrightOverviewNodeText" Grid.Column="1" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,12"/>
+                                                <TextBlock x:Name="PlaywrightOverviewNodeStatusText" Grid.Column="2" Style="{StaticResource StatusTextStyle}" Margin="0,0,0,12"/>
+                                                <TextBlock Text="Playwright" Grid.Row="1" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,12"/>
+                                                <TextBlock x:Name="PlaywrightOverviewPackageText" Grid.Row="1" Grid.Column="1" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,12"/>
+                                                <TextBlock x:Name="PlaywrightOverviewPackageStatusText" Grid.Row="1" Grid.Column="2" Style="{StaticResource StatusTextStyle}" Margin="0,0,0,12"/>
+                                                <TextBlock Text="Chromium" Grid.Row="2" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,12"/>
+                                                <TextBlock x:Name="PlaywrightOverviewBrowserText" Grid.Row="2" Grid.Column="1" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,12"/>
+                                                <TextBlock x:Name="PlaywrightOverviewBrowserStatusText" Grid.Row="2" Grid.Column="2" Style="{StaticResource StatusTextStyle}" Margin="0,0,0,12"/>
                                                 <TextBlock Text="Service account" Grid.Row="3" Style="{StaticResource FieldLabelStyle}"/>
-                                                <TextBlock Grid.Row="3" Grid.Column="1" Text="NT AUTHORITY\SYSTEM" VerticalAlignment="Center"/>
-                                                <TextBlock Grid.Row="3" Grid.Column="2" Text="Background execution" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Row="3" Grid.Column="1" Text="NT AUTHORITY\SYSTEM" Style="{StaticResource ValueTextStyle}"/>
+                                                <TextBlock Grid.Row="3" Grid.Column="2" Text="Background execution" Foreground="{StaticResource MutedBrush}" Style="{StaticResource ValueTextStyle}"/>
                                             </Grid>
                                         </StackPanel>
                                     </Border>
@@ -798,177 +888,249 @@
                         </TabItem>
 
                         <TabItem Header="Runtime">
-                            <Grid Margin="16">
-                                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,14">
+                            <ScrollViewer x:Name="PlaywrightRuntimeScroller"
+                                          VerticalScrollBarVisibility="Disabled"
+                                          HorizontalScrollBarVisibility="Disabled">
+                            <Grid x:Name="PlaywrightRuntimePageGrid" Margin="0,16,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="12"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <Border Style="{StaticResource SectionStyle}" Margin="0">
                                     <StackPanel>
                                         <TextBlock Text="Dependencies" Style="{StaticResource SectionTitleStyle}"/>
                                         <Grid>
-                                            <Grid.ColumnDefinitions><ColumnDefinition Width="160"/><ColumnDefinition/><ColumnDefinition Width="110"/></Grid.ColumnDefinitions>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="160"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="110"/>
+                                            </Grid.ColumnDefinitions>
                                             <Grid.RowDefinitions>
-                                                <RowDefinition Height="52"/><RowDefinition Height="52"/><RowDefinition Height="52"/><RowDefinition Height="52"/><RowDefinition Height="52"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
                                             </Grid.RowDefinitions>
-                                            <TextBlock Text="Node.js" Style="{StaticResource FieldLabelStyle}"/>
-                                            <TextBlock x:Name="PlaywrightNodeText" Grid.Column="1" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock x:Name="PlaywrightNodeStatusText" Grid.Column="2" VerticalAlignment="Center"/>
-                                            <TextBlock Text="npm" Grid.Row="1" Style="{StaticResource FieldLabelStyle}"/>
-                                            <TextBlock x:Name="PlaywrightNpmText" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock x:Name="PlaywrightNpmStatusText" Grid.Row="1" Grid.Column="2" VerticalAlignment="Center"/>
-                                            <TextBlock Text="Playwright package" Grid.Row="2" Style="{StaticResource FieldLabelStyle}"/>
-                                            <TextBlock x:Name="PlaywrightPackageText" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center"/>
-                                            <TextBlock x:Name="PlaywrightPackageStatusText" Grid.Row="2" Grid.Column="2" VerticalAlignment="Center"/>
-                                            <TextBlock Text="Chromium" Grid.Row="3" Style="{StaticResource FieldLabelStyle}"/>
-                                            <TextBlock x:Name="PlaywrightChromiumText" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock x:Name="PlaywrightChromiumStatusText" Grid.Row="3" Grid.Column="2" VerticalAlignment="Center"/>
+                                            <TextBlock Text="Node.js" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,12"/>
+                                            <TextBlock x:Name="PlaywrightNodeText" Grid.Column="1" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,12"/>
+                                            <TextBlock x:Name="PlaywrightNodeStatusText" Grid.Column="2" Style="{StaticResource StatusTextStyle}" Margin="0,0,0,12"/>
+                                            <TextBlock Text="npm" Grid.Row="1" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,12"/>
+                                            <TextBlock x:Name="PlaywrightNpmText" Grid.Row="1" Grid.Column="1" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,12"/>
+                                            <TextBlock x:Name="PlaywrightNpmStatusText" Grid.Row="1" Grid.Column="2" Style="{StaticResource StatusTextStyle}" Margin="0,0,0,12"/>
+                                            <TextBlock Text="Playwright package" Grid.Row="2" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,12"/>
+                                            <TextBlock x:Name="PlaywrightPackageText" Grid.Row="2" Grid.Column="1" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,12"/>
+                                            <TextBlock x:Name="PlaywrightPackageStatusText" Grid.Row="2" Grid.Column="2" Style="{StaticResource StatusTextStyle}" Margin="0,0,0,12"/>
+                                            <TextBlock Text="Chromium" Grid.Row="3" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,12"/>
+                                            <TextBlock x:Name="PlaywrightChromiumText" Grid.Row="3" Grid.Column="1" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,12"/>
+                                            <TextBlock x:Name="PlaywrightChromiumStatusText" Grid.Row="3" Grid.Column="2" Style="{StaticResource StatusTextStyle}" Margin="0,0,0,12"/>
                                             <TextBlock Text="Browser cache" Grid.Row="4" Style="{StaticResource FieldLabelStyle}"/>
-                                            <TextBlock x:Name="PlaywrightCacheText" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                            <TextBlock x:Name="PlaywrightCacheText" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" Style="{StaticResource ValueTextStyle}" TextWrapping="Wrap"/>
                                         </Grid>
                                     </StackPanel>
                                 </Border>
-                                <Border Grid.Row="1" Style="{StaticResource CardStyle}">
-                                    <Grid>
-                                        <Grid.ColumnDefinitions><ColumnDefinition Width="310"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                        <StackPanel Margin="0,0,22,0">
+
+                                <Grid x:Name="PlaywrightRuntimeLayoutGrid" Grid.Row="2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="300"/>
+                                        <ColumnDefinition Width="12"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                    </Grid.RowDefinitions>
+                                    <Border Style="{StaticResource SectionStyle}" Margin="0">
+                                        <StackPanel>
                                             <TextBlock Text="Installation" Style="{StaticResource SectionTitleStyle}"/>
-                                            <TextBlock x:Name="PlaywrightInstallMessageText" Text="Runtime has not been checked." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,0,0,18"/>
-                                            <ProgressBar x:Name="PlaywrightInstallProgress" Height="9" Minimum="0" Maximum="100"/>
-                                            <DockPanel Margin="0,8,0,18">
-                                                <TextBlock x:Name="PlaywrightInstallTaskText" Foreground="{StaticResource MutedBrush}"/>
-                                                <TextBlock x:Name="PlaywrightInstallProgressText" HorizontalAlignment="Right"/>
-                                            </DockPanel>
-                                            <TextBlock Text="Installation flow" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                                            <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}"
-                                                       Text="If Node.js is missing, the Agent downloads and silently installs the latest Windows x64 LTS MSI. It then installs @playwright/test, Chromium, and verifies the service-owned browser cache."/>
+                                            <TextBlock x:Name="PlaywrightInstallMessageText" Text="Runtime has not been checked." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" LineHeight="22" Margin="0,0,0,16"/>
+                                            <ProgressBar x:Name="PlaywrightInstallProgress" Height="10" Minimum="0" Maximum="100"/>
+                                            <Grid Margin="0,8,0,16">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock x:Name="PlaywrightInstallTaskText" Foreground="{StaticResource MutedBrush}" TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock x:Name="PlaywrightInstallProgressText" Grid.Column="1" HorizontalAlignment="Right"/>
+                                            </Grid>
+                                            <TextBlock Text="Flow" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" LineHeight="24"/>
+                                            <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" LineHeight="22"
+                                                       Text="If Node.js is missing, the Agent downloads and silently installs Windows x64 LTS. It then installs @playwright/test, Chromium, and verifies the service-owned browser cache."/>
                                         </StackPanel>
-                                        <Grid Grid.Column="1">
-                                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                                            <TextBlock Text="Installation log" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                                            <TextBox Grid.Row="1" x:Name="PlaywrightRuntimeLogBox" IsReadOnly="True" AcceptsReturn="True"
-                                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                                                 TextWrapping="NoWrap" FontFamily="Consolas" FontSize="12"
-                                                 MinHeight="280" Background="#FBFCFE"/>
+                                    </Border>
+                                    <GridSplitter x:Name="PlaywrightRuntimeSplitter" Grid.Column="1"
+                                                  Width="12"
+                                                  HorizontalAlignment="Stretch"
+                                                  Background="Transparent"/>
+                                    <Border x:Name="PlaywrightRuntimeLogPanel" Grid.Column="2" Style="{StaticResource SectionStyle}" Margin="0">
+                                        <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="*"/>
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Text="Installation log" Style="{StaticResource SectionTitleStyle}"/>
+                                            <controls:TerminalTextBox Grid.Row="1" x:Name="PlaywrightRuntimeLogBox" MinHeight="260"/>
                                         </Grid>
-                                    </Grid>
-                                </Border>
+                                    </Border>
+                                </Grid>
                             </Grid>
+                            </ScrollViewer>
                         </TabItem>
 
                         <TabItem Header="Test suites">
-                            <Grid Margin="16">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="410"/></Grid.ColumnDefinitions>
-                                <Border Style="{StaticResource CardStyle}" Margin="0,0,14,0" Padding="12">
+                            <ScrollViewer x:Name="PlaywrightSuitesScroller"
+                                          VerticalScrollBarVisibility="Disabled"
+                                          HorizontalScrollBarVisibility="Disabled">
+                            <Grid x:Name="PlaywrightSuitesLayoutGrid" Margin="0,16,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="14"/>
+                                    <ColumnDefinition Width="390" MinWidth="320"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Border Style="{StaticResource SectionStyle}" Padding="12" Margin="0">
                                     <DataGrid x:Name="PlaywrightSuiteGrid" ItemsSource="{Binding PlaywrightSuites}" SelectionChanged="PlaywrightSuiteGrid_SelectionChanged">
                                         <DataGrid.Columns>
-                                            <DataGridTextColumn Header="Suite" Binding="{Binding Name}" Width="2*"/>
-                                            <DataGridTextColumn Header="Web Client URL" Binding="{Binding BaseUrl}" Width="2*"/>
-                                            <DataGridTextColumn Header="Test file" Binding="{Binding TestFile}" Width="1.5*"/>
-                                            <DataGridCheckBoxColumn Header="Enabled" Binding="{Binding Enabled}" Width="75"/>
-                                            <DataGridTemplateColumn Header="" Width="80">
+                                            <DataGridTextColumn Header="Suite" Binding="{Binding Name}" Width="2*" MinWidth="160"/>
+                                            <DataGridTextColumn Header="Web Client URL" Binding="{Binding BaseUrl}" Width="2.2*" MinWidth="220"/>
+                                            <DataGridTextColumn Header="Test file" Binding="{Binding TestFile}" Width="1.6*" MinWidth="150"/>
+                                            <DataGridCheckBoxColumn Header="Enabled" Binding="{Binding Enabled}" Width="86"/>
+                                            <DataGridTemplateColumn Header="" Width="90">
                                                 <DataGridTemplateColumn.CellTemplate>
                                                     <DataTemplate>
-                                                        <Button Style="{StaticResource BaseButtonStyle}" MinWidth="62" Height="30" Padding="8,0" Content="Run" Tag="{Binding Id}" Click="RunPlaywrightSuite_Click"/>
+                                                        <Button Style="{StaticResource BaseButtonStyle}" MinWidth="68" Padding="8,4" Content="Run" Tag="{Binding Id}" Click="RunPlaywrightSuite_Click"/>
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
                                         </DataGrid.Columns>
                                     </DataGrid>
                                 </Border>
-                                <Border Grid.Column="1" Style="{StaticResource CardStyle}">
-                                    <StackPanel>
-                                        <TextBlock Text="Suite details" Style="{StaticResource SectionTitleStyle}"/>
-                                        <TextBlock Text="Name" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,5"/>
-                                        <TextBox x:Name="PlaywrightSuiteNameBox" Margin="0,0,0,12"/>
-                                        <TextBlock Text="Web Client URL" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,5"/>
-                                        <Grid Margin="0,0,0,8">
-                                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="44"/></Grid.ColumnDefinitions>
-                                            <ComboBox x:Name="PlaywrightWebClientBox"
-                                                      DisplayMemberPath="DisplayName"
-                                                      SelectionChanged="PlaywrightWebClientBox_SelectionChanged">
-                                                <ComboBox.ItemContainerStyle>
-                                                    <Style TargetType="ComboBoxItem">
-                                                        <Setter Property="ToolTip" Value="{Binding Evidence}"/>
-                                                    </Style>
-                                                </ComboBox.ItemContainerStyle>
-                                            </ComboBox>
-                                            <Button Grid.Column="1" Style="{StaticResource IconButtonStyle}"
-                                                    ToolTip="Discover Web Client URLs from local IIS bindings"
-                                                    Click="DiscoverPlaywrightWebClients_Click">
-                                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE721;" FontSize="16"/>
-                                            </Button>
-                                        </Grid>
-                                        <TextBox x:Name="PlaywrightSuiteUrlBox" Margin="0,0,0,4"/>
-                                        <TextBlock Text="Discovered from IIS site bindings; the URL remains editable."
-                                                   Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,0,0,12"/>
-                                        <TextBlock Text="Test file" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,5"/>
-                                        <TextBox x:Name="PlaywrightSuiteFileBox" Margin="0,0,0,12"/>
-                                        <Grid Margin="0,0,0,12">
-                                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-                                            <StackPanel Margin="0,0,6,0">
-                                                <TextBlock Text="Timeout seconds" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,5"/>
-                                                <TextBox x:Name="PlaywrightSuiteTimeoutBox" Text="120" PreviewTextInput="NumericOnly_PreviewTextInput"/>
-                                            </StackPanel>
-                                            <StackPanel Grid.Column="1" Margin="6,0,0,0">
-                                                <TextBlock Text="Retries" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,5"/>
-                                                <TextBox x:Name="PlaywrightSuiteRetriesBox" Text="0" PreviewTextInput="NumericOnly_PreviewTextInput"/>
-                                            </StackPanel>
-                                        </Grid>
-                                        <CheckBox x:Name="PlaywrightSuiteHeadlessCheck" Content="Headless browser" IsChecked="True" Margin="0,0,0,10"/>
-                                        <CheckBox x:Name="PlaywrightSuiteEnabledCheck" Content="Suite enabled" IsChecked="True" Margin="0,0,0,18"/>
-                                        <Button Style="{StaticResource PrimaryButtonStyle}" Margin="0,0,0,10" Click="SavePlaywrightSuite_Click">Save suite</Button>
-                                        <UniformGrid Columns="2">
-                                            <Button Style="{StaticResource BaseButtonStyle}" Margin="0,0,5,0" Click="NewPlaywrightSuite_Click">New</Button>
-                                            <Button Style="{StaticResource DangerButtonStyle}" Margin="5,0,0,0" Click="DeletePlaywrightSuite_Click">Delete</Button>
-                                        </UniformGrid>
-                                    </StackPanel>
+                                <Border x:Name="PlaywrightSuiteDetailsPanel" Grid.Column="2" Style="{StaticResource SectionStyle}" Margin="0">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                        <StackPanel>
+                                            <TextBlock Text="Suite details" Style="{StaticResource SectionTitleStyle}"/>
+                                            <TextBlock Text="Name" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,6"/>
+                                            <TextBox x:Name="PlaywrightSuiteNameBox" Margin="0,0,0,12"/>
+                                            <TextBlock Text="Web Client URL" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,6"/>
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="46"/>
+                                                </Grid.ColumnDefinitions>
+                                                <ComboBox x:Name="PlaywrightWebClientBox"
+                                                          DisplayMemberPath="DisplayName"
+                                                          SelectionChanged="PlaywrightWebClientBox_SelectionChanged">
+                                                    <ComboBox.ItemContainerStyle>
+                                                        <Style TargetType="ComboBoxItem">
+                                                            <Setter Property="ToolTip" Value="{Binding Evidence}"/>
+                                                        </Style>
+                                                    </ComboBox.ItemContainerStyle>
+                                                </ComboBox>
+                                                <Button Grid.Column="1" Style="{StaticResource IconButtonStyle}"
+                                                        ToolTip="Discover Web Client URLs from local IIS bindings"
+                                                        Click="DiscoverPlaywrightWebClients_Click" Margin="8,0,0,0">
+                                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE721;" FontSize="16"/>
+                                                </Button>
+                                            </Grid>
+                                            <TextBox x:Name="PlaywrightSuiteUrlBox" Margin="0,0,0,5"/>
+                                            <TextBlock Text="Discovered from IIS bindings; the URL remains editable."
+                                                       Foreground="{StaticResource MutedBrush}" FontSize="12" LineHeight="20" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                                            <TextBlock Text="Test file" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,6"/>
+                                            <TextBox x:Name="PlaywrightSuiteFileBox" Margin="0,0,0,12"/>
+                                            <Grid Margin="0,0,0,12">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="12"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel>
+                                                    <TextBlock Text="Timeout seconds" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,6"/>
+                                                    <TextBox x:Name="PlaywrightSuiteTimeoutBox" Text="120" PreviewTextInput="NumericOnly_PreviewTextInput"/>
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="2">
+                                                    <TextBlock Text="Retries" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,6"/>
+                                                    <TextBox x:Name="PlaywrightSuiteRetriesBox" Text="0" PreviewTextInput="NumericOnly_PreviewTextInput"/>
+                                                </StackPanel>
+                                            </Grid>
+                                            <CheckBox x:Name="PlaywrightSuiteHeadlessCheck" Content="Headless browser" IsChecked="True" Margin="0,0,0,8"/>
+                                            <CheckBox x:Name="PlaywrightSuiteEnabledCheck" Content="Suite enabled" IsChecked="True" Margin="0,0,0,16"/>
+                                            <WrapPanel>
+                                                <Button Style="{StaticResource PrimaryButtonStyle}" Click="SavePlaywrightSuite_Click">Save suite</Button>
+                                                <Button Style="{StaticResource BaseButtonStyle}" Click="NewPlaywrightSuite_Click">New</Button>
+                                                <Button Style="{StaticResource DangerButtonStyle}" Click="DeletePlaywrightSuite_Click">Delete</Button>
+                                            </WrapPanel>
+                                        </StackPanel>
+                                    </ScrollViewer>
                                 </Border>
                             </Grid>
+                            </ScrollViewer>
                         </TabItem>
 
                         <TabItem Header="Test runs">
-                            <Grid Margin="16">
-                                <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="210"/></Grid.RowDefinitions>
-                                <Border Style="{StaticResource CardStyle}" Padding="12" Margin="0,0,0,14">
+                            <Grid Margin="0,16,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*"/>
+                                    <RowDefinition Height="10"/>
+                                    <RowDefinition Height="0.55*"/>
+                                </Grid.RowDefinitions>
+                                <Border Style="{StaticResource SectionStyle}" Padding="12" Margin="0">
                                     <DataGrid x:Name="PlaywrightRunGrid" ItemsSource="{Binding PlaywrightRuns}" SelectionChanged="PlaywrightRunGrid_SelectionChanged">
                                         <DataGrid.Columns>
-                                            <DataGridTextColumn Header="Run ID" Binding="{Binding Id}" Width="1.4*"/>
-                                            <DataGridTextColumn Header="Suite" Binding="{Binding SuiteName}" Width="1.7*"/>
-                                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="90"/>
-                                            <DataGridTextColumn Header="Started" Binding="{Binding StartedAt}" Width="160"/>
-                                            <DataGridTextColumn Header="Duration" Binding="{Binding DurationMs}" Width="100"/>
+                                            <DataGridTextColumn Header="Run ID" Binding="{Binding Id}" Width="1.4*" MinWidth="190"/>
+                                            <DataGridTextColumn Header="Suite" Binding="{Binding SuiteName}" Width="1.7*" MinWidth="180"/>
+                                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="98"/>
+                                            <DataGridTextColumn Header="Started" Binding="{Binding StartedAt}" Width="170"/>
+                                            <DataGridTextColumn Header="Duration" Binding="{Binding DurationMs}" Width="110"/>
                                             <DataGridTextColumn Header="Exit" Binding="{Binding ExitCode}" Width="70"/>
                                         </DataGrid.Columns>
                                     </DataGrid>
                                 </Border>
-                                <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="16">
+                                <GridSplitter Grid.Row="1" Height="10" HorizontalAlignment="Stretch" Background="Transparent"/>
+                                <Border Grid.Row="2" Style="{StaticResource SectionStyle}" Padding="16" Margin="0">
                                     <Grid>
-                                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                                        <TextBlock Text="Selected run" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                                        <TextBox x:Name="PlaywrightRunDetailBox" Grid.Row="1" IsReadOnly="True" AcceptsReturn="True"
-                                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                                                 TextWrapping="NoWrap" FontFamily="Consolas" FontSize="12"
-                                                 Text="Select a run to inspect details." Background="#FBFCFE"/>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="*"/>
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Text="Selected run" Style="{StaticResource SectionTitleStyle}"/>
+                                        <controls:TerminalTextBox x:Name="PlaywrightRunDetailBox" Grid.Row="1" Text="Select a run to inspect details." MinHeight="180"/>
                                     </Grid>
                                 </Border>
                             </Grid>
                         </TabItem>
 
                         <TabItem Header="Artifacts">
-                            <Grid Margin="16">
-                                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                                <DockPanel Margin="0,0,0,12">
-                                    <TextBlock Text="Failure screenshots, traces, logs, and test output." Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
-                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
-                                        <Button Style="{StaticResource BaseButtonStyle}" Margin="0,0,10,0" Click="OpenPlaywrightFolder_Click">Open folder</Button>
+                            <Grid Margin="0,16,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <Grid x:Name="PlaywrightArtifactsHeaderGrid" Margin="0,0,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="Failure screenshots, traces, logs, and test output." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                                    <WrapPanel x:Name="PlaywrightArtifactsActions" Grid.Column="1" HorizontalAlignment="Right">
+                                        <Button Style="{StaticResource BaseButtonStyle}" Click="OpenPlaywrightFolder_Click">Open folder</Button>
                                         <Button Style="{StaticResource DangerButtonStyle}" Click="ClearPlaywrightArtifacts_Click">Clear artifacts</Button>
-                                    </StackPanel>
-                                </DockPanel>
-                                <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="12">
+                                    </WrapPanel>
+                                </Grid>
+                                <Border Grid.Row="1" Style="{StaticResource SectionStyle}" Padding="12" Margin="0">
                                     <DataGrid x:Name="PlaywrightArtifactGrid" ItemsSource="{Binding PlaywrightArtifacts}">
                                         <DataGrid.Columns>
-                                            <DataGridTextColumn Header="File" Binding="{Binding Name}" Width="2*"/>
-                                            <DataGridTextColumn Header="Directory" Binding="{Binding DirectoryName}" Width="3*"/>
-                                            <DataGridTextColumn Header="Size" Binding="{Binding Length}" Width="100"/>
-                                            <DataGridTextColumn Header="Modified" Binding="{Binding LastWriteTime}" Width="160"/>
+                                            <DataGridTextColumn Header="File" Binding="{Binding Name}" Width="2*" MinWidth="180"/>
+                                            <DataGridTextColumn Header="Directory" Binding="{Binding DirectoryName}" Width="3*" MinWidth="300"/>
+                                            <DataGridTextColumn Header="Size" Binding="{Binding Length}" Width="110"/>
+                                            <DataGridTextColumn Header="Modified" Binding="{Binding LastWriteTime}" Width="170"/>
                                         </DataGrid.Columns>
                                     </DataGrid>
                                 </Border>
@@ -977,58 +1139,85 @@
                     </TabControl>
                 </Grid>
 
-                <!-- Diagnostics -->
-                <Grid x:Name="DiagnosticsPage" Visibility="Collapsed">
-                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                <ScrollViewer x:Name="DiagnosticsPage"
+                              Visibility="Collapsed"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                <Grid x:Name="DiagnosticsPageGrid" MinHeight="590">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
                     <StackPanel>
-                        <TextBlock Text="Updates &amp; logs" FontSize="28" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"/>
-                        <TextBlock Text="Keep the Agent current and inspect local service diagnostics."
-                                   Foreground="{StaticResource MutedBrush}" Margin="0,5,0,18"/>
+                        <TextBlock Text="Diagnostics" Style="{StaticResource PageTitleStyle}"/>
+                        <TextBlock Text="Keep the Agent current and inspect local service logs."
+                                   Style="{StaticResource PageSubtitleStyle}" Margin="0,0,0,18"/>
                     </StackPanel>
-                    <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="18" Margin="0,0,0,14">
-                        <Grid>
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <Border Grid.Row="1" Style="{StaticResource SectionStyle}" Padding="18" Margin="0">
+                        <Grid x:Name="DiagnosticsUpdateGrid">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
                             <StackPanel VerticalAlignment="Center">
-                                <TextBlock Text="Client update" FontSize="16" FontWeight="SemiBold"/>
-                                <TextBlock x:Name="UpdateStatusText" Text="Current version v0.5.3" Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0"/>
+                                <TextBlock Text="Client update" Style="{StaticResource SectionTitleStyle}" Margin="0,0,0,4"/>
+                                <TextBlock x:Name="UpdateStatusText" Text="Current version v0.6.2" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
                             </StackPanel>
-                            <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                <Button Style="{StaticResource PrimaryButtonStyle}" Margin="0,0,10,0" Click="CheckUpdate_Click">Check update</Button>
-                                <Button Style="{StaticResource BaseButtonStyle}" Click="OpenDataFolder_Click">Open data folder</Button>
-                            </StackPanel>
+                            <WrapPanel x:Name="DiagnosticsUpdateActions" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                <Button Style="{StaticResource PrimaryButtonStyle}" Click="CheckUpdate_Click">Check update</Button>
+                                <Button Style="{StaticResource BaseButtonStyle}" Click="OpenDataFolder_Click" ToolTip="Open Relay Agent data folder">Open data folder</Button>
+                            </WrapPanel>
                         </Grid>
                     </Border>
-                    <Border Grid.Row="2" Style="{StaticResource CardStyle}" Padding="16">
+                    <Border Grid.Row="3" Style="{StaticResource SectionStyle}" Padding="16" Margin="0" MinHeight="310">
                         <Grid>
-                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="50"/></Grid.RowDefinitions>
-                            <TextBlock Text="Agent log" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12"/>
-                            <TextBox x:Name="AgentLogBox" Grid.Row="1" IsReadOnly="True" AcceptsReturn="True"
-                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                                     TextWrapping="NoWrap" FontFamily="Consolas" FontSize="12"
-                                     VerticalAlignment="Stretch" MinHeight="220" Background="#FBFCFE"/>
-                            <DockPanel Grid.Row="2" Margin="0,10,0,0">
-                                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
-                                    <Button Style="{StaticResource BaseButtonStyle}" Margin="0,0,8,0" Click="RefreshLog_Click">Refresh</Button>
-                                    <Button Style="{StaticResource BaseButtonStyle}" Margin="0,0,14,0" Click="OpenAgentLog_Click">Open log file</Button>
-                                    <CheckBox x:Name="LogAutoScrollCheck" Content="Auto-scroll" IsChecked="True" Margin="0,0,14,0"/>
-                                    <TextBlock Text="Level" Style="{StaticResource FieldLabelStyle}" Margin="0,0,7,0"/>
-                                    <ComboBox x:Name="LogLevelFilter" Width="96" SelectionChanged="LogLevelFilter_SelectionChanged">
-                                        <ComboBoxItem Content="All"/><ComboBoxItem Content="Error"/><ComboBoxItem Content="Warning"/><ComboBoxItem Content="Info"/>
-                                    </ComboBox>
-                                </StackPanel>
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                    <Button Style="{StaticResource DangerButtonStyle}" Margin="0,0,8,0" Click="ClearAgentLog_Click">Clear log</Button>
-                                    <Button Style="{StaticResource BaseButtonStyle}" Click="CopySelectedLog_Click">Copy selected</Button>
-                                </StackPanel>
-                            </DockPanel>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <Grid x:Name="DiagnosticsLogToolbarGrid" Margin="0,0,0,12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Agent log"
+                                           Style="{StaticResource SectionTitleStyle}"
+                                           Margin="0,0,24,8"
+                                           VerticalAlignment="Center"/>
+                                <WrapPanel Grid.Column="1" HorizontalAlignment="Right">
+                                    <WrapPanel x:Name="DiagnosticsLogFilters">
+                                        <Button Style="{StaticResource BaseButtonStyle}" Click="RefreshLog_Click">Refresh</Button>
+                                        <Button Style="{StaticResource BaseButtonStyle}" Click="OpenAgentLog_Click" ToolTip="Open the raw Agent log file">Open log file</Button>
+                                        <CheckBox x:Name="LogAutoScrollCheck" Content="Auto-scroll" IsChecked="True" Margin="0,0,14,8"/>
+                                        <TextBlock Text="Level" Style="{StaticResource FieldLabelStyle}" Margin="0,0,8,8"/>
+                                        <ComboBox x:Name="LogLevelFilter" Width="108" SelectionChanged="LogLevelFilter_SelectionChanged" Margin="0,0,12,8">
+                                            <ComboBoxItem Content="All"/>
+                                            <ComboBoxItem Content="Error"/>
+                                            <ComboBoxItem Content="Warning"/>
+                                            <ComboBoxItem Content="Info"/>
+                                        </ComboBox>
+                                    </WrapPanel>
+                                    <WrapPanel x:Name="DiagnosticsLogActions">
+                                        <Button Style="{StaticResource DangerButtonStyle}" Click="ClearAgentLog_Click">Clear log</Button>
+                                        <Button Style="{StaticResource BaseButtonStyle}" Click="CopySelectedLog_Click">Copy selected</Button>
+                                    </WrapPanel>
+                                </WrapPanel>
+                            </Grid>
+                            <controls:TerminalTextBox x:Name="AgentLogBox" Grid.Row="1" MinHeight="220"/>
                         </Grid>
                     </Border>
                 </Grid>
+                </ScrollViewer>
             </Grid>
 
-            <Border Grid.Row="2" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0">
-                <TextBlock x:Name="FooterText" Foreground="{StaticResource MutedBrush}" FontSize="12"
-                           Margin="30,0,22,0" VerticalAlignment="Center"/>
+            <Border Grid.Row="2" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Padding="24,9">
+                <TextBlock x:Name="FooterText" Foreground="{StaticResource MutedBrush}" FontSize="12" LineHeight="20"/>
             </Border>
         </Grid>
     </Grid>

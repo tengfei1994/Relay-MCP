@@ -383,12 +383,18 @@ namespace RelayAgent.Shared
         public static IList<PlaywrightRun> ReadRuns(int maximum)
         {
             EnsureDirectories();
-            return Directory.EnumerateFiles(RunsPath, "*.json")
+            var migrated = false;
+            var runs = Directory.EnumerateFiles(RunsPath, "*.json")
                 .OrderByDescending(File.GetLastWriteTimeUtc)
                 .Take(Math.Max(1, maximum))
-                .Select(ReadJson<PlaywrightRun>)
+                .Select(path => ReadRunSummary(path, ref migrated))
                 .Where(item => item != null)
                 .ToList();
+            if (migrated)
+            {
+                GC.Collect(2, GCCollectionMode.Optimized, false);
+            }
+            return runs;
         }
 
         public static PlaywrightRun ReadRun(string runId)
@@ -1141,6 +1147,44 @@ test('SampleManager Web Client responds', async ({ page }) => {
         private static void SaveRun(PlaywrightRun run)
         {
             WriteJsonAtomic(Path.Combine(RunsPath, run.Id + ".json"), run);
+            WriteJsonAtomic(Path.Combine(RunsPath, run.Id + ".index"), CreateRunSummary(run));
+        }
+
+        private static PlaywrightRun ReadRunSummary(string detailPath, ref bool migrated)
+        {
+            var indexPath = Path.ChangeExtension(detailPath, ".index");
+            var summary = ReadJson<PlaywrightRun>(indexPath);
+            if (summary != null) return summary;
+
+            var legacy = ReadJson<PlaywrightRun>(detailPath);
+            if (legacy == null) return null;
+            summary = CreateRunSummary(legacy);
+            try
+            {
+                WriteJsonAtomic(indexPath, summary);
+                migrated = true;
+            }
+            catch { }
+            return summary;
+        }
+
+        private static PlaywrightRun CreateRunSummary(PlaywrightRun run)
+        {
+            return new PlaywrightRun
+            {
+                Id = run.Id,
+                SuiteId = run.SuiteId,
+                SuiteName = run.SuiteName,
+                Status = run.Status,
+                QueuedAt = run.QueuedAt,
+                StartedAt = run.StartedAt,
+                FinishedAt = run.FinishedAt,
+                DurationMs = run.DurationMs,
+                ExitCode = run.ExitCode,
+                Output = "",
+                ArtifactDirectory = run.ArtifactDirectory,
+                Error = Compact(run.Error, 500)
+            };
         }
 
         private static void EnsureDirectories()
@@ -1262,6 +1306,15 @@ test('SampleManager Web Client responds', async ({ page }) => {
         {
             if (string.IsNullOrEmpty(value) || value.Length <= maximum) return value ?? "";
             return value.Substring(value.Length - maximum);
+        }
+
+        private static string Compact(string value, int maximum)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return "";
+            var compact = value.Replace("\r", " ").Replace("\n", " ").Trim();
+            return compact.Length <= maximum
+                ? compact
+                : compact.Substring(0, maximum) + "...";
         }
 
         private sealed class ProcessResult

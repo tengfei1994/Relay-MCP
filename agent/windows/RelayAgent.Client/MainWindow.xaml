@@ -337,7 +337,7 @@
                     <Button x:Name="AuditNav" Tag="AuditPage" Style="{StaticResource NavButtonStyle}" Click="Navigation_Click">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE9D5;" Width="26"/>
-                            <TextBlock Text="Request Audit"/>
+                            <TextBlock Text="Command Audit"/>
                         </StackPanel>
                     </Button>
                     <Button x:Name="PlaywrightNav" Tag="PlaywrightPage" Style="{StaticResource NavButtonStyle}" Click="Navigation_Click">
@@ -369,24 +369,24 @@
                     BorderBrush="{StaticResource BorderBrush}"
                     BorderThickness="0,0,0,1"
                     Padding="26,18,22,18">
-                <StackPanel>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <StackPanel>
+                <Grid x:Name="HeaderContentGrid">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <StackPanel x:Name="HeaderIntroPanel">
                             <TextBlock Text="Agent operations" FontSize="24" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" LineHeight="32"/>
                             <TextBlock Text="Configure, operate, audit, and test the Relay Agent from one local console."
                                        Foreground="{StaticResource MutedBrush}"
                                        TextWrapping="Wrap"
                                        LineHeight="22"/>
-                        </StackPanel>
-                        <Button Grid.Column="1" Style="{StaticResource IconButtonStyle}" ToolTip="Refresh status" Click="RefreshAll_Click" Margin="16,4,0,4">
-                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72C;" FontSize="15"/>
-                        </Button>
-                    </Grid>
-                    <WrapPanel Margin="0,14,0,0">
+                    </StackPanel>
+                    <WrapPanel x:Name="HeaderMetricsPanel" Grid.Row="1" Grid.ColumnSpan="3" Margin="0,14,0,0">
                         <Border Margin="0,0,10,10" Padding="12,8" Background="{StaticResource SurfaceAltBrush}" CornerRadius="8" MinWidth="122">
                             <StackPanel>
                                 <TextBlock Text="Connection" Foreground="{StaticResource MutedBrush}" FontSize="12" LineHeight="18"/>
@@ -406,14 +406,17 @@
                             </StackPanel>
                         </Border>
                     </WrapPanel>
-                </StackPanel>
+                    <Button x:Name="HeaderRefreshButton" Grid.Column="2" Style="{StaticResource IconButtonStyle}" ToolTip="Refresh status" Click="RefreshAll_Click" Margin="16,4,0,4">
+                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72C;" FontSize="15"/>
+                    </Button>
+                </Grid>
             </Border>
 
             <Grid Grid.Row="1" x:Name="PageHost" Margin="24,20,22,18">
                 <ScrollViewer x:Name="OverviewPage" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel>
                         <TextBlock Text="Overview" Style="{StaticResource PageTitleStyle}"/>
-                        <TextBlock Text="A quick view of the Agent connection, Windows Service state, database access, and request audit."
+                        <TextBlock Text="A quick view of the Agent connection, Windows Service state, database access, and command audit."
                                    Style="{StaticResource PageSubtitleStyle}" Margin="0,0,0,18"/>
 
                         <WrapPanel>
@@ -437,8 +440,8 @@
                             </Border>
                             <Border Style="{StaticResource MetricCardStyle}">
                                 <StackPanel>
-                                    <TextBlock Text="Request Audit" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
-                                    <TextBlock x:Name="OverviewAuditText" Text="Audit enabled" Style="{StaticResource StatusTextStyle}" Margin="0,10,0,0"/>
+                                    <TextBlock Text="Command Audit" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
+                                    <TextBlock x:Name="OverviewAuditText" Text="Command audit enabled" Style="{StaticResource StatusTextStyle}" Margin="0,10,0,0"/>
                                 </StackPanel>
                             </Border>
                         </WrapPanel>
@@ -477,7 +480,7 @@
                                         <TextBlock x:Name="SummaryServiceAccountText" Grid.Row="2" Grid.Column="1" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,10"/>
                                         <TextBlock Text="Poll interval" Grid.Row="3" Style="{StaticResource FieldLabelStyle}" Margin="0,0,0,10"/>
                                         <TextBlock x:Name="SummaryPollText" Grid.Row="3" Grid.Column="1" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,10"/>
-                                        <TextBlock Text="Audit retention" Grid.Row="4" Style="{StaticResource FieldLabelStyle}"/>
+                                        <TextBlock Text="Command retention" Grid.Row="4" Style="{StaticResource FieldLabelStyle}"/>
                                         <TextBlock x:Name="SummaryAuditText" Grid.Row="4" Grid.Column="1" Style="{StaticResource ValueTextStyle}"/>
                                     </Grid>
                                 </StackPanel>
@@ -490,7 +493,7 @@
                                         <Button Style="{StaticResource BaseButtonStyle}" Click="TestRelay_Click">Test relay</Button>
                                         <Button Style="{StaticResource BaseButtonStyle}" Click="RestartService_Click">Restart service</Button>
                                         <Button Style="{StaticResource BaseButtonStyle}" Click="OpenDatabasePage_Click">Check database</Button>
-                                        <Button Style="{StaticResource BaseButtonStyle}" Click="OpenAuditPage_Click">Open audit</Button>
+                                        <Button Style="{StaticResource BaseButtonStyle}" Click="OpenAuditPage_Click">Open commands</Button>
                                     </WrapPanel>
                                 </StackPanel>
                             </Border>
@@ -712,21 +715,15 @@
                     </StackPanel>
                 </ScrollViewer>
 
-                <ScrollViewer x:Name="AuditPage"
-                              Visibility="Collapsed"
-                              VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled">
-                <Grid x:Name="AuditPageGrid" MinHeight="650">
+                <Grid x:Name="AuditPage" Visibility="Collapsed">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*" MinHeight="150"/>
-                        <RowDefinition Height="10"/>
-                        <RowDefinition Height="0.72*" MinHeight="180"/>
+                        <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
                     <StackPanel>
-                        <TextBlock Text="Request Audit" Style="{StaticResource PageTitleStyle}"/>
-                        <TextBlock Text="Inspect the local Agent request log, filter by method and status, and export redacted evidence."
+                        <TextBlock Text="Command Audit" Style="{StaticResource PageTitleStyle}"/>
+                        <TextBlock Text="Inspect instructions received by this Agent, the command that ran, and the returned result."
                                    Style="{StaticResource PageSubtitleStyle}" Margin="0,0,0,18"/>
                     </StackPanel>
                     <Border Grid.Row="1" Style="{StaticResource SectionStyle}" Padding="16">
@@ -740,19 +737,19 @@
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
                             <WrapPanel x:Name="AuditSettingsPanel" VerticalAlignment="Center">
-                                <CheckBox x:Name="AuditEnabledCheck" Content="Audit enabled" Margin="0,0,18,8"/>
-                                <CheckBox x:Name="AuditPayloadsCheck" Content="Log redacted payloads" Margin="0,0,18,8"/>
+                                <CheckBox x:Name="AuditEnabledCheck" Content="Command audit enabled" Margin="0,0,18,8"/>
+                                <CheckBox x:Name="AuditPayloadsCheck" Content="Capture command and result" Margin="0,0,18,8"/>
                                 <TextBlock Text="Retention" Style="{StaticResource FieldLabelStyle}" Margin="0,0,8,8"/>
                                 <TextBox x:Name="AuditRetentionBox" Width="70" Text="14" PreviewTextInput="NumericOnly_PreviewTextInput" Margin="0,0,18,8"/>
                             </WrapPanel>
                             <WrapPanel x:Name="AuditFilterActionsPanel" Grid.Column="1" HorizontalAlignment="Right">
-                                <TextBlock Text="Method" Style="{StaticResource FieldLabelStyle}" Margin="0,0,8,8"/>
-                                <ComboBox x:Name="AuditMethodFilter" Width="98" SelectionChanged="AuditFilter_SelectionChanged" Margin="0,0,12,8">
-                                    <ComboBoxItem Content="All"/><ComboBoxItem Content="GET"/><ComboBoxItem Content="POST"/>
+                                <TextBlock Text="Kind" Style="{StaticResource FieldLabelStyle}" Margin="0,0,8,8"/>
+                                <ComboBox x:Name="AuditMethodFilter" Width="112" SelectionChanged="AuditFilter_SelectionChanged" Margin="0,0,12,8">
+                                    <ComboBoxItem Content="All"/><ComboBoxItem Content="PowerShell"/><ComboBoxItem Content="Shell"/><ComboBoxItem Content="Playwright"/><ComboBoxItem Content="Artifact"/>
                                 </ComboBox>
                                 <TextBlock Text="Status" Style="{StaticResource FieldLabelStyle}" Margin="0,0,8,8"/>
                                 <ComboBox x:Name="AuditStatusFilter" Width="112" SelectionChanged="AuditFilter_SelectionChanged" Margin="0,0,12,8">
-                                    <ComboBoxItem Content="All"/><ComboBoxItem Content="2xx"/><ComboBoxItem Content="4xx"/><ComboBoxItem Content="5xx"/>
+                                    <ComboBoxItem Content="All"/><ComboBoxItem Content="running"/><ComboBoxItem Content="completed"/><ComboBoxItem Content="failed"/>
                                 </ComboBox>
                                 <Button Style="{StaticResource PrimaryButtonStyle}" Click="ApplyAuditSettings_Click">Apply</Button>
                                 <Button Style="{StaticResource BaseButtonStyle}" Click="ExportAudit_Click">Export</Button>
@@ -761,19 +758,36 @@
                         </Grid>
                     </Border>
 
-                    <Border Grid.Row="2" Style="{StaticResource SectionStyle}" Padding="12">
+                    <ScrollViewer x:Name="AuditResultsScroller"
+                                  Grid.Row="2"
+                                  VerticalScrollBarVisibility="Disabled"
+                                  HorizontalScrollBarVisibility="Disabled">
+                    <Grid x:Name="AuditResultsGrid">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" MinHeight="150"/>
+                            <RowDefinition Height="10"/>
+                            <RowDefinition Height="0.72*" MinHeight="180"/>
+                        </Grid.RowDefinitions>
+                    <Border Grid.Row="0" Style="{StaticResource SectionStyle}" Padding="12">
                         <Grid>
-                            <DataGrid x:Name="AuditGrid" ItemsSource="{Binding AuditRows}" SelectionChanged="AuditGrid_SelectionChanged">
+                            <DataGrid x:Name="AuditGrid"
+                                      SelectionChanged="AuditGrid_SelectionChanged"
+                                      EnableRowVirtualization="True"
+                                      EnableColumnVirtualization="True"
+                                      VirtualizingPanel.IsVirtualizing="True"
+                                      VirtualizingPanel.VirtualizationMode="Recycling"
+                                      ScrollViewer.CanContentScroll="True">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="Time" Binding="{Binding Time}" Width="150" MinWidth="140"/>
-                                    <DataGridTextColumn Header="Method" Binding="{Binding Method}" Width="86" MinWidth="80"/>
-                                    <DataGridTextColumn Header="Endpoint" Binding="{Binding Endpoint}" Width="3*" MinWidth="260"/>
+                                    <DataGridTextColumn Header="Kind" Binding="{Binding Kind}" Width="112" MinWidth="100"/>
+                                    <DataGridTextColumn Header="Instruction" Binding="{Binding Instruction}" Width="3*" MinWidth="280"/>
                                     <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="94" MinWidth="86"/>
+                                    <DataGridTextColumn Header="Exit" Binding="{Binding ExitCode}" Width="78" MinWidth="70"/>
                                     <DataGridTextColumn Header="Duration" Binding="{Binding Duration}" Width="110" MinWidth="100"/>
                                     <DataGridTextColumn Header="Job ID" Binding="{Binding JobId}" Width="2*" MinWidth="220"/>
                                 </DataGrid.Columns>
                             </DataGrid>
-                            <TextBlock x:Name="AuditEmptyText" Text="No audited requests yet."
+                            <TextBlock x:Name="AuditEmptyText" Text="No command executions recorded yet."
                                        Foreground="{StaticResource MutedBrush}"
                                        HorizontalAlignment="Center"
                                        VerticalAlignment="Center"
@@ -781,25 +795,26 @@
                         </Grid>
                     </Border>
 
-                    <GridSplitter Grid.Row="3"
+                    <GridSplitter Grid.Row="1"
                                   Height="10"
                                   HorizontalAlignment="Stretch"
                                   Background="Transparent"/>
 
-                    <Border Grid.Row="4" Style="{StaticResource SectionStyle}" Padding="16" Margin="0">
+                    <Border x:Name="AuditDetailPanel" Grid.Row="2" Style="{StaticResource SectionStyle}" Padding="16" Margin="0">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
-                            <TextBlock Text="Selected request" Style="{StaticResource SectionTitleStyle}"/>
+                            <TextBlock Text="Selected command" Style="{StaticResource SectionTitleStyle}"/>
                             <controls:TerminalTextBox x:Name="AuditDetailBox" Grid.Row="1"
-                                                      Text="Select a request to inspect details."
+                                                      Text="Select a command to inspect details."
                                                       MinHeight="170"/>
                         </Grid>
                     </Border>
+                    </Grid>
+                    </ScrollViewer>
                 </Grid>
-                </ScrollViewer>
 
                 <Grid x:Name="PlaywrightPage" Visibility="Collapsed">
                     <Grid.RowDefinitions>
@@ -828,6 +843,7 @@
 
                     <TabControl Grid.Row="1"
                                 x:Name="PlaywrightTabs"
+                                SelectionChanged="PlaywrightTabs_SelectionChanged"
                                 Style="{StaticResource PlaywrightTabControlStyle}"
                                 ItemContainerStyle="{StaticResource PlaywrightTabItemStyle}">
                         <TabItem Header="Overview">
@@ -1071,14 +1087,19 @@
                         </TabItem>
 
                         <TabItem Header="Test runs">
-                            <Grid Margin="0,16,0,0">
+                            <ScrollViewer x:Name="PlaywrightRunsScroller"
+                                          VerticalScrollBarVisibility="Disabled"
+                                          HorizontalScrollBarVisibility="Disabled">
+                            <Grid x:Name="PlaywrightRunsLayoutGrid" Margin="0,16,0,0">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="*"/>
                                     <RowDefinition Height="10"/>
                                     <RowDefinition Height="0.55*"/>
                                 </Grid.RowDefinitions>
                                 <Border Style="{StaticResource SectionStyle}" Padding="12" Margin="0">
-                                    <DataGrid x:Name="PlaywrightRunGrid" ItemsSource="{Binding PlaywrightRuns}" SelectionChanged="PlaywrightRunGrid_SelectionChanged">
+                                    <DataGrid x:Name="PlaywrightRunGrid"
+                                              ItemsSource="{Binding PlaywrightRuns}"
+                                              SelectionChanged="PlaywrightRunGrid_SelectionChanged">
                                         <DataGrid.Columns>
                                             <DataGridTextColumn Header="Run ID" Binding="{Binding Id}" Width="1.4*" MinWidth="190"/>
                                             <DataGridTextColumn Header="Suite" Binding="{Binding SuiteName}" Width="1.7*" MinWidth="180"/>
@@ -1090,7 +1111,11 @@
                                     </DataGrid>
                                 </Border>
                                 <GridSplitter Grid.Row="1" Height="10" HorizontalAlignment="Stretch" Background="Transparent"/>
-                                <Border Grid.Row="2" Style="{StaticResource SectionStyle}" Padding="16" Margin="0">
+                                <Border x:Name="PlaywrightRunDetailPanel"
+                                        Grid.Row="2"
+                                        Style="{StaticResource SectionStyle}"
+                                        Padding="16"
+                                        Margin="0">
                                     <Grid>
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto"/>
@@ -1101,6 +1126,7 @@
                                     </Grid>
                                 </Border>
                             </Grid>
+                            </ScrollViewer>
                         </TabItem>
 
                         <TabItem Header="Artifacts">
@@ -1167,7 +1193,7 @@
                             </Grid.RowDefinitions>
                             <StackPanel VerticalAlignment="Center">
                                 <TextBlock Text="Client update" Style="{StaticResource SectionTitleStyle}" Margin="0,0,0,4"/>
-                                <TextBlock x:Name="UpdateStatusText" Text="Current version v0.7.0" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
+                                <TextBlock x:Name="UpdateStatusText" Text="Current version v0.7.1" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
                             </StackPanel>
                             <WrapPanel x:Name="DiagnosticsUpdateActions" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center">
                                 <Button Style="{StaticResource PrimaryButtonStyle}" Click="CheckUpdate_Click">Check update</Button>

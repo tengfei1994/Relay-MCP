@@ -33,6 +33,9 @@
     <Compile Include="..\RelayAgent.Shared\HttpAuditStore.cs">
       <Link>HttpAuditStore.cs</Link>
     </Compile>
+    <Compile Include="..\RelayAgent.Shared\CommandAuditStore.cs">
+      <Link>CommandAuditStore.cs</Link>
+    </Compile>
     <Compile Include="..\RelayAgent.Shared\PlaywrightManager.cs">
       <Link>PlaywrightManager.cs</Link>
     </Compile>

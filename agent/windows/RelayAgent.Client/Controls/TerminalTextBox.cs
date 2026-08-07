@@ -22,6 +22,8 @@ namespace RelayAgent.Client.Controls
             CaretBrush = Foreground;
             Padding = new Thickness(12, 10, 12, 10);
             IsReadOnly = true;
+            IsUndoEnabled = false;
+            UndoLimit = 0;
             AcceptsReturn = true;
             AcceptsTab = true;
             TextWrapping = TextWrapping.NoWrap;

@@ -15,12 +15,42 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 
 $AssemblyPath = (Resolve-Path -LiteralPath $AssemblyPath).Path
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
+$qaAgentData = Join-Path $OutputDirectory "_agent-data"
+New-Item -ItemType Directory -Force -Path $qaAgentData | Out-Null
+$env:RELAY_AGENT_CONFIG_DIR = $qaAgentData
 
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName WindowsBase
 
 $assembly = [Reflection.Assembly]::LoadFrom($AssemblyPath)
+$commandAuditType = $assembly.GetType("RelayAgent.Shared.CommandAuditStore", $true)
+$commandAuditStart = $commandAuditType.GetMethod("Start")
+$commandAuditComplete = $commandAuditType.GetMethod("Complete")
+$commandAuditMarkResult = $commandAuditType.GetMethod("MarkResultPosted")
+for ($index = 1; $index -le 105; $index++) {
+  $jobId = "qa-command-{0:D3}" -f $index
+  $commandAuditStart.Invoke($null, @(
+    $jobId,
+    "powershell",
+    "Inspect SampleManager service state",
+    '$service = Get-Service -Name SampleManager; password=qa-secret; $service | Select-Object Name,Status',
+    "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <Agent jobs script>",
+    120000,
+    $true,
+    $true,
+    14
+  )) | Out-Null
+  $commandAuditComplete.Invoke($null, @(
+    $jobId,
+    $(if ($index % 9 -eq 0) { "failed" } else { "completed" }),
+    $(if ($index % 9 -eq 0) { 1 } else { 0 }),
+    "Name=SampleManager Status=Running`nQA output line $index",
+    $(if ($index % 9 -eq 0) { "QA simulated stderr" } else { "" }),
+    "QA command audit fixture"
+  )) | Out-Null
+  $commandAuditMarkResult.Invoke($null, @($jobId, $true, "")) | Out-Null
+}
 $windowType = $assembly.GetType("RelayAgent.Client.MainWindow", $true)
 $showPage = $windowType.GetMethod(
   "ShowPage",
@@ -91,6 +121,51 @@ function Save-WindowPng {
   Write-Host $path
 }
 
+function Ensure-QASelectedRun {
+  $runs = $windowType.GetProperty("PlaywrightRuns").GetValue($window, $null)
+  if ($runs.Count -eq 0) {
+    $runType = $assembly.GetType("RelayAgent.Shared.PlaywrightRun", $true)
+    $run = [Activator]::CreateInstance($runType)
+    $run.Id = "qa-run-001"
+    $run.SuiteName = "HKJC Web Client verification"
+    $run.Status = "failed"
+    $run.StartedAt = "2026-08-06T12:00:00Z"
+    $run.FinishedAt = "2026-08-06T12:00:24Z"
+    $run.DurationMs = 24000
+    $run.ExitCode = 1
+    $run.ArtifactDirectory = "C:\ProgramData\RelayMcpAgent\playwright\artifacts\qa-run-001"
+    $run.Error = "QA fixture error message"
+    $run.Output = (1..18 | ForEach-Object { "QA output line $_ - selected run terminal layout check" }) -join [Environment]::NewLine
+    $runs.Add($run)
+  }
+
+  $runGrid = $window.FindName("PlaywrightRunGrid")
+  if ($null -ne $runGrid) {
+    $runGrid.SelectedIndex = 0
+  }
+}
+
+function Wait-ForQACommandAudit {
+  $watch = [Diagnostics.Stopwatch]::StartNew()
+  $auditGrid = $window.FindName("AuditGrid")
+  $rows = $windowType.GetProperty("AuditRows").GetValue($window, $null)
+  while (($rows.Count -eq 0 -or -not $auditGrid.IsEnabled) -and $watch.ElapsedMilliseconds -lt 5000) {
+    Invoke-LayoutPass
+    Start-Sleep -Milliseconds 25
+    $rows = $windowType.GetProperty("AuditRows").GetValue($window, $null)
+  }
+  $watch.Stop()
+  if ($rows.Count -eq 0) {
+    throw "Command Audit QA failed: no rows loaded within five seconds."
+  }
+  if ($rows.Count -gt 100) {
+    throw "Command Audit QA failed: expected at most 100 rows, got $($rows.Count)."
+  }
+  $auditGrid.SelectedIndex = 0
+  Invoke-LayoutPass
+  Write-Host "Command audit load: $($rows.Count) rows in $($watch.ElapsedMilliseconds) ms"
+}
+
 $trayHintField.SetValue($window, $true)
 $window.WindowState = [System.Windows.WindowState]::Minimized
 Invoke-LayoutPass
@@ -125,6 +200,9 @@ $pages = @(
 foreach ($viewport in $viewports) {
   foreach ($page in $pages) {
     $showPage.Invoke($window, @($page.Page)) | Out-Null
+    if ($page.Page -eq "AuditPage") {
+      Wait-ForQACommandAudit
+    }
     Invoke-LayoutPass
     Save-WindowPng `
       -Name ($viewport.Name + "-" + $page.Name) `
@@ -137,6 +215,9 @@ foreach ($viewport in $viewports) {
   $tabNames = @("overview", "runtime", "suites", "runs", "artifacts")
   for ($index = 0; $index -lt $tabNames.Count; $index++) {
     $tabs.SelectedIndex = $index
+    if ($tabNames[$index] -eq "runs") {
+      Ensure-QASelectedRun
+    }
     Invoke-LayoutPass
     Save-WindowPng `
       -Name ($viewport.Name + "-playwright-" + $tabNames[$index]) `

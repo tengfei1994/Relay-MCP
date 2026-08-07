@@ -7,7 +7,7 @@ final result: passed
 - Selected direction: adaptive WPF operations workspace.
 - Visual language: light neutral workspace, compact left navigation, blue
   primary actions, restrained status colors, and dense administrative tables.
-- Additional requirement: Request Audit is a separate page.
+- Additional requirement: Command Audit is a separate page.
 - Current priority: avoid DPI text clipping, hidden section titles, and fixed
   terminal/log panes.
 
@@ -31,6 +31,8 @@ final result: passed
 - Initial window bounds are calculated from the current WPF work area, so a
   high-DPI display does not turn the nominal 1240 x 820 size into an almost
   full-screen window. Users can still maximize the window explicitly.
+- On short, sufficiently wide work areas, the global status metrics move next
+  to the Agent operations heading to release vertical space for page content.
 - Sidebar navigation scrolls independently on short work areas instead of
   clipping its final items or the service-owned execution notice.
 - Outer page horizontal scrolling is disabled. Data tables retain their own
@@ -50,9 +52,12 @@ final result: passed
   clipping at higher DPI.
 - Relay URL host and port are fully masked after save.
 - Agent token is masked and can only be replaced, not revealed.
-- Database actions are separated from the Request Audit workflow.
-- Request Audit filters, actions, table, and selected-request detail are on
+- Database actions are separated from the Command Audit workflow.
+- Command Audit filters, actions, table, and selected-command detail are on
   separate resizable regions.
+- Command Audit QA uses 105 isolated local job fixtures, verifies that only the
+  latest 100 rows load, waits for the background refresh, and selects a command
+  with command/output details. It never reads the host's real Agent data.
 - Playwright runtime log, selected run details, request details, and Agent log
   use terminal-style output panes with search, copy, wrapping, and zoom.
 - Destructive actions use a distinct danger treatment and confirmation.
@@ -60,6 +65,10 @@ final result: passed
 - Minimizing hides the WPF window and taskbar entry while exposing the Windows
   notification-area icon. Restoring from the tray reverses all three states;
   the lifecycle is exercised by the repeatable offscreen QA script.
+- Playwright Test runs QA includes a selected run fixture so the detail
+  terminal is verified with realistic output, not only an empty-state label.
+- Playwright Test runs switch from proportional rows to bounded content rows
+  plus page scrolling on short work areas, keeping Selected run output usable.
 
 ## Remaining Polish
 

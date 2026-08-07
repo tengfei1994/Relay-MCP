@@ -40,6 +40,12 @@ For repeatable UI layout QA, build the client and run:
 .\render-ui-qa.ps1
 ```
 
+For isolated large-output memory QA, run:
+
+```powershell
+.\test-memory-qa.ps1
+```
+
 The script renders every main page and Playwright tab at 1240 x 820,
 1060 x 680, 980 x 760, and 900 x 700 without requiring interactive window
 automation. It also verifies minimize-to-tray and restore behavior.
@@ -60,13 +66,13 @@ instead of trying to create a duplicate service.
 
 The current client uses a left-navigation WPF operations workspace:
 
-- Overview: connection, service, database, and audit readiness.
+- Overview: connection, service, database, and command-audit readiness.
 - Connection: encrypted Relay URL and Agent token configuration.
 - Service Control: install, update, start, stop, restart, and uninstall.
 - Database Access: discover local SQL Server databases, test the service
   identity, and grant or revoke read, read/write, or DDL permissions.
-- Request Audit: filter, inspect, search, export, and clear audited Relay HTTP
-  calls.
+- Command Audit: inspect the instruction, executed command or script, status,
+  exit code, stdout, stderr, and Relay result-post state for Agent jobs.
 - Playwright: detect and install Node/Playwright/Chromium dependencies, manage
   SampleManager Web Client test suites, queue background test runs, and inspect
   artifacts.
@@ -124,23 +130,31 @@ Because the ciphertext is machine-bound, copying `agent.env` to another
 computer does not transfer usable secrets. Use Replace in the Connection page
 to configure that computer.
 
-## Request Audit
+## Command Audit
 
-The Agent records audited Relay HTTP calls in:
+The Agent writes one structured record per received job under:
 
 ```text
-%ProgramData%\RelayMcpAgent\http-audit.jsonl
+%ProgramData%\RelayMcpAgent\command-audit
 ```
 
-Each entry includes timestamp, method, endpoint, status, duration, job ID,
-request body, response body, and error details. Authorization headers, tokens,
-passwords, secrets, API keys, and connection strings are redacted before
-storage. Payload logging can be disabled independently, and retention is
-configurable from 1 to 365 days.
+Each record includes the job ID, kind, instruction, redacted command or script,
+the executable path or runtime action, timestamps, status, timeout, exit code,
+stdout, stderr, and whether the result was posted back to Relay. Payload
+capture can be disabled independently, and retention is configurable from 1
+to 365 days.
 
-The job polling response contains the dispatched command or PowerShell script,
-while the result POST contains stdout, stderr, and exit status. This gives the
-Request Audit page an end-to-end record without storing Agent credentials.
+The Client loads at most the latest 100 lightweight record indexes on a
+background thread. Full command, stdout, and stderr payloads are loaded only
+after selecting one record, and the Terminal preview is bounded while Export
+streams the complete stored records. It no longer scans the Relay HTTP request
+log when the page opens.
+Successful heartbeat time is maintained in `last-heartbeat.txt`, so the normal
+five-second status refresh also avoids reparsing the HTTP audit file.
+
+Playwright run lists use the same summary/detail pattern. The Client does not
+preload Playwright runs or Agent logs during startup, expensive runtime checks
+are throttled, and the log viewer reads only a bounded tail of `agent.log`.
 
 ## Database Access
 

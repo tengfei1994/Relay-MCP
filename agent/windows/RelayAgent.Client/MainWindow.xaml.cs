@@ -35,11 +35,19 @@ namespace RelayAgent.Client
         private Drawing.Icon _trayIconImage;
         private WindowState _windowStateBeforeMinimize = WindowState.Normal;
         private bool _trayHintShown;
+        private int _auditRefreshGeneration;
+        private int _auditDetailGeneration;
+        private int _playwrightRunDetailGeneration;
+        private bool _auditResultsStacked;
+        private bool _playwrightRefreshInProgress;
+        private DateTime _lastPlaywrightRefreshUtc = DateTime.MinValue;
+        private const int MaximumTerminalDetailCharacters = 128 * 1024;
+        private const int MaximumAgentLogTailBytes = 512 * 1024;
 
         public MainWindow()
         {
             PermissionRows = new ObservableCollection<PermissionRow>();
-            AuditRows = new ObservableCollection<AuditRow>();
+            AuditRows = new List<AuditRow>();
             PlaywrightSuites = new ObservableCollection<PlaywrightSuite>();
             PlaywrightRuns = new ObservableCollection<PlaywrightRun>();
             PlaywrightArtifacts = new ObservableCollection<FileInfo>();
@@ -103,7 +111,7 @@ namespace RelayAgent.Client
 
         public ObservableCollection<PermissionRow> PermissionRows { get; private set; }
 
-        public ObservableCollection<AuditRow> AuditRows { get; private set; }
+        public IList<AuditRow> AuditRows { get; private set; }
 
         public ObservableCollection<PlaywrightSuite> PlaywrightSuites { get; private set; }
 
@@ -297,6 +305,7 @@ namespace RelayAgent.Client
             var compactShell = ActualWidth < 1120;
 
             SetSidebarLayout(compactShell);
+            SetHeaderLayout(ActualHeight < 760 && width >= 900);
             PageHost.Margin = compactShell
                 ? new Thickness(16, 16, 14, 14)
                 : new Thickness(24, 20, 22, 18);
@@ -317,6 +326,11 @@ namespace RelayAgent.Client
             SetDatabaseLayout(width < 1180);
             SetPlaywrightRuntimeLayout(width < 1060);
             SetPlaywrightSuitesLayout(width < 1240);
+            var pageHeight = PageHost == null || PageHost.ActualHeight <= 0
+                ? ActualHeight
+                : PageHost.ActualHeight;
+            SetAuditResultsLayout(pageHeight < 560);
+            SetPlaywrightRunsLayout(pageHeight < 560);
 
             var stackToolbars = width < 1050;
             SetToolbarLayout(AuditToolbarGrid, AuditFilterActionsPanel, stackToolbars);
@@ -377,6 +391,32 @@ namespace RelayAgent.Client
                     ? new Thickness(8, 2, 8, 2)
                     : new Thickness(10, 2, 10, 2);
             }
+        }
+
+        private void SetHeaderLayout(bool compact)
+        {
+            if (HeaderContentGrid == null || HeaderMetricsPanel == null || HeaderRefreshButton == null)
+            {
+                return;
+            }
+
+            if (compact)
+            {
+                HeaderContentGrid.RowDefinitions[1].Height = new GridLength(0);
+                HeaderMetricsPanel.Margin = new Thickness(14, 4, 0, 4);
+                Grid.SetRow(HeaderMetricsPanel, 0);
+                Grid.SetColumn(HeaderMetricsPanel, 1);
+                Grid.SetColumnSpan(HeaderMetricsPanel, 1);
+                Grid.SetRow(HeaderRefreshButton, 0);
+                return;
+            }
+
+            HeaderContentGrid.RowDefinitions[1].Height = GridLength.Auto;
+            HeaderMetricsPanel.Margin = new Thickness(0, 14, 0, 0);
+            Grid.SetRow(HeaderMetricsPanel, 1);
+            Grid.SetColumn(HeaderMetricsPanel, 0);
+            Grid.SetColumnSpan(HeaderMetricsPanel, 3);
+            Grid.SetRow(HeaderRefreshButton, 0);
         }
 
         private void SetConnectionLayout(bool stacked)
@@ -651,6 +691,74 @@ namespace RelayAgent.Client
             PlaywrightSuiteGrid.MinHeight = 0;
         }
 
+        private void SetPlaywrightRunsLayout(bool stacked)
+        {
+            if (PlaywrightRunsLayoutGrid == null ||
+                PlaywrightRunsLayoutGrid.RowDefinitions.Count < 3 ||
+                PlaywrightRunsScroller == null ||
+                PlaywrightRunGrid == null ||
+                PlaywrightRunDetailPanel == null)
+            {
+                return;
+            }
+
+            if (stacked)
+            {
+                PlaywrightRunsScroller.VerticalScrollBarVisibility =
+                    ScrollBarVisibility.Auto;
+                PlaywrightRunsLayoutGrid.RowDefinitions[0].Height =
+                    GridLength.Auto;
+                PlaywrightRunsLayoutGrid.RowDefinitions[2].Height =
+                    GridLength.Auto;
+                PlaywrightRunGrid.MinHeight = 0;
+                PlaywrightRunGrid.MaxHeight = 320;
+                PlaywrightRunDetailPanel.MinHeight = 220;
+                return;
+            }
+
+            PlaywrightRunsScroller.VerticalScrollBarVisibility =
+                ScrollBarVisibility.Disabled;
+            PlaywrightRunsLayoutGrid.RowDefinitions[0].Height =
+                new GridLength(1, GridUnitType.Star);
+            PlaywrightRunsLayoutGrid.RowDefinitions[2].Height =
+                new GridLength(0.55, GridUnitType.Star);
+            PlaywrightRunGrid.MinHeight = 0;
+            PlaywrightRunGrid.MaxHeight = double.PositiveInfinity;
+            PlaywrightRunDetailPanel.MinHeight = 0;
+        }
+
+        private void SetAuditResultsLayout(bool stacked)
+        {
+            if (AuditResultsGrid == null ||
+                AuditResultsGrid.RowDefinitions.Count < 3 ||
+                AuditResultsScroller == null ||
+                AuditGrid == null ||
+                AuditDetailPanel == null)
+            {
+                return;
+            }
+
+            _auditResultsStacked = stacked;
+
+            if (stacked)
+            {
+                AuditResultsScroller.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+                AuditResultsGrid.RowDefinitions[0].Height = GridLength.Auto;
+                AuditResultsGrid.RowDefinitions[2].Height = GridLength.Auto;
+                AuditGrid.MinHeight = 140;
+                AuditGrid.MaxHeight = 240;
+                AuditDetailPanel.MinHeight = 260;
+                return;
+            }
+
+            AuditResultsScroller.VerticalScrollBarVisibility = ScrollBarVisibility.Disabled;
+            AuditResultsGrid.RowDefinitions[0].Height = new GridLength(1, GridUnitType.Star);
+            AuditResultsGrid.RowDefinitions[2].Height = new GridLength(0.72, GridUnitType.Star);
+            AuditGrid.MinHeight = 0;
+            AuditGrid.MaxHeight = double.PositiveInfinity;
+            AuditDetailPanel.MinHeight = 0;
+        }
+
         private void ShowPage(string pageName)
         {
             FrameworkElement selectedPage;
@@ -675,13 +783,22 @@ namespace RelayAgent.Client
                 pair.Value.FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal;
             }
 
+            if (!pageName.Equals("AuditPage", StringComparison.OrdinalIgnoreCase))
+            {
+                ReleaseAuditDetail();
+            }
+            if (!pageName.Equals("PlaywrightPage", StringComparison.OrdinalIgnoreCase))
+            {
+                ReleasePlaywrightRunDetail();
+            }
+
             if (pageName.Equals("AuditPage", StringComparison.OrdinalIgnoreCase))
             {
                 RefreshAudit();
             }
             else if (pageName.Equals("PlaywrightPage", StringComparison.OrdinalIgnoreCase))
             {
-                _ = RefreshPlaywrightAsync();
+                _ = RefreshPlaywrightAsync(false);
             }
             else if (pageName.Equals("DiagnosticsPage", StringComparison.OrdinalIgnoreCase))
             {
@@ -1248,8 +1365,8 @@ namespace RelayAgent.Client
                 _loadedConfig = config;
                 _configurationLoadError = "";
                 LoadConfigurationIntoView();
-                SetFooter("Audit settings saved securely.");
-                LogClientAction("HTTP audit settings updated.");
+                SetFooter("Command audit settings saved securely.");
+                LogClientAction("Command audit settings updated.");
                 if (QueryService() == "running")
                 {
                     RestartService();
@@ -1267,89 +1384,166 @@ namespace RelayAgent.Client
             ShowSelectedAuditDetail();
         }
 
-        private void RefreshAudit()
+        private async void RefreshAudit()
         {
-            if (!_initialized && AuditMethodFilter.SelectedIndex < 0)
+            if (!_initialized)
             {
                 return;
             }
 
-            var method = GetComboValue(AuditMethodFilter, "All");
+            var generation = Interlocked.Increment(ref _auditRefreshGeneration);
+            var kind = GetComboValue(AuditMethodFilter, "All");
             var status = GetComboValue(AuditStatusFilter, "All");
-            var entries = HttpAuditStore.ReadRecent(1000, method, status);
+            AuditGrid.IsEnabled = false;
+            AuditEmptyText.Text = "Loading command executions...";
+            AuditEmptyText.Visibility = Visibility.Visible;
 
-            AuditRows.Clear();
+            IList<CommandAuditSummary> entries;
+            try
+            {
+                entries = await Task.Run(() => CommandAuditStore.ReadRecent(100, kind, status));
+            }
+            catch (Exception ex)
+            {
+                if (generation != _auditRefreshGeneration) return;
+                AuditGrid.IsEnabled = true;
+                AuditEmptyText.Text = "Unable to load command audit.";
+                SetFooter("Command audit load failed: " + ex.Message);
+                return;
+            }
+
+            if (generation != _auditRefreshGeneration) return;
+            var rows = new List<AuditRow>(entries.Count);
             foreach (var entry in entries)
             {
                 DateTimeOffset timestamp;
-                var displayTime = DateTimeOffset.TryParse(entry.timestamp, out timestamp)
+                var displayTime = DateTimeOffset.TryParse(entry.startedAt, out timestamp)
                     ? timestamp.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")
-                    : entry.timestamp;
-                AuditRows.Add(new AuditRow
+                    : entry.startedAt;
+                rows.Add(new AuditRow
                 {
                     Time = displayTime,
-                    Method = entry.method,
-                    Endpoint = entry.endpoint,
-                    Status = entry.statusCode.HasValue
-                        ? entry.statusCode.Value.ToString()
-                        : "Failed",
-                    Duration = entry.durationMs + " ms",
+                    Kind = CommandAuditStore.DisplayKind(entry.kind),
+                    Instruction = entry.instruction,
+                    Status = ToTitle(entry.status),
+                    ExitCode = entry.exitCode.HasValue ? entry.exitCode.Value.ToString() : "-",
+                    Duration = entry.durationMs > 0 ? entry.durationMs + " ms" : "-",
                     JobId = entry.jobId,
-                    Payload = !string.IsNullOrWhiteSpace(entry.requestBody) ||
-                              !string.IsNullOrWhiteSpace(entry.responseBody)
-                        ? "Yes"
-                        : "No",
-                    Entry = entry
+                    Summary = entry
                 });
             }
+            AuditRows = rows;
+            AuditGrid.ItemsSource = AuditRows;
+            AuditResultsScroller.ScrollToTop();
 
+            AuditGrid.IsEnabled = true;
+            AuditEmptyText.Text = "No command executions recorded yet.";
             AuditEmptyText.Visibility = AuditRows.Count == 0
                 ? Visibility.Visible
                 : Visibility.Collapsed;
             ShowSelectedAuditDetail();
         }
 
-        private void ShowSelectedAuditDetail()
+        private async void ShowSelectedAuditDetail()
         {
             var row = AuditGrid.SelectedItem as AuditRow;
-            var entry = row == null ? null : row.Entry;
-            if (entry == null)
+            var summary = row == null ? null : row.Summary;
+            var generation = Interlocked.Increment(ref _auditDetailGeneration);
+            if (summary == null)
             {
                 AuditDetailBox.IsEnabled = true;
-                AuditDetailBox.Text = "Select a request to inspect details.";
+                AuditDetailBox.Text = "Select a command to inspect details.";
                 return;
             }
 
             AuditDetailBox.IsEnabled = true;
+            AuditDetailBox.Text = "Loading command result...";
+            CommandAuditEntry entry;
+            try
+            {
+                entry = await Task.Run(() => CommandAuditStore.ReadDetail(summary.jobId));
+            }
+            catch (Exception ex)
+            {
+                if (generation != _auditDetailGeneration) return;
+                AuditDetailBox.Text = "Unable to load command result.\r\n" + ex.Message;
+                return;
+            }
+
+            if (generation != _auditDetailGeneration) return;
+            var selected = AuditGrid.SelectedItem as AuditRow;
+            if (selected == null || selected.Summary == null ||
+                !string.Equals(selected.Summary.jobId, summary.jobId, StringComparison.Ordinal))
+            {
+                return;
+            }
+            if (entry == null)
+            {
+                AuditDetailBox.Text = "Command detail is unavailable. The record may have been cleared.";
+                return;
+            }
+
             var builder = new StringBuilder();
-            builder.AppendLine(entry.method + " " + entry.endpoint);
-            builder.AppendLine(
-                "Status: " +
-                (entry.statusCode.HasValue ? entry.statusCode.Value.ToString() : "Failed"));
+            builder.AppendLine("Job ID: " + entry.jobId);
+            builder.AppendLine("Kind: " + CommandAuditStore.DisplayKind(entry.kind));
+            builder.AppendLine("Status: " + ToTitle(entry.status));
+            builder.AppendLine("Exit code: " + (entry.exitCode.HasValue ? entry.exitCode.Value.ToString() : "-"));
             builder.AppendLine("Duration: " + entry.durationMs + " ms");
-            if (!string.IsNullOrWhiteSpace(entry.jobId))
+            builder.AppendLine("Timeout: " + entry.timeoutMs + " ms");
+            builder.AppendLine("Started: " + entry.startedAt);
+            if (!string.IsNullOrWhiteSpace(entry.finishedAt))
             {
-                builder.AppendLine("Job ID: " + entry.jobId);
+                builder.AppendLine("Finished: " + entry.finishedAt);
             }
-            if (!string.IsNullOrWhiteSpace(entry.error))
+            builder.AppendLine("Result posted to Relay: " +
+                (entry.resultPosted.HasValue ? (entry.resultPosted.Value ? "Yes" : "No") : "Pending"));
+            var remaining = Math.Max(0, MaximumTerminalDetailCharacters - builder.Length);
+            AppendTerminalSection(builder, "Instruction", entry.instruction, ref remaining);
+            AppendTerminalSection(builder, "Executed command", entry.executedCommand, ref remaining);
+            AppendTerminalSection(builder, "Command / script", entry.command, ref remaining);
+            AppendTerminalSection(builder, "Message", entry.message, ref remaining);
+            AppendTerminalSection(builder, "STDOUT", entry.stdout, ref remaining);
+            AppendTerminalSection(builder, "STDERR", entry.stderr, ref remaining);
+            AppendTerminalSection(builder, "Relay result post error", entry.resultPostError, ref remaining);
+            if (remaining == 0)
             {
                 builder.AppendLine();
-                builder.AppendLine("Error");
-                builder.AppendLine(entry.error);
-            }
-            if (!string.IsNullOrWhiteSpace(entry.requestBody))
-            {
-                builder.AppendLine();
-                builder.AppendLine("Request");
-                builder.AppendLine(entry.requestBody);
-            }
-            if (!string.IsNullOrWhiteSpace(entry.responseBody))
-            {
-                builder.AppendLine();
-                builder.AppendLine("Response");
-                builder.AppendLine(entry.responseBody);
+                builder.AppendLine("[DISPLAY TRUNCATED - export the command audit record for the complete stored payload]");
             }
             AuditDetailBox.Text = builder.ToString();
+            if (_auditResultsStacked)
+            {
+                _ = Dispatcher.BeginInvoke(
+                    new Action(delegate { AuditDetailBox.BringIntoView(); }),
+                    DispatcherPriority.Background);
+            }
+        }
+
+        private void ReleaseAuditDetail()
+        {
+            Interlocked.Increment(ref _auditDetailGeneration);
+            if (AuditGrid != null) AuditGrid.SelectedItem = null;
+            if (AuditDetailBox != null) AuditDetailBox.Text = "Select a command to inspect details.";
+        }
+
+        private static void AppendTerminalSection(
+            StringBuilder builder,
+            string title,
+            string value,
+            ref int remaining)
+        {
+            if (string.IsNullOrWhiteSpace(value) || remaining <= 0) return;
+            var heading = Environment.NewLine + title + Environment.NewLine;
+            if (heading.Length >= remaining)
+            {
+                remaining = 0;
+                return;
+            }
+            builder.Append(heading);
+            remaining -= heading.Length;
+            var count = Math.Min(value.Length, remaining);
+            builder.Append(value, 0, count);
+            remaining -= count;
         }
 
         private void ExportAudit_Click(object sender, RoutedEventArgs e)
@@ -1358,15 +1552,15 @@ namespace RelayAgent.Client
             {
                 var dialog = new SaveFileDialog
                 {
-                    Title = "Export Relay request audit",
+                    Title = "Export Relay command audit",
                     Filter = "JSON Lines (*.jsonl)|*.jsonl|All files (*.*)|*.*",
-                    FileName = "relay-http-audit-" +
+                    FileName = "relay-command-audit-" +
                                DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".jsonl"
                 };
                 if (dialog.ShowDialog(this) == true)
                 {
-                    HttpAuditStore.Export(dialog.FileName);
-                    SetFooter("Audit exported to " + dialog.FileName);
+                    CommandAuditStore.Export(dialog.FileName);
+                    SetFooter("Command audit exported to " + dialog.FileName);
                 }
             }
             catch (Exception ex)
@@ -1379,7 +1573,7 @@ namespace RelayAgent.Client
         {
             if (MessageBox.Show(
                     this,
-                    "Clear the local HTTP request audit history?",
+                    "Clear the local command execution audit history?",
                     Title,
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Warning) != MessageBoxResult.Yes)
@@ -1389,9 +1583,9 @@ namespace RelayAgent.Client
 
             try
             {
-                HttpAuditStore.Clear();
+                CommandAuditStore.Clear();
                 RefreshAudit();
-                SetFooter("Request audit cleared.");
+                SetFooter("Command audit cleared.");
             }
             catch (Exception ex)
             {
@@ -1507,28 +1701,27 @@ namespace RelayAgent.Client
             _loadedConfig = LoadConfigSafely();
             LoadConfigurationIntoView();
             RefreshRuntimeStatus();
-            RefreshAudit();
-            RefreshAgentLog();
-            _ = RefreshPlaywrightAsync();
         }
 
         private async void RefreshPlaywright_Click(object sender, RoutedEventArgs e)
         {
-            await RefreshPlaywrightAsync();
+            await RefreshPlaywrightAsync(true);
             SetFooter("Playwright runtime refreshed.");
         }
 
-        private async Task RefreshPlaywrightAsync()
+        private async Task RefreshPlaywrightAsync(bool force)
         {
+            if (_playwrightRefreshInProgress) return;
+            if (!force && DateTime.UtcNow - _lastPlaywrightRefreshUtc < TimeSpan.FromSeconds(15)) return;
+            _playwrightRefreshInProgress = true;
             try
             {
                 var snapshot = await Task.Run(() => new
                 {
                     Runtime = PlaywrightManager.DetectRuntime(),
                     Suites = PlaywrightManager.ReadSuites(),
-                    Runs = PlaywrightManager.ReadRuns(100),
-                    Artifacts = PlaywrightManager.ReadArtifacts(250),
-                    WebClients = PlaywrightManager.DiscoverWebClients()
+                    Runs = PlaywrightManager.ReadRuns(50),
+                    Artifacts = PlaywrightManager.ReadArtifacts(150)
                 });
 
                 PlaywrightSuites.Clear();
@@ -1537,15 +1730,6 @@ namespace RelayAgent.Client
                 foreach (var item in snapshot.Runs) PlaywrightRuns.Add(item);
                 PlaywrightArtifacts.Clear();
                 foreach (var item in snapshot.Artifacts) PlaywrightArtifacts.Add(item);
-                var selectedWebClientUrl = (PlaywrightWebClientBox.SelectedItem as PlaywrightWebClientCandidate)?.Url;
-                PlaywrightWebClients.Clear();
-                foreach (var item in snapshot.WebClients) PlaywrightWebClients.Add(item);
-                PlaywrightWebClientBox.ItemsSource = PlaywrightWebClients;
-                if (!string.IsNullOrWhiteSpace(selectedWebClientUrl))
-                {
-                    PlaywrightWebClientBox.SelectedItem = PlaywrightWebClients.FirstOrDefault(item =>
-                        string.Equals(item.Url, selectedWebClientUrl, StringComparison.OrdinalIgnoreCase));
-                }
 
                 var state = snapshot.Runtime;
                 var ready = string.Equals(state.Status, "ready", StringComparison.OrdinalIgnoreCase);
@@ -1585,6 +1769,11 @@ namespace RelayAgent.Client
                 PlaywrightInstallMessageText.Text = ex.Message;
                 PlaywrightRuntimeLogBox.Text = ex.ToString();
             }
+            finally
+            {
+                _lastPlaywrightRefreshUtc = DateTime.UtcNow;
+                _playwrightRefreshInProgress = false;
+            }
         }
 
         private async void QueuePlaywrightInstall_Click(object sender, RoutedEventArgs e)
@@ -1601,7 +1790,7 @@ namespace RelayAgent.Client
                 SetFooter("Playwright installation queued: " + taskId);
                 LogClientAction("Playwright installation queued: " + taskId);
                 PlaywrightTabs.SelectedIndex = 1;
-                _ = RefreshPlaywrightAsync();
+                _ = RefreshPlaywrightAsync(true);
             }
             catch (Exception ex)
             {
@@ -1697,7 +1886,7 @@ namespace RelayAgent.Client
                 };
                 var saved = PlaywrightManager.SaveSuite(suite);
                 _selectedPlaywrightSuiteId = saved.Id;
-                await RefreshPlaywrightAsync();
+                await RefreshPlaywrightAsync(true);
                 SetFooter("Playwright suite saved.");
             }
             catch (Exception ex)
@@ -1719,7 +1908,7 @@ namespace RelayAgent.Client
             }
             PlaywrightManager.DeleteSuite(_selectedPlaywrightSuiteId);
             NewPlaywrightSuite_Click(sender, e);
-            await RefreshPlaywrightAsync();
+            await RefreshPlaywrightAsync(true);
             SetFooter("Playwright suite deleted.");
         }
 
@@ -1733,7 +1922,7 @@ namespace RelayAgent.Client
                 SetFooter("Playwright test queued: " + taskId);
                 LogClientAction("Playwright test queued: " + taskId);
                 PlaywrightTabs.SelectedIndex = 3;
-                await RefreshPlaywrightAsync();
+                await RefreshPlaywrightAsync(true);
             }
             catch (Exception ex)
             {
@@ -1741,15 +1930,40 @@ namespace RelayAgent.Client
             }
         }
 
-        private void PlaywrightRunGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        private async void PlaywrightRunGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            var run = PlaywrightRunGrid.SelectedItem as PlaywrightRun;
-            if (run == null)
+            var summary = PlaywrightRunGrid.SelectedItem as PlaywrightRun;
+            var generation = Interlocked.Increment(ref _playwrightRunDetailGeneration);
+            if (summary == null)
             {
                 PlaywrightRunDetailBox.Text = "Select a run to inspect details.";
                 return;
             }
-            PlaywrightRunDetailBox.Text =
+
+            PlaywrightRunDetailBox.Text = "Loading Playwright run output...";
+            PlaywrightRun run;
+            try
+            {
+                run = await Task.Run(() => PlaywrightManager.ReadRun(summary.Id));
+            }
+            catch (Exception ex)
+            {
+                if (generation != _playwrightRunDetailGeneration) return;
+                PlaywrightRunDetailBox.Text = "Unable to load Playwright run.\r\n" + ex.Message;
+                return;
+            }
+
+            if (generation != _playwrightRunDetailGeneration) return;
+            var selected = PlaywrightRunGrid.SelectedItem as PlaywrightRun;
+            if (selected == null || !string.Equals(selected.Id, summary.Id, StringComparison.Ordinal)) return;
+            if (run == null)
+            {
+                PlaywrightRunDetailBox.Text = "Playwright run detail is unavailable.";
+                return;
+            }
+
+            var builder = new StringBuilder();
+            builder.Append(
                 "Run ID: " + run.Id + Environment.NewLine +
                 "Suite: " + run.SuiteName + Environment.NewLine +
                 "Status: " + run.Status + Environment.NewLine +
@@ -1757,9 +1971,35 @@ namespace RelayAgent.Client
                 "Finished: " + run.FinishedAt + Environment.NewLine +
                 "Duration: " + run.DurationMs + " ms" + Environment.NewLine +
                 "Exit code: " + run.ExitCode + Environment.NewLine +
-                "Artifacts: " + run.ArtifactDirectory + Environment.NewLine +
-                (string.IsNullOrWhiteSpace(run.Error) ? "" : "Error: " + run.Error + Environment.NewLine) +
-                Environment.NewLine + (run.Output ?? "");
+                "Artifacts: " + run.ArtifactDirectory + Environment.NewLine);
+            var remaining = Math.Max(0, MaximumTerminalDetailCharacters - builder.Length);
+            AppendTerminalSection(builder, "Error", run.Error, ref remaining);
+            AppendTerminalSection(builder, "Output", run.Output, ref remaining);
+            if (remaining == 0)
+            {
+                builder.AppendLine();
+                builder.AppendLine("[DISPLAY TRUNCATED - open the run artifact for the complete output]");
+            }
+            PlaywrightRunDetailBox.Text = builder.ToString();
+        }
+
+        private void PlaywrightTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!ReferenceEquals(e.OriginalSource, PlaywrightTabs)) return;
+            if (PlaywrightTabs.SelectedIndex != 3)
+            {
+                ReleasePlaywrightRunDetail();
+            }
+        }
+
+        private void ReleasePlaywrightRunDetail()
+        {
+            Interlocked.Increment(ref _playwrightRunDetailGeneration);
+            if (PlaywrightRunGrid != null) PlaywrightRunGrid.SelectedItem = null;
+            if (PlaywrightRunDetailBox != null)
+            {
+                PlaywrightRunDetailBox.Text = "Select a run to inspect details.";
+            }
         }
 
         private void OpenPlaywrightFolder_Click(object sender, RoutedEventArgs e)
@@ -1782,7 +2022,7 @@ namespace RelayAgent.Client
                 return;
             }
             PlaywrightManager.ClearArtifacts();
-            await RefreshPlaywrightAsync();
+                await RefreshPlaywrightAsync(true);
             SetFooter("Playwright artifacts cleared.");
         }
 
@@ -1791,10 +2031,7 @@ namespace RelayAgent.Client
             var service = QueryService();
             var configured = !string.IsNullOrWhiteSpace(_loadedConfig.RelayUrl) &&
                              !string.IsNullOrWhiteSpace(_loadedConfig.Token);
-            var auditEntries = HttpAuditStore.ReadRecent(100, "All", "All");
-            var latestHeartbeat = auditEntries.FirstOrDefault(entry =>
-                entry.endpoint != null &&
-                entry.endpoint.IndexOf("/heartbeat", StringComparison.OrdinalIgnoreCase) >= 0);
+            var latestHeartbeat = ReadLastHeartbeat();
 
             SetStatusText(
                 HeaderConnectionText,
@@ -1804,12 +2041,12 @@ namespace RelayAgent.Client
                 HeaderServiceText,
                 ToTitle(service),
                 service == "running");
-            HeaderLastSeenText.Text = latestHeartbeat == null
+            HeaderLastSeenText.Text = string.IsNullOrWhiteSpace(latestHeartbeat)
                 ? "No heartbeat"
-                : FormatTimestamp(latestHeartbeat.timestamp);
-            HeaderLastSeenText.ToolTip = latestHeartbeat == null
+                : FormatTimestamp(latestHeartbeat);
+            HeaderLastSeenText.ToolTip = string.IsNullOrWhiteSpace(latestHeartbeat)
                 ? null
-                : latestHeartbeat.timestamp;
+                : latestHeartbeat;
 
             SetStatusText(ServiceStateText, ToTitle(service), service == "running");
             ServiceIdentityText.Text = DatabaseAccessManager.GetServiceIdentity();
@@ -1839,7 +2076,7 @@ namespace RelayAgent.Client
 
             SetStatusText(
                 OverviewAuditText,
-                _loadedConfig.AuditEnabled ? "Audit enabled" : "Audit disabled",
+                _loadedConfig.AuditEnabled ? "Command audit enabled" : "Command audit disabled",
                 _loadedConfig.AuditEnabled);
 
             SummaryRelayText.Text = AgentConfig.MaskRelayUrl(_loadedConfig.RelayUrl);
@@ -1852,13 +2089,27 @@ namespace RelayAgent.Client
 
             FooterText.Text =
                 "Service: " + ToTitle(service) +
-                "    |    Audit: " +
+                "    |    Command audit: " +
                 (_loadedConfig.AuditEnabled ? "Enabled" : "Disabled") +
                 "    |    Local time: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
 
             if (PlaywrightPage.Visibility == Visibility.Visible)
             {
-                _ = RefreshPlaywrightAsync();
+                _ = RefreshPlaywrightAsync(false);
+            }
+        }
+
+        private static string ReadLastHeartbeat()
+        {
+            try
+            {
+                return File.Exists(AgentConfig.LastHeartbeatPath)
+                    ? File.ReadAllText(AgentConfig.LastHeartbeatPath).Trim()
+                    : "";
+            }
+            catch
+            {
+                return "";
             }
         }
 
@@ -1967,12 +2218,17 @@ namespace RelayAgent.Client
                 }
 
                 var level = GetComboValue(LogLevelFilter, "All");
-                var lines = File.ReadLines(AgentConfig.AgentLogPath)
+                var lines = ReadTailLines(
+                    AgentConfig.AgentLogPath,
+                    1200,
+                    MaximumAgentLogTailBytes)
                     .Where(line => level == "All" ||
                                    line.IndexOf(level, StringComparison.OrdinalIgnoreCase) >= 0)
-                    .Reverse()
-                    .Take(400)
-                    .Reverse();
+                    .ToList();
+                if (lines.Count > 400)
+                {
+                    lines = lines.Skip(lines.Count - 400).ToList();
+                }
                 AgentLogBox.Text = string.Join(Environment.NewLine, lines);
                 if (LogAutoScrollCheck.IsChecked == true)
                 {
@@ -1983,6 +2239,45 @@ namespace RelayAgent.Client
             catch (Exception ex)
             {
                 AgentLogBox.Text = "Log file unavailable\r\n" + ex.Message;
+            }
+        }
+
+        private static IList<string> ReadTailLines(string path, int maximumLines, int maximumBytes)
+        {
+            using (var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete))
+            {
+                var start = Math.Max(0, stream.Length - Math.Max(4096, maximumBytes));
+                stream.Seek(start, SeekOrigin.Begin);
+                var bytes = new byte[(int)(stream.Length - start)];
+                var offset = 0;
+                while (offset < bytes.Length)
+                {
+                    var read = stream.Read(bytes, offset, bytes.Length - offset);
+                    if (read <= 0) break;
+                    offset += read;
+                }
+
+                var text = Encoding.UTF8.GetString(bytes, 0, offset);
+                if (start > 0)
+                {
+                    var firstNewLine = text.IndexOf('\n');
+                    text = firstNewLine < 0 ? "" : text.Substring(firstNewLine + 1);
+                }
+
+                var lines = text
+                    .Split(new[] { "\r\n", "\n" }, StringSplitOptions.None)
+                    .Where(line => line.Length > 0)
+                    .ToList();
+                var keep = Math.Max(1, maximumLines);
+                if (lines.Count > keep)
+                {
+                    lines.RemoveRange(0, lines.Count - keep);
+                }
+                return lines;
             }
         }
 

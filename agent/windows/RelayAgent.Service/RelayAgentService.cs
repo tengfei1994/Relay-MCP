@@ -139,8 +139,22 @@ namespace RelayAgent.Service
                     token))
                 {
                     await EnsureSuccessAsync(response, "heartbeat");
+                    RecordHeartbeat();
                 }
             }
+        }
+
+        private static void RecordHeartbeat()
+        {
+            try
+            {
+                Directory.CreateDirectory(AgentConfig.ConfigDirectory);
+                File.WriteAllText(
+                    AgentConfig.LastHeartbeatPath,
+                    DateTimeOffset.UtcNow.ToString("o"),
+                    new UTF8Encoding(false));
+            }
+            catch { }
         }
 
         private static async Task PollOnceAsync(HttpClient client, AgentConfig config, CancellationToken token)
@@ -167,6 +181,7 @@ namespace RelayAgent.Service
                     if (job != null && !string.IsNullOrWhiteSpace(job.jobId))
                     {
                         Log("Claimed job " + job.jobId + " kind=" + job.kind);
+                        StartCommandAudit(config, job);
                         AgentResult result;
                         try
                         {
@@ -184,18 +199,93 @@ namespace RelayAgent.Service
                             };
                         }
 
+                        CommandAuditStore.Complete(
+                            job.jobId,
+                            result.status,
+                            result.exitCode,
+                            result.stdout,
+                            result.stderr,
+                            result.message);
+
                         try
                         {
                             await PostResultAsync(client, config, job.jobId, result, token);
+                            CommandAuditStore.MarkResultPosted(job.jobId, true, "");
                             Log("Posted result for job " + job.jobId + " status=" + result.status + " exitCode=" + result.exitCode);
                         }
                         catch (Exception ex)
                         {
+                            CommandAuditStore.MarkResultPosted(job.jobId, false, ex.ToString());
                             Log("Failed to post result for job " + job.jobId + ": " + ex);
                         }
                     }
                 }
             }
+        }
+
+        private static void StartCommandAudit(AgentConfig config, AgentJob job)
+        {
+            var payload = job.payload ?? new AgentPayload();
+            var kind = job.kind ?? "unknown";
+            string instruction;
+            string command;
+            string executedCommand;
+
+            if (string.Equals(kind, "powershell", StringComparison.OrdinalIgnoreCase))
+            {
+                instruction = "Execute PowerShell script";
+                command = payload.script ?? "";
+                executedCommand = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <Agent jobs script>";
+            }
+            else if (string.Equals(kind, "exec", StringComparison.OrdinalIgnoreCase))
+            {
+                instruction = "Execute shell command";
+                command = payload.command ?? "";
+                executedCommand = "cmd.exe /d /s /c <Agent jobs command>";
+            }
+            else if (string.Equals(kind, "playwright", StringComparison.OrdinalIgnoreCase))
+            {
+                instruction = "Run Playwright action: " + (payload.action ?? "unknown");
+                command = SerializePlaywrightAuditPayload(payload);
+                executedCommand = "RelayAgent PlaywrightManager action=" + (payload.action ?? "unknown");
+            }
+            else if (string.Equals(kind, "artifact-upload", StringComparison.OrdinalIgnoreCase))
+            {
+                instruction = "Upload artifact from the Agent host";
+                command = "remotePath=" + (payload.remotePath ?? "") + Environment.NewLine +
+                          "uploadPath=" + (payload.uploadPath ?? "");
+                executedCommand = "HTTP PUT artifact upload from the Agent service";
+            }
+            else
+            {
+                instruction = "Execute Agent job";
+                command = new JavaScriptSerializer().Serialize(payload);
+                executedCommand = "RelayAgent job kind=" + kind;
+            }
+
+            CommandAuditStore.Start(
+                job.jobId,
+                kind,
+                instruction,
+                command,
+                executedCommand,
+                job.timeoutMs,
+                config.AuditEnabled,
+                config.AuditLogPayloads,
+                config.AuditRetentionDays);
+        }
+
+        private static string SerializePlaywrightAuditPayload(AgentPayload payload)
+        {
+            return new JavaScriptSerializer().Serialize(new
+            {
+                action = payload.action,
+                suiteId = payload.suiteId,
+                runId = payload.runId,
+                requestedRunId = payload.requestedRunId,
+                artifactPath = payload.artifactPath,
+                maximum = payload.maximum
+            });
         }
 
         private static async Task<AgentResult> ExecuteJobAsync(

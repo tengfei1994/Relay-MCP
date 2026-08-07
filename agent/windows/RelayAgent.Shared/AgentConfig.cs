@@ -47,6 +47,11 @@ namespace RelayAgent.Shared
             get { return Path.Combine(ConfigDirectory, "agent.log"); }
         }
 
+        public static string LastHeartbeatPath
+        {
+            get { return Path.Combine(ConfigDirectory, "last-heartbeat.txt"); }
+        }
+
         public static AgentConfig Load()
         {
             var config = new AgentConfig();

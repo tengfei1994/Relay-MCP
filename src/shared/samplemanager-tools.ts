@@ -767,10 +767,38 @@ function buildToolDiscoveryPowerShell(): string {
   return `
 function Get-RelayMsBuildCandidates {
   $items = New-Object 'System.Collections.Generic.List[object]'
-  function Add-RelayMsBuildCandidate([string]$source, [string]$path, [int]$priority) {
-    if (-not $path -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
+  function ConvertTo-RelayFilePath([object]$value) {
+    if ($null -eq $value) { return $null }
+    if ($value -is [System.Array]) {
+      foreach ($item in $value) {
+        $candidate = ConvertTo-RelayFilePath $item
+        if ($candidate) { return $candidate }
+      }
+      return $null
+    }
+    $text = ([string]$value).Trim().Trim('"')
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    try {
+      if (-not [IO.Path]::IsPathRooted($text)) { return $null }
+      return [IO.Path]::GetFullPath($text)
+    } catch {
+      return $null
+    }
+  }
+  function Add-RelayMsBuildCandidate([string]$source, [object]$rawPath, [int]$priority) {
+    $path = ConvertTo-RelayFilePath $rawPath
+    if (-not $path) {
+      $null = $relayMsBuildWarnings.Add("Skipped $source because its MSBuild path was invalid")
+      return
+    }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
     if ($items.path -contains $path) { return }
-    $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($path).FileVersion
+    try {
+      $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($path).FileVersion
+    } catch {
+      $null = $relayMsBuildWarnings.Add("Could not read MSBuild version for '$path': $($_.Exception.Message)")
+      return
+    }
     $null = $items.Add([pscustomobject]@{
       priority = $priority
       source = $source
@@ -812,11 +840,13 @@ export async function discoverBuildTools(
 ): Promise<string> {
   const script = `
 $ErrorActionPreference = "Stop"
+$relayMsBuildWarnings = New-Object 'System.Collections.Generic.List[string]'
 ${buildToolDiscoveryPowerShell()}
 $tools = @(Get-RelayMsBuildCandidates)
 [pscustomobject]@{
   selected = if ($tools.Count -gt 0) { $tools[0] } else { $null }
   candidates = $tools
+  warnings = @($relayMsBuildWarnings)
   recommendation = if ($tools.Count -eq 0) {
     "Install Visual Studio Build Tools 2022 with MSBuild."
   } elseif (-not $tools[0].supportsModernCSharp) {

@@ -99,21 +99,57 @@ foreach ($service in $services) {
 }
 
 $msbuildCandidates = @()
+$buildToolWarnings = New-Object 'System.Collections.Generic.List[string]'
+function ConvertTo-RelayFilePath([object]$value) {
+  if ($null -eq $value) { return $null }
+  if ($value -is [System.Array]) {
+    foreach ($item in $value) {
+      $candidate = ConvertTo-RelayFilePath $item
+      if ($candidate) { return $candidate }
+    }
+    return $null
+  }
+  $text = ([string]$value).Trim().Trim('"')
+  if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+  try {
+    if (-not [IO.Path]::IsPathRooted($text)) { return $null }
+    return [IO.Path]::GetFullPath($text)
+  } catch {
+    return $null
+  }
+}
+function New-RelayMsbuildCandidate([object]$value) {
+  $path = ConvertTo-RelayFilePath $value
+  if (-not $path) {
+    $null = $buildToolWarnings.Add('Skipped an MSBuild candidate because its value was not a valid absolute file path')
+    return $null
+  }
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+  try {
+    return [pscustomobject]@{
+      kind = 'msbuild'
+      path = $path
+      version = [Diagnostics.FileVersionInfo]::GetVersionInfo($path).FileVersion
+    }
+  } catch {
+    $null = $buildToolWarnings.Add("Could not read MSBuild version for '$path': $($_.Exception.Message)")
+    return $null
+  }
+}
 $programFilesX86 = [Environment]::GetFolderPath('ProgramFilesX86')
 $vswhere = Join-Path $programFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (Test-Path -LiteralPath $vswhere) {
-  $installations = @(& $vswhere -products * -requires Microsoft.Component.MSBuild -format json | ConvertFrom-Json)
-  foreach ($installation in $installations) {
-    $path = Join-Path $installation.installationPath 'MSBuild\Current\Bin\MSBuild.exe'
-    if (Test-Path -LiteralPath $path) {
-      $msbuildCandidates += [pscustomobject]@{ kind='msbuild'; path=$path; version=[Diagnostics.FileVersionInfo]::GetVersionInfo($path).FileVersion }
-    }
+  $installationPaths = @(& $vswhere -products * -requires Microsoft.Component.MSBuild -property installationPath 2>$null)
+  foreach ($installationPath in $installationPaths) {
+    $basePath = ConvertTo-RelayFilePath $installationPath
+    if (-not $basePath) { continue }
+    $candidate = New-RelayMsbuildCandidate (Join-Path $basePath 'MSBuild\Current\Bin\MSBuild.exe')
+    if ($candidate) { $msbuildCandidates += $candidate }
   }
 }
 $frameworkMsbuild = Join-Path ([Environment]::GetFolderPath('Windows')) 'Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe'
-if (Test-Path -LiteralPath $frameworkMsbuild) {
-  $msbuildCandidates += [pscustomobject]@{ kind='msbuild'; path=$frameworkMsbuild; version=[Diagnostics.FileVersionInfo]::GetVersionInfo($frameworkMsbuild).FileVersion }
-}
+$frameworkCandidate = New-RelayMsbuildCandidate $frameworkMsbuild
+if ($frameworkCandidate) { $msbuildCandidates += $frameworkCandidate }
 $dotnetCandidates = @()
 $dotnetCommand = Get-Command dotnet.exe -ErrorAction SilentlyContinue
 if ($dotnetCommand) {
@@ -135,7 +171,14 @@ foreach ($root in @($roots)) {
     'SampleManagerCommand.exe',
     'SampleManager.exe'
   ) | ForEach-Object { Join-Path $exe $_ } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-  $version = if ($versionFile) { [Diagnostics.FileVersionInfo]::GetVersionInfo($versionFile).ProductVersion } else { '' }
+  $version = ''
+  if ($versionFile) {
+    try {
+      $version = [Diagnostics.FileVersionInfo]::GetVersionInfo((ConvertTo-RelayFilePath $versionFile)).ProductVersion
+    } catch {
+      $null = $buildToolWarnings.Add("Could not read SampleManager version from '$versionFile': $($_.Exception.Message)")
+    }
+  }
   $runtimeKind = 'unknown'
   $parsedVersion = [version]'0.0'
   if ([version]::TryParse(($version -replace '[^0-9.].*$',''), [ref]$parsedVersion)) {
@@ -442,6 +485,7 @@ WHERE TABLE_TYPE = 'BASE TABLE'
   elseif ($databaseProbe.sampleManagerTableCount -eq 0) { $warnings += 'Selected database was not verified as a SampleManager LIMS business database' }
   if ($selectedDatabase -and $selectedDatabase.sourceKind -notin @('instance-registry','instance-config')) { $warnings += 'Database target came from machine-wide fallback discovery and must be reviewed before import' }
   if (@($databaseCandidates | Where-Object { $_.auxiliary }).Count -gt 0) { $warnings += 'Auxiliary LocalDB/EntityContext databases were excluded from LIMS database selection' }
+  foreach ($buildToolWarning in $buildToolWarnings) { $warnings += $buildToolWarning }
   if (-not $selected) { $warnings += 'No compatible build tool was detected' }
   $confidence = 40
   if ($version) { $confidence += 20 }
@@ -472,6 +516,7 @@ WHERE TABLE_TYPE = 'BASE TABLE'
       selectedVersion = if ($selected) { $selected.version } else { $null }
       targetFramework = $null
       candidates = $buildCandidates
+      warnings = @($buildToolWarnings)
     }
     confidence = $confidence
     warnings = $warnings

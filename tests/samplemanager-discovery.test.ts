@@ -46,6 +46,11 @@ test("instance discovery returns a normalized candidate list and keeps the scan 
   assert.match(script, /EntityContext\[-_\]/);
   assert.match(script, /AttachDbFilename/);
   assert.match(script, /function Normalize-LocalSqlServer/);
+  assert.match(script, /function ConvertTo-RelayFilePath/);
+  assert.match(script, /function New-RelayMsbuildCandidate/);
+  assert.match(script, /-property installationPath/);
+  assert.match(script, /Skipped an MSBuild candidate because its value was not a valid absolute file path/);
+  assert.match(script, /buildToolWarnings/);
   assert.match(script, /localhost\\\$\(\$trimmed\.Substring\(2\)\)/);
   assert.match(script, /\$env:COMPUTERNAME/);
   assert.match(script, /\^MSSQL\\\$\(\.\+\)\$/);

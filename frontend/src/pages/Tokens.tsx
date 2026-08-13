@@ -139,9 +139,9 @@ export default function TokensPage() {
     setEditingTokenId(null);
   };
 
-  const revoke = async (id: number) => {
-    if (!confirm("Revoke this MCP token? Existing MCP clients using it will stop working.")) return;
-    await api.revokeToken(id);
+  const deleteApiKey = async (id: number) => {
+    if (!confirm("Delete this API key permanently? Existing MCP clients using it will stop working.")) return;
+    await api.deleteApiKey(id);
     await load();
   };
 
@@ -180,22 +180,22 @@ export default function TokensPage() {
       <div className="flex items-center gap-3 mb-6">
         <KeyRound size={18} className="text-indigo-400" />
         <div>
-          <h2 className="text-lg font-semibold text-gray-100">MCP Tokens</h2>
-          <p className="text-xs text-gray-500">Codex access tokens for MCP Project and Server permissions.</p>
+          <h2 className="text-lg font-semibold text-gray-100">API Keys</h2>
+          <p className="text-xs text-gray-500">API keys used by Codex and other MCP clients, with Project and Server permissions.</p>
         </div>
         <button
           onClick={() => setShowCreate(true)}
           className="ml-auto flex items-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-md"
         >
           <Plus size={15} />
-          New Token
+          New API Key
         </button>
       </div>
 
       {createdToken && (
         <div className="mb-6 bg-gray-900 border border-indigo-800 rounded-lg p-4">
           <div className="flex items-center justify-between gap-3 mb-2">
-            <p className="text-sm font-medium text-indigo-300">Token created. Copy it now; it will not be shown again.</p>
+            <p className="text-sm font-medium text-indigo-300">API key created. Copy it now; it will not be shown again.</p>
             <button onClick={() => copy(createdToken)} className="flex items-center gap-1 text-xs text-gray-300 hover:text-white">
               <Copy size={13} /> Copy
             </button>
@@ -210,7 +210,7 @@ export default function TokensPage() {
 
       {showCreate && (
         <div className="mb-6 bg-gray-900 border border-gray-800 rounded-lg p-4">
-          <p className="mb-4 text-sm font-medium text-gray-200">{editingTokenId ? "Edit MCP Token Permissions" : "New MCP Token"}</p>
+          <p className="mb-4 text-sm font-medium text-gray-200">{editingTokenId ? "Edit API Key Permissions" : "New API Key"}</p>
           <form onSubmit={createToken} className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs text-gray-500 mb-1">Name</label>
@@ -312,7 +312,7 @@ export default function TokensPage() {
             <div>
               <p className="text-sm font-medium text-gray-200">{token.name}</p>
               <p className="text-xs text-gray-500">
-                default project: {token.projectName ?? "ask agent"} · projects: {token.allowAllProjects ? "all" : `${token.projectScopes?.length ?? 0}`} · servers: {token.serverScopes?.length ?? 0} · create: {token.canCreateProjects ? "yes" : "no"} · env: {token.environment ?? "production"} · {token.active ? "active" : "revoked"}
+                default project: {token.projectName ?? "ask agent"} · projects: {token.allowAllProjects ? "all" : `${token.projectScopes?.length ?? 0}`} · servers: {token.serverScopes?.length ?? 0} · create: {token.canCreateProjects ? "yes" : "no"} · env: {token.environment ?? "production"} · {token.active ? "active" : "inactive"}
               </p>
               {!token.allowAllProjects && token.projectScopes?.length > 0 && (
                 <p className="text-xs text-gray-600">
@@ -330,13 +330,13 @@ export default function TokensPage() {
               <button onClick={() => editToken(token)} className="text-gray-600 hover:text-indigo-400" title="Edit permissions">
                 <Pencil size={15} />
               </button>
-              <button onClick={() => revoke(token.id)} className="text-gray-600 hover:text-red-400" title="Revoke">
+              <button onClick={() => deleteApiKey(token.id)} className="text-gray-600 hover:text-red-400" title="Delete API key permanently" aria-label={`Delete API key ${token.name}`}>
                 <Trash2 size={15} />
               </button>
             </div>
           </div>
         ))}
-        {tokens.length === 0 && <p className="text-sm text-gray-600">No MCP tokens yet.</p>}
+        {tokens.length === 0 && <p className="text-sm text-gray-600">No API keys yet.</p>}
       </div>
 
       <div className="flex items-center gap-3 mt-10 mb-4">

@@ -47,7 +47,7 @@ export default function Layout() {
           </NavLink>
           <NavLink to="/tokens" className={navCls}>
             <KeyRound size={15} />
-            Tokens
+            API Keys
           </NavLink>
           {user?.isAdmin && (
             <NavLink to="/users" className={navCls}>

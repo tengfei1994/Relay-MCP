@@ -337,6 +337,79 @@ export function sqlContainsMutation(sql: string): boolean {
     .test(withoutCommentsOrStrings);
 }
 
+export interface UnicodeCheckResult {
+  ok: boolean;
+  connection?: Record<string, unknown>;
+  sqlServer?: Record<string, unknown>;
+  powershell?: Record<string, unknown>;
+  agentReceived?: Record<string, unknown>;
+  encoding?: Record<string, string>;
+  error?: string;
+  sqlErrors?: unknown[];
+}
+
+/** Read-only, layered Unicode probe for diagnosing Windows PowerShell/SQL transport loss. */
+export async function runUnicodeCheck(
+  runner: RemoteRunner,
+  database: string,
+  databaseHost: string,
+): Promise<UnicodeCheckResult & { rawAgentStdout: string }> {
+  if (!/^[A-Za-z0-9_.-]+$/.test(database)) throw new Error(`Invalid database name: ${database}`);
+  if (!databaseHost || /[\r\n";]/.test(databaseHost)) throw new Error(`Invalid database host: ${databaseHost}`);
+  const sqlBase64 = Buffer.from("SELECT N'注射用曲妥珠单抗' AS TEST_TEXT;", "utf8").toString("base64");
+  const script = `
+$ErrorActionPreference = "Stop"
+try {
+  $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+  [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+  function Describe([string]$value) {
+    if ($null -eq $value) { $value = "" }
+    $utf8 = [System.Text.Encoding]::UTF8.GetBytes($value)
+    $units = @($value.ToCharArray() | ForEach-Object { [int]$_ })
+    $points = @()
+    for ($i = 0; $i -lt $value.Length; $i++) {
+      $code = [int]$value[$i]
+      if ($code -ge 0xD800 -and $code -le 0xDBFF -and $i + 1 -lt $value.Length) {
+        $code = [char]::ConvertToUtf32($value[$i], $value[$i + 1]); $i++
+      }
+      $points += $code
+    }
+    [ordered]@{
+      value = $value
+      length = $value.Length
+      containsQuestionMark = $value.Contains([char]0x3F)
+      utf8Base64 = [Convert]::ToBase64String($utf8)
+      utf8Hex = (($utf8 | ForEach-Object { $_.ToString('X2') }) -join ' ')
+      utf16CodeUnits = $units
+      unicodeCodePoints = $points
+      sha256Utf8 = ([Security.Cryptography.SHA256]::Create().ComputeHash($utf8) | ForEach-Object { $_.ToString('x2') }) -join ''
+    }
+  }
+  $cs = "Server=${databaseHost};Database=${database};Integrated Security=True;TrustServerCertificate=True"
+  $cn = New-Object System.Data.SqlClient.SqlConnection $cs
+  $cn.Open()
+  $identity = $cn.CreateCommand(); $identity.CommandText = "SELECT SUSER_SNAME(), ORIGINAL_LOGIN(), DB_NAME(), @@SERVERNAME"
+  $ir = $identity.ExecuteReader(); $connection = [ordered]@{ loginName=$null; originalLogin=$null; databaseName=$null; serverName=$null }
+  if ($ir.Read()) { $connection.loginName=[string]$ir.GetValue(0); $connection.originalLogin=[string]$ir.GetValue(1); $connection.databaseName=[string]$ir.GetValue(2); $connection.serverName=[string]$ir.GetValue(3) }; $ir.Close()
+  $cmd = $cn.CreateCommand(); $cmd.CommandText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${sqlBase64}'))
+  $reader = $cmd.ExecuteReader(); $value = if ($reader.Read()) { [string]$reader.GetValue(0) } else { "" }; $reader.Close(); $cn.Close()
+  $probe = Describe $value
+  [pscustomobject]@{ ok=$true; connection=$connection; sqlServer=$probe; powershell=$probe; encoding=[ordered]@{ sqlClientString='UTF-16 (.NET String)'; powershellOutput='UTF-8'; agentProcessStdout='UTF-8'; relayJson='UTF-8'; ui='not measured' } } | ConvertTo-Json -Depth 8 -Compress
+} catch {
+  [pscustomobject]@{ ok=$false; error=$_.Exception.Message } | ConvertTo-Json -Depth 8 -Compress
+}
+`;
+  const result = await runner.execPowerShell(script, 120000);
+  ensureRemoteSuccess(result);
+  const rawAgentStdout = result.stdout || result.stderr;
+  try {
+    const parsed = JSON.parse(rawAgentStdout) as UnicodeCheckResult;
+    return { ...parsed, agentReceived: parsed.powershell, rawAgentStdout };
+  } catch (error) {
+    throw new Error(`Unicode diagnostic returned invalid JSON: ${error instanceof Error ? error.message : String(error)}; raw=${compactText(rawAgentStdout, 2000)}`);
+  }
+}
+
 export async function runSql(
   runner: RemoteRunner,
   database: string,
@@ -483,6 +556,7 @@ try {
     recordsAffected = $reader.RecordsAffected
   } | ConvertTo-Json -Depth 8 -Compress
 }
+
 catch {
   $exception = $_.Exception
   $sqlException = $exception
@@ -517,6 +591,71 @@ finally {
   const result = await runner.execPowerShell(script, 120000);
   ensureRemoteSuccess(result);
   return compactText(result.stdout || result.stderr);
+}
+
+export interface SqlChangeSetItem {
+  idempotencyKey: string;
+  operation: "insert" | "update" | "delete";
+  table: string;
+  values?: Record<string, SqlParameterValue>;
+  where?: string;
+  parameters?: Record<string, SqlParameterValue>;
+}
+
+/** Execute multiple SQL mutations in one transaction. The caller owns deployment/idempotency state. */
+export async function runSqlChangeSet(
+  runner: RemoteRunner,
+  database: string,
+  changes: SqlChangeSetItem[],
+  options: { dryRun?: boolean; createBackup?: boolean; maxRows?: number; databaseHost?: string; verifySql?: string } = {}
+): Promise<string> {
+  if (changes.length === 0 || changes.length > 50) throw new Error("changes must contain between 1 and 50 items");
+  if (!/^[A-Za-z0-9_.-]+$/.test(database)) throw new Error(`Invalid database name: ${database}`);
+  const createBackup = options.createBackup ?? true;
+  const dryRun = options.dryRun ?? true;
+  const maxRows = Math.max(1, Math.min(options.maxRows ?? 100, 1000));
+  const statements: string[] = ["SET NOCOUNT ON;", "SET XACT_ABORT ON;", "BEGIN TRY", "BEGIN TRANSACTION;"];
+  const stamp = new Date().toISOString().replace(/\D/g, "").slice(0, 17);
+  const allParameters: Record<string, SqlParameterValue> = {};
+  const evidence: string[] = [];
+
+  changes.forEach((change, index) => {
+    const table = quoteSqlIdentifier(change.table);
+    const where = (change.where ?? "").trim();
+    if (change.operation !== "insert" && !where) throw new Error(`where is required for change '${change.idempotencyKey}'`);
+    if (/[;]|\b(insert|update|delete|merge|drop|alter|truncate|create|exec|execute)\b/i.test(where)) throw new Error(`Invalid where for change '${change.idempotencyKey}'`);
+    const values = validateSqlParameters(change.values ?? {});
+    if (change.operation !== "delete" && Object.keys(values).length === 0) throw new Error(`values are required for change '${change.idempotencyKey}'`);
+    const bindings = Object.entries(values).map(([column, value], valueIndex) => {
+      const name = `relay_change_${index}_value_${valueIndex}`;
+      allParameters[name] = value;
+      return { column: quoteSqlIdentifier(column), parameter: `@${name}` };
+    });
+    for (const [name, value] of Object.entries(validateSqlParameters(change.parameters ?? {}))) allParameters[`relay_change_${index}_${name}`] = value;
+    const renderedWhere = where.replace(/@([A-Za-z_][A-Za-z0-9_]*)/g, (_match, name: string) => `@relay_change_${index}_${name}`);
+    const key = change.idempotencyKey.replace(/'/g, "''");
+    if (createBackup && change.operation !== "insert") {
+      const backupName = `RELAY_BACKUP_${change.table.split(".").pop()!.replace(/[^A-Za-z0-9_]/g, "_")}_${stamp}_${index}`;
+      statements.push(`SELECT * INTO ${quoteSqlIdentifier(`dbo.${backupName}`)} FROM ${table} WHERE ${renderedWhere};`);
+    }
+    if (change.operation !== "insert") statements.push(`SELECT '${key}' AS __relay_change, 'before' AS __relay_phase, * FROM ${table} WHERE ${renderedWhere};`);
+    if (change.operation === "insert") {
+      statements.push(`INSERT INTO ${table} (${bindings.map((item) => item.column).join(", ")}) VALUES (${bindings.map((item) => item.parameter).join(", ")});`);
+    } else if (change.operation === "update") {
+      statements.push(`UPDATE ${table} SET ${bindings.map((item) => `${item.column} = ${item.parameter}`).join(", ")} WHERE ${renderedWhere};`);
+    } else {
+      statements.push(`DELETE FROM ${table} WHERE ${renderedWhere};`);
+    }
+    statements.push(`SELECT '${key}' AS __relay_change, 'after' AS __relay_phase, @@ROWCOUNT AS affectedRows;`);
+    evidence.push(`${change.idempotencyKey}:${change.operation}:${change.table}`);
+  });
+  if (options.verifySql?.trim()) statements.push(options.verifySql.trim());
+  statements.push(dryRun ? "ROLLBACK TRANSACTION;" : "COMMIT TRANSACTION;", "END TRY", "BEGIN CATCH", "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;", "THROW;", "END CATCH");
+  const raw = await runSql(runner, database, statements.join("\n"), { allowMutation: true, maxRows, includeResultSets: true, parameters: allParameters, databaseHost: options.databaseHost });
+  let result: unknown = raw;
+  try { result = JSON.parse(raw); } catch {}
+  if (!result || typeof result !== "object" || (result as Record<string, unknown>).ok === false) throw new Error(`Change Set SQL failed: ${compactText(raw, 4000)}`);
+  return JSON.stringify({ ok: true, dryRun, transaction: dryRun ? "rolled_back" : "committed", changeCount: changes.length, changes: evidence, backupRequested: createBackup, verificationSqlProvided: Boolean(options.verifySql?.trim()), result });
 }
 
 export interface SqlMutationOptions {

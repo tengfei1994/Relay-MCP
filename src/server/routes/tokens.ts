@@ -193,10 +193,20 @@ export async function tokenRoutes(app: FastifyInstance) {
 
   app.delete("/api/tokens/:id", { onRequest: [app.authenticate] }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    db.update(mcpTokens)
-      .set({ active: false })
-      .where(and(eq(mcpTokens.id, Number(id)), eq(mcpTokens.userId, req.user.id)))
-      .run();
+    const tokenDbId = Number(id);
+    const existing = db.select({ id: mcpTokens.id })
+      .from(mcpTokens)
+      .where(and(eq(mcpTokens.id, tokenDbId), eq(mcpTokens.userId, req.user.id)))
+      .get();
+    if (!existing) return reply.status(404).send({ error: "API key not found" });
+
+    db.transaction((tx) => {
+      tx.delete(mcpTokenProjectScopes).where(eq(mcpTokenProjectScopes.tokenId, tokenDbId)).run();
+      tx.delete(mcpTokenServerScopes).where(eq(mcpTokenServerScopes.tokenId, tokenDbId)).run();
+      tx.delete(mcpTokens)
+        .where(and(eq(mcpTokens.id, tokenDbId), eq(mcpTokens.userId, req.user.id)))
+        .run();
+    });
     return reply.send({ ok: true });
   });
 
@@ -210,7 +220,7 @@ export async function tokenRoutes(app: FastifyInstance) {
       .from(mcpTokens)
       .where(and(eq(mcpTokens.id, tokenDbId), eq(mcpTokens.userId, req.user.id)))
       .get();
-    if (!existing) return reply.status(404).send({ error: "MCP token not found" });
+    if (!existing) return reply.status(404).send({ error: "API key not found" });
 
     let environment = body.data.environment;
     const scopedProjectIds = Array.from(new Set([

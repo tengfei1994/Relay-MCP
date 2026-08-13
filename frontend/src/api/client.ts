@@ -133,7 +133,7 @@ export const api = {
     }
   },
 
-  // MCP tokens
+  // MCP API keys (legacy API route and database names remain token-based)
   listTokens: () =>
     request<{ tokens: any[] }>("GET", "/tokens"),
   createToken: (data: {
@@ -160,7 +160,7 @@ export const api = {
     canCreateProjects?: boolean;
   }) =>
     request<{ profile: any }>("PUT", `/tokens/${id}`, data),
-  revokeToken: (id: number) =>
+  deleteApiKey: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/tokens/${id}`),
 
   // Agent tokens

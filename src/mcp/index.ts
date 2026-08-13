@@ -28,7 +28,9 @@ import {
   runSampleManagerCommand,
   runSampleManagerUtility,
   runSql,
+  runSqlChangeSet,
   runSqlMutation,
+  runUnicodeCheck,
   sqlContainsMutation,
   sampleManagerTableSchema,
 } from "../shared/samplemanager-tools.js";
@@ -60,7 +62,7 @@ const MCP_PORT = Number(process.env.MCP_PORT ?? 3001);
 const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-in-production";
 const DB_PATH = process.env.DB_PATH ?? "./data/app.db";
 const RELAY_PUBLIC_URL = (process.env.RELAY_PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 3000}`).replace(/\/$/, "");
-const RELAY_MCP_VERSION = process.env.RELAY_MCP_VERSION ?? "0.5.0";
+const RELAY_MCP_VERSION = process.env.RELAY_MCP_VERSION ?? "0.6.0";
 
 interface McpUser {
   id: number;
@@ -973,6 +975,73 @@ function createMcpServer(user: McpUser) {
             runtime,
           }),
         }],
+      };
+    }
+  );
+
+  server.tool(
+    "relay_unicode_check",
+    "Run a read-only SQL/PowerShell/Agent Unicode round-trip diagnostic for the selected LIMS database.",
+    {
+      project: z.string().optional().describe("Project name."),
+      environment: z.string().optional().describe("Exact project environment key."),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
+      database: z.string().optional().describe("Optional database override; must match the bound instance when one is configured."),
+    },
+    async ({ project: projectName, environment, serverId, serverName, database }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const target = getSampleManagerDatabaseTarget(projectName, environment, database);
+      if (serverId !== undefined || serverName) {
+        const selected = getRunner(resolvedProjectName, environment, { serverId, serverName });
+        if (selected.ps.server.id !== target.ps.server.id) {
+          throw new Error("Unicode check target mismatch: database target and explicit server selector resolved differently");
+        }
+      }
+      const queryId = `unicode-${Date.now()}-${randomUUID().slice(0, 8)}`;
+      const startedAt = new Date().toISOString();
+      const result = await runUnicodeCheck(target.runner, target.database, target.databaseHost);
+      const finishedAt = new Date().toISOString();
+      const response = {
+        queryId,
+        startedAt,
+        finishedAt,
+        readOnly: true,
+        mutationAttempted: false,
+        provenance: {
+          project: resolvedProjectName,
+          environment: target.ps.environment,
+          serverId: target.ps.server.id,
+          serverName: target.ps.server.name,
+          connectionMode: target.ps.connectionMode,
+          agentId: target.ps.server.agentId,
+          instance: target.configuredInstance?.name,
+          instanceVersion: target.configuredInstance?.version,
+          databaseHost: target.databaseHost,
+          databaseName: target.database,
+        },
+        ...result,
+        rawAgentStdout: undefined,
+      };
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        project: resolvedProjectName,
+        tool: "relay_unicode_check",
+        environment: target.ps.environment,
+        serverId: target.ps.server.id,
+        serverName: target.ps.server.name,
+        database: target.database,
+        databaseHost: target.databaseHost,
+        queryId,
+        startedAt,
+        finishedAt,
+        readOnly: true,
+        mutationAttempted: false,
+      });
+      return {
+        structuredContent: response,
+        content: [{ type: "text", text: summarizeJson(response) }],
       };
     }
   );
@@ -2390,10 +2459,11 @@ else {
       maxRows: z.number().optional().describe("Maximum rows returned per result set, capped at 1000. Default 100."),
       offset: z.number().int().nonnegative().optional().describe("Zero-based result row offset for pagination. Use nextOffset from the previous response."),
       includeResultSets: z.boolean().optional().describe("Include full resultSets payload. Default false."),
+      resultSet: z.union([z.string(), z.number().int().nonnegative()]).optional().describe("Return only one named result set or zero-based result-set index."),
       parameters: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional().describe("Named SQL parameters without '@', referenced as @name in SQL."),
       identifiers: z.record(z.string()).optional().describe("Identifiers substituted into {{name}} placeholders and escaped with SQL Server brackets."),
     },
-    async ({ project: projectName, database, sql, environment, allowMutation = false, maxRows, offset, includeResultSets, parameters, identifiers }) => {
+    async ({ project: projectName, database, sql, environment, allowMutation = false, maxRows, offset, includeResultSets, resultSet, parameters, identifiers }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const target = getSampleManagerDatabaseTarget(projectName, environment, database);
       const { runner, database: targetDatabase, databaseHost, configuredInstance, ps } = target;
@@ -2416,7 +2486,7 @@ else {
         readOnly: !allowMutation,
         mutationAttempted,
       };
-      const text = await runSql(runner, targetDatabase, sql, { allowMutation, maxRows, offset, includeResultSets, parameters, identifiers, databaseHost });
+      const text = await runSql(runner, targetDatabase, sql, { allowMutation, maxRows, offset, includeResultSets: true, parameters, identifiers, databaseHost });
       const finishedAt = new Date().toISOString();
       const artifact = persistQueryArtifact({
         queryId,
@@ -2439,18 +2509,41 @@ else {
         truncated: raw.truncated,
         resultSetCount: raw.resultSetCount,
       };
-      let compactResult: unknown;
-      try {
-        compactResult = JSON.parse(summarizeJson(raw, 7000));
-      } catch {
-        compactResult = { rawResponse: text };
+      const allResultSets = Array.isArray(raw.resultSets) ? raw.resultSets : [];
+      let selectedResultSets = allResultSets.slice(0, 1);
+      if (resultSet !== undefined) {
+        const selected = typeof resultSet === "number"
+          ? allResultSets[resultSet]
+          : allResultSets.find((item: any) => String(item?.name ?? item?.label ?? item?.__relay_phase ?? "").toLowerCase() === String(resultSet).toLowerCase());
+        if (!selected) throw new Error(`Result set '${String(resultSet)}' was not found; available indexes: ${allResultSets.map((_item: unknown, index: number) => index).join(", ")}; available labels: ${allResultSets.map((item: any, index: number) => `${index}:${item?.rows?.[0]?.__relay_phase ?? "unnamed"}`).join(", ")}`);
+        selectedResultSets = [selected];
       }
+      const selectedResult = selectedResultSets.length > 0
+        ? selectedResultSets
+        : (Array.isArray(raw.rows) ? [{ columns: raw.rows[0] && typeof raw.rows[0] === "object" ? Object.keys(raw.rows[0] as Record<string, unknown>) : [], rows: raw.rows, rowCount: raw.rowCount, rowsReturned: raw.rowsReturned, offset: raw.offset, hasMore: raw.hasMore, nextOffset: raw.nextOffset, truncated: raw.truncated }] : []);
+      const continuationToken = selectedResult.some((item: any) => item?.hasMore)
+        ? Buffer.from(JSON.stringify({ queryId, resultSet: resultSet ?? null, offset: selectedResult[0]?.nextOffset ?? null }), "utf8").toString("base64url")
+        : undefined;
       const response = {
         queryId,
         provenance: { ...provenance, finishedAt },
         page,
         artifact,
-        result: compactResult,
+        result: {
+          ok: raw.ok,
+          connection: raw.connection,
+          columns: selectedResult[0]?.columns ?? [],
+          rows: selectedResult[0]?.rows ?? [],
+          rowCount: selectedResult[0]?.rowCount ?? 0,
+          rowsReturned: selectedResult[0]?.rowsReturned ?? 0,
+          hasMore: Boolean(selectedResult.some((item: any) => item?.hasMore)),
+          continuationToken,
+          resultSetCount: allResultSets.length,
+          resultSets: selectedResult,
+          recordsAffected: raw.recordsAffected,
+          error: raw.error,
+          sqlErrors: raw.sqlErrors,
+        },
       };
       writeAudit({
         userId: user.id,
@@ -2462,7 +2555,8 @@ else {
         allowMutation,
         maxRows,
         offset,
-        includeResultSets,
+        includeResultSets: true,
+        resultSet,
         parameterNames: Object.keys(parameters ?? {}),
         identifiers,
         queryId,
@@ -2473,7 +2567,10 @@ else {
         artifactSha256: artifact.sha256,
         mutationAttempted,
       });
-      return { content: [{ type: "text", text: JSON.stringify(response, null, 2) }] };
+      return {
+        structuredContent: response,
+        content: [{ type: "text", text: summarizeJson({ queryId, provenance: response.provenance, page: response.page, result: { rowCount: response.result.rowCount, rowsReturned: response.result.rowsReturned, resultSetCount: response.result.resultSetCount, hasMore: response.result.hasMore, continuationToken: response.result.continuationToken }, artifact }) }],
+      };
     }
   );
 
@@ -2917,6 +3014,115 @@ else {
   );
 
   server.tool(
+    "samplemanager_apply_change_set",
+    "Apply multiple SQL changes atomically with dry-run, rollback, verification, idempotency, and deployment recovery state.",
+    {
+      project: z.string().optional(),
+      database: z.string().optional(),
+      environment: z.string().optional(),
+      deploymentId: z.string().optional(),
+      dryRun: z.boolean().optional().describe("Execute and roll back by default. Set false to commit."),
+      createBackup: z.boolean().optional(),
+      maxRows: z.number().int().positive().max(1000).optional(),
+      verifySql: z.string().optional().describe("Read-only verification SQL executed in the same transaction."),
+      changes: z.array(z.object({
+        idempotencyKey: z.string().min(1).max(200),
+        operation: z.enum(["insert", "update", "delete"]),
+        table: z.string().min(1),
+        values: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+        where: z.string().optional(),
+        parameters: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+      })).min(1).max(50),
+    },
+    async ({ project: projectName, database, environment, deploymentId: requestedDeploymentId, dryRun = true, createBackup = true, maxRows, verifySql, changes }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const target = getSampleManagerDatabaseTarget(projectName, environment, database);
+      let deploymentId = requestedDeploymentId;
+      let run = deploymentId ? getDeployment(deploymentId) : undefined;
+      if (deploymentId && (!run || run.userId !== user.id || run.project !== resolvedProjectName)) {
+        throw new Error(`Deployment '${deploymentId}' not found for project '${resolvedProjectName}'`);
+      }
+      if (run?.status === "unknown") {
+        throw new Error(`Deployment '${run.id}' has unknown execution state. Verify the database and call samplemanager_deployment_status before retrying.`);
+      }
+      if (!run) {
+        run = startDeployment({
+          userId: user.id,
+          username: user.username,
+          project: resolvedProjectName,
+          environment: target.ps.environment,
+          host: target.ps.server.host || target.ps.server.agentId || target.ps.server.name,
+          kind: "samplemanager-change-set",
+          instance: target.configuredInstance?.name,
+          steps: [{ name: "change-set", status: "pending" }, { name: "verify", status: verifySql ? "pending" : "succeeded" }],
+          artifacts: { database: target.database, databaseHost: target.databaseHost },
+          rollbackRequested: true,
+        });
+        deploymentId = run.id;
+      }
+
+      const existingKeys = run.idempotencyKeys ?? {};
+      const runnable = changes.filter((change) => {
+        const previous = existingKeys[change.idempotencyKey];
+        if (!previous) return true;
+        if (previous.status === "succeeded") return false;
+        if (previous.status === "unknown" || previous.status === "running") {
+          throw new Error(`Idempotency key '${change.idempotencyKey}' has status '${previous.status}'. Verify deployment '${run!.id}' before retrying.`);
+        }
+        return true;
+      });
+      const nextKeys = { ...existingKeys };
+      for (const change of runnable) nextKeys[change.idempotencyKey] = { status: "running", at: new Date().toISOString() };
+      updateDeployment(run.id, {
+        status: "running",
+        idempotencyKeys: nextKeys,
+        pendingPhases: ["change-set", ...(verifySql ? ["verify"] : [])],
+        recommendedResumeAction: "Do not retry while execution state is unknown; inspect deployment status and database evidence first.",
+      });
+
+      try {
+        const resultText = runnable.length === 0
+          ? JSON.stringify({ ok: true, skipped: changes.map((change) => change.idempotencyKey), reason: "already_succeeded" })
+          : await runSqlChangeSet(target.runner, target.database, runnable, { dryRun, createBackup, maxRows, databaseHost: target.databaseHost, verifySql });
+        const result = JSON.parse(resultText) as Record<string, unknown>;
+        const completedAt = new Date().toISOString();
+        for (const change of runnable) nextKeys[change.idempotencyKey] = { status: dryRun ? "dry_run" : "succeeded", at: completedAt, result: { dryRun } };
+        const committed = dryRun ? (run.committedMutations ?? []) : [...(run.committedMutations ?? []), ...runnable.map((change) => change.idempotencyKey)];
+        const dryOnly = dryRun ? [...new Set([...(run.dryRunOnlyMutations ?? []), ...runnable.map((change) => change.idempotencyKey)])] : (run.dryRunOnlyMutations ?? []);
+        const updated = finishDeployment(run.id, {
+          status: "succeeded",
+          rollback: { ...run.rollback, status: dryRun ? "not-needed" : "not-needed" },
+          idempotencyKeys: nextKeys,
+          committedMutations: committed,
+          dryRunOnlyMutations: dryOnly,
+          lastCompletedPhase: "verify",
+          pendingPhases: [],
+          failedMutation: undefined,
+          recommendedResumeAction: dryRun ? "Review dry-run evidence; rerun with the same idempotency keys and dryRun=false to commit." : "No resume required.",
+          output: resultText,
+          artifacts: { ...(run.artifacts ?? {}), changeCount: changes.length, skipped: changes.length - runnable.length },
+        });
+        writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_apply_change_set", deploymentId: run.id, database: target.database, databaseHost: target.databaseHost, dryRun, changeCount: changes.length, skipped: changes.length - runnable.length, mutationAttempted: true });
+        return { structuredContent: { ...updated }, content: [{ type: "text", text: summarizeJson({ deploymentId: updated.id, status: updated.status, dryRun, skipped: changes.length - runnable.length, idempotencyKeys: Object.keys(nextKeys) }) }] };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        for (const change of runnable) nextKeys[change.idempotencyKey] = { status: "unknown", at: new Date().toISOString() };
+        const failed = finishDeployment(run.id, {
+          status: "unknown",
+          rollback: { ...run.rollback, status: "failed", error: message },
+          idempotencyKeys: nextKeys,
+          failedMutation: runnable[0]?.idempotencyKey,
+          pendingPhases: ["change-set", ...(verifySql ? ["verify"] : [])],
+          recommendedResumeAction: "Inspect database state and deployment evidence before retrying any change.",
+          error: message,
+        });
+        writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_apply_change_set", deploymentId: run.id, status: "unknown", error: message });
+        throw new Error(`${message} Deployment '${failed.id}' is unknown; inspect it before retrying.`);
+      }
+    }
+  );
+
+  server.tool(
     "samplemanager_build_dotnet",
     "Build a classic SampleManager .NET project or solution with MSBuild on the linked Windows server.",
     {
@@ -3324,7 +3530,7 @@ app.get("/mcp/health", (_req, res) => {
     ok: true,
     route: "relay_mcp",
     namespace: "relay_",
-    version: "0.5.0",
+    version: "0.6.0",
     transport: "streamable-http",
     mcpPort: MCP_PORT,
   });

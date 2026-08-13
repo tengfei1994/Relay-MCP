@@ -50,6 +50,14 @@ export default function ProjectsPage() {
     setFiles(r.entries);
   };
 
+  const openBreadcrumb = async (parts: string[], index: number) => {
+    const newPath = parts.slice(0, index + 1).join("/");
+    if (newPath === currentPath) return;
+    setCurrentPath(newPath);
+    const r = await api.listFiles(selected.id, newPath);
+    setFiles(r.entries);
+  };
+
   const createProject = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
@@ -353,14 +361,37 @@ export default function ProjectsPage() {
         ) : (
           /* File browser */
           <>
-            <div className="flex items-center gap-1 px-4 py-3 border-b border-gray-800 text-xs text-gray-500">
-              <button onClick={() => openProject(selected)} className="hover:text-gray-300">{selected.name}</button>
+            <div className="flex min-w-0 items-center gap-1 px-4 py-3 border-b border-gray-800 text-xs text-gray-500">
+              <nav aria-label="Workspace path" className="flex min-w-0 items-center gap-1 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => openProject(selected)}
+                  title={selected.name}
+                  className={`max-w-48 shrink truncate rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 ${currentPath ? "hover:text-gray-300" : "cursor-default text-gray-300"}`}
+                  aria-current={currentPath ? undefined : "page"}
+                >
+                  {selected.name}
+                </button>
               {currentPath.split("/").filter(Boolean).map((part, i, arr) => (
-                <span key={i} className="flex items-center gap-1">
+                <span key={`${part}-${i}`} className="flex min-w-0 items-center gap-1">
                   <ChevronRight size={11} />
-                  <span className={i === arr.length - 1 ? "text-gray-300" : ""}>{part}</span>
+                  {i === arr.length - 1 ? (
+                    <span className="max-w-64 truncate px-1 py-0.5 text-gray-300" title={part} aria-current="page">
+                      {part}
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => openBreadcrumb(arr, i)}
+                      title={arr.slice(0, i + 1).join("/")}
+                      className="max-w-64 truncate rounded px-1 py-0.5 hover:text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    >
+                      {part}
+                    </button>
+                  )}
                 </span>
               ))}
+              </nav>
               <button onClick={() => openServerPanel(selected)} className="ml-auto flex items-center gap-1 text-gray-600 hover:text-indigo-400" title="Manage servers">
                 <Server size={12} /> Servers
               </button>

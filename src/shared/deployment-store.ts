@@ -7,7 +7,7 @@ const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT ?? "/workspace";
 const STATE_ROOT = process.env.RELAY_STATE_ROOT ?? join(WORKSPACE_ROOT, ".relay-mcp");
 const DEPLOYMENT_ROOT = join(STATE_ROOT, "deployments");
 
-export type DeploymentStatus = "running" | "succeeded" | "failed";
+export type DeploymentStatus = "running" | "succeeded" | "failed" | "unknown";
 
 export interface DeploymentRecord {
   id: string;
@@ -17,7 +17,7 @@ export interface DeploymentRecord {
   environment: string;
   host: string;
   branch?: string;
-  kind?: "git" | "samplemanager-assembly";
+  kind?: "git" | "samplemanager-assembly" | "samplemanager-change-set";
   instance?: string;
   status: DeploymentStatus;
   startedAt: string;
@@ -44,6 +44,17 @@ export interface DeploymentRecord {
     error?: string;
   }>;
   artifacts?: Record<string, unknown>;
+  lastCompletedPhase?: string;
+  pendingPhases?: string[];
+  committedMutations?: string[];
+  dryRunOnlyMutations?: string[];
+  failedMutation?: string;
+  recommendedResumeAction?: string;
+  idempotencyKeys?: Record<string, {
+    status: "running" | "dry_run" | "succeeded" | "failed" | "unknown";
+    at: string;
+    result?: unknown;
+  }>;
 }
 
 function ensureRoot(): void {
@@ -88,7 +99,7 @@ export function startDeployment(input: Omit<DeploymentRecord, "id" | "status" | 
 export function finishDeployment(
   id: string,
   updates: Pick<DeploymentRecord, "status" | "rollback"> &
-    Partial<Pick<DeploymentRecord, "commitBefore" | "commitAfter" | "output" | "outputTruncated" | "outputLength" | "error" | "steps" | "artifacts">>
+  Partial<Pick<DeploymentRecord, "commitBefore" | "commitAfter" | "output" | "outputTruncated" | "outputLength" | "error" | "steps" | "artifacts" | "lastCompletedPhase" | "pendingPhases" | "committedMutations" | "dryRunOnlyMutations" | "failedMutation" | "recommendedResumeAction" | "idempotencyKeys">>
 ): DeploymentRecord {
   const existing = getDeployment(id);
   if (!existing) throw new Error(`Deployment '${id}' not found`);
@@ -97,7 +108,7 @@ export function finishDeployment(
 
 export function updateDeployment(
   id: string,
-  updates: Partial<Pick<DeploymentRecord, "status" | "output" | "outputTruncated" | "outputLength" | "error" | "steps" | "artifacts" | "rollback">>
+  updates: Partial<Pick<DeploymentRecord, "status" | "output" | "outputTruncated" | "outputLength" | "error" | "steps" | "artifacts" | "rollback" | "lastCompletedPhase" | "pendingPhases" | "committedMutations" | "dryRunOnlyMutations" | "failedMutation" | "recommendedResumeAction" | "idempotencyKeys">>
 ): DeploymentRecord {
   const existing = getDeployment(id);
   if (!existing) throw new Error(`Deployment '${id}' not found`);

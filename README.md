@@ -2,13 +2,13 @@
 
 > Self-hosted remote operations relay for MCP clients, SSH servers, Windows Agents, and Thermo Scientific SampleManager LIMS.
 
-[![Release](https://img.shields.io/badge/release-v0.5.0-2563eb)](https://github.com/tengfei1994/Relay-MCP/releases/tag/v0.5.0)
+[![Release](https://img.shields.io/badge/release-v0.6.0-2563eb)](https://github.com/tengfei1994/Relay-MCP/releases/tag/v0.6.0)
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/license-MIT-64748b)](#license)
 
 Relay MCP 让 Codex、Claude 等 MCP 客户端通过一台自托管 Relay，按受控的项目、服务器和环境范围执行远程运维与 SampleManager 开发任务。目标服务器既可以使用 SSH，也可以运行仅需出站 HTTP 的 Relay Agent。
 
-## v0.5.0
+## v0.6.0
 
 - Agent 通过 `artifact-upload` job 将远程文件流式上传到 Relay，不再把大型二进制塞进 Base64/JSON。
 - 下载接口支持 HTTP Range，本地下载器使用 `.part` 文件断点续传。
@@ -17,7 +17,7 @@ Relay MCP 让 Codex、Claude 等 MCP 客户端通过一台自托管 Relay，按�
 - 提供单文件 WPF Windows Agent Client，包含服务控制、数据库权限、请求审计、日志和更新管理。
 
 Release 与 Windows Agent 下载：
-[v0.5.0](https://github.com/tengfei1994/Relay-MCP/releases/tag/v0.5.0)
+[v0.6.0](https://github.com/tengfei1994/Relay-MCP/releases/tag/v0.6.0)
 
 ## 架构
 
@@ -288,6 +288,7 @@ SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备�
 | Project | `relay_mcp_info` | 返回 Relay MCP 路由、命名空间和版本信息。 |
 | Project | `relay_core_tools` | 返回稳定的首选 Relay 工具和兼容旧别名。 |
 | Project | `relay_route_check` | 只读确认请求进入 Relay MCP，并解析可选的 Project/Server 目标。 |
+| Remote execution | `relay_unicode_check` | 只读检查 SQL Server、PowerShell、Agent 到 MCP 的中文往返编码，并返回字节、码点、哈希和编码证据。 |
 | Project | `relay_project_server_links_list` | 使用明确的 Relay 命名空间列出 Project links。 |
 | Project | `project_create` | 创建 Project workspace，并可关联允许的 Server。 |
 | Remote execution | `exec_remote` | 兼容旧调用；新调用优先使用 `relay_exec_remote`。 |
@@ -336,6 +337,7 @@ SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备�
 | SampleManager | `samplemanager_sql_query` | 执行参数化只读 SQL，并返回详细 SQL Server 错误。 |
 | SampleManager | `samplemanager_sql_execute_file` | 执行 workspace 中的参数化 SQL 文件。 |
 | SampleManager | `samplemanager_sql_mutation` | 执行支持 dry run、备份和 before/after 的 mutation。 |
+| SampleManager | `samplemanager_apply_change_set` | 在一个事务中执行多项 SQL 变更，支持幂等键、失败回滚、验证和 Deployment 恢复状态。 |
 | SampleManager | `samplemanager_run_command` | 以结构化参数运行 `SampleManagerCommand.exe`。 |
 | SampleManager | `samplemanager_create_entity_definition` | 运行 `CreateEntityDefinition.exe`。 |
 | SampleManager | `samplemanager_convert_tables` | 对已验证表名分别运行 `convert_table.exe`。 |
@@ -368,7 +370,7 @@ SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备�
 | `RELAY_UPLOAD_MAX_BYTES` | `4294967296` | 流式上传最大字节数。 |
 | `RELAY_ARTIFACT_MAX_BYTES` | `4294967296` | Agent artifact 最大字节数。 |
 | `RELAY_DOWNLOAD_TTL_MS` | `900000` | 下载 session 有效期。 |
-| `RELAY_VERSION` | `0.5.0` | `/api/health` 返回的版本。 |
+| `RELAY_VERSION` | `0.6.0` | `/api/health` 返回的版本。 |
 | `RELAY_BUILD_COMMIT` | `development` | 部署 commit fingerprint。 |
 | `RELAY_BUILD_TIME` | `unknown` | 构建时间 fingerprint。 |
 

@@ -147,7 +147,9 @@ export class RemoteRunner {
     timeout = 60000,
     options: RemoteExecutionOptions = {}
   ): Promise<ExecResult> {
-    const encoded = Buffer.from(script, "utf16le").toString("base64");
+    const utf8Preamble = "$OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n" +
+      "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n";
+    const encoded = Buffer.from(utf8Preamble + script, "utf16le").toString("base64");
     const result = await this.exec(
       `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`,
       timeout,

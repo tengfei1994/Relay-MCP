@@ -329,7 +329,9 @@ namespace RelayAgent.Service
                 if (isPowerShell)
                 {
                     scriptPath = Path.Combine(jobsDirectory, "relay-" + Guid.NewGuid().ToString("N") + ".ps1");
-                    File.WriteAllText(scriptPath, command, new UTF8Encoding(true));
+                    var utf8Preamble = "$OutputEncoding = New-Object System.Text.UTF8Encoding($false)\r\n" +
+                        "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\r\n";
+                    File.WriteAllText(scriptPath, utf8Preamble + command, new UTF8Encoding(true));
                     info.FileName = "powershell.exe";
                     info.Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + scriptPath + "\"";
                 }
@@ -344,6 +346,11 @@ namespace RelayAgent.Service
                 info.CreateNoWindow = true;
                 info.RedirectStandardOutput = true;
                 info.RedirectStandardError = true;
+                // PowerShell 5.1 writes redirected streams using the process code page
+                // unless both sides explicitly agree on UTF-8. Without this, non-ASCII
+                // SQL values can be replaced with '?' before Relay receives the result.
+                info.StandardOutputEncoding = Encoding.UTF8;
+                info.StandardErrorEncoding = Encoding.UTF8;
 
                 using (var process = new Process())
                 {

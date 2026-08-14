@@ -15,6 +15,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using Drawing = System.Drawing;
 using Forms = System.Windows.Forms;
@@ -44,6 +45,7 @@ namespace RelayAgent.Client
         private DateTime _lastPlaywrightRefreshUtc = DateTime.MinValue;
         private Stopwatch _updateStopwatch;
         private int? _updatePercentage;
+        private bool _updateProgressAnimating;
         private const int MaximumTerminalDetailCharacters = 128 * 1024;
         private const int MaximumAgentLogTailBytes = 512 * 1024;
 
@@ -1660,8 +1662,8 @@ namespace RelayAgent.Client
             _updateStopwatch = Stopwatch.StartNew();
             _updatePercentage = null;
             UpdateProgressPanel.Visibility = Visibility.Visible;
-            UpdateProgressBar.IsIndeterminate = true;
             UpdateProgressBar.Value = 0;
+            StartUpdateProgressAnimation();
             UpdateStatusText.Foreground = PrimaryBrush;
             UpdateStatusText.Text = "Starting update check...";
             UpdateStageText.Text = "Preparing";
@@ -1679,11 +1681,15 @@ namespace RelayAgent.Client
             }
 
             UpdateProgressPanel.Visibility = Visibility.Visible;
-            UpdateProgressBar.IsIndeterminate = progress.IsIndeterminate;
             _updatePercentage = progress.Percentage;
-            if (progress.Percentage.HasValue)
+            if (progress.IsIndeterminate)
             {
-                UpdateProgressBar.Value = progress.Percentage.Value;
+                StartUpdateProgressAnimation();
+            }
+            else
+            {
+                StopUpdateProgressAnimation();
+                UpdateProgressBar.Value = progress.Percentage ?? 0;
             }
             UpdateStatusText.Foreground = PrimaryBrush;
             UpdateStatusText.Text = progress.Message;
@@ -1709,7 +1715,7 @@ namespace RelayAgent.Client
             }
             _updatePercentage = value > 0 ? (int?)value : null;
             UpdateProgressPanel.Visibility = Visibility.Visible;
-            UpdateProgressBar.IsIndeterminate = false;
+            StopUpdateProgressAnimation();
             UpdateProgressBar.Value = value;
             UpdateStatusText.Foreground = statusBrush;
             UpdateStatusText.Text = message;
@@ -1717,6 +1723,46 @@ namespace RelayAgent.Client
             UpdateProgressText.Text = outcome + " · " + FormatUpdateElapsed();
             CheckUpdateButton.IsEnabled = true;
             CheckUpdateButton.Content = "Check update";
+        }
+
+        private void StartUpdateProgressAnimation()
+        {
+            if (_updateProgressAnimating)
+            {
+                return;
+            }
+
+            _updateProgressAnimating = true;
+            UpdateProgressBar.IsIndeterminate = false;
+            var animation = new DoubleAnimation
+            {
+                From = 8,
+                To = 92,
+                Duration = TimeSpan.FromSeconds(1.15),
+                AutoReverse = true,
+                RepeatBehavior = RepeatBehavior.Forever,
+                EasingFunction = new CubicEase
+                {
+                    EasingMode = EasingMode.EaseInOut
+                }
+            };
+            UpdateProgressBar.BeginAnimation(
+                System.Windows.Controls.Primitives.RangeBase.ValueProperty,
+                animation,
+                HandoffBehavior.SnapshotAndReplace);
+        }
+
+        private void StopUpdateProgressAnimation()
+        {
+            if (!_updateProgressAnimating)
+            {
+                return;
+            }
+
+            UpdateProgressBar.BeginAnimation(
+                System.Windows.Controls.Primitives.RangeBase.ValueProperty,
+                null);
+            _updateProgressAnimating = false;
         }
 
         private void RefreshUpdateElapsedText()

@@ -17,7 +17,7 @@ namespace RelayAgent.Client
         private const string ReleaseDownloadBase = "https://github.com/tengfei1994/Relay-MCP/releases/download/";
         private static readonly TimeSpan CheckTimeout = TimeSpan.FromSeconds(30);
         private static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(5);
-        public const string CurrentRelease = "v0.7.4";
+        public const string CurrentRelease = "v0.7.5";
 
         public async Task<UpdateInfo> CheckLatestAsync(
             IProgress<UpdateProgress> progress = null,

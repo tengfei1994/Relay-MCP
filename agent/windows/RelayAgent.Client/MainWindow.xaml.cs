@@ -24,6 +24,7 @@ namespace RelayAgent.Client
     public partial class MainWindow : Window
     {
         private readonly DispatcherTimer _refreshTimer;
+        private readonly DispatcherTimer _updateProgressTimer;
         private readonly Dictionary<string, FrameworkElement> _pages;
         private readonly Dictionary<string, Button> _navigation;
         private AgentConfig _loadedConfig;
@@ -41,6 +42,8 @@ namespace RelayAgent.Client
         private bool _auditResultsStacked;
         private bool _playwrightRefreshInProgress;
         private DateTime _lastPlaywrightRefreshUtc = DateTime.MinValue;
+        private Stopwatch _updateStopwatch;
+        private int? _updatePercentage;
         private const int MaximumTerminalDetailCharacters = 128 * 1024;
         private const int MaximumAgentLogTailBytes = 512 * 1024;
 
@@ -99,9 +102,15 @@ namespace RelayAgent.Client
             };
             _refreshTimer.Tick += delegate { RefreshRuntimeStatus(); };
             _refreshTimer.Start();
+            _updateProgressTimer = new DispatcherTimer(DispatcherPriority.Background)
+            {
+                Interval = TimeSpan.FromSeconds(1)
+            };
+            _updateProgressTimer.Tick += delegate { RefreshUpdateElapsedText(); };
             Closed += delegate
             {
                 _refreshTimer.Stop();
+                _updateProgressTimer.Stop();
                 DisposeTrayIcon();
             };
             Loaded += delegate { UpdateResponsiveLayout(); };
@@ -340,7 +349,7 @@ namespace RelayAgent.Client
                 PlaywrightArtifactsActions,
                 width < 760);
             SetToolbarLayout(
-                DiagnosticsUpdateGrid,
+                DiagnosticsUpdateToolbarGrid,
                 DiagnosticsUpdateActions,
                 width < 760);
         }
@@ -1597,16 +1606,18 @@ namespace RelayAgent.Client
 
         private async void CheckUpdate_Click(object sender, RoutedEventArgs e)
         {
+            BeginUpdateOperation();
             try
             {
-                UpdateStatusText.Foreground = PrimaryBrush;
-                UpdateStatusText.Text = "Checking GitHub release...";
                 var updater = new AutoUpdater();
-                var update = await updater.CheckLatestAsync();
+                var progress = new Progress<UpdateProgress>(ApplyUpdateProgress);
+                var update = await updater.CheckLatestAsync(progress);
                 if (update.IsCurrent)
                 {
-                    UpdateStatusText.Foreground = SuccessBrush;
-                    UpdateStatusText.Text = "Up to date: " + update.TagName;
+                    var message = update.IsNewerThanLatest
+                        ? "Current " + AutoUpdater.CurrentRelease + " is newer than published " + update.TagName + "."
+                        : "Up to date: " + update.TagName;
+                    FinishUpdateOperation(SuccessBrush, "Up to date", message, 100, "Completed");
                     return;
                 }
 
@@ -1619,15 +1630,118 @@ namespace RelayAgent.Client
                         MessageBoxButton.YesNo,
                         MessageBoxImage.Question) == MessageBoxResult.Yes)
                 {
-                    await updater.StageAndRestartAsync(update);
+                    CheckUpdateButton.Content = "Downloading...";
+                    await updater.StageAndRestartAsync(update, progress);
+                    FinishUpdateOperation(
+                        SuccessBrush,
+                        "Restarting",
+                        "Update downloaded and verified. Restarting the client...",
+                        100,
+                        "Ready");
                     Application.Current.Shutdown();
+                    return;
                 }
+
+                FinishUpdateOperation(
+                    WarningBrush,
+                    "Update available",
+                    "Update " + update.TagName + " is available. Installation was not started.",
+                    100,
+                    "Ready");
             }
             catch (Exception ex)
             {
-                UpdateStatusText.Foreground = DangerBrush;
-                UpdateStatusText.Text = ex.Message;
+                FinishUpdateOperation(DangerBrush, "Update failed", ex.Message, 0, "Failed");
             }
+        }
+
+        private void BeginUpdateOperation()
+        {
+            _updateStopwatch = Stopwatch.StartNew();
+            _updatePercentage = null;
+            UpdateProgressPanel.Visibility = Visibility.Visible;
+            UpdateProgressBar.IsIndeterminate = true;
+            UpdateProgressBar.Value = 0;
+            UpdateStatusText.Foreground = PrimaryBrush;
+            UpdateStatusText.Text = "Starting update check...";
+            UpdateStageText.Text = "Preparing";
+            UpdateProgressText.Text = "Connecting · 0s";
+            CheckUpdateButton.IsEnabled = false;
+            CheckUpdateButton.Content = "Checking...";
+            _updateProgressTimer.Start();
+        }
+
+        private void ApplyUpdateProgress(UpdateProgress progress)
+        {
+            if (progress == null)
+            {
+                return;
+            }
+
+            UpdateProgressPanel.Visibility = Visibility.Visible;
+            UpdateProgressBar.IsIndeterminate = progress.IsIndeterminate;
+            _updatePercentage = progress.Percentage;
+            if (progress.Percentage.HasValue)
+            {
+                UpdateProgressBar.Value = progress.Percentage.Value;
+            }
+            UpdateStatusText.Foreground = PrimaryBrush;
+            UpdateStatusText.Text = progress.Message;
+            UpdateStageText.Text = progress.Stage;
+            if (string.Equals(progress.Stage, "Downloading", StringComparison.OrdinalIgnoreCase))
+            {
+                CheckUpdateButton.Content = "Downloading...";
+            }
+            RefreshUpdateElapsedText();
+        }
+
+        private void FinishUpdateOperation(
+            Brush statusBrush,
+            string stage,
+            string message,
+            double value,
+            string outcome)
+        {
+            _updateProgressTimer.Stop();
+            if (_updateStopwatch != null)
+            {
+                _updateStopwatch.Stop();
+            }
+            _updatePercentage = value > 0 ? (int?)value : null;
+            UpdateProgressPanel.Visibility = Visibility.Visible;
+            UpdateProgressBar.IsIndeterminate = false;
+            UpdateProgressBar.Value = value;
+            UpdateStatusText.Foreground = statusBrush;
+            UpdateStatusText.Text = message;
+            UpdateStageText.Text = stage;
+            UpdateProgressText.Text = outcome + " · " + FormatUpdateElapsed();
+            CheckUpdateButton.IsEnabled = true;
+            CheckUpdateButton.Content = "Check update";
+        }
+
+        private void RefreshUpdateElapsedText()
+        {
+            if (_updateStopwatch == null)
+            {
+                return;
+            }
+
+            var progressText = _updatePercentage.HasValue
+                ? _updatePercentage.Value + "%"
+                : "Working";
+            UpdateProgressText.Text = progressText + " · " + FormatUpdateElapsed();
+        }
+
+        private string FormatUpdateElapsed()
+        {
+            var elapsed = _updateStopwatch == null
+                ? TimeSpan.Zero
+                : _updateStopwatch.Elapsed;
+            if (elapsed.TotalMinutes >= 1)
+            {
+                return ((int)elapsed.TotalMinutes) + "m " + elapsed.Seconds + "s";
+            }
+            return Math.Max(0, (int)elapsed.TotalSeconds) + "s";
         }
 
         private void OpenDataFolder_Click(object sender, RoutedEventArgs e)

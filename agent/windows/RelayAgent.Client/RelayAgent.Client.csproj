@@ -68,6 +68,7 @@
       <SubType>Designer</SubType>
     </Page>
     <Resource Include="Assets\relay-mcp.ico" />
+    <Resource Include="Assets\relay-mcp.png" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

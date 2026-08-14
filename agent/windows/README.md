@@ -189,11 +189,13 @@ For foreground diagnostics, run:
 .\RelayAgent.Client.exe --console
 ```
 
-The UI also includes a Check Update button. It compares the current release
-with GitHub and downloads the latest
-`RelayAgent.Client.exe` from the GitHub release page, stops the service,
-replaces both the running UI executable and the executable path registered for
-the Windows Service, restarts the service, and reopens the UI.
+The UI also includes a Check Update button. It shows the active connection,
+metadata, download, verification, and restart stages with elapsed time and
+byte-level download progress. If the GitHub API is unavailable or rate
+limited, the client automatically falls back to the public latest-release
+redirect. After download validation it stops the service, replaces both the
+running UI executable and the executable path registered for the Windows
+Service, restarts the service, and reopens the UI.
 
 ## Current Protocol
 

@@ -81,6 +81,64 @@
             <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
         </Style>
 
+        <Style x:Key="UpdateProgressBarStyle" TargetType="ProgressBar">
+            <Setter Property="Height" Value="10"/>
+            <Setter Property="Minimum" Value="0"/>
+            <Setter Property="Maximum" Value="100"/>
+            <Setter Property="Foreground" Value="{StaticResource PrimaryBrush}"/>
+            <Setter Property="Background" Value="#E8EDF5"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Border Background="{TemplateBinding Background}"
+                                CornerRadius="5"
+                                SnapsToDevicePixels="True">
+                            <Grid x:Name="PART_Track" ClipToBounds="True">
+                                <Border x:Name="PART_Indicator"
+                                        HorizontalAlignment="Left"
+                                        Background="{TemplateBinding Foreground}"
+                                        CornerRadius="5"/>
+                                <Border x:Name="IndeterminateIndicator"
+                                        Width="170"
+                                        HorizontalAlignment="Left"
+                                        CornerRadius="5"
+                                        Visibility="Collapsed">
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                            <GradientStop Offset="0" Color="#002563EB"/>
+                                            <GradientStop Offset="0.35" Color="#6038BDF8"/>
+                                            <GradientStop Offset="0.68" Color="#FF2563EB"/>
+                                            <GradientStop Offset="1" Color="#002563EB"/>
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                    <Border.RenderTransform>
+                                        <TranslateTransform x:Name="IndeterminateTransform" X="-170"/>
+                                    </Border.RenderTransform>
+                                </Border>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsIndeterminate" Value="True">
+                                <Setter TargetName="PART_Indicator" Property="Visibility" Value="Collapsed"/>
+                                <Setter TargetName="IndeterminateIndicator" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                <BeginStoryboard>
+                                    <Storyboard RepeatBehavior="Forever">
+                                        <DoubleAnimation Storyboard.TargetName="IndeterminateTransform"
+                                                         Storyboard.TargetProperty="X"
+                                                         From="-170"
+                                                         To="1200"
+                                                         Duration="0:0:1.6"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="MetricCardStyle" TargetType="Border">
             <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
             <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
@@ -302,7 +360,9 @@
                            Height="40"
                            HorizontalAlignment="Left"
                            VerticalAlignment="Center"
-                           Source="Assets/relay-mcp.ico"/>
+                           RenderOptions.BitmapScalingMode="HighQuality"
+                           SnapsToDevicePixels="True"
+                           Source="Assets/relay-mcp.png"/>
                     <StackPanel x:Name="SidebarBrandTextPanel" Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
                         <TextBlock x:Name="SidebarTitleText" Text="Relay MCP" FontSize="20" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" LineHeight="28"/>
                         <TextBlock x:Name="SidebarSubtitleText" Text="Agent Client" Foreground="{StaticResource MutedBrush}" LineHeight="20"/>
@@ -1196,22 +1256,49 @@
                     </StackPanel>
                     <Border Grid.Row="1" Style="{StaticResource SectionStyle}" Padding="18" Margin="0">
                         <Grid x:Name="DiagnosticsUpdateGrid">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
-                            <StackPanel VerticalAlignment="Center">
-                                <TextBlock Text="Client update" Style="{StaticResource SectionTitleStyle}" Margin="0,0,0,4"/>
-                                <TextBlock x:Name="UpdateStatusText" Text="Current version v0.7.3" Foreground="{StaticResource MutedBrush}" LineHeight="22"/>
+                            <Grid x:Name="DiagnosticsUpdateToolbarGrid">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="Client update" Style="{StaticResource SectionTitleStyle}" Margin="0,0,0,4"/>
+                                    <TextBlock x:Name="UpdateStatusText"
+                                               Text="Current version v0.7.4"
+                                               Foreground="{StaticResource MutedBrush}"
+                                               TextWrapping="Wrap"
+                                               LineHeight="22"/>
+                                </StackPanel>
+                                <WrapPanel x:Name="DiagnosticsUpdateActions" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                    <Button x:Name="CheckUpdateButton" Style="{StaticResource PrimaryButtonStyle}" Click="CheckUpdate_Click">Check update</Button>
+                                    <Button Style="{StaticResource BaseButtonStyle}" Click="OpenDataFolder_Click" ToolTip="Open Relay Agent data folder">Open data folder</Button>
+                                </WrapPanel>
+                            </Grid>
+                            <StackPanel x:Name="UpdateProgressPanel" Grid.Row="1" Margin="0,16,0,0" Visibility="Collapsed">
+                                <ProgressBar x:Name="UpdateProgressBar" Style="{StaticResource UpdateProgressBarStyle}"/>
+                                <Grid Margin="0,9,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="UpdateStageText"
+                                               Foreground="{StaticResource MutedBrush}"
+                                               TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock x:Name="UpdateProgressText"
+                                               Grid.Column="1"
+                                               Margin="16,0,0,0"
+                                               Foreground="{StaticResource MutedBrush}"
+                                               HorizontalAlignment="Right"/>
+                                </Grid>
                             </StackPanel>
-                            <WrapPanel x:Name="DiagnosticsUpdateActions" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center">
-                                <Button Style="{StaticResource PrimaryButtonStyle}" Click="CheckUpdate_Click">Check update</Button>
-                                <Button Style="{StaticResource BaseButtonStyle}" Click="OpenDataFolder_Click" ToolTip="Open Relay Agent data folder">Open data folder</Button>
-                            </WrapPanel>
                         </Grid>
                     </Border>
                     <Border Grid.Row="3" Style="{StaticResource SectionStyle}" Padding="16" Margin="0" MinHeight="310">

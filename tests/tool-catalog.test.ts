@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "fs";
 import { TOOL_CATALOG } from "../src/shared/tool-catalog.ts";
+import { SAMPLEMANAGER_ENTITY_CATALOG } from "../src/shared/samplemanager-capabilities.ts";
 
 test("every registered MCP tool is categorized and described exactly once", () => {
   const source = readFileSync(new URL("../src/mcp/index.ts", import.meta.url), "utf8");
@@ -17,5 +18,12 @@ test("every registered MCP tool is categorized and described exactly once", () =
     assert.ok(entry.category);
     assert.ok(entry.description.length >= 12);
     assert.ok(readme.includes(`\`${entry.name}\``), `README is missing ${entry.name}`);
+    if (entry.category === "samplemanager" && entry.entity) {
+      const entity = SAMPLEMANAGER_ENTITY_CATALOG.find((item) => item.id === entry.entity);
+      assert.ok(entity, `Unknown SampleManager entity '${entry.entity}' for ${entry.name}`);
+      if (entry.capability) {
+        assert.ok(entity.inspectors.some((item) => item.id === entry.capability), `Unknown capability '${entry.entity}.${entry.capability}' for ${entry.name}`);
+      }
+    }
   }
 });

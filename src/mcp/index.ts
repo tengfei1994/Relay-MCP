@@ -56,6 +56,10 @@ import { createUploadSession, getUploadSession, publicUploadSession } from "../s
 import { createDownloadSession } from "../shared/download-store.js";
 import { getAgentStore } from "../shared/agent-store.js";
 import { TOOL_CATALOG_BY_NAME } from "../shared/tool-catalog.js";
+import {
+  SampleManagerCapabilityRegistry,
+  createSampleManagerInspectionEnvelope,
+} from "../shared/samplemanager-capabilities.js";
 import "dotenv/config";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? 3001);
@@ -63,6 +67,7 @@ const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-in-production";
 const DB_PATH = process.env.DB_PATH ?? "./data/app.db";
 const RELAY_PUBLIC_URL = (process.env.RELAY_PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 3000}`).replace(/\/$/, "");
 const RELAY_MCP_VERSION = process.env.RELAY_MCP_VERSION ?? "0.6.0";
+const sampleManagerCapabilityRegistry = new SampleManagerCapabilityRegistry();
 
 interface McpUser {
   id: number;
@@ -2335,6 +2340,94 @@ else {
   );
 
   // ── SampleManager high-level tools ────────────────────────────────────────
+  server.tool(
+    "samplemanager_capabilities",
+    "Resolve the versioned SampleManager Capability Pack for a bound instance and list ready, planned, and unavailable semantic inspectors.",
+    {
+      project: z.string().optional(),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional(),
+      serverName: z.string().optional(),
+      includeAdapters: z.boolean().optional().describe("Include every built-in version adapter. Default false."),
+    },
+    async ({ project: projectName, environment, serverId, serverName, includeAdapters = false }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { ps } = getRunner(projectName, environment, { serverId, serverName });
+      const instance = ps.limsInstance;
+      if (!instance) {
+        throw new Error(`No SampleManager instance is bound to project '${resolvedProjectName}' environment '${ps.environment}'`);
+      }
+      const pack = sampleManagerCapabilityRegistry.resolve({
+        id: instance.id,
+        name: instance.name,
+        version: instance.version,
+        runtimeKind: instance.runtimeKind,
+        rootPath: instance.rootPath,
+        databaseHost: instance.databaseHost,
+        databaseName: instance.databaseName,
+      });
+      const provenance = {
+        project: resolvedProjectName,
+        environment: ps.environment,
+        serverId: ps.server.id,
+        serverName: ps.server.name,
+        connectionMode: ps.connectionMode,
+        agentId: ps.server.agentId,
+        instance: instance.name,
+        instanceVersion: instance.version,
+        runtimeKind: instance.runtimeKind,
+        databaseHost: instance.databaseHost,
+        databaseName: instance.databaseName,
+        adapterId: pack.adapterId,
+        instanceFingerprint: pack.instanceFingerprint,
+      };
+      const envelope = createSampleManagerInspectionEnvelope({
+        capability: "instance.inspect",
+        provenance,
+        facts: [
+          { path: "instance.name", value: instance.name, source: "project_server_link" },
+          { path: "instance.version", value: instance.version, source: "lims_instance_metadata" },
+          { path: "instance.runtimeKind", value: instance.runtimeKind, source: "lims_instance_metadata" },
+          { path: "instance.database", value: `${instance.databaseHost}/${instance.databaseName}`, source: "lims_instance_metadata" },
+        ],
+        unknowns: pack.adapterId === "samplemanager-generic"
+          ? ["No version-specific semantic adapter is available for this SampleManager version."]
+          : [],
+        evidence: [{ type: "capability_pack", packId: pack.packId, schemaProfile: pack.schemaProfile }],
+      });
+      const response = {
+        ...envelope,
+        capabilityPack: pack,
+        adapters: includeAdapters ? sampleManagerCapabilityRegistry.listAdapters() : undefined,
+      };
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        project: resolvedProjectName,
+        tool: "samplemanager_capabilities",
+        environment: ps.environment,
+        serverId: ps.server.id,
+        instance: instance.name,
+        instanceVersion: instance.version,
+        adapterId: pack.adapterId,
+        readOnly: true,
+        mutationAttempted: false,
+      });
+      return {
+        structuredContent: response,
+        content: [{ type: "text", text: summarizeJson({
+          provenance,
+          packId: pack.packId,
+          adapterId: pack.adapterId,
+          cache: pack.cache,
+          ready: pack.capabilities.filter((item) => item.status === "ready").map((item) => item.id),
+          planned: pack.capabilities.filter((item) => item.status === "planned").map((item) => item.id),
+          unavailable: pack.capabilities.filter((item) => item.status === "unavailable").map((item) => item.id),
+        }) }],
+      };
+    }
+  );
+
   server.tool(
     "samplemanager_deployment_start",
     "Create a SampleManager deploymentId that correlates SQL, build, deploy, restart, hashes, backups, logs, and rollback evidence.",

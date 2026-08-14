@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { TOOL_CATALOG } from "../../shared/tool-catalog.js";
+import { SAMPLEMANAGER_ENTITY_CATALOG } from "../../shared/samplemanager-capabilities.js";
 
 function classifyTool(name: string, category: string) {
   const mutating = /(^|_)(deploy|restart|write|delete|move|patch|upload|sync|create|convert|restore|mutation|loader|run_command|run_utility|run_suite|build)/i.test(name);
@@ -28,5 +29,6 @@ export async function toolRoutes(app: FastifyInstance) {
       { id: "context", label: "Context", description: "Durable project facts and search." },
       { id: "samplemanager", label: "SampleManager", description: "Instances, SQL, utilities, builds, forms, and deployment workflows." },
     ],
+    sampleManagerEntities: SAMPLEMANAGER_ENTITY_CATALOG,
   }));
 }

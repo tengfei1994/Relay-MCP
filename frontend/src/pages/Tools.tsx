@@ -18,7 +18,31 @@ type Tool = {
   access: "read-only" | "mutation";
   execution: "remote-capable" | "local-service";
   lifecycle: "preferred" | "standard" | "legacy";
+  entity?: string;
+  capability?: string;
 };
+
+type Inspector = {
+  id: string;
+  label: string;
+  status: "ready" | "planned" | "unavailable";
+  readOnly: boolean;
+  description: string;
+  plannedTool?: string;
+  relatedEntities?: string[];
+  evidenceKinds: string[];
+};
+
+type SampleManagerEntity = {
+  id: string;
+  label: string;
+  description: string;
+  inspectors: Inspector[];
+};
+
+type Selection =
+  | { kind: "tool"; tool: Tool }
+  | { kind: "inspector"; entity: SampleManagerEntity; inspector: Inspector };
 
 const categoryOrder = ["project", "remote-execution", "playwright", "remote-files", "workspace", "jobs", "context", "samplemanager"];
 const categoryLabels: Record<string, string> = {
@@ -40,6 +64,9 @@ const badgeStyles: Record<string, string> = {
   preferred: "border-indigo-500/30 bg-indigo-500/10 text-indigo-300",
   standard: "border-gray-700 bg-gray-800/70 text-gray-400",
   legacy: "border-rose-500/30 bg-rose-500/10 text-rose-300",
+  ready: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+  planned: "border-sky-500/30 bg-sky-500/10 text-sky-300",
+  unavailable: "border-gray-700 bg-gray-800/70 text-gray-500",
 };
 
 function Badge({ children }: { children: string }) {
@@ -53,10 +80,12 @@ function Badge({ children }: { children: string }) {
 export default function ToolsPage() {
   const [tools, setTools] = useState<Tool[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
+  const [sampleManagerEntities, setSampleManagerEntities] = useState<SampleManagerEntity[]>([]);
   const [category, setCategory] = useState("all");
+  const [entity, setEntity] = useState("all");
   const [access, setAccess] = useState("all");
   const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState<Tool | null>(null);
+  const [selected, setSelected] = useState<Selection | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -65,7 +94,8 @@ export default function ToolsPage() {
       .then((result) => {
         setTools(result.tools);
         setCategories(result.categories);
-        setSelected(result.tools[0] ?? null);
+        setSampleManagerEntities(result.sampleManagerEntities ?? []);
+        setSelected(result.tools[0] ? { kind: "tool", tool: result.tools[0] } : null);
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Unable to load tools"))
       .finally(() => setLoading(false));
@@ -75,11 +105,23 @@ export default function ToolsPage() {
     const needle = query.trim().toLowerCase();
     return tools.filter((tool) => {
       const matchesCategory = category === "all" || tool.category === category;
+      const matchesEntity = entity === "all" || tool.category !== "samplemanager" || tool.entity === entity;
       const matchesAccess = access === "all" || tool.access === access;
-      const matchesQuery = !needle || `${tool.name} ${tool.description} ${tool.category}`.toLowerCase().includes(needle);
-      return matchesCategory && matchesAccess && matchesQuery;
+      const matchesQuery = !needle || `${tool.name} ${tool.description} ${tool.category} ${tool.entity ?? ""} ${tool.capability ?? ""}`.toLowerCase().includes(needle);
+      return matchesCategory && matchesEntity && matchesAccess && matchesQuery;
     });
-  }, [tools, category, access, query]);
+  }, [tools, category, entity, access, query]);
+
+  const visibleEntities = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return sampleManagerEntities
+      .filter((item) => entity === "all" || item.id === entity)
+      .map((item) => ({
+        ...item,
+        inspectors: item.inspectors.filter((inspector) => !needle || `${item.label} ${item.description} ${inspector.label} ${inspector.description} ${inspector.id}`.toLowerCase().includes(needle)),
+      }))
+      .filter((item) => item.inspectors.length > 0);
+  }, [sampleManagerEntities, entity, query]);
 
   const grouped = useMemo(() => categoryOrder
     .map((id) => ({ id, tools: filtered.filter((tool) => tool.category === id) }))
@@ -151,7 +193,7 @@ export default function ToolsPage() {
               return (
                 <button
                   key={item.id}
-                  onClick={() => setCategory(item.id)}
+                  onClick={() => { setCategory(item.id); if (item.id !== "samplemanager") setEntity("all"); }}
                   className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm ${category === item.id ? "bg-indigo-500/10 text-indigo-300" : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"}`}
                 >
                   <span>{item.label}</span><span className="text-xs text-gray-600">{count}</span>
@@ -159,6 +201,28 @@ export default function ToolsPage() {
               );
             })}
           </div>
+          {category === "samplemanager" && (
+            <div className="mt-7 border-t border-gray-800 pt-5">
+              <p className="mb-3 px-2 text-[11px] font-semibold uppercase tracking-wider text-gray-600">Entities</p>
+              <button
+                onClick={() => setEntity("all")}
+                className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-sm ${entity === "all" ? "bg-sky-500/10 text-sky-300" : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"}`}
+              >
+                <span>All entities</span><span className="text-xs text-gray-600">{sampleManagerEntities.length}</span>
+              </button>
+              <div className="mt-2 space-y-1">
+                {sampleManagerEntities.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => setEntity(item.id)}
+                    className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm ${entity === item.id ? "bg-sky-500/10 text-sky-300" : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"}`}
+                  >
+                    <span className="truncate">{item.label}</span><span className="text-xs text-gray-600">{item.inspectors.length}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="mt-8 border-t border-gray-800 pt-5">
             <p className="px-2 text-xs leading-5 text-gray-600">This directory is generated from the server-side MCP tool catalog.</p>
           </div>
@@ -173,6 +237,36 @@ export default function ToolsPage() {
               <p className="text-sm text-gray-400">No commands match the current filters.</p>
             </div>
           )}
+          {!loading && !error && category === "samplemanager" && visibleEntities.map((item) => (
+            <section key={item.id} className="mb-8">
+              <div className="mb-3">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-sm font-semibold text-gray-200">{item.label}</h2>
+                  <span className="text-xs text-gray-700">{item.inspectors.length} inspectors</span>
+                </div>
+                <p className="mt-1 text-xs text-gray-600">{item.description}</p>
+              </div>
+              <div className="divide-y divide-gray-800 overflow-hidden rounded-md border border-gray-800 bg-gray-900/50">
+                {item.inspectors.map((inspector) => (
+                  <button
+                    key={`${item.id}.${inspector.id}`}
+                    onClick={() => setSelected({ kind: "inspector", entity: item, inspector })}
+                    className={`flex w-full items-center gap-4 px-4 py-4 text-left transition hover:bg-gray-800/60 ${selected?.kind === "inspector" && selected.entity.id === item.id && selected.inspector.id === inspector.id ? "bg-sky-500/5" : ""}`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-medium text-gray-200">{inspector.label}</span>
+                        <Badge>{inspector.status}</Badge>
+                      </div>
+                      <p className="mt-1 truncate text-xs text-gray-500">{inspector.description}</p>
+                    </div>
+                    {inspector.plannedTool && <code className="hidden max-w-56 truncate text-[11px] text-gray-600 xl:block">{inspector.plannedTool}</code>}
+                    <ChevronRight size={16} className="shrink-0 text-gray-700" />
+                  </button>
+                ))}
+              </div>
+            </section>
+          ))}
           {!loading && !error && grouped.map((group) => (
             <section key={group.id} className="mb-8">
               <div className="mb-3 flex items-center gap-2">
@@ -183,8 +277,8 @@ export default function ToolsPage() {
                 {group.tools.map((tool) => (
                   <button
                     key={tool.name}
-                    onClick={() => setSelected(tool)}
-                    className={`flex w-full items-center gap-4 px-4 py-4 text-left transition hover:bg-gray-800/60 ${selected?.name === tool.name ? "bg-indigo-500/5" : ""}`}
+                    onClick={() => setSelected({ kind: "tool", tool })}
+                    className={`flex w-full items-center gap-4 px-4 py-4 text-left transition hover:bg-gray-800/60 ${selected?.kind === "tool" && selected.tool.name === tool.name ? "bg-indigo-500/5" : ""}`}
                   >
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
@@ -207,23 +301,25 @@ export default function ToolsPage() {
         </main>
 
         <aside className="border-l border-gray-800 bg-gray-925 px-5 py-6">
-          {selected ? (
+          {selected?.kind === "tool" ? (
             <>
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-400">{categoryLabels[selected.category]}</p>
-                  <h2 className="mt-2 break-all font-mono text-sm font-semibold leading-6 text-gray-100">{selected.name}</h2>
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-400">{categoryLabels[selected.tool.category]}</p>
+                  <h2 className="mt-2 break-all font-mono text-sm font-semibold leading-6 text-gray-100">{selected.tool.name}</h2>
                 </div>
                 <BookOpen size={17} className="mt-1 shrink-0 text-gray-600" />
               </div>
-              <p className="mt-6 text-sm leading-6 text-gray-400">{selected.description}</p>
+              <p className="mt-6 text-sm leading-6 text-gray-400">{selected.tool.description}</p>
               <div className="mt-6 space-y-3 border-t border-gray-800 pt-5">
-                <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Access</span><Badge>{selected.access}</Badge></div>
-                <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Execution</span><Badge>{selected.execution}</Badge></div>
-                <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Lifecycle</span><Badge>{selected.lifecycle}</Badge></div>
+                {selected.tool.entity && <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Entity</span><span className="text-gray-300">{sampleManagerEntities.find((item) => item.id === selected.tool.entity)?.label ?? selected.tool.entity}</span></div>}
+                {selected.tool.capability && <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Capability</span><span className="text-gray-300">{selected.tool.capability.replace(/_/g, " ")}</span></div>}
+                <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Access</span><Badge>{selected.tool.access}</Badge></div>
+                <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Execution</span><Badge>{selected.tool.execution}</Badge></div>
+                <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Lifecycle</span><Badge>{selected.tool.lifecycle}</Badge></div>
               </div>
               <div className="mt-7 rounded-md border border-gray-800 bg-gray-900 p-4">
-                {selected.access === "mutation" ? (
+                {selected.tool.access === "mutation" ? (
                   <div className="flex gap-3">
                     <CircleAlert size={16} className="mt-0.5 shrink-0 text-amber-400" />
                     <p className="text-xs leading-5 text-gray-500">This command can change remote state. Use a deploymentId, verify the target, and prefer async execution for long operations.</p>
@@ -234,6 +330,38 @@ export default function ToolsPage() {
                     <p className="text-xs leading-5 text-gray-500">This command is classified as read-only by the Relay catalog.</p>
                   </div>
                 )}
+              </div>
+            </>
+          ) : selected?.kind === "inspector" ? (
+            <>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-sky-400">{selected.entity.label}</p>
+                  <h2 className="mt-2 text-sm font-semibold leading-6 text-gray-100">{selected.inspector.label}</h2>
+                </div>
+                <BookOpen size={17} className="mt-1 shrink-0 text-gray-600" />
+              </div>
+              <p className="mt-6 text-sm leading-6 text-gray-400">{selected.inspector.description}</p>
+              <div className="mt-6 space-y-3 border-t border-gray-800 pt-5">
+                <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Status</span><Badge>{selected.inspector.status}</Badge></div>
+                <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Access</span><Badge>{selected.inspector.readOnly ? "read-only" : "mutation"}</Badge></div>
+                {selected.inspector.plannedTool && <div className="text-xs"><p className="text-gray-600">MCP tool</p><code className="mt-2 block break-all text-gray-300">{selected.inspector.plannedTool}</code></div>}
+              </div>
+              {selected.inspector.relatedEntities && selected.inspector.relatedEntities.length > 0 && (
+                <div className="mt-6">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600">Related entities</p>
+                  <div className="mt-2 flex flex-wrap gap-2">{selected.inspector.relatedEntities.map((value) => <span key={value} className="rounded border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-400">{sampleManagerEntities.find((item) => item.id === value)?.label ?? value}</span>)}</div>
+                </div>
+              )}
+              <div className="mt-6">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600">Evidence</p>
+                <div className="mt-2 flex flex-wrap gap-2">{selected.inspector.evidenceKinds.map((value) => <span key={value} className="rounded border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-400">{value}</span>)}</div>
+              </div>
+              <div className="mt-7 rounded-md border border-gray-800 bg-gray-900 p-4">
+                <div className="flex gap-3">
+                  {selected.inspector.status === "ready" ? <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-emerald-400" /> : <CircleAlert size={16} className="mt-0.5 shrink-0 text-sky-400" />}
+                  <p className="text-xs leading-5 text-gray-500">{selected.inspector.status === "ready" ? "This inspector is available through the listed MCP tool." : "This inspector is part of the Capability Pack roadmap and is not yet callable."}</p>
+                </div>
               </div>
             </>
           ) : (

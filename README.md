@@ -329,6 +329,7 @@ SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备�
 | Jobs | `job_cancel` | 请求取消运行中的 SSH job。 |
 | Context | `context_record_fact` | 保存持久化 Project fact。 |
 | Context | `context_search` | 搜索持久化 Project fact。 |
+| SampleManager | `samplemanager_capabilities` | 解析实例使用的版本化 Capability Pack，并列出已就绪、规划中和不可用的语义检查能力。 |
 | SampleManager | `samplemanager_restart_instance` | 重启指定实例的核心服务。 |
 | SampleManager | `samplemanager_deployment_start` | 创建用于关联多阶段操作的 `deploymentId`。 |
 | SampleManager | `samplemanager_clear_form_cache` | 清理一个 form 的 FormsBin cache。 |

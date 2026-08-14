@@ -44,7 +44,7 @@ export const api = {
   listProjects: () =>
     request<{ projects: any[] }>("GET", "/projects"),
   listTools: () =>
-    request<{ tools: any[]; categories: any[] }>("GET", "/tools"),
+    request<{ tools: any[]; categories: any[]; sampleManagerEntities: any[] }>("GET", "/tools"),
   createProject: (name: string, description?: string) =>
     request<{ project: any }>("POST", "/projects", { name, description }),
   deleteProject: (id: number) =>

@@ -15,6 +15,8 @@ export interface ToolCatalogEntry {
   name: string;
   category: ToolCategory;
   description: string;
+  entity?: string;
+  capability?: string;
 }
 
 export const TOOL_CATALOG: ToolCatalogEntry[] = [
@@ -64,28 +66,29 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: "job_cancel", category: "jobs", description: "Request cancellation and close the active SSH command for a running job." },
   { name: "context_record_fact", category: "context", description: "Record a durable project fact for future MCP sessions." },
   { name: "context_search", category: "context", description: "Search durable project facts." },
-  { name: "samplemanager_restart_instance", category: "samplemanager", description: "Restart core services for a SampleManager instance." },
-  { name: "samplemanager_deployment_start", category: "samplemanager", description: "Start a deploymentId for correlating independent SampleManager operations." },
-  { name: "samplemanager_clear_form_cache", category: "samplemanager", description: "Remove compiled FormsBin entries for one form." },
-  { name: "samplemanager_recent_errors", category: "samplemanager", description: "Search recent SampleManager logs for compact error evidence." },
-  { name: "samplemanager_table_schema", category: "samplemanager", description: "Inspect SQL Server columns, keys, identity, defaults, and physical mapping for a SampleManager table." },
-  { name: "samplemanager_sql_query", category: "samplemanager", description: "Run parameterized SQL Server queries with escaped identifiers and detailed errors." },
-  { name: "samplemanager_sql_execute_file", category: "samplemanager", description: "Run a parameterized workspace SQL file with detailed SQL Server errors." },
-  { name: "samplemanager_sql_mutation", category: "samplemanager", description: "Run structured SQL mutations with dry-run rollback, backup, and before/after evidence." },
-  { name: "samplemanager_apply_change_set", category: "samplemanager", description: "Apply multiple SQL changes in one transaction with idempotency keys, rollback, verification, and deployment recovery state." },
-  { name: "samplemanager_run_command", category: "samplemanager", description: "Run SampleManagerCommand.exe with structured arguments." },
-  { name: "samplemanager_create_entity_definition", category: "samplemanager", description: "Run CreateEntityDefinition.exe after structure source changes." },
-  { name: "samplemanager_convert_tables", category: "samplemanager", description: "Run convert_table.exe separately for validated table names." },
-  { name: "samplemanager_table_loader", category: "samplemanager", description: "Load a remote CSV through the built-in $table_loader VGL report." },
-  { name: "samplemanager_deploy_table_loader_package", category: "samplemanager", description: "Stage, hash-verify, load, verify, and audit a table-loader package under one deploymentId." },
-  { name: "samplemanager_run_utility", category: "samplemanager", description: "Run an allowlisted version-dependent SampleManager utility." },
-  { name: "samplemanager_discover_build_tools", category: "samplemanager", description: "Discover MSBuild candidates in VS2022, VS2019, Framework, and PATH priority order." },
-  { name: "samplemanager_build_dotnet", category: "samplemanager", description: "Build a classic SampleManager .NET solution with MSBuild." },
-  { name: "samplemanager_build_deploy_assembly", category: "samplemanager", description: "Build, hash, back up, deploy, restart, and roll back one SampleManager assembly under a deploymentId." },
-  { name: "samplemanager_deployment_status", category: "samplemanager", description: "Read SampleManager deployment phases, artifacts, hashes, backup, and rollback state." },
-  { name: "samplemanager_deployment_finish", category: "samplemanager", description: "Finish a manually orchestrated SampleManager deploymentId as succeeded or failed." },
-  { name: "samplemanager_deploy_file", category: "samplemanager", description: "Deploy a staged file into an instance area with timestamped backup." },
-  { name: "samplemanager_restore_backup", category: "samplemanager", description: "Restore a specific SampleManager backup file to an explicit target." },
+  { name: "samplemanager_capabilities", category: "samplemanager", entity: "instance", capability: "capabilities", description: "Resolve the versioned SampleManager Capability Pack and list ready, planned, and unavailable semantic inspectors." },
+  { name: "samplemanager_restart_instance", category: "samplemanager", entity: "instance", capability: "readiness", description: "Restart core services for a SampleManager instance." },
+  { name: "samplemanager_deployment_start", category: "samplemanager", entity: "deployment", capability: "runtime_drift", description: "Start a deploymentId for correlating independent SampleManager operations." },
+  { name: "samplemanager_clear_form_cache", category: "samplemanager", entity: "instance", capability: "readiness", description: "Remove compiled FormsBin entries for one form." },
+  { name: "samplemanager_recent_errors", category: "samplemanager", entity: "instance", capability: "readiness", description: "Search recent SampleManager logs for compact error evidence." },
+  { name: "samplemanager_table_schema", category: "samplemanager", entity: "data_model", capability: "schema", description: "Inspect SQL Server columns, keys, identity, defaults, and physical mapping for a SampleManager table." },
+  { name: "samplemanager_sql_query", category: "samplemanager", entity: "data_model", capability: "schema", description: "Run parameterized SQL Server queries with escaped identifiers and detailed errors." },
+  { name: "samplemanager_sql_execute_file", category: "samplemanager", entity: "data_model", capability: "schema", description: "Run a parameterized workspace SQL file with detailed SQL Server errors." },
+  { name: "samplemanager_sql_mutation", category: "samplemanager", entity: "data_model", capability: "schema", description: "Run structured SQL mutations with dry-run rollback, backup, and before/after evidence." },
+  { name: "samplemanager_apply_change_set", category: "samplemanager", entity: "deployment", capability: "rollback_readiness", description: "Apply multiple SQL changes in one transaction with idempotency keys, rollback, verification, and deployment recovery state." },
+  { name: "samplemanager_run_command", category: "samplemanager", entity: "instance", capability: "readiness", description: "Run SampleManagerCommand.exe with structured arguments." },
+  { name: "samplemanager_create_entity_definition", category: "samplemanager", entity: "data_model", capability: "schema", description: "Run CreateEntityDefinition.exe after structure source changes." },
+  { name: "samplemanager_convert_tables", category: "samplemanager", entity: "data_model", capability: "schema", description: "Run convert_table.exe separately for validated table names." },
+  { name: "samplemanager_table_loader", category: "samplemanager", entity: "data_model", capability: "schema", description: "Load a remote CSV through the built-in $table_loader VGL report." },
+  { name: "samplemanager_deploy_table_loader_package", category: "samplemanager", entity: "deployment", capability: "rollback_readiness", description: "Stage, hash-verify, load, verify, and audit a table-loader package under one deploymentId." },
+  { name: "samplemanager_run_utility", category: "samplemanager", entity: "instance", capability: "readiness", description: "Run an allowlisted version-dependent SampleManager utility." },
+  { name: "samplemanager_discover_build_tools", category: "samplemanager", entity: "deployment", capability: "runtime_drift", description: "Discover MSBuild candidates in VS2022, VS2019, Framework, and PATH priority order." },
+  { name: "samplemanager_build_dotnet", category: "samplemanager", entity: "deployment", capability: "runtime_drift", description: "Build a classic SampleManager .NET solution with MSBuild." },
+  { name: "samplemanager_build_deploy_assembly", category: "samplemanager", entity: "deployment", capability: "runtime_drift", description: "Build, hash, back up, deploy, restart, and roll back one SampleManager assembly under a deploymentId." },
+  { name: "samplemanager_deployment_status", category: "samplemanager", entity: "deployment", capability: "runtime_drift", description: "Read SampleManager deployment phases, artifacts, hashes, backup, and rollback state." },
+  { name: "samplemanager_deployment_finish", category: "samplemanager", entity: "deployment", capability: "runtime_drift", description: "Finish a manually orchestrated SampleManager deploymentId as succeeded or failed." },
+  { name: "samplemanager_deploy_file", category: "samplemanager", entity: "deployment", capability: "runtime_drift", description: "Deploy a staged file into an instance area with timestamped backup." },
+  { name: "samplemanager_restore_backup", category: "samplemanager", entity: "deployment", capability: "rollback_readiness", description: "Restore a specific SampleManager backup file to an explicit target." },
 ];
 
 export const TOOL_CATALOG_BY_NAME = new Map(TOOL_CATALOG.map((entry) => [entry.name, entry]));

@@ -33,6 +33,13 @@ export default function LoginPage() {
     <div className="flex h-screen items-center justify-center bg-gray-950">
       <div className="w-full max-w-sm">
         <div className="bg-gray-900 rounded-xl border border-gray-800 p-8">
+          <div className="mb-6 flex items-center gap-3">
+            <img src="/relay-mcp-icon.png" alt="Relay MCP" className="h-12 w-12" />
+            <div>
+              <p className="text-base font-semibold text-gray-100">Remote Ops</p>
+              <p className="text-xs text-cyan-400">Relay MCP</p>
+            </div>
+          </div>
           <h1 className="text-xl font-semibold text-gray-100 mb-6">
             {mode === "login" ? "Sign in" : "Create account"}
           </h1>

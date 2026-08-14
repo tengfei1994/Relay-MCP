@@ -359,13 +359,15 @@ namespace RelayAgent.Client
             SidebarSubtitleText.Visibility = compact
                 ? Visibility.Collapsed
                 : Visibility.Visible;
-            SidebarTitleText.Text = compact ? "R" : "Relay MCP";
-            SidebarTitleText.HorizontalAlignment = compact
+            SidebarBrandTextPanel.Visibility = compact
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+            SidebarBrandLogo.HorizontalAlignment = compact
                 ? HorizontalAlignment.Center
                 : HorizontalAlignment.Left;
             SidebarBrandPanel.Margin = compact
                 ? new Thickness(8, 22, 8, 20)
-                : new Thickness(22, 24, 18, 22);
+                : new Thickness(18, 22, 14, 20);
 
             foreach (var button in _navigation.Values)
             {

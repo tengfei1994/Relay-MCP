@@ -58,7 +58,7 @@ declare module "fastify" {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const app = Fastify({ logger: true });
-const RELAY_VERSION = process.env.RELAY_VERSION ?? "0.6.0";
+const RELAY_VERSION = process.env.RELAY_VERSION ?? "0.6.3";
 const RELAY_BUILD_COMMIT = process.env.RELAY_BUILD_COMMIT ?? "development";
 const RELAY_BUILD_TIME = process.env.RELAY_BUILD_TIME ?? "unknown";
 

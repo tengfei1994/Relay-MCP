@@ -1,6 +1,6 @@
 {
   "name": "remote-ops-platform",
-  "version": "0.6.0",
+  "version": "0.6.3",
   "description": "MCP-based remote operations platform with web management UI",
   "type": "module",
   "scripts": {

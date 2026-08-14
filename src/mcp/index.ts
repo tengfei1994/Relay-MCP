@@ -66,7 +66,7 @@ const MCP_PORT = Number(process.env.MCP_PORT ?? 3001);
 const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-in-production";
 const DB_PATH = process.env.DB_PATH ?? "./data/app.db";
 const RELAY_PUBLIC_URL = (process.env.RELAY_PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 3000}`).replace(/\/$/, "");
-const RELAY_MCP_VERSION = process.env.RELAY_MCP_VERSION ?? "0.6.0";
+const RELAY_MCP_VERSION = process.env.RELAY_MCP_VERSION ?? "0.6.3";
 const sampleManagerCapabilityRegistry = new SampleManagerCapabilityRegistry();
 
 interface McpUser {
@@ -3623,7 +3623,7 @@ app.get("/mcp/health", (_req, res) => {
     ok: true,
     route: "relay_mcp",
     namespace: "relay_",
-    version: "0.6.0",
+    version: "0.6.3",
     transport: "streamable-http",
     mcpPort: MCP_PORT,
   });

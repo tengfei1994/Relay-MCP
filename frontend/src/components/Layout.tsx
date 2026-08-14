@@ -22,10 +22,14 @@ export default function Layout() {
     <div className="flex h-screen bg-gray-950 text-gray-100">
       <aside className="w-56 flex flex-col bg-gray-900 border-r border-gray-800">
         <div className="p-4 border-b border-gray-800">
-          <h1 className="text-sm font-semibold text-indigo-400 tracking-wide uppercase">
-            Remote Ops
-          </h1>
-          <p className="mt-1 text-xs text-gray-500">{user?.username}{user?.isAdmin && <span className="ml-1 text-indigo-500">· admin</span>}</p>
+          <div className="flex items-center gap-3">
+            <img src="/relay-mcp-icon.png" alt="" className="h-10 w-10 shrink-0" />
+            <div className="min-w-0">
+              <h1 className="text-sm font-semibold text-gray-100">Remote Ops</h1>
+              <p className="text-[11px] text-cyan-400">Relay MCP</p>
+            </div>
+          </div>
+          <p className="mt-3 truncate text-xs text-gray-500">{user?.username}{user?.isAdmin && <span className="ml-1 text-indigo-500">· admin</span>}</p>
         </div>
 
         <nav className="flex-1 p-3 space-y-1">

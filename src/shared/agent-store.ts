@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { randomUUID } from "crypto";
 import { dirname } from "path";
 import { mkdirSync } from "fs";
+import { RemoteCommandTimeoutError } from "./remote-runner.js";
 import "dotenv/config";
 
 export interface AgentState {
@@ -40,6 +41,17 @@ export class AgentOfflineError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AgentOfflineError";
+  }
+}
+
+export class AgentJobTimeoutError extends RemoteCommandTimeoutError {
+  readonly jobId: string;
+
+  constructor(jobId: string, timeoutMs: number) {
+    super(timeoutMs);
+    this.name = "AgentJobTimeoutError";
+    this.jobId = jobId;
+    this.message = `Agent job '${jobId}' timed out after ${timeoutMs}ms; remote completion is unknown`;
   }
 }
 
@@ -199,7 +211,7 @@ export class AgentStore {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     this.cancelJob(jobId, "unknown");
-    throw new Error(`Agent job '${jobId}' timed out after ${timeoutMs}ms; remote completion is unknown`);
+    throw new AgentJobTimeoutError(jobId, timeoutMs);
   }
 
   private assertJobOwner(userId: number, agentId: string, jobId: string) {

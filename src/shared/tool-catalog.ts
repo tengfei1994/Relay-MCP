@@ -62,6 +62,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: "sync_workspace", category: "workspace", description: "Synchronize the project workspace to a linked remote directory through SFTP." },
   { name: "upload_workspace_file", category: "workspace", description: "Upload one Relay workspace file to a linked remote server." },
   { name: "job_status", category: "jobs", description: "Read status, result, error, and recent logs for an async job." },
+  { name: "job_wait", category: "jobs", description: "Wait for an async job terminal state or phase change without turning the wait deadline into an execution failure." },
   { name: "job_list", category: "jobs", description: "List recent async jobs owned by the current user." },
   { name: "job_cancel", category: "jobs", description: "Request cancellation and close the active SSH command for a running job." },
   { name: "context_record_fact", category: "context", description: "Record a durable project fact for future MCP sessions." },

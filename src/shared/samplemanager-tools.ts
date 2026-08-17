@@ -1,4 +1,4 @@
-import { ensureRemoteSuccess, type RemoteExecutionOptions, type RemoteRunner } from "./remote-runner.js";
+import { ensureRemoteSuccess, type RemoteErrorCategory, type RemoteExecutionOptions, type RemoteRunner } from "./remote-runner.js";
 import { compactText } from "./output.js";
 import { validateRelativeRemotePath, validateSampleManagerIdentifier } from "./shell-utils.js";
 
@@ -46,6 +46,68 @@ export function instancePaths(instance: SampleManagerInstanceRef) {
   };
 }
 
+export type SampleManagerRestartFailureStage =
+  | "preflight"
+  | "stop"
+  | "stop_wait"
+  | "start"
+  | "start_wait"
+  | "termination"
+  | "health"
+  | "parse"
+  | "transport";
+
+export interface SampleManagerRestartServiceEvidence {
+  name: string;
+  before: string | null;
+  after: string | null;
+  stop?: Record<string, unknown>;
+  start?: Record<string, unknown>;
+  wait?: { stop?: Record<string, unknown>; start?: Record<string, unknown> };
+}
+
+export interface SampleManagerRestartEvidence {
+  instance: string;
+  startedAt: string;
+  finishedAt?: string;
+  elapsedMs?: number;
+  configuredServices: string[];
+  missingServices: string[];
+  services: SampleManagerRestartServiceEvidence[];
+  terminatedProcessIds: number[];
+  terminationFailures: Array<{ processId: number; lastState: string | null; error: string }>;
+  failedServices: Array<{ service: string; desiredState: string; elapsedMs: number; lastState: string | null; error?: string }>;
+  health: {
+    state: "pending" | "healthy" | "failed";
+    checkedAt?: string;
+    readyServices: string[];
+    notRunningServices: string[];
+    missingServices: string[];
+  };
+  failure?: {
+    stage: SampleManagerRestartFailureStage;
+    message: string;
+    service?: string;
+    desiredState?: string;
+    elapsedMs?: number;
+    lastState?: string | null;
+  };
+}
+
+export class SampleManagerRestartError extends Error {
+  readonly evidence: SampleManagerRestartEvidence;
+  readonly category?: RemoteErrorCategory;
+  readonly cause?: unknown;
+
+  constructor(message: string, evidence: SampleManagerRestartEvidence, options: { category?: RemoteErrorCategory; cause?: unknown } = {}) {
+    super(message);
+    this.name = "SampleManagerRestartError";
+    this.evidence = evidence;
+    this.category = options.category;
+    this.cause = options.cause;
+  }
+}
+
 export async function restartSampleManagerInstance(
   runner: RemoteRunner,
   instance: SampleManagerInstanceRef,
@@ -58,43 +120,276 @@ export async function restartSampleManagerInstance(
   const serviceNames = configuredServices.length > 0
     ? configuredServices
     : [`smptq${suffix}`, `smpSTAT${suffix}`, `smp${suffix}`, `SMDaemon${suffix}`];
-  const script = `
+  const waitTimeoutMs = 60000;
+  const waitPollMs = 1000;
+  const evidence: SampleManagerRestartEvidence = {
+    instance: name,
+    startedAt: new Date().toISOString(),
+    configuredServices: [...serviceNames],
+    missingServices: [],
+    services: [],
+    terminatedProcessIds: [],
+    terminationFailures: [],
+    failedServices: [],
+    health: { state: "pending", readyServices: [], notRunningServices: [], missingServices: [] },
+  };
+  let stage: SampleManagerRestartFailureStage = "preflight";
+  let activeService: { name: string; desiredState: string } | undefined;
+
+  // The restart function owns phase names. Per-request transport phases would otherwise
+  // overwrite e.g. `waiting:<service>` with `completed` between service transitions.
+  const stepExecution: RemoteExecutionOptions = { ...execution, onPhase: undefined };
+  const finishEvidence = () => {
+    evidence.finishedAt = new Date().toISOString();
+    evidence.elapsedMs = Math.max(0, Date.parse(evidence.finishedAt) - Date.parse(evidence.startedAt));
+    return evidence;
+  };
+  const throwEvidence = (
+    failureStage: SampleManagerRestartFailureStage,
+    message: string,
+    details: Partial<SampleManagerRestartEvidence["failure"]> = {},
+    options: { category?: RemoteErrorCategory; cause?: unknown } = {}
+  ): never => {
+    const service = details.service;
+    const desiredState = details.desiredState;
+    const elapsedMs = details.elapsedMs ?? evidence.elapsedMs ?? Math.max(0, Date.now() - Date.parse(evidence.startedAt));
+    const lastState = details.lastState ?? null;
+    if (service && desiredState && !evidence.failedServices.some((item) => item.service === service && item.desiredState === desiredState)) {
+      evidence.failedServices.push({ service, desiredState, elapsedMs, lastState, error: message });
+    }
+    evidence.health = { ...evidence.health, state: "failed", checkedAt: new Date().toISOString() };
+    evidence.failure = { stage: failureStage, message, ...details, elapsedMs, lastState };
+    const completed = finishEvidence();
+    execution.onStderr?.(JSON.stringify(completed));
+    throw new SampleManagerRestartError(message, completed, options);
+  };
+  const parseStep = async (script: string, timeoutMs: number): Promise<Record<string, unknown>> => {
+    const result = await runner.execPowerShell(script, timeoutMs, stepExecution);
+    ensureRemoteSuccess(result);
+    const payload = (result.stdout || result.stderr).trim();
+    if (!payload) throw new Error("Restart step returned no JSON evidence");
+    try {
+      return JSON.parse(payload) as Record<string, unknown>;
+    } catch {
+      stage = "parse";
+      throw new Error(`Restart step returned invalid JSON evidence: ${compactText(payload, 500)}`);
+    }
+  };
+  const asStringArray = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  const numberValue = (value: unknown, fallback = 0): number => typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  const transitionScript = (serviceName: string, action: "stop" | "start", desiredState: "Stopped" | "Running") => `
+# relay-restart:service-transition
+$ErrorActionPreference = "Stop"
+$serviceName = ${psQuote(serviceName)}
+$action = ${psQuote(action)}
+$desiredState = ${psQuote(desiredState)}
+$startedAt = Get-Date
+$service = Get-Service -Name $serviceName -ErrorAction Stop
+$before = [string]$service.Status
+if (($action -eq "stop" -and $before -ne "Stopped") -or ($action -eq "start" -and $before -ne "Running")) {
+  if ($action -eq "stop") { Stop-Service -Name $serviceName -Force -ErrorAction Stop }
+  else { Start-Service -Name $serviceName -ErrorAction Stop }
+}
+$actionElapsedMs = [int][math]::Round(((Get-Date) - $startedAt).TotalMilliseconds)
+$waitStartedAt = Get-Date
+$deadline = (Get-Date).AddMilliseconds(${waitTimeoutMs})
+$lastState = $null
+$reached = $false
+do {
+  $current = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+  $lastState = if ($current) { [string]$current.Status } else { "Missing" }
+  if ($lastState -eq $desiredState) { $reached = $true; break }
+  if ((Get-Date) -ge $deadline) { break }
+  Start-Sleep -Milliseconds ${waitPollMs}
+} while ($true)
+[pscustomobject]@{
+  service = $serviceName
+  action = $action
+  desiredState = $desiredState
+  before = $before
+  after = $lastState
+  reached = $reached
+  lastState = $lastState
+  actionElapsedMs = $actionElapsedMs
+  waitElapsedMs = [int][math]::Round(((Get-Date) - $waitStartedAt).TotalMilliseconds)
+  elapsedMs = [int][math]::Round(((Get-Date) - $startedAt).TotalMilliseconds)
+} | ConvertTo-Json -Depth 4 -Compress
+`;
+
+  try {
+    execution.onPhase?.("restart_preflight");
+    stage = "preflight";
+    const preflight = await parseStep(`
+# relay-restart:preflight
+$ErrorActionPreference = "Stop"
+$services = ${psArray(serviceNames)}
+$serviceEvidence = @()
+$missing = @()
+foreach ($serviceName in $services) {
+  $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+  if ($service) { $serviceEvidence += [pscustomobject]@{ name = $serviceName; before = [string]$service.Status } }
+  else { $missing += $serviceName }
+}
+[pscustomobject]@{ configuredServices = @($services); missingServices = @($missing); services = @($serviceEvidence) } | ConvertTo-Json -Depth 5 -Compress
+`, 30000);
+    evidence.missingServices = asStringArray(preflight.missingServices);
+    evidence.health.missingServices = [...evidence.missingServices];
+    const preflightServices = new Map<string, Record<string, unknown>>(
+      (Array.isArray(preflight.services) ? preflight.services : [])
+        .filter((service): service is Record<string, unknown> => Boolean(service) && typeof service === "object" && typeof (service as Record<string, unknown>).name === "string")
+        .map((service) => [service.name as string, service])
+    );
+    evidence.services = serviceNames
+      .filter((service) => !evidence.missingServices.includes(service))
+      .map((service) => ({ name: service, before: (preflightServices.get(service)?.before as string | undefined) ?? null, after: (preflightServices.get(service)?.before as string | undefined) ?? null }));
+    if (evidence.missingServices.length > 0) {
+      throwEvidence("preflight", `Configured services are missing: ${evidence.missingServices.join(", ")}`);
+    }
+    const serviceByName = new Map(evidence.services.map((service) => [service.name, service]));
+
+    for (const serviceName of [...serviceNames].reverse()) {
+      const service = serviceByName.get(serviceName)!;
+      activeService = { name: serviceName, desiredState: "Stopped" };
+      stage = "stop";
+      execution.onPhase?.(`stopping:${serviceName}`);
+      const transition = await parseStep(transitionScript(serviceName, "stop", "Stopped"), waitTimeoutMs + 5000);
+      execution.onPhase?.(`waiting:${serviceName}`);
+      service.stop = { ...transition, elapsedMs: numberValue(transition.actionElapsedMs, numberValue(transition.elapsedMs)) };
+      service.wait = { ...service.wait, stop: { ...transition, elapsedMs: numberValue(transition.waitElapsedMs, numberValue(transition.elapsedMs)) } };
+      service.after = (transition.lastState as string | undefined) ?? service.after;
+      if (transition.reached !== true) {
+        throwEvidence("stop_wait", `Service '${serviceName}' did not reach 'Stopped' within ${numberValue(transition.waitElapsedMs, waitTimeoutMs)}ms; last state: ${transition.lastState ?? "Unknown"}`, {
+          service: serviceName,
+          desiredState: "Stopped",
+          elapsedMs: numberValue(transition.waitElapsedMs, waitTimeoutMs),
+          lastState: (transition.lastState as string | undefined) ?? null,
+        }, { category: "timeout" });
+      }
+    }
+
+    activeService = undefined;
+    stage = "termination";
+    execution.onPhase?.("terminating_instance_processes");
+    const termination = await parseStep(`
+# relay-restart:terminate
 $ErrorActionPreference = "Stop"
 $instanceName = ${psQuote(name)}
 $instanceRoot = ${psQuote(paths.root)}
-$services = ${psArray(serviceNames)}
-$existing = @($services | ForEach-Object { Get-Service $_ -ErrorAction SilentlyContinue })
-$stopOrder = @($existing)
-[array]::Reverse($stopOrder)
-foreach ($svc in $stopOrder) {
-  if ($svc.Status -ne 'Stopped') {
-    Stop-Service -Name $svc.Name -Force -ErrorAction Stop
-  }
-}
+$normalizedRoot = $instanceRoot.TrimEnd('\\', '/')
+$instanceTokenPattern = '(?i)(?<![A-Za-z0-9_.-])' + [Regex]::Escape($instanceName) + '(?![A-Za-z0-9_.-])'
 $terminated = @()
+$terminationFailures = @()
 Get-CimInstance Win32_Process -Filter "Name='SampleManagerServerHost.exe'" -ErrorAction SilentlyContinue |
   ForEach-Object {
-    $belongsToInstance =
-      ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($instanceRoot, [StringComparison]::OrdinalIgnoreCase)) -or
-      ($_.CommandLine -and $_.CommandLine.IndexOf($instanceName, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+    $processId = [int]$_.ProcessId
+    $executablePath = [string]$_.ExecutablePath
+    $commandLine = [string]$_.CommandLine
+    $pathBelongsToInstance = $executablePath -and (
+      $executablePath.Equals($normalizedRoot, [StringComparison]::OrdinalIgnoreCase) -or
+      $executablePath.StartsWith($normalizedRoot + '\\', [StringComparison]::OrdinalIgnoreCase)
+    )
+    $commandBelongsToInstance = $commandLine -and [Regex]::IsMatch($commandLine, $instanceTokenPattern)
+    $belongsToInstance = $pathBelongsToInstance -or $commandBelongsToInstance
     if ($belongsToInstance) {
-      $terminated += $_.ProcessId
-      Invoke-CimMethod -InputObject $_ -MethodName Terminate -ErrorAction SilentlyContinue | Out-Null
+      try {
+        $terminationResult = Invoke-CimMethod -InputObject $_ -MethodName Terminate -ErrorAction Stop
+        if ($terminationResult.ReturnValue -ne 0) {
+          throw "Terminate returned $($terminationResult.ReturnValue)"
+        }
+        $deadline = (Get-Date).AddMilliseconds(10000)
+        do {
+          $remaining = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction SilentlyContinue
+          if (-not $remaining) { break }
+          Start-Sleep -Milliseconds 250
+        } while ((Get-Date) -lt $deadline)
+        if ($remaining) {
+          $terminationFailures += [pscustomobject]@{ processId = $processId; lastState = "Running"; error = "Process still exists after terminate" }
+        } else {
+          $terminated += $processId
+        }
+      } catch {
+        $terminationFailures += [pscustomobject]@{ processId = $processId; lastState = "Unknown"; error = $_.Exception.Message }
+      }
     }
   }
-foreach ($svc in $existing) {
-  Start-Service -Name $svc.Name -ErrorAction Stop
+[pscustomobject]@{ terminatedProcessIds = @($terminated); terminationFailures = @($terminationFailures) } | ConvertTo-Json -Depth 5 -Compress
+`, 30000);
+    evidence.terminatedProcessIds = (Array.isArray(termination.terminatedProcessIds) ? termination.terminatedProcessIds : [])
+      .filter((value): value is number => typeof value === "number");
+    evidence.terminationFailures = (Array.isArray(termination.terminationFailures) ? termination.terminationFailures : [])
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+      .map((item) => ({ processId: numberValue(item.processId), lastState: (item.lastState as string | undefined) ?? null, error: String(item.error ?? "Termination was not verified") }));
+    if (evidence.terminationFailures.length > 0) {
+      throwEvidence("termination", `Failed to verify termination of process IDs: ${evidence.terminationFailures.map((item) => item.processId).join(", ")}`);
+    }
+
+    for (const serviceName of serviceNames) {
+      const service = serviceByName.get(serviceName)!;
+      activeService = { name: serviceName, desiredState: "Running" };
+      stage = "start";
+      execution.onPhase?.(`starting:${serviceName}`);
+      const transition = await parseStep(transitionScript(serviceName, "start", "Running"), waitTimeoutMs + 5000);
+      execution.onPhase?.(`waiting:${serviceName}`);
+      service.start = { ...transition, elapsedMs: numberValue(transition.actionElapsedMs, numberValue(transition.elapsedMs)) };
+      service.wait = { ...service.wait, start: { ...transition, elapsedMs: numberValue(transition.waitElapsedMs, numberValue(transition.elapsedMs)) } };
+      service.after = (transition.lastState as string | undefined) ?? service.after;
+      if (transition.reached !== true) {
+        throwEvidence("start_wait", `Service '${serviceName}' did not reach 'Running' within ${numberValue(transition.waitElapsedMs, waitTimeoutMs)}ms; last state: ${transition.lastState ?? "Unknown"}`, {
+          service: serviceName,
+          desiredState: "Running",
+          elapsedMs: numberValue(transition.waitElapsedMs, waitTimeoutMs),
+          lastState: (transition.lastState as string | undefined) ?? null,
+        }, { category: "timeout" });
+      }
+    }
+
+    activeService = undefined;
+    stage = "health";
+    execution.onPhase?.("health_check");
+    const health = await parseStep(`
+# relay-restart:health
+$ErrorActionPreference = "Stop"
+$services = ${psArray(serviceNames)}
+$readyServices = @()
+$notRunningServices = @()
+foreach ($serviceName in $services) {
+  $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+  if ($service -and [string]$service.Status -eq "Running") { $readyServices += $serviceName }
+  else { $notRunningServices += $serviceName }
 }
-[pscustomobject]@{
-  instance = $instanceName
-  configuredServices = $services
-  terminatedProcessIds = $terminated
-  services = @(Get-Service $services -ErrorAction SilentlyContinue | Select-Object Name, Status)
-} | ConvertTo-Json -Depth 4 -Compress
-`;
-  const result = await runner.execPowerShell(script, 120000, execution);
-  ensureRemoteSuccess(result);
-  return compactText(`${result.stdout}\n${result.stderr}`.trim());
+[pscustomobject]@{ readyServices = @($readyServices); notRunningServices = @($notRunningServices) } | ConvertTo-Json -Depth 4 -Compress
+`, 30000);
+    evidence.health = {
+      state: asStringArray(health.notRunningServices).length > 0 ? "failed" : "healthy",
+      checkedAt: new Date().toISOString(),
+      readyServices: asStringArray(health.readyServices),
+      notRunningServices: asStringArray(health.notRunningServices),
+      missingServices: [],
+    };
+    if (evidence.health.notRunningServices.length > 0) {
+      const failedService = evidence.health.notRunningServices[0];
+      throwEvidence("health", `Service '${failedService}' is not Running after restart`, {
+        service: failedService,
+        desiredState: "Running",
+        lastState: serviceByName.get(failedService)?.after ?? null,
+      });
+    }
+    execution.onPhase?.("completed");
+    return compactText(JSON.stringify(finishEvidence()));
+  } catch (error) {
+    if (error instanceof SampleManagerRestartError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    const fallbackStage = stage;
+    const service = activeService?.name;
+    const desiredState = activeService?.desiredState;
+    const conciseMessage = service
+      ? `Restart ${fallbackStage} failed for service '${service}' targeting '${desiredState}': ${message}`
+      : `Restart ${fallbackStage} failed: ${message}`;
+    const category = error && typeof error === "object" && "category" in error
+      ? (error as { category?: RemoteErrorCategory }).category
+      : undefined;
+    return throwEvidence(fallbackStage, conciseMessage, { service, desiredState }, { category, cause: error });
+  }
 }
 
 export async function clearFormCache(
@@ -1038,45 +1333,252 @@ $tools = @(Get-RelayMsBuildCandidates)
   return compactText(result.stdout || result.stderr);
 }
 
+export interface SampleManagerBuildProfile {
+  kind?: "msbuild" | "dotnet" | "unknown";
+  selectedPath?: string;
+  selectedVersion?: string;
+  targetFramework?: string;
+}
+
+export interface SampleManagerBuildOptions {
+  instance?: SampleManagerInstanceRef;
+  msbuildProperties?: Record<string, string>;
+  environmentVariables?: Record<string, string>;
+  preflightOnly?: boolean;
+  expectedAssemblyPath?: string;
+}
+
+interface EffectiveBuildContext {
+  instance?: { name: string; root: string; exe: string };
+  properties: Record<string, string>;
+  environment: Record<string, string>;
+  redactionValues: Record<string, string>;
+  preflightOnly: boolean;
+  expectedAssemblyPath?: string;
+}
+
+const BUILD_SETTING_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SENSITIVE_BUILD_SETTING_NAME = /TOKEN|SECRET|PASSWORD|PWD|PASS|KEY|CREDENTIAL|AUTH|PAT|BEARER|COOKIE|CONNECTION_?STRING/i;
+
+/**
+ * Converts an instance name into the deterministic MSBuild property <INSTANCE>_EXE:
+ * ASCII letters and digits are preserved in uppercase, other characters become `_`,
+ * and an underscore is prepended when the first character is not a letter or `_`.
+ */
+export function instanceExePropertyName(name: string): string {
+  const normalized = name.replace(/[^A-Za-z0-9_]/g, "_").toUpperCase() || "INSTANCE";
+  const identifier = /^[A-Za-z_]/.test(normalized) ? normalized : `_${normalized}`;
+  return `${identifier}_EXE`;
+}
+
+function isSensitiveEnvironmentVariableName(name: string): boolean {
+  return SENSITIVE_BUILD_SETTING_NAME.test(name);
+}
+
+export function redactSensitiveBuildOutput(text: string, environment: Record<string, string>): string {
+  return Object.entries(environment)
+    .filter(([, value]) => value.length > 0)
+    .sort(([, left], [, right]) => right.length - left.length)
+    .reduce((redacted, [, value]) => redacted.split(value).join("[REDACTED]"), text);
+}
+
+export function buildSettingsMetadata(values: Record<string, string> | undefined): {
+  keys: string[];
+  count: number;
+  valuesRedacted: true;
+} {
+  const keys = Object.keys(values ?? {}).sort();
+  return { keys, count: keys.length, valuesRedacted: true };
+}
+
+function redactedBuildExecutionOptions(
+  execution: RemoteExecutionOptions,
+  environment: Record<string, string>
+): RemoteExecutionOptions {
+  return {
+    ...execution,
+    onStdout: execution.onStdout
+      ? (text) => execution.onStdout?.(redactSensitiveBuildOutput(text, environment))
+      : undefined,
+    onStderr: execution.onStderr
+      ? (text) => execution.onStderr?.(redactSensitiveBuildOutput(text, environment))
+      : undefined,
+  };
+}
+
+function validatedBuildSettings(values: Record<string, string> | undefined, label: string): Record<string, string> {
+  const validated: Record<string, string> = {};
+  for (const [name, value] of Object.entries(values ?? {})) {
+    if (!BUILD_SETTING_NAME.test(name)) throw new Error(`Invalid ${label} name: ${name}`);
+    if (typeof value !== "string") throw new Error(`${label} '${name}' must be a string`);
+    validated[name] = value;
+  }
+  return validated;
+}
+
+export function validateBuildEnvironmentVariables(
+  values: Record<string, string> | undefined
+): Record<string, string> {
+  const environment = validatedBuildSettings(values, "environment variable");
+  const sensitiveName = Object.keys(environment).find(isSensitiveEnvironmentVariableName);
+  if (sensitiveName) {
+    throw new Error(
+      `Direct secret-bearing environment variables are not supported; preconfigure secrets on the target service account (rejected: ${sensitiveName})`
+    );
+  }
+  return environment;
+}
+
+export function validateBuildMsbuildProperties(
+  values: Record<string, string> | undefined
+): Record<string, string> {
+  const properties = validatedBuildSettings(values, "MSBuild property");
+  const sensitiveName = Object.keys(properties).find(isSensitiveEnvironmentVariableName);
+  if (sensitiveName) {
+    throw new Error(
+      `Direct secret-bearing MSBuild properties are not supported; preconfigure secrets on the target service account (rejected: ${sensitiveName})`
+    );
+  }
+  return properties;
+}
+
+function effectiveBuildContext(options: SampleManagerBuildOptions): EffectiveBuildContext {
+  const properties = validateBuildMsbuildProperties(options.msbuildProperties);
+  const environment = validateBuildEnvironmentVariables(options.environmentVariables);
+  if (!options.instance) {
+    return {
+      properties,
+      environment,
+      redactionValues: { ...properties, ...environment },
+      preflightOnly: options.preflightOnly === true,
+      expectedAssemblyPath: options.expectedAssemblyPath,
+    };
+  }
+
+  const paths = instancePaths(options.instance);
+  const name = instanceName(options.instance);
+  return {
+    instance: { name, root: paths.root, exe: paths.exe },
+    properties: {
+      ...properties,
+      [instanceExePropertyName(name)]: paths.exe,
+      SAMPLEMANAGER_EXE: paths.exe,
+    },
+    environment,
+    redactionValues: { ...properties, ...environment },
+    preflightOnly: options.preflightOnly === true,
+    expectedAssemblyPath: options.expectedAssemblyPath,
+  };
+}
+
+function psOrderedMap(name: string, values: Record<string, string>): string {
+  const entries = Object.entries(values)
+    .map(([key, value]) => `  ${psQuote(key)} = ${psQuote(value)}`)
+    .join("\n");
+  return `$${name} = [ordered]@{${entries ? `\n${entries}\n` : ""}}`;
+}
+
+function buildScript(
+  projectOrSolutionPath: string,
+  configuration: string,
+  explicitToolPath: string | undefined,
+  profile: SampleManagerBuildProfile,
+  context: EffectiveBuildContext
+): string {
+  const toolKind = profile.kind === "dotnet" ? "dotnet" : "msbuild";
+  const toolSetup = toolKind === "dotnet"
+    ? `
+$dotnet = ${psQuote(explicitToolPath || profile.selectedPath || "dotnet.exe")}
+$dotnetCommand = Get-Command $dotnet -ErrorAction SilentlyContinue
+$toolPath = if (Test-Path -LiteralPath $dotnet -PathType Leaf) { (Resolve-Path -LiteralPath $dotnet).Path } elseif ($dotnetCommand) { $dotnetCommand.Source } else { $null }
+if (-not $toolPath) { throw "dotnet was not found; pass msbuildPath explicitly" }
+`
+    : `
+$msbuild = ${explicitToolPath ? psQuote(explicitToolPath) : "$null"}
+if (-not $msbuild) {
+  ${buildToolDiscoveryPowerShell()}
+  $tools = @(Get-RelayMsBuildCandidates)
+  if ($tools.Count -gt 0) { $msbuild = $tools[0].path }
+}
+if (-not $msbuild -or -not (Test-Path -LiteralPath $msbuild -PathType Leaf)) {
+  throw "MSBuild.exe was not found; pass msbuildPath explicitly"
+}
+$toolPath = (Resolve-Path -LiteralPath $msbuild).Path
+`;
+  const instanceContext = context.instance
+    ? `[pscustomobject]@{ name = ${psQuote(context.instance.name)}; root = ${psQuote(context.instance.root)}; exe = ${psQuote(context.instance.exe)} }`
+    : "$null";
+  const instanceValidation = context.instance
+    ? `
+$instanceRoot = ${psQuote(context.instance.root)}
+$instanceExe = ${psQuote(context.instance.exe)}
+if (-not (Test-Path -LiteralPath $instanceRoot -PathType Container)) { throw "SampleManager instance root not found: $instanceRoot" }
+if (-not (Test-Path -LiteralPath $instanceExe -PathType Container)) { throw "SampleManager instance Exe directory not found: $instanceExe" }
+`
+    : "";
+  const properties = psOrderedMap("effectiveProperties", context.properties);
+  const buildEnvironment = psOrderedMap("buildEnvironment", context.environment);
+  const propertyArguments = Object.entries(context.properties)
+    .map(([name, value]) => psQuote(`/p:${name}=${value}`))
+    .join(", ");
+  const buildInvocation = toolKind === "dotnet"
+    ? `
+$arguments = @("build", $project, "--configuration", ${psQuote(configuration)}, "--nologo")
+${profile.targetFramework ? `$arguments += @("--framework", ${psQuote(profile.targetFramework)})` : ""}
+$arguments += @(${propertyArguments})
+& $toolPath @arguments
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+`
+    : `
+$arguments = @($project, "/t:Restore,Build", "/p:Configuration=${configuration}", "/nologo")
+$arguments += @(${propertyArguments})
+& $toolPath @arguments
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+`;
+  return `
+$ErrorActionPreference = "Stop"
+$project = ${psQuote(projectOrSolutionPath)}
+if (-not (Test-Path -LiteralPath $project)) { throw "Project or solution not found: $project" }
+${instanceValidation}
+${properties}
+${buildEnvironment}
+foreach ($entry in $buildEnvironment.GetEnumerator()) { Set-Item -Path "Env:$($entry.Key)" -Value $entry.Value }
+${toolSetup}
+if (${context.preflightOnly ? "$true" : "$false"}) {
+  [pscustomobject]@{
+    preflightOnly = $true
+    projectOrSolutionPath = $project
+    tool = [pscustomobject]@{ kind = ${psQuote(toolKind)}; path = $toolPath }
+    instance = ${instanceContext}
+    effectiveProperties = $effectiveProperties
+    effectiveEnvironment = $buildEnvironment
+    expectedAssemblyPath = ${context.expectedAssemblyPath ? psQuote(context.expectedAssemblyPath) : "$null"}
+  } | ConvertTo-Json -Depth 6 -Compress
+  exit 0
+}
+${buildInvocation}
+`;
+}
+
 export async function buildDotNetProject(
   runner: RemoteRunner,
   projectOrSolutionPath: string,
   configuration = "Release",
   msbuildPath?: string,
   timeoutMs = 600000,
-  execution: RemoteExecutionOptions = {}
+  execution: RemoteExecutionOptions = {},
+  options: SampleManagerBuildOptions = {}
 ): Promise<string> {
-  if (!/^[A-Za-z0-9_.-]+$/.test(configuration)) {
-    throw new Error(`Invalid build configuration: ${configuration}`);
-  }
-  const script = `
-$ErrorActionPreference = "Stop"
-$project = ${psQuote(projectOrSolutionPath)}
-if (-not (Test-Path -LiteralPath $project)) {
-  throw "Project or solution not found: $project"
-}
-$msbuild = ${msbuildPath ? psQuote(msbuildPath) : "$null"}
-if (-not $msbuild) {
-  ${buildToolDiscoveryPowerShell()}
-  $tools = @(Get-RelayMsBuildCandidates)
-  if ($tools.Count -gt 0) { $msbuild = $tools[0].path }
-}
-if (-not $msbuild -or -not (Test-Path -LiteralPath $msbuild)) {
-  throw "MSBuild.exe was not found; pass msbuildPath explicitly"
-}
-& $msbuild $project /t:Restore,Build /p:Configuration=${configuration} /nologo
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-`;
-  const result = await runner.execPowerShell(script, timeoutMs, execution);
-  ensureRemoteSuccess(result);
-  return compactText(`${result.stdout}\n${result.stderr}`.trim());
-}
-
-export interface SampleManagerBuildProfile {
-  kind?: "msbuild" | "dotnet" | "unknown";
-  selectedPath?: string;
-  selectedVersion?: string;
-  targetFramework?: string;
+  return buildSampleManagerProject(
+    runner,
+    projectOrSolutionPath,
+    configuration,
+    msbuildPath,
+    { kind: "msbuild" },
+    timeoutMs,
+    execution,
+    options
+  );
 }
 
 export async function buildSampleManagerProject(
@@ -1086,34 +1588,32 @@ export async function buildSampleManagerProject(
   explicitToolPath?: string,
   profile: SampleManagerBuildProfile = {},
   timeoutMs = 600000,
-  execution: RemoteExecutionOptions = {}
+  execution: RemoteExecutionOptions = {},
+  options: SampleManagerBuildOptions = {}
 ): Promise<string> {
-  if (profile.kind !== "dotnet") {
-    return buildDotNetProject(
-      runner,
-      projectOrSolutionPath,
-      configuration,
-      explicitToolPath || profile.selectedPath,
-      timeoutMs,
-      execution
-    );
-  }
   if (!/^[A-Za-z0-9_.-]+$/.test(configuration)) {
     throw new Error(`Invalid build configuration: ${configuration}`);
   }
-  const script = `
-$ErrorActionPreference = "Stop"
-$project = ${psQuote(projectOrSolutionPath)}
-if (-not (Test-Path -LiteralPath $project)) { throw "Project or solution not found: $project" }
-$dotnet = ${psQuote(explicitToolPath || profile.selectedPath || "dotnet.exe")}
-$arguments = @("build", $project, "--configuration", ${psQuote(configuration)}, "--nologo")
-${profile.targetFramework ? `$arguments += @("--framework", ${psQuote(profile.targetFramework)})` : ""}
-& $dotnet @arguments
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-`;
-  const result = await runner.execPowerShell(script, timeoutMs, execution);
-  ensureRemoteSuccess(result);
-  return compactText(`${result.stdout}\n${result.stderr}`.trim());
+  const context = effectiveBuildContext(options);
+  const script = buildScript(
+    projectOrSolutionPath,
+    configuration,
+    explicitToolPath || profile.selectedPath,
+    profile,
+    context
+  );
+  const result = await runner.execPowerShell(
+    script,
+    timeoutMs,
+    redactedBuildExecutionOptions(execution, context.redactionValues)
+  );
+  const redactedResult = {
+    ...result,
+    stdout: redactSensitiveBuildOutput(result.stdout, context.redactionValues),
+    stderr: redactSensitiveBuildOutput(result.stderr, context.redactionValues),
+  };
+  ensureRemoteSuccess(redactedResult);
+  return compactText(`${redactedResult.stdout}\n${redactedResult.stderr}`.trim());
 }
 
 export type SampleManagerDeployArea = "exe" | "solutionAssemblies" | "forms" | "resourceIcon" | "data";

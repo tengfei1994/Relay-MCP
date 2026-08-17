@@ -3,7 +3,15 @@ import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { AgentOfflineError, AgentStore } from "../src/shared/agent-store.ts";
+import { AgentJobTimeoutError, AgentOfflineError, AgentStore } from "../src/shared/agent-store.ts";
+
+test("agent job wait timeout has typed unknown execution semantics", () => {
+  const error = new AgentJobTimeoutError("agent-job-1", 120000);
+  assert.equal(error.category, "timeout");
+  assert.equal(error.timeoutMs, 120000);
+  assert.equal(error.jobId, "agent-job-1");
+  assert.match(error.message, /remote completion is unknown/i);
+});
 
 test("agent store shares heartbeat, queue, claim, and result state", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "relay-agent-store-"));

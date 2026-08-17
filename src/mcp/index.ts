@@ -10,9 +10,10 @@ import { ensureRemoteSuccess, RemoteRunner } from "../shared/remote-runner.js";
 import { AgentRemoteRunner } from "../shared/agent-remote-runner.js";
 import { selectProjectTarget } from "../shared/project-target-selection.js";
 import { compactText, compactTextWithMetadata, sanitizeStructuredOutput, summarizeExec, summarizeJson } from "../shared/output.js";
-import { cancelJob, getJob, listJobs, startJob, writeAudit, type JobContext } from "../shared/job-store.js";
+import { cancelJob, getJob, listJobs, startJob, waitForJobRecord, writeAudit, type JobContext, type JobRecord } from "../shared/job-store.js";
 import { recordFact, searchFacts } from "../shared/context-store.js";
-import { finishDeployment, getDeployment, startDeployment, updateDeployment } from "../shared/deployment-store.js";
+import { appendDeploymentOperationArtifact, deploymentFailureDisposition, finishDeployment, getDeployment, requireRunningDeployment, startDeployment, updateDeployment } from "../shared/deployment-store.js";
+import { sanitizeAuditArguments } from "../shared/audit-sanitizer.js";
 import {
   clearFormCache,
   buildSampleManagerProject,
@@ -33,6 +34,9 @@ import {
   runUnicodeCheck,
   sqlContainsMutation,
   sampleManagerTableSchema,
+  buildSettingsMetadata,
+  validateBuildEnvironmentVariables,
+  validateBuildMsbuildProperties,
 } from "../shared/samplemanager-tools.js";
 import { persistQueryArtifact } from "../shared/query-artifact-store.js";
 import {
@@ -85,16 +89,7 @@ interface McpUser {
 }
 
 function auditArguments(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(auditArguments);
-  if (!value || typeof value !== "object") return value;
-  const sensitive = /^(script|content|base64|token|password|sql|parameters)$/i;
-  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => {
-    if (sensitive.test(key)) {
-      const text = typeof item === "string" ? item : JSON.stringify(item);
-      return [key, { redacted: true, length: text?.length ?? 0 }];
-    }
-    return [key, auditArguments(item)];
-  }));
+  return sanitizeAuditArguments(value);
 }
 
 // ─── Auth middleware ───────────────────────────────────────────────────────────
@@ -404,13 +399,24 @@ function createMcpServer(user: McpUser) {
       updateDeployment(deploymentId, { steps });
       return result;
     } catch (error) {
+      const disposition = deploymentFailureDisposition(error, {
+        rollbackRequested: deployment.rollback.requested,
+        backupAvailable: false,
+      });
       steps[steps.length - 1] = {
         ...steps[steps.length - 1],
-        status: "failed",
+        status: disposition.stepStatus,
         finishedAt: new Date().toISOString(),
         error: error instanceof Error ? error.message : String(error),
       };
-      updateDeployment(deploymentId, { steps, status: "failed", error: steps[steps.length - 1].error });
+      updateDeployment(deploymentId, {
+        steps,
+        status: disposition.status,
+        error: steps[steps.length - 1].error,
+        recommendedResumeAction: disposition.status === "unknown"
+          ? "Remote completion is unknown. Inspect job and target state before retrying; do not roll back automatically."
+          : undefined,
+      });
       throw error;
     }
   }
@@ -2245,6 +2251,31 @@ else {
     }
   );
 
+  function jobSnapshot(job: JobRecord) {
+    return {
+      ...job,
+      executionState:
+        job.status === "succeeded" ? "Completed"
+        : job.status === "failed" ? "Failed"
+        : job.status === "unknown" || job.status === "interrupted" ? "Unknown"
+        : job.status === "cancelled" ? "Cancelled"
+        : job.phase === "not_started" ? "NotStarted"
+        : "Running",
+      dispatchState:
+        job.status === "unknown" || job.phase === "unknown" ? "remote_completion_unknown"
+        : job.phase === "agent_claimed" ? "agent_claimed"
+        : job.phase === "waiting_agent" ? "waiting_agent"
+        : job.phase === "queued" ? "queued"
+        : job.phase === "connecting" ? "connecting"
+        : job.status === "succeeded" ? "completed"
+        : job.status === "failed" ? "remote_or_relay_failed"
+        : job.status,
+      agentClaimedAt: job.logs?.find((entry) => entry.message === "phase=agent_claimed")?.at,
+      logs: job.logs?.slice(-40),
+      summary: job.summary ? compactTextWithMetadata(job.summary, 6000) : undefined,
+    };
+  }
+
   // ── Tool: job status and history ──────────────────────────────────────────
   server.tool(
     "job_status",
@@ -2255,29 +2286,42 @@ else {
     async ({ jobId }) => {
       const job = getJob(jobId);
       if (!job || job.userId !== user.id) throw new Error(`Job '${jobId}' not found`);
-      const snapshot = {
-        ...job,
-        executionState:
-          job.status === "succeeded" ? "Completed"
-          : job.status === "failed" ? "Failed"
-          : job.status === "unknown" || job.status === "interrupted" ? "Unknown"
-          : job.status === "cancelled" ? "Cancelled"
-          : job.phase === "not_started" ? "NotStarted"
-          : "Running",
-        dispatchState:
-          job.status === "unknown" || job.phase === "unknown" ? "remote_completion_unknown"
-          : job.phase === "agent_claimed" ? "agent_claimed"
-          : job.phase === "waiting_agent" ? "waiting_agent"
-          : job.phase === "queued" ? "queued"
-          : job.phase === "connecting" ? "connecting"
-          : job.status === "succeeded" ? "completed"
-          : job.status === "failed" ? "remote_or_relay_failed"
-          : job.status,
-        agentClaimedAt: job.logs?.find((entry) => entry.message === "phase=agent_claimed")?.at,
-        logs: job.logs?.slice(-40),
-        summary: job.summary ? compactTextWithMetadata(job.summary, 6000) : undefined,
-      };
+      const snapshot = jobSnapshot(job);
       return { content: [{ type: "text", text: summarizeJson(snapshot) }] };
+    }
+  );
+
+  server.tool(
+    "job_wait",
+    "Wait for an asynchronous Relay-MCP job to finish or change phase. A wait deadline returns the latest snapshot instead of changing the job status.",
+    {
+      jobId: z.string().describe("Job id returned by an async tool"),
+      waitMs: z.number().int().min(0).max(110000).optional().describe("Maximum long-poll wait; default 90000."),
+      pollMs: z.number().int().min(50).max(5000).optional().describe("Polling interval; default 500."),
+      returnOnPhaseChange: z.boolean().optional().describe("Return when phase changes even if the job remains running."),
+    },
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async ({ jobId, waitMs = 90000, pollMs = 500, returnOnPhaseChange = false }) => {
+      const waited = await waitForJobRecord(jobId, user.id, { waitMs, pollMs, returnOnPhaseChange });
+      const response = {
+        ...jobSnapshot(waited.job),
+        wait: {
+          reason: waited.reason,
+          waitedMs: waited.waitedMs,
+          initialPhase: waited.initialPhase,
+          finalPhase: waited.job.phase,
+          terminal: waited.job.status !== "running",
+        },
+      };
+      return {
+        structuredContent: response,
+        content: [{ type: "text", text: summarizeJson(response) }],
+      };
     }
   );
 
@@ -2444,7 +2488,7 @@ else {
         userId: user.id,
         username: user.username,
         project: resolvedProjectName,
-        environment: environment ?? "production",
+        environment: ps.environment,
         host: ps.server.host || ps.server.agentId || ps.server.name,
         kind: "samplemanager-assembly",
         instance: instanceName,
@@ -3002,9 +3046,16 @@ else {
         finishDeployment(run.id, { status: "succeeded", rollback: run.rollback, artifacts: { files: results, stagingRoot, verification, backupSqlProvided: Boolean(backupSql) } });
           return summarizeJson({ deploymentId: run.id, stagingRoot, files: results, verification });
         } catch (error) {
+          const disposition = deploymentFailureDisposition(error, {
+            rollbackRequested: false,
+            backupAvailable: false,
+          });
           updateDeployment(run.id, {
-            status: "failed",
+            status: disposition.status,
             error: error instanceof Error ? error.message : String(error),
+            recommendedResumeAction: disposition.status === "unknown"
+              ? "Remote completion is unknown. Inspect the current deployment step and target state before retrying."
+              : undefined,
           });
           throw error;
         }
@@ -3253,8 +3304,13 @@ else {
     {
       project: z.string().optional(),
       projectOrSolutionPath: z.string(),
+      instance: z.string().optional().describe("Optional SampleManager instance used to derive build paths and properties."),
       configuration: z.string().optional().describe("Default Release"),
       msbuildPath: z.string().optional().describe("Optional explicit MSBuild.exe path"),
+      msbuildProperties: z.record(z.string()).optional().describe("Additional validated MSBuild properties, passed as /p:name=value."),
+      environmentVariables: z.record(z.string()).optional().describe("Nonsecret environment variables applied only to the remote build process. Preconfigure secrets on the target service account."),
+      preflightOnly: z.boolean().optional().describe("Validate project, build tool, instance paths, and effective context without running a build."),
+      expectedAssemblyPath: z.string().optional().describe("Expected output assembly path reported by preflight."),
       environment: z.string().optional(),
       deploymentId: z.string().optional(),
       timeoutMs: z.number().positive().optional().describe("Default 600000"),
@@ -3263,20 +3319,33 @@ else {
     async ({
       project: projectName,
       projectOrSolutionPath,
+      instance,
       configuration = "Release",
       msbuildPath,
+      msbuildProperties,
+      environmentVariables,
+      preflightOnly = false,
+      expectedAssemblyPath,
       environment,
       deploymentId,
       timeoutMs = 600000,
-      async = true,
+      async: requestedAsync,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner, ps } = getRunner(projectName, environment);
-      const buildProfile = ps.limsInstance?.buildProfile ?? {};
+      const connection = getRunner(projectName, environment);
+      const target = instance || connection.ps.limsInstance
+        ? getSampleManagerTarget(projectName, environment, instance)
+        : undefined;
+      const runner = target?.runner ?? connection.runner;
+      const buildProfile = target?.configuredInstance?.buildProfile ?? connection.ps.limsInstance?.buildProfile ?? {};
+      const instanceTarget = target?.instance;
+      const async = requestedAsync ?? !preflightOnly;
+      const validatedEnvironmentVariables = validateBuildEnvironmentVariables(environmentVariables);
+      const validatedMsbuildProperties = validateBuildMsbuildProperties(msbuildProperties);
       const work = (context?: JobContext) => withDeploymentStep(
         deploymentId,
         resolvedProjectName,
-        `build:${basename(projectOrSolutionPath)}`,
+        `${preflightOnly ? "build-preflight" : "build"}:${basename(projectOrSolutionPath)}`,
         () => buildSampleManagerProject(
           runner,
           projectOrSolutionPath,
@@ -3284,12 +3353,13 @@ else {
           msbuildPath,
           buildProfile,
           timeoutMs,
-          executionForJob(context)
+          executionForJob(context),
+          { instance: instanceTarget, msbuildProperties: validatedMsbuildProperties, environmentVariables: validatedEnvironmentVariables, preflightOnly, expectedAssemblyPath }
         )
       );
-      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_build_dotnet", projectOrSolutionPath, configuration, async });
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_build_dotnet", projectOrSolutionPath, instance: target?.instanceName, configuration, msbuildProperties: buildSettingsMetadata(validatedMsbuildProperties), environmentVariables: buildSettingsMetadata(validatedEnvironmentVariables), preflightOnly, async });
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_build_dotnet", { projectOrSolutionPath, configuration, msbuildPath, environment, deploymentId, timeoutMs }, work);
+        const job = startJob(user, resolvedProjectName, "samplemanager_build_dotnet", { projectOrSolutionPath, instance: target?.instanceName, configuration, msbuildPath, msbuildProperties: buildSettingsMetadata(validatedMsbuildProperties), environmentVariables: buildSettingsMetadata(validatedEnvironmentVariables), preflightOnly, expectedAssemblyPath, environment, deploymentId, timeoutMs }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
@@ -3307,9 +3377,13 @@ else {
       targetRelativePath: z.string().optional().describe("Destination under SolutionAssemblies; defaults to assembly filename"),
       configuration: z.string().optional().describe("Default Release"),
       msbuildPath: z.string().optional(),
+      msbuildProperties: z.record(z.string()).optional().describe("Additional validated MSBuild properties, passed as /p:name=value."),
+      environmentVariables: z.record(z.string()).optional().describe("Nonsecret environment variables applied only to the remote build process. Preconfigure secrets on the target service account."),
+      preflightOnly: z.boolean().optional().describe("Validate build inputs and target context without building, deploying, or restarting."),
       restart: z.boolean().optional().describe("Restart SampleManager after deploy. Default true."),
       rollbackOnFailure: z.boolean().optional().describe("Restore the timestamped backup if a later phase fails. Default true."),
       environment: z.string().optional(),
+      deploymentId: z.string().optional().describe("Existing running deploymentId to reuse. If omitted, a new deployment is created."),
       timeoutMs: z.number().positive().optional().describe("Build timeout; default 600000"),
       async: z.boolean().optional().describe("Return jobId and deploymentId immediately. Default true."),
     },
@@ -3321,20 +3395,27 @@ else {
       targetRelativePath,
       configuration = "Release",
       msbuildPath,
+      msbuildProperties,
+      environmentVariables,
+      preflightOnly = false,
       restart = true,
       rollbackOnFailure = true,
       environment,
+      deploymentId: requestedDeploymentId,
       timeoutMs = 600000,
       async = true,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { ps, runner, instance: instanceTarget, instanceName, configuredInstance } =
         getSampleManagerTarget(projectName, environment, instance);
+      const resolvedEnvironment = ps.environment;
       const buildProfile = configuredInstance?.buildProfile ?? {};
+      const validatedEnvironmentVariables = validateBuildEnvironmentVariables(environmentVariables);
+      const validatedMsbuildProperties = validateBuildMsbuildProperties(msbuildProperties);
       const target = targetRelativePath ?? basename(assemblyPath);
-      const steps: Array<{
+      const operationSteps: Array<{
         name: string;
-        status: "pending" | "running" | "succeeded" | "failed" | "rolled-back";
+        status: "pending" | "running" | "succeeded" | "failed" | "rolled-back" | "unknown";
         startedAt?: string;
         finishedAt?: string;
         summary?: string;
@@ -3344,37 +3425,118 @@ else {
         { name: "deploy", status: "pending" },
         { name: "restart", status: restart ? "pending" : "succeeded", summary: restart ? undefined : "Skipped by request" },
       ];
-      const run = startDeployment({
-        userId: user.id,
-        username: user.username,
-        project: resolvedProjectName,
-        environment: environment ?? "production",
-        host: ps.server.host || ps.server.agentId || ps.server.name,
-        kind: "samplemanager-assembly",
-        instance: instanceName,
-        steps,
-        artifacts: { projectOrSolutionPath, assemblyPath, targetRelativePath: target },
-        rollbackRequested: rollbackOnFailure,
-      });
+      const run = requestedDeploymentId
+        ? requireRunningDeployment(requestedDeploymentId, {
+            userId: user.id,
+            project: resolvedProjectName,
+            environment: resolvedEnvironment,
+            instance: instanceName,
+          })
+        : startDeployment({
+            userId: user.id,
+            username: user.username,
+            project: resolvedProjectName,
+            environment: resolvedEnvironment,
+            host: ps.server.host || ps.server.agentId || ps.server.name,
+            kind: "samplemanager-assembly",
+            instance: instanceName,
+            steps: operationSteps,
+            artifacts: { projectOrSolutionPath, assemblyPath, targetRelativePath: target },
+            rollbackRequested: rollbackOnFailure,
+          });
+      const operationId = `assembly-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const operationStartedAt = new Date().toISOString();
+      if (requestedDeploymentId && !Array.isArray(run.artifacts?.operations) && Object.keys(run.artifacts ?? {}).length > 0) {
+        appendDeploymentOperationArtifact(run.id, {
+          id: `legacy-${run.startedAt}`,
+          kind: "legacy-artifacts",
+          status: run.status,
+          recordedAt: operationStartedAt,
+          artifacts: run.artifacts,
+          rollback: run.rollback,
+        });
+      }
+      const existingStepCount = requestedDeploymentId ? (run.steps ?? []).length : 0;
+      const steps = requestedDeploymentId
+        ? [...(run.steps ?? []), ...operationSteps]
+        : operationSteps;
+      const operationStepIndexes = new Map(
+        operationSteps.map((step, index) => [step.name, existingStepCount + index])
+      );
+      if (requestedDeploymentId) {
+        const current = getDeployment(run.id)!;
+        updateDeployment(run.id, {
+          steps,
+          artifacts: {
+            projectOrSolutionPath,
+            assemblyPath,
+            targetRelativePath: target,
+          },
+          rollback: rollbackOnFailure
+            ? { ...current.rollback, requested: true, status: current.rollback.status === "not-requested" ? "not-needed" : current.rollback.status }
+            : current.rollback,
+        });
+      }
+
+      const currentDeployment = () => {
+        const current = getDeployment(run.id);
+        if (!current) throw new Error(`Deployment '${run.id}' no longer exists`);
+        return current;
+      };
 
       const setStep = (
         name: string,
-        status: "pending" | "running" | "succeeded" | "failed" | "rolled-back",
+        status: "pending" | "running" | "succeeded" | "failed" | "rolled-back" | "unknown",
         summary?: string,
         error?: string
       ) => {
-        const step = steps.find((item) => item.name === name)!;
-        step.status = status as any;
-        if (status === "running") step.startedAt = new Date().toISOString();
-        if (["succeeded", "failed", "rolled-back"].includes(status)) step.finishedAt = new Date().toISOString();
-        step.summary = summary;
-        step.error = error;
-        updateDeployment(run.id, { steps: steps as any });
+        const current = currentDeployment();
+        const currentSteps = [...(current.steps ?? [])];
+        const index = operationStepIndexes.get(name);
+        if (index === undefined) throw new Error(`Deployment '${run.id}' has no current '${name}' step`);
+        const previous = currentSteps[index];
+        if (!previous) throw new Error(`Deployment '${run.id}' is missing its current '${name}' step`);
+        currentSteps[index] = {
+          ...previous,
+          status,
+          ...(status === "running" ? { startedAt: new Date().toISOString() } : {}),
+          ...(["succeeded", "failed", "rolled-back"].includes(status) ? { finishedAt: new Date().toISOString() } : {}),
+          summary,
+          error,
+        };
+        updateDeployment(run.id, { steps: currentSteps });
       };
 
       const work = async (context?: JobContext) => {
         const output: string[] = [];
         let backupPath: string | undefined;
+        let deployEvidence: Record<string, unknown> | undefined;
+        let restartEvidence: unknown;
+        const appendOperation = (
+          status: "succeeded" | "failed" | "unknown",
+          rollback: typeof run.rollback,
+          error?: string,
+          errorCategory?: string
+        ) => {
+          const current = currentDeployment();
+          const operationStepsSnapshot = [...operationStepIndexes.values()]
+            .map((index) => current.steps?.[index])
+            .filter(Boolean);
+          appendDeploymentOperationArtifact(run.id, {
+            id: operationId,
+            kind: "samplemanager-assembly",
+            status,
+            startedAt: operationStartedAt,
+            finishedAt: new Date().toISOString(),
+            target: { projectOrSolutionPath, assemblyPath, targetRelativePath: target, instance: instanceName },
+            steps: operationStepsSnapshot,
+            deploy: deployEvidence,
+            restart: restartEvidence,
+            rollback,
+            error,
+            errorCategory,
+          }, deployEvidence ?? {});
+        };
         try {
           setStep("build", "running");
           const buildOutput = await buildSampleManagerProject(
@@ -3384,10 +3546,33 @@ else {
             msbuildPath,
             buildProfile,
             timeoutMs,
-            executionForJob(context)
+            executionForJob(context),
+            {
+              instance: instanceTarget,
+              msbuildProperties: validatedMsbuildProperties,
+              environmentVariables: validatedEnvironmentVariables,
+              preflightOnly,
+              expectedAssemblyPath: assemblyPath,
+            }
           );
           output.push(`build\n${buildOutput}`);
           setStep("build", "succeeded", compactText(buildOutput, 1500));
+
+          if (preflightOnly) {
+            setStep("deploy", "succeeded", "Skipped by preflight");
+            setStep("restart", "succeeded", "Skipped by preflight");
+            const current = currentDeployment();
+            const compact = compactTextWithMetadata([current.output, ...output].filter(Boolean).join("\n\n"));
+            appendOperation("succeeded", { requested: rollbackOnFailure, attempted: false, status: rollbackOnFailure ? "not-needed" : "not-requested" });
+            finishDeployment(run.id, {
+              status: "succeeded",
+              rollback: current.rollback,
+              output: compact.text,
+              outputLength: compact.originalLength,
+              outputTruncated: compact.truncated,
+            });
+            return summarizeJson(getDeployment(run.id));
+          }
 
           setStep("deploy", "running");
           const deployOutput = await deploySampleManagerFile(
@@ -3402,8 +3587,9 @@ else {
           );
           output.push(`deploy\n${deployOutput}`);
           try {
-            const parsed = JSON.parse(deployOutput);
-            backupPath = parsed.backup ?? undefined;
+            const parsed = JSON.parse(deployOutput) as Record<string, unknown>;
+            deployEvidence = parsed;
+            backupPath = typeof parsed.backup === "string" ? parsed.backup : undefined;
             updateDeployment(run.id, {
               artifacts: {
                 projectOrSolutionPath,
@@ -3422,14 +3608,16 @@ else {
             setStep("restart", "running");
             const restartOutput = await restartSampleManagerInstance(runner, instanceTarget, executionForJob(context));
             output.push(`restart\n${restartOutput}`);
+            try { restartEvidence = JSON.parse(restartOutput); } catch { restartEvidence = compactText(restartOutput, 1500); }
             setStep("restart", "succeeded", compactText(restartOutput, 1500));
           }
 
-          const compact = compactTextWithMetadata(output.join("\n\n"));
+          const current = currentDeployment();
+          const compact = compactTextWithMetadata([current.output, ...output].filter(Boolean).join("\n\n"));
+          appendOperation("succeeded", { requested: rollbackOnFailure, attempted: false, status: rollbackOnFailure ? "not-needed" : "not-requested" });
           finishDeployment(run.id, {
             status: "succeeded",
-            rollback: { ...run.rollback, status: "not-needed" },
-            steps: steps as any,
+            rollback: current.rollback,
             output: compact.text,
             outputLength: compact.originalLength,
             outputTruncated: compact.truncated,
@@ -3437,10 +3625,17 @@ else {
           return summarizeJson(getDeployment(run.id));
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const runningStep = steps.find((step) => step.status === "running");
-          if (runningStep) setStep(runningStep.name, "failed", undefined, message);
-          let rollback = run.rollback;
-          if (rollbackOnFailure && backupPath) {
+          const current = currentDeployment();
+          const disposition = deploymentFailureDisposition(error, {
+            rollbackRequested: rollbackOnFailure,
+            backupAvailable: Boolean(backupPath),
+          });
+          const runningStep = [...operationStepIndexes.entries()]
+            .map(([name, index]) => ({ name, step: current.steps?.[index] }))
+            .find(({ step }) => step?.status === "running");
+          if (runningStep) setStep(runningStep.name, disposition.stepStatus, undefined, message);
+          let rollback = currentDeployment().rollback;
+          if (disposition.rollbackAllowed && backupPath) {
             rollback = { ...rollback, attempted: true };
             try {
               const targetPath = `${instancePaths(instanceTarget).solutionAssemblies}\\${target}`;
@@ -3456,12 +3651,16 @@ else {
               };
             }
           }
+          const completed = currentDeployment();
+          appendOperation(disposition.status, rollback, message, disposition.category);
           finishDeployment(run.id, {
-            status: "failed",
+            status: disposition.status,
             rollback,
-            steps: steps as any,
-            output: compactText(output.join("\n\n")),
+            output: compactText([completed.output, ...output].filter(Boolean).join("\n\n")),
             error: message,
+            recommendedResumeAction: disposition.status === "unknown"
+              ? "Remote completion is unknown. Inspect the job, deployed DLL hash, loaded assembly, and service state before any retry or rollback."
+              : completed.recommendedResumeAction,
           });
           throw error;
         }
@@ -3473,9 +3672,13 @@ else {
         project: resolvedProjectName,
         tool: "samplemanager_build_deploy_assembly",
         deploymentId: run.id,
+        requestedDeploymentId,
         instance: instanceName,
         assemblyPath,
         target,
+        msbuildProperties: buildSettingsMetadata(validatedMsbuildProperties),
+        environmentVariables: buildSettingsMetadata(validatedEnvironmentVariables),
+        preflightOnly,
         async,
       });
       if (async) {
@@ -3486,6 +3689,9 @@ else {
           instance: instanceName,
           target,
           configuration,
+          msbuildProperties: buildSettingsMetadata(validatedMsbuildProperties),
+          environmentVariables: buildSettingsMetadata(validatedEnvironmentVariables),
+          preflightOnly,
           environment,
           timeoutMs,
         }, work);

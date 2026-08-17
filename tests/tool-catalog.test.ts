@@ -33,3 +33,21 @@ test("form cache cleanup is classified as a mutating tool", () => {
   const mutationPattern = source.match(/const mutating = \/\(\^\|_\)\((?<operations>[^)]+)\)/)?.groups?.operations ?? "";
   assert.match(mutationPattern, /(^|\|)clear(\||$)/);
 });
+
+test("job wait is exposed as a categorized MCP tool", () => {
+  assert.ok(TOOL_CATALOG.some((entry) => entry.name === "job_wait" && entry.category === "jobs"));
+});
+
+test("SampleManager deployment start persists the resolved project link environment", () => {
+  const source = readFileSync(new URL("../src/mcp/index.ts", import.meta.url), "utf8");
+  const block = source.match(/server\.tool\(\s*"samplemanager_deployment_start"[\s\S]*?(?=\n\s*server\.tool\()/)?.[0] ?? "";
+  assert.match(block, /environment:\s*ps\.environment/);
+  assert.doesNotMatch(block, /environment:\s*environment\s*\?\?/);
+});
+
+test("table-loader package preserves unknown timeout status from deployment steps", () => {
+  const source = readFileSync(new URL("../src/mcp/index.ts", import.meta.url), "utf8");
+  const block = source.match(/server\.tool\(\s*"samplemanager_deploy_table_loader_package"[\s\S]*?(?=\n\s*server\.tool\()/)?.[0] ?? "";
+  assert.match(block, /catch \(error\)[\s\S]*deploymentFailureDisposition\(error/);
+  assert.doesNotMatch(block, /catch \(error\)[\s\S]*?status:\s*"failed"/);
+});

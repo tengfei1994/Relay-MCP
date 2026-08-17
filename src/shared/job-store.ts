@@ -44,6 +44,28 @@ export interface JobContext {
   phase: (name: string) => void;
 }
 
+export interface JobWaitOptions {
+  waitMs?: number;
+  pollMs?: number;
+  returnOnPhaseChange?: boolean;
+}
+
+export interface JobWaitResult {
+  job: JobRecord;
+  reason: "terminal" | "wait_timeout" | "phase_changed";
+  initialPhase?: string;
+  waitedMs: number;
+}
+
+function structuredErrorSummary(error: unknown): string | undefined {
+  if (!error || typeof error !== "object" || !("evidence" in error)) return undefined;
+  try {
+    return JSON.stringify((error as { evidence: unknown }).evidence);
+  } catch {
+    return JSON.stringify({ serializationError: "Structured error evidence could not be serialized" });
+  }
+}
+
 const activeJobs = new Map<string, AbortController>();
 
 function ensureState(): void {
@@ -80,6 +102,35 @@ export function listJobs(userId: number, limit = 20): JobRecord[] {
     .filter((job) => job.userId === userId)
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
     .slice(0, Math.max(1, Math.min(limit, 100)));
+}
+
+export async function waitForJobRecord(
+  id: string,
+  userId: number,
+  options: JobWaitOptions = {}
+): Promise<JobWaitResult> {
+  const waitMs = Math.max(0, Math.min(options.waitMs ?? 90000, 110000));
+  const pollMs = Math.max(50, Math.min(options.pollMs ?? 500, 5000));
+  const started = Date.now();
+  const initial = getJob(id);
+  if (!initial || initial.userId !== userId) throw new Error(`Job '${id}' not found`);
+  const initialPhase = initial.phase;
+
+  while (true) {
+    const current = getJob(id);
+    if (!current || current.userId !== userId) throw new Error(`Job '${id}' not found`);
+    const waitedMs = Date.now() - started;
+    if (current.status !== "running") {
+      return { job: current, reason: "terminal", initialPhase, waitedMs };
+    }
+    if (options.returnOnPhaseChange && current.phase !== initialPhase) {
+      return { job: current, reason: "phase_changed", initialPhase, waitedMs };
+    }
+    if (waitedMs >= waitMs) {
+      return { job: current, reason: "wait_timeout", initialPhase, waitedMs };
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, waitMs - waitedMs)));
+  }
 }
 
 export function appendJobLog(id: string, message: string, level: JobLogEntry["level"] = "info"): void {
@@ -160,7 +211,8 @@ export function startJob(
       const errorCategory = err instanceof Error && "category" in err
         ? String((err as Error & { category?: string }).category)
         : "remote_or_relay";
-      const timedOut = err instanceof RemoteCommandTimeoutError;
+      const timedOut = err instanceof RemoteCommandTimeoutError || errorCategory === "timeout";
+      const summary = cancelled ? undefined : structuredErrorSummary(err);
       const error = cancelled
         ? "Job cancelled"
         : timedOut
@@ -173,6 +225,7 @@ export function startJob(
         lastHeartbeatAt: new Date().toISOString(),
         errorCategory: cancelled ? "cancelled" : timedOut ? "timeout" : errorCategory,
         retrySafe: timedOut || errorCategory === "remote_exit" ? false : true,
+        summary,
         error,
         finishedAt: new Date().toISOString(),
       });

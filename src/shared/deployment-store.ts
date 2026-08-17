@@ -37,7 +37,7 @@ export interface DeploymentRecord {
   error?: string;
   steps?: Array<{
     name: string;
-    status: "pending" | "running" | "succeeded" | "failed" | "rolled-back";
+    status: "pending" | "running" | "succeeded" | "failed" | "rolled-back" | "unknown";
     startedAt?: string;
     finishedAt?: string;
     summary?: string;
@@ -55,6 +55,36 @@ export interface DeploymentRecord {
     at: string;
     result?: unknown;
   }>;
+}
+
+export function deploymentFailureDisposition(
+  error: unknown,
+  options: { rollbackRequested: boolean; backupAvailable: boolean }
+): {
+  status: "failed" | "unknown";
+  stepStatus: "failed" | "unknown";
+  rollbackAllowed: boolean;
+  retrySafe: boolean;
+  category: string;
+} {
+  const category = error instanceof Error && "category" in error
+    ? String((error as Error & { category?: string }).category ?? "unknown")
+    : "unknown";
+  const executionUnknown = category === "timeout";
+  return {
+    status: executionUnknown ? "unknown" : "failed",
+    stepStatus: executionUnknown ? "unknown" : "failed",
+    rollbackAllowed: !executionUnknown && options.rollbackRequested && options.backupAvailable,
+    retrySafe: false,
+    category,
+  };
+}
+
+export interface DeploymentReuseTarget {
+  userId: number;
+  project: string;
+  environment: string;
+  instance: string;
 }
 
 function ensureRoot(): void {
@@ -112,7 +142,31 @@ export function updateDeployment(
 ): DeploymentRecord {
   const existing = getDeployment(id);
   if (!existing) throw new Error(`Deployment '${id}' not found`);
-  return save({ ...existing, ...updates });
+  return save({
+    ...existing,
+    ...updates,
+    artifacts: updates.artifacts === undefined
+      ? existing.artifacts
+      : { ...existing.artifacts, ...updates.artifacts },
+  });
+}
+
+export function appendDeploymentOperationArtifact(
+  id: string,
+  operation: Record<string, unknown>,
+  latestCompatibilityFields: Record<string, unknown> = {}
+): DeploymentRecord {
+  const existing = getDeployment(id);
+  if (!existing) throw new Error(`Deployment '${id}' not found`);
+  const currentOperations = Array.isArray(existing.artifacts?.operations)
+    ? existing.artifacts.operations
+    : [];
+  return updateDeployment(id, {
+    artifacts: {
+      ...latestCompatibilityFields,
+      operations: [...currentOperations, operation],
+    },
+  });
 }
 
 export function getDeployment(id: string): DeploymentRecord | undefined {
@@ -120,4 +174,24 @@ export function getDeployment(id: string): DeploymentRecord | undefined {
   const path = recordPath(id);
   if (!existsSync(path)) return undefined;
   return JSON.parse(readFileSync(path, "utf8")) as DeploymentRecord;
+}
+
+export function requireRunningDeployment(
+  id: string,
+  target: DeploymentReuseTarget
+): DeploymentRecord {
+  const deployment = getDeployment(id);
+  if (!deployment || deployment.userId !== target.userId || deployment.project !== target.project) {
+    throw new Error(`Deployment '${id}' not found for project '${target.project}'`);
+  }
+  if (deployment.status !== "running") {
+    throw new Error(`Deployment '${id}' is '${deployment.status}' and cannot accept new operations`);
+  }
+  if (deployment.environment.localeCompare(target.environment, undefined, { sensitivity: "accent" }) !== 0) {
+    throw new Error(`Deployment '${id}' environment '${deployment.environment}' does not match '${target.environment}'`);
+  }
+  if (!deployment.instance || deployment.instance.localeCompare(target.instance, undefined, { sensitivity: "accent" }) !== 0) {
+    throw new Error(`Deployment '${id}' instance '${deployment.instance}' does not match '${target.instance}'`);
+  }
+  return deployment;
 }

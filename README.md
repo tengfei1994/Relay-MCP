@@ -275,6 +275,8 @@ npm run relay-download -- --url <url> --token <token> \
 - Windows Service 与进程范围。
 - .NET Framework MSBuild 或现代 `dotnet build` profile。
 
+构建工具支持 `preflightOnly`、`msbuildProperties` 和仅限非敏感值的 `environmentVariables`。两类设置的名称只要包含 `TOKEN`、`SECRET`、`PASSWORD`、`PWD`、`PASS`、`KEY`（包括 `APIKEY` / `API_KEY`）、`CREDENTIAL`、`AUTH`、`PAT`、`BEARER`、`COOKIE` 或 connection string 等敏感标记就会被拒绝，必须预先配置到目标服务账号。审计、Job 和 deployment metadata 只记录设置键名，不保存值。绑定实例时会自动注入 `SAMPLEMANAGER_EXE` 及 `<INSTANCE>_EXE`；后者将实例名转为大写 ASCII，非字母数字字符替换为 `_`，若首字符不是字母或 `_` 则前置 `_`，因此始终是有效的 MSBuild 属性名。
+
 SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备份和 before/after 证据。部署操作可通过 `deploymentId` 关联构建、哈希、备份、SQL、日志、重启和回滚状态。
 
 ## MCP 工具目录
@@ -325,6 +327,7 @@ SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备�
 | Workspace | `sync_workspace` | 通过 SFTP 同步 workspace 到远端目录。 |
 | Workspace | `upload_workspace_file` | 上传单个 workspace 文件到远端。 |
 | Jobs | `job_status` | 查询异步 job 的状态、结果、错误和日志。 |
+| Jobs | `job_wait` | 有界等待 job 终态或阶段变化；等待到期时返回最新快照而不是制造新的执行超时。 |
 | Jobs | `job_list` | 列出当前用户的近期 job。 |
 | Jobs | `job_cancel` | 请求取消运行中的 SSH job。 |
 | Context | `context_record_fact` | 保存持久化 Project fact。 |

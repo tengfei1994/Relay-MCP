@@ -97,22 +97,60 @@ foreach ($svc in $existing) {
   return compactText(`${result.stdout}\n${result.stderr}`.trim());
 }
 
-export async function clearFormCache(runner: RemoteRunner, instance: SampleManagerInstanceRef, formName: string): Promise<string> {
+export async function clearFormCache(
+  runner: RemoteRunner,
+  instance: SampleManagerInstanceRef,
+  formName: string,
+  execution: RemoteExecutionOptions = {}
+): Promise<string> {
   const paths = instancePaths(instance);
   const script = `
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Stop"
 $formsBin = ${psQuote(paths.formsBin)}
 $formName = ${psQuote(formName)}
+$expectedName = "$formName.binform"
+$matched = @()
 $removed = @()
-if (Test-Path -LiteralPath $formsBin) {
-  Get-ChildItem -LiteralPath $formsBin -File -Filter "$formName*" -ErrorAction SilentlyContinue | ForEach-Object {
-    $removed += $_.FullName
-    Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
-  }
+if (-not (Test-Path -LiteralPath $formsBin -PathType Container)) {
+  throw "FormsBin path does not exist: $formsBin"
 }
-[pscustomobject]@{ Instance=${psQuote(instanceName(instance))}; Form=$formName; Removed=$removed } | ConvertTo-Json -Compress
+
+$matched = @(
+  Get-ChildItem -LiteralPath $formsBin -Recurse -File -ErrorAction Stop |
+    Where-Object { $_.Name -ieq $expectedName } |
+    ForEach-Object { $_.FullName }
+)
+
+foreach ($path in $matched) {
+  Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+  if (Test-Path -LiteralPath $path -PathType Leaf) {
+    throw "Cache file still exists after deletion: $path"
+  }
+  $removed += $path
+}
+
+$remaining = @(
+  Get-ChildItem -LiteralPath $formsBin -Recurse -File -ErrorAction Stop |
+    Where-Object { $_.Name -ieq $expectedName } |
+    ForEach-Object { $_.FullName }
+)
+if ($remaining.Count -gt 0) {
+  throw "Form cache cleanup incomplete. Remaining: $($remaining -join ', ')"
+}
+
+[pscustomobject]@{
+  Instance = ${psQuote(instanceName(instance))}
+  Form = $formName
+  FormsBin = $formsBin
+  ExpectedName = $expectedName
+  Recursive = $true
+  Matched = $matched
+  Removed = $removed
+  Remaining = $remaining
+  Success = $true
+} | ConvertTo-Json -Depth 4 -Compress
 `;
-  const result = await runner.execPowerShell(script, 30000);
+  const result = await runner.execPowerShell(script, 30000, execution);
   ensureRemoteSuccess(result);
   return compactText(result.stdout || result.stderr);
 }

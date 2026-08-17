@@ -27,3 +27,9 @@ test("every registered MCP tool is categorized and described exactly once", () =
     }
   }
 });
+
+test("form cache cleanup is classified as a mutating tool", () => {
+  const source = readFileSync(new URL("../src/server/routes/tools.ts", import.meta.url), "utf8");
+  const mutationPattern = source.match(/const mutating = \/\(\^\|_\)\((?<operations>[^)]+)\)/)?.groups?.operations ?? "";
+  assert.match(mutationPattern, /(^|\|)clear(\||$)/);
+});

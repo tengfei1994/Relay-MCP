@@ -2485,16 +2485,48 @@ else {
 
   server.tool(
     "samplemanager_clear_form_cache",
-    "Clear FormsBin cache for one SampleManager form without creating local throwaway scripts",
+    "Recursively clear and verify compiled FormsBin cache entries for one exact SampleManager form identity, including Translation subdirectories.",
     {
       project: z.string().optional(),
       instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       formName: z.string(),
       environment: z.string().optional(),
+      async: z.boolean().optional().describe("Run as an async tracked job and return a jobId."),
     },
-    async ({ project: projectName, instance, formName, environment }) => {
-      const { runner, instance: target } = getSampleManagerTarget(projectName, environment, instance);
-      return { content: [{ type: "text", text: await clearFormCache(runner, target, formName) }] };
+    {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async ({ project: projectName, instance, formName, environment, async = false }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { runner, instance: target, instanceName } = getSampleManagerTarget(projectName, environment, instance);
+      const work = (context?: JobContext) => clearFormCache(
+        runner,
+        target,
+        formName,
+        executionForJob(context)
+      );
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        project: resolvedProjectName,
+        tool: "samplemanager_clear_form_cache",
+        instance: instanceName,
+        formName,
+        environment,
+        async,
+      });
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_clear_form_cache", {
+          instance: instanceName,
+          formName,
+          environment,
+        }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      return { content: [{ type: "text", text: await work() }] };
     }
   );
 

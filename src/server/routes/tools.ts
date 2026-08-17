@@ -3,7 +3,7 @@ import { TOOL_CATALOG } from "../../shared/tool-catalog.js";
 import { SAMPLEMANAGER_ENTITY_CATALOG } from "../../shared/samplemanager-capabilities.js";
 
 function classifyTool(name: string, category: string) {
-  const mutating = /(^|_)(deploy|restart|write|delete|move|patch|upload|sync|create|convert|restore|mutation|loader|run_command|run_utility|run_suite|build)/i.test(name);
+  const mutating = /(^|_)(deploy|restart|clear|write|delete|move|patch|upload|sync|create|convert|restore|mutation|loader|run_command|run_utility|run_suite|build)/i.test(name);
   const asyncCapable = category === "remote-execution" || category === "playwright" || category === "remote-files" || category === "samplemanager";
   const preferred = name.startsWith("relay_") || !/^exec_remote(_powershell|_script)?$/.test(name);
   return {

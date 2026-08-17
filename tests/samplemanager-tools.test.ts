@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  clearFormCache,
   quoteSqlIdentifier,
   renderSqlIdentifiers,
   instancePaths,
@@ -9,6 +10,59 @@ import {
   runSql,
   sqlContainsMutation,
 } from "../src/shared/samplemanager-tools.ts";
+
+test("form cache cleanup recursively removes exact binform entries and verifies deletion", async () => {
+  let script = "";
+  const runner = {
+    execPowerShell: async (value: string) => {
+      script = value;
+      return {
+        stdout: JSON.stringify({
+          Instance: "VGSM",
+          Form: "Stocks",
+          Matched: ["C:\\Cache\\FormsBin\\Translation\\zh\\zh-CN\\Stocks.binform"],
+          Removed: ["C:\\Cache\\FormsBin\\Translation\\zh\\zh-CN\\Stocks.binform"],
+          Remaining: [],
+          Success: true,
+        }),
+        stderr: "",
+        code: 0,
+      };
+    },
+  } as any;
+
+  const result = JSON.parse(await clearFormCache(runner, {
+    name: "VGSM",
+    formsBinPath: "C:\\Cache\\FormsBin",
+  }, "Stocks"));
+
+  assert.equal(result.Success, true);
+  assert.match(script, /Get-ChildItem[^\n]+-Recurse[^\n]+-File/);
+  assert.match(script, /Stocks\.binform|\$expectedName/);
+  assert.match(script, /Remove-Item[^\n]+-ErrorAction Stop/);
+  assert.match(script, /Remaining/);
+  assert.match(script, /Test-Path -LiteralPath/);
+  assert.doesNotMatch(script, /-Filter "\$formName\*"/);
+});
+
+test("form cache cleanup forwards tracked execution options", async () => {
+  let receivedExecution: unknown;
+  const runner = {
+    execPowerShell: async (_script: string, _timeout: number, execution: unknown) => {
+      receivedExecution = execution;
+      return {
+        stdout: JSON.stringify({ Success: true, Matched: [], Removed: [], Remaining: [] }),
+        stderr: "",
+        code: 0,
+      };
+    },
+  } as any;
+  const execution = { onPhase: (_phase: string) => undefined };
+
+  await clearFormCache(runner, "VGSM", "Stocks", execution);
+
+  assert.equal(receivedExecution, execution);
+});
 
 test("sqlContainsMutation identifies statements that change data or permissions", () => {
   assert.equal(sqlContainsMutation("select * from sample"), false);

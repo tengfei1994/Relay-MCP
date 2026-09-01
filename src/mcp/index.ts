@@ -14,6 +14,8 @@ import { cancelJob, getJob, listJobs, startJob, waitForJobRecord, writeAudit, ty
 import { recordFact, searchFacts } from "../shared/context-store.js";
 import { appendDeploymentOperationArtifact, deploymentFailureDisposition, finishDeployment, getDeployment, requireRunningDeployment, startDeployment, updateDeployment } from "../shared/deployment-store.js";
 import { sanitizeAuditArguments } from "../shared/audit-sanitizer.js";
+import { createDeploymentManifest } from "../shared/deployment-manifest.js";
+import { inspectSampleManagerAssemblyType, validateSampleManagerFormTaskContract } from "../shared/samplemanager-inspection-tools.js";
 import {
   clearFormCache,
   buildSampleManagerProject,
@@ -2384,6 +2386,109 @@ else {
   );
 
   // ── SampleManager high-level tools ────────────────────────────────────────
+  server.tool(
+    "samplemanager_inspect_assembly_type",
+    "Inspect one .NET assembly type with bounded metadata reflection. Returns only flattened type, property, method, event, version, dependency, and SHA-256 evidence.",
+    {
+      project: z.string().optional(),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional(),
+      serverName: z.string().optional(),
+      assemblyPath: z.string(),
+      typeName: z.string(),
+      memberFilter: z.string().optional(),
+      includeInherited: z.boolean().optional(),
+      includeNonPublic: z.boolean().optional(),
+      maxMembers: z.number().int().min(1).max(500).optional(),
+      async: z.boolean().optional().describe("Run as a tracked job. Default false."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async ({ project: projectName, environment, serverId, serverName, assemblyPath, typeName, memberFilter, includeInherited = true, includeNonPublic = false, maxMembers = 100, async = false }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { runner, ps } = getRunner(projectName, environment, { serverId, serverName });
+      const work = (context?: JobContext) => inspectSampleManagerAssemblyType(runner, { assemblyPath, typeName, memberFilter, includeInherited, includeNonPublic, maxMembers, execution: executionForJob(context) });
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_inspect_assembly_type", environment: ps.environment, serverId: ps.server.id, assemblyPath, typeName, memberFilter, maxMembers, readOnly: true, mutationAttempted: false });
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_inspect_assembly_type", { environment: ps.environment, serverId: ps.server.id, assemblyPath, typeName, memberFilter, includeInherited, includeNonPublic, maxMembers }, work);
+        return { structuredContent: { jobId: job.id, status: job.status }, content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      const raw = await work();
+      const response = JSON.parse(raw);
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson(response) }] };
+    },
+  );
+
+  server.tool(
+    "samplemanager_validate_form_task_contract",
+    "Read-only Form Task preflight across FORM/TASK/MASTER_MENU, the exact form XML, requested controls, compiled cache, and an optional assembly type contract.",
+    {
+      project: z.string().optional(),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional(),
+      serverName: z.string().optional(),
+      instance: z.string().optional(),
+      database: z.string().optional(),
+      formName: z.string(),
+      taskName: z.string(),
+      assemblyPath: z.string().optional(),
+      typeName: z.string().optional(),
+      controlNames: z.array(z.string()).max(100).optional(),
+      maxMembers: z.number().int().min(1).max(500).optional(),
+      async: z.boolean().optional().describe("Run as a tracked job. Default true."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async ({ project: projectName, environment, serverId, serverName, instance, database, formName, taskName, assemblyPath, typeName, controlNames, maxMembers = 100, async = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const connection = getRunner(projectName, environment, { serverId, serverName });
+      const configured = connection.ps.limsInstance;
+      if (configured && instance && configured.name.toLowerCase() !== instance.toLowerCase()) throw new Error(`Project link is bound to LIMS instance '${configured.name}', not '${instance}'`);
+      if (configured?.databaseName && database && configured.databaseName.toLowerCase() !== database.toLowerCase()) throw new Error(`LIMS instance '${configured.name}' is configured for database '${configured.databaseName}', not '${database}'`);
+      const instanceTarget = configured ?? instance;
+      if (!instanceTarget) throw new Error("No LIMS instance is bound; select one in the management UI or pass instance");
+      const databaseName = configured?.databaseName ?? database;
+      if (!databaseName) throw new Error("No database is configured for the selected LIMS instance");
+      const databaseHost = configured?.databaseHost ?? "localhost";
+      const work = (context?: JobContext) => validateSampleManagerFormTaskContract(connection.runner, { instance: instanceTarget, databaseHost, databaseName, formName, taskName, assemblyPath, typeName, controlNames, maxMembers, execution: executionForJob(context) });
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_validate_form_task_contract", environment: connection.ps.environment, serverId: connection.ps.server.id, instance: typeof instanceTarget === "string" ? instanceTarget : instanceTarget.name, databaseHost, databaseName, formName, taskName, assemblyPath, typeName, controlNames, readOnly: true, mutationAttempted: false });
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_validate_form_task_contract", { environment: connection.ps.environment, serverId: connection.ps.server.id, instance: typeof instanceTarget === "string" ? instanceTarget : instanceTarget.name, databaseName, formName, taskName, assemblyPath, typeName, controlNames, maxMembers }, work);
+        return { structuredContent: { jobId: job.id, status: job.status }, content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+      }
+      const response = JSON.parse(await work());
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson(response) }] };
+    },
+  );
+
+  server.tool(
+    "samplemanager_create_deployment_manifest",
+    "Create a read-only deployment manifest in the Relay workspace with SHA-256 metadata for selected source files and explicit target provenance. Does not build or deploy.",
+    {
+      project: z.string().optional(),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional(),
+      serverName: z.string().optional(),
+      instance: z.string().optional(),
+      deploymentId: z.string().optional(),
+      outputPath: z.string().describe("Relative workspace path, e.g. manifests/deploy-123.json"),
+      sourceFiles: z.array(z.string()).max(500),
+      label: z.string().optional(),
+      notes: z.array(z.string()).max(100).optional(),
+    },
+    { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    async ({ project: projectName, environment, serverId, serverName, instance, deploymentId, outputPath, sourceFiles, label, notes }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { project, ps } = getRunner(projectName, environment, { serverId, serverName });
+      const boundInstance = ps.limsInstance?.name;
+      if (boundInstance && instance && boundInstance.toLowerCase() !== instance.toLowerCase()) throw new Error(`Project link is bound to LIMS instance '${boundInstance}', not '${instance}'`);
+      const result = createDeploymentManifest({
+        workspaceRoot: project.workspacePath, outputPath, deploymentId, label, sourceFiles, notes,
+        target: { project: resolvedProjectName, environment: ps.environment, serverId: ps.server.id, serverName: ps.server.name, connectionMode: ps.connectionMode, agentId: ps.server.agentId, instance: boundInstance ?? instance ?? null, databaseHost: ps.limsInstance?.databaseHost ?? null, databaseName: ps.limsInstance?.databaseName ?? null },
+      });
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_create_deployment_manifest", environment: ps.environment, serverId: ps.server.id, deploymentId, outputPath, sourceFiles, label, mutationAttempted: false });
+      return { structuredContent: result.manifest, content: [{ type: "text", text: summarizeJson({ path: result.path, manifest: result.manifest }) }] };
+    },
+  );
+
   server.tool(
     "samplemanager_capabilities",
     "Resolve the versioned SampleManager Capability Pack for a bound instance and list ready, planned, and unavailable semantic inspectors.",

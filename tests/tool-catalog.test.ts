@@ -38,6 +38,12 @@ test("job wait is exposed as a categorized MCP tool", () => {
   assert.ok(TOOL_CATALOG.some((entry) => entry.name === "job_wait" && entry.category === "jobs"));
 });
 
+test("SampleManager form and assembly inspectors are categorized semantic tools", () => {
+  assert.ok(TOOL_CATALOG.some((entry) => entry.name === "samplemanager_inspect_assembly_type" && entry.entity === "deployment"));
+  assert.ok(TOOL_CATALOG.some((entry) => entry.name === "samplemanager_validate_form_task_contract" && entry.entity === "form_task" && entry.capability === "contract"));
+  assert.ok(TOOL_CATALOG.some((entry) => entry.name === "samplemanager_create_deployment_manifest" && entry.entity === "deployment"));
+});
+
 test("SampleManager deployment start persists the resolved project link environment", () => {
   const source = readFileSync(new URL("../src/mcp/index.ts", import.meta.url), "utf8");
   const block = source.match(/server\.tool\(\s*"samplemanager_deployment_start"[\s\S]*?(?=\n\s*server\.tool\()/)?.[0] ?? "";

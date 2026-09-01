@@ -333,6 +333,9 @@ SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备�
 | Context | `context_record_fact` | 保存持久化 Project fact。 |
 | Context | `context_search` | 搜索持久化 Project fact。 |
 | SampleManager | `samplemanager_capabilities` | 解析实例使用的版本化 Capability Pack，并列出已就绪、规划中和不可用的语义检查能力。 |
+| SampleManager | `samplemanager_inspect_assembly_type` | 对单一程序集类型执行受限反射，返回扁平化属性、方法、事件、依赖、版本和 SHA-256 证据。 |
+| SampleManager | `samplemanager_validate_form_task_contract` | 只读核对 FORM/TASK/MASTER_MENU、目标 Form XML/控件、FormsBin cache 与可选程序集类型契约。 |
+| SampleManager | `samplemanager_create_deployment_manifest` | 在 Relay workspace 生成含明确目标与源文件 SHA-256 的只读部署 manifest，不执行构建或部署。 |
 | SampleManager | `samplemanager_restart_instance` | 重启指定实例的核心服务。 |
 | SampleManager | `samplemanager_deployment_start` | 创建用于关联多阶段操作的 `deploymentId`。 |
 | SampleManager | `samplemanager_clear_form_cache` | 清理一个 form 的 FormsBin cache。 |

@@ -207,6 +207,14 @@ export const SAMPLEMANAGER_ENTITY_CATALOG: SampleManagerEntityCatalogEntry[] = [
     ],
   },
   {
+    id: "form_task",
+    label: "Form & Task",
+    description: "Form XML identity, controls, task bindings, assembly contracts, compiled cache, and deployment readiness.",
+    inspectors: [
+      { id: "contract", label: "Contract", status: "ready", readOnly: true, description: "Validate FORM, TASK, MASTER_MENU, form XML controls, assembly members, hashes, and compiled cache evidence.", plannedTool: "samplemanager_validate_form_task_contract", relatedEntities: ["deployment", "instance"], evidenceKinds: ["sql", "schema", "artifact", "runtime"] },
+    ],
+  },
+  {
     id: "data_model",
     label: "Data Model",
     description: "Physical table schema, Entity Definition mapping, SQL access, and data mutation utilities.",

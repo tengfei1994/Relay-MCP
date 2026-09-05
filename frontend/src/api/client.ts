@@ -66,6 +66,7 @@ export const api = {
     return request<{ retrievalRunId: string; query: string; degraded: boolean; results: any[] }>("GET", `/knowledge/search?${query.toString()}`);
   },
   knowledgeDocument: (id: string, projectId?: number) => request<{ document: any; evidenceRefs: string[]; reviews: any[] }>("GET", `/knowledge/documents/${encodeURIComponent(id)}${projectId ? `?projectId=${projectId}` : ""}`),
+  knowledgeDocuments: (projectId: number, kinds?: string) => request<{ documents: any[] }>("GET", `/knowledge/documents?projectId=${projectId}${kinds ? `&kinds=${encodeURIComponent(kinds)}` : ""}`),
   knowledgeEvidence: (id: string) => request<{ evidence: any }>("GET", `/knowledge/evidence/${encodeURIComponent(id)}`),
   knowledgeEvidenceSession: (id: string, maxBytes?: number) => request<{ sessionId: string; evidenceId: string; expiresAt: string; maxBytes: number; mimeType: string; sizeBytes: number; sha256: string }>("POST", `/knowledge/evidence/${encodeURIComponent(id)}/download-session`, maxBytes ? { maxBytes } : {}),
   knowledgeEvidenceContentUrl: (id: string, sessionId: string) => `/api/knowledge/evidence/${encodeURIComponent(id)}/content?sessionId=${encodeURIComponent(sessionId)}`,

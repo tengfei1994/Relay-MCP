@@ -494,6 +494,21 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     } catch (error) { return sendError(reply, error, 400); }
   });
 
+  app.get("/api/knowledge/documents", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    try {
+      const { store, projectId } = resolveProject(request.user.id, query.projectId);
+      const limit = parseBoundedInt(query.limit, 200, 1, 500);
+      const requestedKinds = queryValue(query, "kinds")?.split(",").map((kind) => kind.trim()).filter((kind) => ["candidate", "case", "pattern", "playbook", "fact"].includes(kind));
+      const params: unknown[] = [projectId];
+      const kindClause = requestedKinds?.length ? ` AND d.kind IN (${requestedKinds.map(() => "?").join(",")})` : "";
+      if (requestedKinds?.length) params.push(...requestedKinds);
+      params.push(limit);
+      const rows = store.db.prepare(`SELECT d.* FROM knowledge_documents d WHERE d.project_id = ?${kindClause} ORDER BY d.updated_at DESC LIMIT ?`).all(...params) as KnowledgeRow[];
+      return reply.send({ documents: rows.map((row) => { const enriched = enrichDocumentRow(store, row); return safeDocument(enriched, false, String(row.kind) === "candidate" ? store.getCandidateCard(String(row.id)) : undefined, store.getScopeBinding(String(row.id))); }) });
+    } catch (error) { return sendError(reply, error, 400); }
+  });
+
   app.get("/api/knowledge/diagnostics", { onRequest: [app.authenticate] }, async (request, reply) => {
     try {
       const { store, projectId } = resolveProject(request.user.id, (request.query as Record<string, unknown>).projectId);

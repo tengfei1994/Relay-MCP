@@ -37,6 +37,7 @@ export default function KnowledgePage() {
   const [language, setLanguage] = useState("");
   const [authority, setAuthority] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [catalog, setCatalog] = useState<SearchResult[]>([]);
   const [candidates, setCandidates] = useState<SearchResult[]>([]);
   const [productDocs, setProductDocs] = useState<SearchResult[]>([]);
   const [selected, setSelected] = useState<any | null>(null);
@@ -77,11 +78,13 @@ export default function KnowledgePage() {
       setStatus(null);
       setDashboard(null);
       setCandidates([]);
+      setCatalog([]);
       return;
     }
     api.knowledgeIndexStatus(projectId).then(setStatus).catch(() => setStatus(null));
     api.knowledgeDashboard(projectId).then(setDashboard).catch(() => setDashboard(null));
     api.knowledgeCandidates(projectId).then((response) => setCandidates(response.candidates)).catch(() => setCandidates([]));
+    api.knowledgeDocuments(projectId, "case,pattern,playbook,fact").then((response) => setCatalog(response.documents)).catch(() => setCatalog([]));
     api.knowledgeDiagnostics(projectId).then(setDiagnostics).catch(() => setDiagnostics(null));
     api.knowledgeIngestRuns(projectId).then((response) => setIngestRuns(response.runs)).catch(() => setIngestRuns([]));
   }, [projectId]);
@@ -150,6 +153,7 @@ export default function KnowledgePage() {
       await openResult(selected);
       if (projectId) setStatus(await api.knowledgeIndexStatus(projectId));
       if (projectId) setCandidates((await api.knowledgeCandidates(projectId)).candidates);
+      if (projectId) setCatalog((await api.knowledgeDocuments(projectId, "case,pattern,playbook,fact")).documents);
     } catch (err) { setError(err instanceof Error ? err.message : "Review action failed"); }
     finally { setReviewBusy(false); }
   };
@@ -215,10 +219,10 @@ export default function KnowledgePage() {
 
       <div className="grid min-h-[calc(100vh-245px)] min-w-0 grid-cols-1 lg:grid-cols-[minmax(280px,0.75fr)_minmax(0,1.45fr)_minmax(320px,0.85fr)]">
         <section className="min-w-0 border-r border-gray-800 px-6 py-5">
-          <div className="mb-3 flex items-center justify-between"><h2 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Results</h2><span className="text-xs text-gray-600">{results.length}</span></div>
-          {results.length === 0 && candidates.length === 0 && productDocs.length === 0 ? <div className="rounded-md border border-dashed border-gray-800 p-8 text-center text-sm text-gray-600">Run a search or select a Product Document to inspect global knowledge.</div> : <div className="space-y-2">
-            {results.length === 0 && productDocs.length > 0 && <div className="mb-3 rounded border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-300">Global Product Documents · {productDocs.length}</div>}{results.length === 0 && candidates.length > 0 && <div className="mb-3 rounded border border-sky-500/20 bg-sky-500/5 px-3 py-2 text-xs text-sky-300">Candidate review queue · {candidates.length} pending</div>}
-            {(results.length ? results : [...productDocs, ...candidates]).map((result) => <button key={result.id} onClick={() => openResult(result)} className={`w-full rounded-md border px-4 py-3 text-left transition ${selected?.id === result.id ? "border-indigo-500/50 bg-indigo-500/10" : "border-gray-800 bg-gray-900/40 hover:border-gray-700 hover:bg-gray-900"}`}><div className="flex items-start gap-3"><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="truncate text-sm font-medium text-gray-200">{result.title}</span><span className="rounded border border-gray-700 px-1.5 py-0.5 text-[10px] text-gray-400">{result.kind}{result.candidateType ? ` / ${result.candidateType}` : ""}</span><span className="rounded border border-emerald-500/30 px-1.5 py-0.5 text-[10px] text-emerald-300">{result.lifecycle}</span>{result.scope?.scopeType && <span className="rounded border border-sky-500/30 px-1.5 py-0.5 text-[10px] text-sky-300">{result.scope.scopeType}:{result.scope.scopeKey || "all"}</span>}</div><p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-500">{result.summary}</p>{result.kind === "product_document" && <p className="mt-2 text-[11px] text-gray-600">{[result.sampleManagerVersion, (result as any).documentType, (result as any).language, (result as any).authority, (result as any).sourcePath].filter(Boolean).join(" · ")}</p>}{result.kind === "candidate" && <p className="mt-2 text-[11px] text-gray-600">{[result.sampleManagerVersion, result.solution, result.module, result.environment, result.jobId ? `Job ${result.jobId}` : undefined, result.deploymentId ? `Deployment ${result.deploymentId}` : undefined, `${result.evidenceCount ?? 0} Evidence`, result.createdAt].filter(Boolean).join(" · ")}</p>}<p className="mt-2 text-[11px] text-gray-600">{results.length && result.score !== undefined ? `score ${result.score.toFixed(3)} · ${(result.matchReasons ?? []).join(" · ")}` : "Awaiting reviewer decision"}</p></div><ChevronRight size={15} className="mt-1 shrink-0 text-gray-700" /></div></button>)}
+          <div className="mb-3 flex items-center justify-between"><h2 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Results</h2><span className="text-xs text-gray-600">{results.length || productDocs.length + candidates.length + catalog.length}</span></div>
+          {results.length === 0 && candidates.length === 0 && productDocs.length === 0 && catalog.length === 0 ? <div className="rounded-md border border-dashed border-gray-800 p-8 text-center text-sm text-gray-600">No Knowledge records yet. Use Product Document import or run a search to populate this workbench.</div> : <div className="space-y-2">
+            {results.length === 0 && productDocs.length > 0 && <div className="mb-3 rounded border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-300">Global Product Documents · {productDocs.length}</div>}{results.length === 0 && candidates.length > 0 && <div className="mb-3 rounded border border-sky-500/20 bg-sky-500/5 px-3 py-2 text-xs text-sky-300">Candidate review queue · {candidates.length} pending</div>}{results.length === 0 && catalog.length > 0 && <div className="mb-3 rounded border border-gray-700 bg-gray-900/60 px-3 py-2 text-xs text-gray-400">Project Knowledge · {catalog.length} Case / Pattern / Playbook / Fact records</div>}
+            {(results.length ? results : [...productDocs, ...candidates, ...catalog]).map((result) => <button key={result.id} onClick={() => openResult(result)} className={`w-full rounded-md border px-4 py-3 text-left transition ${selected?.id === result.id ? "border-indigo-500/50 bg-indigo-500/10" : "border-gray-800 bg-gray-900/40 hover:border-gray-700 hover:bg-gray-900"}`}><div className="flex items-start gap-3"><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="truncate text-sm font-medium text-gray-200">{result.title}</span><span className="rounded border border-gray-700 px-1.5 py-0.5 text-[10px] text-gray-400">{result.kind}{result.candidateType ? ` / ${result.candidateType}` : ""}</span><span className="rounded border border-emerald-500/30 px-1.5 py-0.5 text-[10px] text-emerald-300">{result.lifecycle}</span>{result.scope?.scopeType && <span className="rounded border border-sky-500/30 px-1.5 py-0.5 text-[10px] text-sky-300">{result.scope.scopeType}:{result.scope.scopeKey || "all"}</span>}</div><p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-500">{result.summary}</p>{result.kind === "product_document" && <p className="mt-2 text-[11px] text-gray-600">{[result.sampleManagerVersion, (result as any).documentType, (result as any).language, (result as any).authority, (result as any).sourcePath].filter(Boolean).join(" · ")}</p>}{result.kind === "candidate" && <p className="mt-2 text-[11px] text-gray-600">{[result.sampleManagerVersion, result.solution, result.module, result.environment, result.jobId ? `Job ${result.jobId}` : undefined, result.deploymentId ? `Deployment ${result.deploymentId}` : undefined, `${result.evidenceCount ?? 0} Evidence`, result.createdAt].filter(Boolean).join(" · ")}</p>}<p className="mt-2 text-[11px] text-gray-600">{results.length && result.score !== undefined ? `score ${result.score.toFixed(3)} · ${(result.matchReasons ?? []).join(" · ")}` : result.kind === "product_document" ? "Global reference document" : "Awaiting reviewer decision"}</p></div><ChevronRight size={15} className="mt-1 shrink-0 text-gray-700" /></div></button>)}
           </div>}
         </section>
 

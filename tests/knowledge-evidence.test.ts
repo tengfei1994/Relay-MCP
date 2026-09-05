@@ -38,3 +38,15 @@ test("retention cleanup preserves holds and supports purge recovery", () => {
     assert.equal(restored.id, standard.id); assert.equal(evidence.verify(standard.id).ok, true); assert.ok(statSync(restored.storagePath).size > 0);
   } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test("automatic retention cleanup is blocked for production and GMP environments", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-evidence-production-"));
+  const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db"), appDbPath: join(root, "app.db"), evidenceRoot: join(root, "evidence") });
+  try {
+    const evidence = new EvidenceStore(store, join(root, "evidence"));
+    const row = evidence.put({ content: Buffer.from("regulated"), mimeType: "text/plain", sourceKind: "log", projectId: "p1", locator: "test:regulated" });
+    const result = evidence.cleanup({ retentionMs: 0, environment: "production", mode: "automatic" });
+    assert.equal(result.deleted, 0);
+    assert.equal(evidence.verify(row.id).ok, true);
+  } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});

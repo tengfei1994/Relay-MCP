@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { and, eq } from "drizzle-orm";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { projects } from "../db/schema.js";
@@ -83,7 +83,7 @@ function resolveProject(userId: number, raw: unknown) {
   const store = getKnowledgeStore();
   // The control plane remains the source of identity. The Knowledge ACL is a
   // mirrored grant and never broadens the user's project ownership.
-  store.grantAcl(String(project.id), userId, true);
+  store.grantAcl(String(project.id), userId, false);
   return { project, store, projectId: String(project.id) };
 }
 
@@ -112,18 +112,28 @@ function idempotencyKey(req: FastifyRequest): string | undefined {
   return value;
 }
 
-function replayOrRun<T>(store: ReturnType<typeof getKnowledgeStore>, userId: number, operation: string, key: string | undefined, work: () => T): T {
+function replayScope(value: unknown): string {
+  if (value === undefined) return "";
+  const canonical = JSON.stringify(value, (_key, item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+    return Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b)));
+  });
+  return createHash("sha256").update(canonical ?? "", "utf8").digest("hex").slice(0, 24);
+}
+
+function replayOrRun<T>(store: ReturnType<typeof getKnowledgeStore>, userId: number, operation: string, key: string | undefined, work: () => T, scope?: unknown): T {
   if (!key) return work();
-  const previous = store.db.prepare("SELECT response_json FROM knowledge_api_idempotency WHERE user_id = ? AND operation = ? AND idempotency_key = ?").get(userId, operation, key) as { response_json?: string } | undefined;
+  const scopedOperation = `${operation}:${replayScope(scope)}`;
+  const previous = store.db.prepare("SELECT response_json FROM knowledge_api_idempotency WHERE user_id = ? AND operation = ? AND idempotency_key = ?").get(userId, scopedOperation, key) as { response_json?: string } | undefined;
   if (previous?.response_json) return JSON.parse(previous.response_json) as T;
   const result = work();
   try {
     store.db.prepare("INSERT INTO knowledge_api_idempotency(user_id,operation,idempotency_key,response_json,created_at) VALUES (?,?,?,?,?)")
-      .run(userId, operation, key, JSON.stringify(result), new Date().toISOString());
+      .run(userId, scopedOperation, key, JSON.stringify(result), new Date().toISOString());
   } catch (error) {
     // A concurrent identical request may have won the unique race. Return its
     // durable response instead of executing a mutation twice.
-    const concurrent = store.db.prepare("SELECT response_json FROM knowledge_api_idempotency WHERE user_id = ? AND operation = ? AND idempotency_key = ?").get(userId, operation, key) as { response_json?: string } | undefined;
+    const concurrent = store.db.prepare("SELECT response_json FROM knowledge_api_idempotency WHERE user_id = ? AND operation = ? AND idempotency_key = ?").get(userId, scopedOperation, key) as { response_json?: string } | undefined;
     if (concurrent?.response_json) return JSON.parse(concurrent.response_json) as T;
     throw error;
   }
@@ -318,7 +328,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
         if (data.action === "playbook_proposal") { if (!data.playbookId || !data.projectId || !data.title || data.body === undefined) throw new Error("playbookId, projectId, title and body are required"); return { document: proposePlaybook(store, request.user.id, { id: data.playbookId, projectId: data.projectId, title: data.title, body: data.body, skillDiff: data.skillDiff, reason: data.reason }) }; }
         if (!data.lifecycle) throw new Error("lifecycle is required for a review action");
         reviewDocument(store, request.user.id, documentId!, data.lifecycle, data.reason); return { ok: true, action: data.action, documentId, lifecycle: data.lifecycle };
-      });
+      }, body.data);
       return reply.send(result);
     } catch (error) { return sendError(reply, error, 403); }
   });
@@ -334,7 +344,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
         store.db.prepare("INSERT INTO knowledge_feedback(id,document_id,entity_id,user_id,helpful,comment,created_at) VALUES (?,?,?,?,?,?,?)").run(id, body.data.documentId, body.data.documentId, request.user.id, body.data.helpful === undefined ? null : body.data.helpful ? 1 : 0, body.data.comment ?? null, createdAt);
         store.audit({ actorId: request.user.id, projectId: String(row.project_id), action: "knowledge.feedback", entityType: "document", entityId: body.data.documentId, details: { helpful: body.data.helpful } });
         return { ok: true, id, documentId: body.data.documentId, createdAt };
-      });
+      }, body.data);
       return reply.send(result);
     } catch (error) { return sendError(reply, error, 404); }
   });
@@ -348,7 +358,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
         const report = importCasebook(store, { root: body.data.casebookRoot ?? store.casebookRoot ?? "./casebook", projectId, projectNameSnapshot: String(body.data.projectId), evidenceRoot: store.evidenceRoot });
         const facts = body.data.contextFiles?.length ? importContextFacts(store, { files: body.data.contextFiles, userId: request.user.id, projectId, projectNameSnapshot: String(body.data.projectId) }) : undefined;
         return { report, facts };
-      });
+      }, body.data);
       return reply.send(result);
     } catch (error) { return sendError(reply, error, 400); }
   });
@@ -362,14 +372,15 @@ export async function knowledgeRoutes(app: FastifyInstance) {
         const documents = Number((store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_documents WHERE project_id = ?").get(projectId) as { count?: number } | undefined)?.count ?? 0);
         const facts = Number((store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_facts WHERE project_id = ?").get(projectId) as { count?: number } | undefined)?.count ?? 0);
         store.db.transaction(() => {
-          store.db.prepare("DELETE FROM knowledge_fts WHERE rowid IN (SELECT rowid FROM knowledge_documents WHERE project_id = ?)").run(projectId);
-          store.db.prepare("INSERT INTO knowledge_fts(rowid,document_id,title,body) SELECT rowid,id,title,body FROM knowledge_documents WHERE project_id = ?").run(projectId);
+          store.db.prepare("DELETE FROM knowledge_fts WHERE document_id IN (SELECT id FROM knowledge_documents WHERE project_id = ?)").run(projectId);
+          store.db.prepare("INSERT INTO knowledge_fts(document_id,title,body) SELECT c.document_id, d.title, c.content FROM knowledge_chunks c JOIN knowledge_documents d ON d.id = c.document_id WHERE d.project_id = ?").run(projectId);
+          store.db.prepare("INSERT INTO knowledge_fts(document_id,title,body) SELECT d.id, d.title, d.body FROM knowledge_documents d WHERE d.project_id = ? AND NOT EXISTS (SELECT 1 FROM knowledge_chunks c WHERE c.document_id = d.id)").run(projectId);
           store.db.prepare("DELETE FROM knowledge_facts_fts WHERE rowid IN (SELECT rowid FROM knowledge_facts WHERE project_id = ?)").run(projectId);
           store.db.prepare("INSERT INTO knowledge_facts_fts(rowid,fact_id,text,tags) SELECT rowid,id,text,tags_json FROM knowledge_facts WHERE project_id = ?").run(projectId);
         })();
         store.audit({ actorId: request.user.id, projectId, action: "knowledge.reindex", entityType: "index", entityId: `project:${projectId}`, details: { documents, facts } });
         return { ok: true, projectId, documents, facts, completedAt: new Date().toISOString() };
-      });
+      }, body.data);
       return reply.send(result);
     } catch (error) { return sendError(reply, error, 400); }
   });
@@ -378,8 +389,16 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     try {
       const { store, projectId } = resolveProject(request.user.id, (request.query as Record<string, unknown>).projectId);
       const counts = store.db.prepare("SELECT kind, lifecycle, COUNT(*) AS count FROM knowledge_documents WHERE project_id = ? GROUP BY kind,lifecycle ORDER BY kind,lifecycle").all(projectId);
+      const indexCoverage = store.db.prepare(`SELECT
+        (SELECT COUNT(*) FROM knowledge_documents WHERE project_id = ?) AS documents,
+        (SELECT COUNT(DISTINCT f.document_id) FROM knowledge_fts f JOIN knowledge_documents d ON d.id = f.document_id WHERE d.project_id = ?) AS indexedDocuments,
+        (SELECT COUNT(*) FROM knowledge_facts WHERE project_id = ?) AS facts,
+        (SELECT COUNT(DISTINCT f.fact_id) FROM knowledge_facts_fts f JOIN knowledge_facts d ON d.id = f.fact_id WHERE d.project_id = ?) AS indexedFacts`).get(projectId, projectId, projectId, projectId) as Record<string, unknown>;
+      const staleReasons: string[] = [];
+      if (Number(indexCoverage.documents ?? 0) !== Number(indexCoverage.indexedDocuments ?? 0)) staleReasons.push("document_index_incomplete");
+      if (Number(indexCoverage.facts ?? 0) !== Number(indexCoverage.indexedFacts ?? 0)) staleReasons.push("fact_index_incomplete");
       const lastIngest = store.db.prepare("SELECT id,status,imported,skipped,failed,started_at,finished_at,error FROM knowledge_ingest_runs ORDER BY started_at DESC LIMIT 1").get();
-      return reply.send({ projectId, stale: false, counts, lastIngest, checkedAt: new Date().toISOString() });
+      return reply.send({ projectId, stale: staleReasons.length > 0, staleReasons, indexCoverage, counts, lastIngest, checkedAt: new Date().toISOString() });
     } catch (error) { return sendError(reply, error, 400); }
   });
 }

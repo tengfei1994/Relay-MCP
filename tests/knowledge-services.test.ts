@@ -24,6 +24,16 @@ test("casebook and legacy context imports are idempotent and preserve unresolved
   } finally { store.close(); }
 });
 
+test("read-path ACL mirroring preserves an existing reviewer grant", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-knowledge-acl-"));
+  const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db"), appDbPath: join(root, "app.db") });
+  try {
+    store.grantAcl("p1", 7, true);
+    store.grantAcl("p1", 7, false);
+    assert.equal((store.db.prepare("SELECT can_read, can_review FROM knowledge_acl WHERE project_id = ? AND user_id = ?").get("p1", 7) as any).can_review, 1);
+  } finally { store.close(); }
+});
+
 test("retrieval applies ACL, lifecycle and version filters before returning explainable results", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-knowledge-search-")); const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db"), appDbPath: join(root, "app.db") });
   try {
@@ -46,4 +56,3 @@ test("SampleManager relation extraction is deterministic and source-backed", () 
     assert.equal(result.length, 1); assert.equal(result[0].sourceLocator, "Forms/Instrument.xml"); assert.equal(result[0].verified, true);
   } finally { store.close(); }
 });
-

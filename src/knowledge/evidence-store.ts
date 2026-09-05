@@ -22,7 +22,7 @@ type EvidenceRow = {
   source_locator: string; retention: NonNullable<EvidenceInput["retention"]>;
   created_at: string; deleted_at: string | null;
 };
-export interface EvidenceCleanupOptions { retentionMs?: number; now?: Date; actorId?: number; }
+export interface EvidenceCleanupOptions { retentionMs?: number; now?: Date; actorId?: number; environment?: string; mode?: "manual" | "automatic"; }
 export interface EvidenceCleanupResult { scanned: number; deleted: number; bytesFreed: number; skippedHeld: number; errors: Array<{ evidenceId: string; error: string }>; }
 
 export class EvidenceStore {
@@ -106,6 +106,12 @@ export class EvidenceStore {
   }
 
   cleanup(options: EvidenceCleanupOptions = {}): EvidenceCleanupResult {
+    const environment = options.environment?.trim().toLowerCase();
+    if (options.mode === "automatic" && (environment === "production" || environment === "prod" || environment === "gmp" || environment === "regulated")) {
+      const blocked: EvidenceCleanupResult = { scanned: 0, deleted: 0, bytesFreed: 0, skippedHeld: 0, errors: [{ evidenceId: "*", error: "Automatic Evidence deletion is disabled for production/GMP environments" }] };
+      this.store.audit({ actorId: options.actorId, action: "evidence.retention_cleanup_blocked", entityType: "evidence_store", entityId: "retention", details: { environment, mode: options.mode } });
+      return blocked;
+    }
     const now = options.now ?? new Date(); const retentionMs = Math.max(0, options.retentionMs ?? 30 * 24 * 60 * 60 * 1000); const cutoff = new Date(now.getTime() - retentionMs).toISOString();
     const rows = this.store.db.prepare("SELECT id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,source_locator,retention,created_at,deleted_at FROM knowledge_evidence WHERE deleted_at IS NULL AND created_at <= ?").all(cutoff) as EvidenceRow[];
     const result: EvidenceCleanupResult = { scanned: rows.length, deleted: 0, bytesFreed: 0, skippedHeld: 0, errors: [] };

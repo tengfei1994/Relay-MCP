@@ -3,6 +3,7 @@ import { appendFileSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
 import type { KnowledgeOutboxEvent, KnowledgeStore } from "./store.js";
 import { EvidenceStore } from "./evidence-store.js";
+import { KnowledgeRepository } from "./repository.js";
 
 const MAX_CAPTURE_ATTEMPTS = 5;
 const PROJECT_RESOLUTION_RETRY_BASE_MS = 5_000;
@@ -124,9 +125,19 @@ function canonicalJson(value: unknown): string {
     .join(",")}}`;
 }
 
+function eventMetadata(event: KnowledgeOutboxEvent): { sampleManagerVersion?: string; solution?: string; module?: string; candidateType: "case" | "pattern" | "playbook"; applicability?: string; tags: string[]; summary: string } {
+  const payload = event.payload;
+  const text = (key: string) => typeof payload[key] === "string" && String(payload[key]).trim() ? String(payload[key]).trim() : undefined;
+  const candidateType = ["case", "pattern", "playbook"].includes(String(payload.candidateType)) ? String(payload.candidateType) as "case" | "pattern" | "playbook" : "case";
+  const tags = Array.isArray(payload.tags) ? payload.tags.filter((tag): tag is string => typeof tag === "string").map((tag) => tag.trim()).filter(Boolean) : [];
+  const summary = text("summary") ?? text("error") ?? text("status") ?? `${event.type} captured from Relay execution`;
+  return { sampleManagerVersion: text("sampleManagerVersion") ?? text("samplemanagerVersion") ?? text("version"), solution: text("solution"), module: text("module"), candidateType, applicability: text("applicability"), tags, summary };
+}
+
 function candidateBody(event: KnowledgeOutboxEvent, projectId: string | number): string {
   // This is the canonical source representation and the candidate's
   // provenance record. It remains verifiable after outbox metadata is pruned.
+  const metadata = eventMetadata(event);
   return canonicalJson({
     eventId: event.id,
     eventKey: event.eventKey,
@@ -138,6 +149,9 @@ function candidateBody(event: KnowledgeOutboxEvent, projectId: string | number):
     jobId: event.jobId,
     deploymentId: event.deploymentId,
     payload: event.payload,
+    summary: metadata.summary,
+    tags: metadata.tags,
+    applicability: metadata.applicability,
   });
 }
 
@@ -243,7 +257,8 @@ export async function captureKnowledgeCandidates(
       const now = new Date().toISOString();
       const environment = typeof event.payload.environment === "string" ? event.payload.environment : undefined;
       const candidateId = `candidate-${createHash("sha256").update(event.id, "utf8").digest("hex")}`;
-      store.upsertDocument({
+      const metadata = eventMetadata(event);
+      const candidate: import("./domain.js").Candidate = {
         // Candidate identity follows the immutable event ID; source_sha256
         // below follows the actual canonical content instead of the ID.
         id: candidateId,
@@ -254,11 +269,19 @@ export async function captureKnowledgeCandidates(
         projectId: String(projectId),
         projectNameSnapshot: event.projectNameSnapshot,
         environment,
+        sampleManagerVersion: metadata.sampleManagerVersion,
+        solution: metadata.solution,
+        module: metadata.module,
+        candidateType: metadata.candidateType,
+        eventId: event.id,
+        deploymentId: event.deploymentId,
+        jobId: event.jobId,
         locator: `relay-event:${event.id}`,
         sha256: digest,
         createdAt: now,
         updatedAt: now,
-      });
+      };
+      new KnowledgeRepository(store).saveCandidate(candidate);
       materializeEvidence(store, event, projectId, candidateId);
       store.acknowledge(consumer, event.id, event.claimToken);
       count++;

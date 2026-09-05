@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
+import { createHash } from "node:crypto";
 import { createKnowledgeStore } from "../src/knowledge/store.ts";
 
 const documentCount = boundedEnv("KNOWLEDGE_BENCHMARK_DOCUMENTS", 100_000, 1_000, 250_000);
@@ -26,14 +27,21 @@ try {
   const insert = store.db.prepare(`INSERT INTO knowledge_documents
     (id,kind,title,body,lifecycle,project_id,source_locator,created_at,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?)`);
+  const insertChunk = store.db.prepare(`INSERT INTO knowledge_chunks(id,document_id,ordinal,content,content_sha256) VALUES (?,?,?,?,?)`);
   const populate = store.db.transaction(() => {
     for (let index = 0; index < documentCount; index++) {
       const token = index % 5;
       const body = token === 0 ? `FormsBin stale cache incident ${index} version 21.1` : token === 1 ? `仪器 保存 静态必填 incident ${index} 版本 21.1` : token === 2 ? `SamplingHygieneStatus object validation incident ${index}` : token === 3 ? `C:\\ProgramData\\Thermo\\SampleManager\\FormsBin ${index}` : `SampleManager 21.1 deployment evidence ${index}`;
-      insert.run(`chunk-${index}`, "case", `Benchmark chunk ${index}`, body, "verified", "benchmark", `benchmark:${index}`, now, now);
+      const documentId = `chunk-${index}`;
+      insert.run(documentId, "case", `Benchmark chunk ${index}`, body, "verified", "benchmark", `benchmark:${index}`, now, now);
+      insertChunk.run(`${documentId}:chunk:0`, documentId, 0, body, createHash("sha256").update(body, "utf8").digest("hex"));
     }
   });
   populate();
+  // The document insert trigger creates one compatibility row per document;
+  // benchmark the chunk projection used by production reindex/search.
+  store.db.prepare("DELETE FROM knowledge_fts").run();
+  store.db.prepare("INSERT INTO knowledge_fts(document_id,title,body) SELECT c.document_id, d.title, c.content FROM knowledge_chunks c JOIN knowledge_documents d ON d.id = c.document_id").run();
   store.db.pragma("optimize");
   // Fill SQLite's page cache before measuring. The report makes this explicit:
   // it is a hot-cache FTS-only baseline, not an end-to-end provider benchmark.

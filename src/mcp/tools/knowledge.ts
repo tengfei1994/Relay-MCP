@@ -25,7 +25,7 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
     const projectNameResolved = project(projectName);
     if (!projectNameResolved) throw new Error("No project selected");
     const projectId = user.defaultProjectId && projectNameResolved === user.defaultProject ? String(user.defaultProjectId) : projectNameResolved;
-    store.grantAcl(projectId, user.id, true);
+    store.grantAcl(projectId, user.id, false);
     return { content: [{ type: "text", text: summarizeJson(await searchKnowledge(store, { userId: user.id, projectId, query, limit, sampleManagerVersion, solution, module, environment })) }] };
   });
   server.tool("knowledge_get", "Read a complete Knowledge document by id after project ACL enforcement.", { documentId: z.string() }, async ({ documentId }) => {
@@ -47,7 +47,7 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   });
   server.tool("knowledge_relation_query", "Query deterministic, source-backed SampleManager object relations.", { project: z.string().optional(), objectId: z.string().optional(), relationType: z.string().optional(), verifiedOnly: z.boolean().optional(), limit: z.number().int().min(1).max(500).optional() }, async ({ project: projectName, objectId, relationType, verifiedOnly, limit }) => {
     const store = requireKnowledge(); const name = project(projectName); if (!name) throw new Error("No project selected");
-    const projectId = user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name; store.grantAcl(projectId, user.id, true);
+    const projectId = user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name; store.grantAcl(projectId, user.id, false);
     return { content: [{ type: "text", text: summarizeJson(queryRelations(store, { userId: user.id, projectId, objectId, relationType: relationType as never, verifiedOnly, limit })) }] };
   });
   server.tool("knowledge_feedback", "Record whether a Knowledge result was useful; this never mutates the source casebook.", { documentId: z.string(), helpful: z.boolean().optional(), comment: z.string().max(2_000).optional() }, async ({ documentId, helpful, comment }) => {
@@ -59,19 +59,20 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   });
   server.tool("knowledge_ingest", "Import Git-managed Casebook Markdown/YAML and legacy context JSONL idempotently.", { casebookRoot: z.string(), contextFiles: z.array(z.string()).optional(), project: z.string().optional() }, async ({ casebookRoot, contextFiles, project: projectName }) => {
     const store = requireKnowledge(); const name = project(projectName); if (!name) throw new Error("No project selected");
-    const projectId = user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name; store.grantAcl(projectId, user.id, true);
+    const projectId = user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name; store.grantAcl(projectId, user.id, false);
     const report = importCasebook(store, { root: casebookRoot, projectId, projectNameSnapshot: name, evidenceRoot: store.evidenceRoot });
     const facts = contextFiles?.length ? importContextFacts(store, { files: contextFiles, userId: user.id, projectId, projectNameSnapshot: name }) : undefined;
     return { content: [{ type: "text", text: summarizeJson({ report, facts }) }] };
   });
   server.tool("knowledge_reindex", "Rebuild project-scoped FTS and invalidate cached embeddings after a controlled model or source change.", { project: z.string().optional(), invalidateEmbeddings: z.boolean().optional() }, async ({ project: projectName, invalidateEmbeddings }) => {
     const store = requireKnowledge(); const name = project(projectName); if (!name) throw new Error("No project selected");
-    const projectId = user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name; store.grantAcl(projectId, user.id, true);
+    const projectId = user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name; store.grantAcl(projectId, user.id, false);
     const documents = Number((store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_documents WHERE project_id = ?").get(projectId) as { count?: number } | undefined)?.count ?? 0);
     const facts = Number((store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_facts WHERE project_id = ?").get(projectId) as { count?: number } | undefined)?.count ?? 0);
     store.db.transaction(() => {
-      store.db.prepare("DELETE FROM knowledge_fts WHERE rowid IN (SELECT rowid FROM knowledge_documents WHERE project_id = ?)").run(projectId);
-      store.db.prepare("INSERT INTO knowledge_fts(rowid,document_id,title,body) SELECT rowid,id,title,body FROM knowledge_documents WHERE project_id = ?").run(projectId);
+      store.db.prepare("DELETE FROM knowledge_fts WHERE document_id IN (SELECT id FROM knowledge_documents WHERE project_id = ?)").run(projectId);
+      store.db.prepare("INSERT INTO knowledge_fts(document_id,title,body) SELECT c.document_id, d.title, c.content FROM knowledge_chunks c JOIN knowledge_documents d ON d.id = c.document_id WHERE d.project_id = ?").run(projectId);
+      store.db.prepare("INSERT INTO knowledge_fts(document_id,title,body) SELECT d.id, d.title, d.body FROM knowledge_documents d WHERE d.project_id = ? AND NOT EXISTS (SELECT 1 FROM knowledge_chunks c WHERE c.document_id = d.id)").run(projectId);
       store.db.prepare("DELETE FROM knowledge_facts_fts WHERE rowid IN (SELECT rowid FROM knowledge_facts WHERE project_id = ?)").run(projectId);
       store.db.prepare("INSERT INTO knowledge_facts_fts(rowid,fact_id,text,tags) SELECT rowid,id,text,tags_json FROM knowledge_facts WHERE project_id = ?").run(projectId);
       if (invalidateEmbeddings) store.db.prepare("DELETE FROM knowledge_embeddings WHERE document_id IN (SELECT id FROM knowledge_documents WHERE project_id = ?)").run(projectId);

@@ -153,13 +153,21 @@ test("capture worker generates a candidate for job cancellation events", async (
         projectId: "42",
         projectNameSnapshot: "Demo",
         jobId: "job-cancelled",
-        payload: { status: "cancelled", kind: "remote_command", error: "Job cancelled", phase: "cancelled" },
+        payload: { status: "cancelled", kind: "remote_command", error: "Job cancelled", phase: "cancelled", sampleManagerVersion: "21.1", solution: "PT 3.5", module: "Instrument", candidateType: "case", tags: ["cancelled", "remote"], summary: "Cancellation captured" },
       });
       assert.equal(await captureKnowledgeCandidates(store, "capture"), 1);
       store.grantAcl("42", 7);
       const documents = store.listDocuments(7, "42");
       assert.equal(documents.length, 1);
       assert.equal(documents[0].kind, "candidate");
+      const projection = store.db.prepare("SELECT event_id, deployment_id, job_id, samplemanager_version, solution, module, candidate_type FROM knowledge_candidates WHERE id = ?").get(documents[0].id) as Record<string, unknown>;
+      assert.equal(projection.event_id, "event-job-cancelled");
+      assert.equal(projection.job_id, "job-cancelled");
+      assert.equal(projection.samplemanager_version, "21.1");
+      assert.equal(projection.solution, "PT 3.5");
+      assert.equal(projection.module, "Instrument");
+      assert.equal(projection.candidate_type, "case");
+      assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_chunks WHERE document_id = ?").get(documents[0].id).count, 1);
       const provenance = JSON.parse(documents[0].body) as Record<string, unknown>;
       assert.equal(provenance.eventType, "job.cancelled");
       assert.equal((provenance.payload as Record<string, unknown>).status, "cancelled");

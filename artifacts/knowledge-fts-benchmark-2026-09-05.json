@@ -1,6 +1,6 @@
 {
   "format": "relay-knowledge-fts-benchmark/v1",
-  "recordedAt": "2026-09-05T01:47:01.977Z",
+  "recordedAt": "2026-09-05T02:09:04.597Z",
   "hardware": {
     "platform": "win32",
     "release": "10.0.26200",
@@ -29,7 +29,7 @@
     ],
     "cpuCount": 20,
     "totalMemoryBytes": 16834945024,
-    "freeMemoryBytes": 1299439616,
+    "freeMemoryBytes": 2153852928,
     "node": "v26.7.0"
   },
   "data": {
@@ -46,9 +46,9 @@
     "version"
   ],
   "latencyMs": {
-    "p50": 0.28650000000016007,
-    "p95": 0.3713999999999942,
-    "max": 0.6489000000001397,
+    "p50": 0.24639999999999418,
+    "p95": 0.3029000000005908,
+    "max": 0.39210000000093714,
     "samples": 100
   },
   "threshold": {

@@ -16,6 +16,7 @@ import { KNOWLEDGE_FACTS_SEARCH_MIGRATION } from "./migrations/010-facts-search.
 import { KNOWLEDGE_API_GOVERNANCE_MIGRATION } from "./migrations/011-api-governance.js";
 import { KNOWLEDGE_HYBRID_RETRIEVAL_MIGRATION } from "./migrations/011-hybrid-retrieval.js";
 import { randomUUID } from "crypto";
+import { createHash } from "crypto";
 import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type KnowledgeDocument, type KnowledgeLifecycle } from "./domain.js";
 import { sanitizeAuditArguments } from "../shared/audit-sanitizer.js";
 
@@ -167,7 +168,7 @@ export class KnowledgeStore {
     // Databases created by the early P01 preview may already carry the
     // 002-domain marker but not the type projections introduced later. Make
     // this additive repair safe and idempotent without rewriting user data.
-    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl"];
+    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl"];
     const missingTable = requiredTables.some((name) => !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
     if (missingTable) this.db.exec(KNOWLEDGE_DOMAIN_MIGRATION.sql);
     const columns: Record<string, Array<[string, string]>> = {
@@ -398,7 +399,29 @@ export class KnowledgeStore {
         VALUES (@id,@status,'case','[]',@sourceLocator,@sourceSha256,@createdAt,@updatedAt)`).run(projection);
       this.db.prepare("UPDATE knowledge_candidates SET status=@status,source_locator=@sourceLocator,source_sha256=@sourceSha256,updated_at=@updatedAt WHERE id=@id").run(projection);
     }
+    this.syncDocumentChunks(document);
     return document;
+  }
+
+  /** Keep deterministic chunk rows in sync with the canonical document. */
+  private syncDocumentChunks(document: KnowledgeDocument): void {
+    const chunkSize = 2_000;
+    const chunks: string[] = [];
+    for (let offset = 0; offset < document.body.length; offset += chunkSize) chunks.push(document.body.slice(offset, offset + chunkSize));
+    if (chunks.length === 0) chunks.push("");
+    const remove = this.db.prepare("DELETE FROM knowledge_chunks WHERE document_id = ?");
+    const insert = this.db.prepare("INSERT INTO knowledge_chunks(id,document_id,ordinal,content,content_sha256) VALUES (?,?,?,?,?)");
+    const ftsRemove = this.db.prepare("DELETE FROM knowledge_fts WHERE document_id = ?");
+    const ftsInsert = this.db.prepare("INSERT INTO knowledge_fts(document_id,title,body) VALUES (?,?,?)");
+    this.db.transaction(() => {
+      remove.run(document.id);
+      ftsRemove.run(document.id);
+      chunks.forEach((content, ordinal) => {
+        const hash = createHash("sha256").update(content, "utf8").digest("hex");
+        insert.run(`${document.id}:chunk:${ordinal}`, document.id, ordinal, content, hash);
+        ftsInsert.run(document.id, `${document.title} [chunk ${ordinal + 1}]`, content);
+      });
+    })();
   }
 
   canRead(userId: number, projectId: string | undefined): boolean {
@@ -408,7 +431,10 @@ export class KnowledgeStore {
   }
 
   grantAcl(projectId: string, userId: number, canReview = false): void {
-    this.db.prepare("INSERT INTO knowledge_acl(project_id,user_id,can_read,can_review) VALUES (?,?,1,?) ON CONFLICT(project_id,user_id) DO UPDATE SET can_read=1,can_review=excluded.can_review").run(projectId, userId, canReview ? 1 : 0);
+    // Read-path mirroring must never revoke an already-authorized reviewer.
+    // Only an explicit reviewer grant may raise can_review; read grants keep
+    // the existing control-plane decision intact.
+    this.db.prepare("INSERT INTO knowledge_acl(project_id,user_id,can_read,can_review) VALUES (?,?,1,?) ON CONFLICT(project_id,user_id) DO UPDATE SET can_read=1,can_review=CASE WHEN excluded.can_review=1 THEN 1 ELSE knowledge_acl.can_review END").run(projectId, userId, canReview ? 1 : 0);
   }
 
   audit(input: { actorId?: number; projectId?: string; action: string; entityType: string; entityId: string; details?: Record<string, unknown> }): void {

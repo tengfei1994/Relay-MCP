@@ -44,6 +44,18 @@ function documentFingerprint(row: Record<string, unknown>): string {
   return String(row.source_sha256 ?? createHash("sha256").update(`${String(row.title ?? "")}\n${String(row.body ?? "")}`, "utf8").digest("hex"));
 }
 
+function evidenceRefs(store: KnowledgeStore, row: Record<string, unknown>): string[] {
+  const kind = String(row.kind ?? "");
+  const id = String(row.id ?? "");
+  const linked = (store.db.prepare("SELECT evidence_id FROM knowledge_entity_evidence WHERE entity_type = ? AND entity_id = ? ORDER BY created_at").all(kind, id) as Array<{ evidence_id: string }>).map((item) => item.evidence_id);
+  const table = kind === "candidate" ? "knowledge_candidates" : kind === "case" ? "knowledge_cases" : kind === "pattern" ? "knowledge_patterns" : kind === "playbook" ? "knowledge_playbooks" : undefined;
+  if (!table) return [...new Set(linked)];
+  const projection = store.db.prepare(`SELECT evidence_refs_json FROM ${table} WHERE id = ?`).get(id) as { evidence_refs_json?: string } | undefined;
+  let projected: string[] = [];
+  try { const parsed = projection?.evidence_refs_json ? JSON.parse(projection.evidence_refs_json) : []; if (Array.isArray(parsed)) projected = parsed.filter((value): value is string => typeof value === "string"); } catch { /* ignore malformed legacy metadata */ }
+  return [...new Set([...linked, ...projected])];
+}
+
 function readRows(store: KnowledgeStore, request: KnowledgeSearchRequest): Array<Record<string, unknown>> {
   const conditions = ["d.project_id = @projectId"];
   const params: Record<string, unknown> = { projectId: request.projectId };
@@ -65,7 +77,7 @@ function readRows(store: KnowledgeStore, request: KnowledgeSearchRequest): Array
   const limit = Math.max(1, Math.min(request.limit ?? 20, 100));
   const candidateLimit = Math.min(500, Math.max(limit * 5, 50));
   try {
-    const query = `SELECT d.*, bm25(knowledge_fts) AS rank FROM knowledge_fts JOIN knowledge_documents d ON d.id = knowledge_fts.document_id WHERE knowledge_fts MATCH @match AND ${conditions.join(" AND ")} ORDER BY rank LIMIT ${candidateLimit}`;
+    const query = `SELECT d.*, MIN(bm25(knowledge_fts)) AS rank FROM knowledge_fts JOIN knowledge_documents d ON d.id = knowledge_fts.document_id WHERE knowledge_fts MATCH @match AND ${conditions.join(" AND ")} GROUP BY d.id ORDER BY rank LIMIT ${candidateLimit}`;
     const rows = store.db.prepare(query).all({ ...params, match: escapeFtsQuery(request.query) }) as Array<Record<string, unknown>>;
     if (!includeFacts) return rows;
     try {
@@ -158,7 +170,7 @@ export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeS
       id: String(row.id), kind: String(row.kind), title, summary: body.length > 500 ? `${body.slice(0, 500)}…` : body,
       score, lifecycle: String(row.lifecycle), versionMatch, matchReasons: reasons,
       applicability: { sampleManagerVersion: row.samplemanager_version ? String(row.samplemanager_version) : undefined, solution: row.solution ? String(row.solution) : undefined, module: row.module ? String(row.module) : undefined, environment: row.environment ? String(row.environment) : undefined },
-      evidenceRefs: [String(row.source_locator)],
+      evidenceRefs: evidenceRefs(store, row),
     };
   });
   if (providers.rerank && resultRows.length > 1) {

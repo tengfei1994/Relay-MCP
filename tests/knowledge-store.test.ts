@@ -18,6 +18,21 @@ const eventDefaults = {
   payload: { status: "succeeded" },
 };
 
+test("read-path ACL mirroring preserves an existing reviewer grant", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-knowledge-acl-"));
+  const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });
+  try {
+    store.grantAcl("project-7", 7, true);
+    store.grantAcl("project-7", 7, false);
+    const row = store.db.prepare("SELECT can_read, can_review FROM knowledge_acl WHERE project_id = ? AND user_id = ?").get("project-7", 7) as { can_read: number; can_review: number };
+    assert.equal(row.can_read, 1);
+    assert.equal(row.can_review, 1);
+  } finally {
+    store.close();
+    cleanup(root);
+  }
+});
+
 test("knowledge migrations are repeatable and consumer checkpoints make event replay idempotent", (t) => {
   const root = mkdtempSync(join(tmpdir(), "relay-knowledge-"));
   const dbPath = join(root, "knowledge.db");

@@ -76,7 +76,7 @@ export default function KnowledgePage() {
     api.productDocuments({ sampleManagerVersion: version || undefined, solution: solution || undefined, module: moduleName || undefined, documentType: documentType || undefined, language: language || undefined, authority: authority || undefined })
       .then((response) => setProductDocs(response.documents.map((item: any) => ({ ...item, kind: "product_document", summary: item.summary ?? item.title }))))
       .catch(() => setProductDocs([]));
-  }, [version, solution, moduleName, documentType, language, authority]);
+  }, [projectId, version, solution, moduleName, documentType, language, authority]);
 
   useEffect(() => {
     if (!projectId) {

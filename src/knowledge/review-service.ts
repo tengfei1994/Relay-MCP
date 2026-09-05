@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { assertLifecycleTransition, assertReviewer, type CandidateCard, type KnowledgeDocument, type KnowledgeKind, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
 import type { KnowledgeStore } from "./store.js";
+import { KnowledgeRepository } from "./repository.js";
 
 type Row = Record<string, unknown>;
 function entityEvidenceRefs(store: KnowledgeStore, kind: string, id: string): string[] {
@@ -55,6 +56,19 @@ export function acceptCandidate(store: KnowledgeStore, userId: number, candidate
   const row = loadReviewerDocument(store, userId, candidateId);
   if (row.kind !== "candidate") throw new Error("Only candidates can be accepted");
   reviewDocument(store, userId, candidateId, "reproduced", reason);
+  const card = store.getCandidateCard(candidateId);
+  const refs = entityEvidenceRefs(store, "candidate", candidateId);
+  const source = store.db.prepare("SELECT event_id,job_id,deployment_id FROM knowledge_candidates WHERE id = ?").get(candidateId) as { event_id?: string; job_id?: string; deployment_id?: string } | undefined;
+  const existingCaseId = `case-${candidateId}`;
+  const now = new Date().toISOString();
+  const title = card?.summary ? `Case: ${card.summary.slice(0, 180)}` : `Case derived from ${String(row.title ?? candidateId)}`;
+  const body = card
+    ? [`Problem: ${card.problemStatement}`, `Hypothesis: ${card.hypothesis}`, `Actions: ${card.actions.join("; ") || "not established"}`, `Verification: ${card.verification.join("; ") || "not run"}`].join("\n")
+    : String(row.body ?? "");
+  const repository = new KnowledgeRepository(store);
+  repository.saveCase({ id: existingCaseId, kind: "case", title, body, lifecycle: "reproduced", projectId: row.project_id ? String(row.project_id) : undefined, projectNameSnapshot: row.project_name_snapshot ? String(row.project_name_snapshot) : undefined, sampleManagerVersion: row.samplemanager_version ? String(row.samplemanager_version) : undefined, solution: row.solution ? String(row.solution) : undefined, module: row.module ? String(row.module) : undefined, environment: row.environment ? String(row.environment) : undefined, symptoms: card?.symptoms.join("; "), rootCause: card?.verifiedConclusion, verification: card?.verification.join("; "), applicability: card?.applicability, deploymentId: source?.deployment_id ? String(source.deployment_id) : undefined, jobId: source?.job_id ? String(source.job_id) : undefined, eventId: source?.event_id ? String(source.event_id) : undefined, sourceCandidateId: candidateId, evidenceRefs: refs, confidence: card?.confidence, locator: `candidate:${candidateId}`, createdAt: now, updatedAt: now });
+  store.db.prepare("INSERT OR IGNORE INTO knowledge_relations(id,from_document_id,to_document_id,relation_type,source_locator,confidence,verified,extraction_version,created_at,project_id) VALUES (?,?,?,?,?,?,?,?,?,?)").run(`candidate-case-${candidateId}`, candidateId, existingCaseId, "produces_case", `review:${candidateId}`, card?.confidence ?? 0.2, 0, "deterministic-compiler-v1", now, row.project_id ?? null);
+  store.audit({ actorId: userId, projectId: row.project_id as string, action: "knowledge.candidate.case_created", entityType: "case", entityId: existingCaseId, details: { sourceCandidateId: candidateId, eventId: source?.event_id, evidenceCount: refs.length } });
 }
 
 export function rejectCandidate(store: KnowledgeStore, userId: number, candidateId: string, reason: string): void {

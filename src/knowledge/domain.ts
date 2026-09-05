@@ -76,6 +76,8 @@ export interface KnowledgeEntity extends KnowledgeScope, KnowledgeSource {
 
 export interface Case extends KnowledgeEntity {
   kind: "case";
+  sourceCandidateId?: string;
+  eventId?: string;
   symptoms?: string;
   rootCause?: string;
   fix?: string;
@@ -124,6 +126,9 @@ export interface CandidateCard {
   confidence?: number;
   generatedBy: string;
   inferenceStatus: "deterministic" | "provider" | "rejected";
+  eventClass?: string;
+  captureReason?: string;
+  impact?: string;
   updatedAt: string;
 }
 

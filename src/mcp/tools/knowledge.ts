@@ -35,6 +35,19 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
     const scope = store.getScopeBinding(String(row.id));
     return Boolean(scope && (scope.visibility === "global" || scope.visibility === "organization") && ["verified", "approved"].includes(String(row.lifecycle)));
   };
+  const provenance = (store: KnowledgeStore, row: Record<string, unknown>) => {
+    const kind = String(row.kind);
+    if (kind === "candidate") return store.db.prepare("SELECT event_id,event_id AS source_event_id,job_id,deployment_id,evidence_refs_json FROM knowledge_candidates WHERE id = ?").get(String(row.id)) as Record<string, unknown> | undefined;
+    if (kind === "case") return store.db.prepare("SELECT event_id,job_id,deployment_id,source_candidate_id,evidence_refs_json FROM knowledge_cases WHERE id = ?").get(String(row.id)) as Record<string, unknown> | undefined;
+    return undefined;
+  };
+  const evidenceRefs = (source?: Record<string, unknown>): string[] => {
+    if (!source?.evidence_refs_json) return [];
+    try {
+      const parsed = JSON.parse(String(source.evidence_refs_json));
+      return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+    } catch { return []; }
+  };
   server.tool("knowledge_search", "Search ACL- and Scope-filtered Case, Pattern, Playbook, and Candidate knowledge.", { project: z.string().optional(), query: z.string().min(1), limit: z.number().int().min(1).max(100).optional(), sampleManagerVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), environment: z.string().optional(), scopeType: z.string().optional(), scopeKey: z.string().optional() }, async ({ project: projectName, query, limit, sampleManagerVersion, solution, module, environment, scopeType, scopeKey }) => {
     const store = requireKnowledge();
     const projectNameResolved = project(projectName);
@@ -48,7 +61,8 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
     const row = store.db.prepare("SELECT * FROM knowledge_documents WHERE id = ?").get(documentId) as Record<string, unknown> | undefined;
     const name = project(projectName); const projectId = user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name;
     if (!row || !canReadDocument(store, row, projectId)) throw new Error("Knowledge access denied");
-    return { content: [{ type: "text", text: summarizeJson({ id: row.id, kind: row.kind, title: row.title, body: row.body, lifecycle: row.lifecycle, projectId: row.project_id, scope: store.getScopeBinding(documentId), card: String(row.kind) === "candidate" ? store.getCandidateCard(documentId) : undefined, sourceLocator: row.source_locator, sourceSha256: row.source_sha256, updatedAt: row.updated_at }) }] };
+    const source = provenance(store, row);
+    return { content: [{ type: "text", text: summarizeJson({ id: row.id, kind: row.kind, title: row.title, body: row.body, lifecycle: row.lifecycle, projectId: row.project_id, eventId: source?.event_id, jobId: source?.job_id, deploymentId: source?.deployment_id, sourceCandidateId: source?.source_candidate_id, evidenceRefs: evidenceRefs(source), scope: store.getScopeBinding(documentId), card: String(row.kind) === "candidate" ? store.getCandidateCard(documentId) : undefined, sourceLocator: row.source_locator, sourceSha256: row.source_sha256, updatedAt: row.updated_at }) }] };
   });
   server.tool("knowledge_playbook_get", "Read a draft, approved, or deprecated Playbook with its steps and proposed Skill diff.", { playbookId: z.string(), project: z.string().optional() }, async ({ playbookId, project: projectName }) => {
     const store = requireKnowledge();
@@ -108,6 +122,7 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
     const name = project(); const projectId = user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name;
     if (!row || !canReadDocument(store, row, projectId)) throw new Error("Knowledge access denied");
     store.audit({ actorId: user.id, projectId: row.project_id ? String(row.project_id) : undefined, action: "knowledge.resource.read", entityType: kind, entityId: id });
-    return { contents: [{ uri: uri.toString(), mimeType: "application/json", text: JSON.stringify({ id: row.id, kind: row.kind, title: row.title, body: row.body, lifecycle: row.lifecycle, projectId: row.project_id, scope: store.getScopeBinding(id), card: kind === "candidate" ? store.getCandidateCard(id) : undefined, sourceLocator: row.source_locator, sourceSha256: row.source_sha256, updatedAt: row.updated_at }) }] };
+    const source = provenance(store, row);
+    return { contents: [{ uri: uri.toString(), mimeType: "application/json", text: JSON.stringify({ id: row.id, kind: row.kind, title: row.title, body: row.body, lifecycle: row.lifecycle, projectId: row.project_id, eventId: source?.event_id, jobId: source?.job_id, deploymentId: source?.deployment_id, sourceCandidateId: source?.source_candidate_id, evidenceRefs: evidenceRefs(source), scope: store.getScopeBinding(id), card: kind === "candidate" ? store.getCandidateCard(id) : undefined, sourceLocator: row.source_locator, sourceSha256: row.source_sha256, updatedAt: row.updated_at }) }] };
   });
 }

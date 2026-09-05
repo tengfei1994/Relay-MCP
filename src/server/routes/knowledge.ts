@@ -54,6 +54,7 @@ function safeDocument(row: KnowledgeRow, includeBody = true, card?: ReturnType<R
     environment: row.environment ? String(row.environment) : undefined,
     candidateType: row.candidate_type ? String(row.candidate_type) : undefined,
     eventId: row.event_id ? String(row.event_id) : undefined,
+    sourceCandidateId: row.source_candidate_id ? String(row.source_candidate_id) : undefined,
     jobId: row.job_id ? String(row.job_id) : undefined,
     deploymentId: row.deployment_id ? String(row.deployment_id) : undefined,
     evidenceCount: row.evidence_count === undefined ? undefined : Number(row.evidence_count),
@@ -68,11 +69,24 @@ function safeDocument(row: KnowledgeRow, includeBody = true, card?: ReturnType<R
 }
 
 function enrichDocumentRow(store: ReturnType<typeof getKnowledgeStore>, row: KnowledgeRow): KnowledgeRow {
-  if (String(row.kind) !== "candidate") return row;
-  const candidate = store.db.prepare(`SELECT candidate_type,event_id,job_id,deployment_id,
-    (SELECT COUNT(*) FROM knowledge_entity_evidence e WHERE e.entity_type = 'candidate' AND e.entity_id = knowledge_candidates.id) AS evidence_count
-    FROM knowledge_candidates WHERE id = ?`).get(String(row.id)) as KnowledgeRow | undefined;
-  return { ...row, ...(candidate ?? {}) };
+  const kind = String(row.kind);
+  if (kind === "candidate") {
+    const candidate = store.db.prepare(`SELECT candidate_type,event_id,job_id,deployment_id,
+      (SELECT COUNT(*) FROM knowledge_entity_evidence e WHERE e.entity_type = 'candidate' AND e.entity_id = knowledge_candidates.id) AS evidence_count
+      FROM knowledge_candidates WHERE id = ?`).get(String(row.id)) as KnowledgeRow | undefined;
+    return { ...row, ...(candidate ?? {}) };
+  }
+  if (kind === "case") {
+    const source = store.db.prepare("SELECT event_id,job_id,deployment_id,source_candidate_id,evidence_refs_json FROM knowledge_cases WHERE id = ?").get(String(row.id)) as KnowledgeRow | undefined;
+    if (!source) return row;
+    let evidenceCount: number | undefined;
+    try {
+      const refs = JSON.parse(String(source.evidence_refs_json ?? "[]"));
+      evidenceCount = Array.isArray(refs) ? refs.length : undefined;
+    } catch { /* malformed legacy metadata remains readable */ }
+    return { ...row, ...source, ...(evidenceCount === undefined ? {} : { evidence_count: evidenceCount }) };
+  }
+  return row;
 }
 
 function safeEvidence(value: Record<string, unknown>): Record<string, unknown> {

@@ -17,6 +17,7 @@ import { KNOWLEDGE_API_GOVERNANCE_MIGRATION } from "./migrations/011-api-governa
 import { KNOWLEDGE_HYBRID_RETRIEVAL_MIGRATION } from "./migrations/011-hybrid-retrieval.js";
 import { KNOWLEDGE_CANDIDATE_CARD_MIGRATION } from "./migrations/012-candidate-card.js";
 import { KNOWLEDGE_SCOPE_MIGRATION } from "./migrations/013-knowledge-scope.js";
+import { DETERMINISTIC_COMPILER_MIGRATION } from "./migrations/014-deterministic-compiler.js";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
 import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type CandidateCard, type KnowledgeDocument, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeBinding, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
@@ -44,6 +45,7 @@ const KNOWLEDGE_MIGRATIONS = [
   KNOWLEDGE_HYBRID_RETRIEVAL_MIGRATION,
   KNOWLEDGE_CANDIDATE_CARD_MIGRATION,
   KNOWLEDGE_SCOPE_MIGRATION,
+  DETERMINISTIC_COMPILER_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(
@@ -164,6 +166,9 @@ export class KnowledgeStore {
             this.db.exec("CREATE TABLE IF NOT EXISTS knowledge_outbox_claims (event_id TEXT NOT NULL REFERENCES relay_domain_events(id), consumer_name TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, available_at TEXT NOT NULL, claimed_until TEXT, claimed_by TEXT, last_error TEXT, consumed_at TEXT, PRIMARY KEY(event_id, consumer_name)); CREATE INDEX IF NOT EXISTS idx_knowledge_outbox_claims_ready ON knowledge_outbox_claims(consumer_name, available_at, claimed_until);");
           } else if (migration.version === "006-event-actor" && /duplicate column name/i.test(String(error))) {
             // column was applied before migration marker commit
+          } else if (migration.version === "014-deterministic-compiler" && /duplicate column name/i.test(String(error))) {
+            // A crash after one ALTER TABLE statement is safe to resume; the
+            // additive repair below ensures the remaining columns/tables exist.
           } else throw error;
         }
         insert.run(migration.version, this.now().toISOString());
@@ -173,20 +178,27 @@ export class KnowledgeStore {
     // Databases created by the early P01 preview may already carry the
     // 002-domain marker but not the type projections introduced later. Make
     // this additive repair safe and idempotent without rewriting user data.
-    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl"];
+    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations"];
     const missingTable = requiredTables.some((name) => !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
     if (missingTable) this.db.exec(KNOWLEDGE_DOMAIN_MIGRATION.sql);
     const columns: Record<string, Array<[string, string]>> = {
-      knowledge_cases: [["status", "TEXT NOT NULL DEFAULT 'draft'"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"]],
+      knowledge_cases: [["status", "TEXT NOT NULL DEFAULT 'draft'"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"], ["source_candidate_id", "TEXT"], ["event_id", "TEXT"]],
       knowledge_patterns: [["status", "TEXT NOT NULL DEFAULT 'draft'"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"]],
       knowledge_playbooks: [["status", "TEXT NOT NULL DEFAULT 'draft'"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"]],
       knowledge_candidates: [["status", "TEXT NOT NULL DEFAULT 'draft'"], ["reviewed_by", "INTEGER"], ["verified_at", "TEXT"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"]],
       knowledge_relations: [["project_id", "TEXT"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"], ["source_sha256", "TEXT"]],
+      knowledge_candidate_cards: [["event_class", "TEXT"], ["capture_reason", "TEXT"], ["impact", "TEXT"]],
     };
     for (const [table, definitions] of Object.entries(columns)) {
       const present = new Set((this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
       for (const [name, definition] of definitions) if (!present.has(name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
     }
+    this.db.exec(`CREATE TABLE IF NOT EXISTS knowledge_observations (
+      id TEXT PRIMARY KEY, event_id TEXT NOT NULL UNIQUE, project_id TEXT, event_class TEXT NOT NULL,
+      capture_reason TEXT NOT NULL, problem_statement TEXT, facts_json TEXT NOT NULL DEFAULT '[]',
+      evidence_refs_json TEXT NOT NULL DEFAULT '[]', source_locator TEXT NOT NULL, source_sha256 TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    ); CREATE INDEX IF NOT EXISTS idx_knowledge_observations_project ON knowledge_observations(project_id, created_at);`);
     this.backfillDefaultScopes();
   }
 
@@ -467,7 +479,7 @@ export class KnowledgeStore {
       if (!legacy) return undefined;
       const evidenceRefs = (this.db.prepare("SELECT evidence_id FROM knowledge_entity_evidence WHERE entity_type = 'candidate' AND entity_id = ? ORDER BY created_at").all(candidateId) as Array<{ evidence_id: string }>).map((item) => item.evidence_id);
       const card = generateDeterministicCandidateCardFromLegacy({
-        candidateId,
+      candidateId,
         projectId: String(legacy.project_id ?? ""),
         body: String(legacy.body ?? ""),
         evidenceRefs,
@@ -489,18 +501,28 @@ export class KnowledgeStore {
     const parseArray = (value: unknown): unknown[] => { try { const parsed = JSON.parse(String(value ?? "[]")); return Array.isArray(parsed) ? parsed : []; } catch { return []; } };
     return {
       candidateId: String(row.candidate_id), summary: String(row.summary), problemStatement: String(row.problem_statement), facts: parseArray(row.facts_json) as Array<Record<string, unknown>>, symptoms: parseArray(row.symptoms_json).filter((item): item is string => typeof item === "string"), hypothesis: String(row.hypothesis), verificationPlan: parseArray(row.verification_plan_json).filter((item): item is string => typeof item === "string"), verifiedConclusion: row.verified_conclusion ? String(row.verified_conclusion) : undefined, actions: parseArray(row.actions_json).filter((item): item is string => typeof item === "string"), verification: parseArray(row.verification_json).filter((item): item is string => typeof item === "string"), applicability: row.applicability ? String(row.applicability) : undefined, tags: parseArray(row.tags_json).filter((item): item is string => typeof item === "string"), confidence: row.confidence === null || row.confidence === undefined ? undefined : Number(row.confidence), generatedBy: String(row.generated_by), inferenceStatus: row.inference_status as CandidateCard["inferenceStatus"], updatedAt: String(row.updated_at),
+      eventClass: row.event_class ? String(row.event_class) : undefined, captureReason: row.capture_reason ? String(row.capture_reason) : undefined, impact: row.impact ? String(row.impact) : undefined,
     };
   }
 
   saveCandidateCard(card: CandidateCard): CandidateCard {
     const safeConfidence = card.confidence === undefined ? null : Math.max(0, Math.min(1, card.confidence));
     this.db.prepare(`INSERT INTO knowledge_candidate_cards
-      (candidate_id,summary,problem_statement,facts_json,symptoms_json,hypothesis,verification_plan_json,verified_conclusion,actions_json,verification_json,applicability,tags_json,confidence,generated_by,inference_status,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(candidate_id) DO UPDATE SET summary=excluded.summary,problem_statement=excluded.problem_statement,facts_json=excluded.facts_json,symptoms_json=excluded.symptoms_json,hypothesis=excluded.hypothesis,verification_plan_json=excluded.verification_plan_json,verified_conclusion=excluded.verified_conclusion,actions_json=excluded.actions_json,verification_json=excluded.verification_json,applicability=excluded.applicability,tags_json=excluded.tags_json,confidence=excluded.confidence,generated_by=excluded.generated_by,inference_status=excluded.inference_status,updated_at=excluded.updated_at`).run(
-      card.candidateId, card.summary, card.problemStatement, JSON.stringify(card.facts), JSON.stringify(card.symptoms), card.hypothesis, JSON.stringify(card.verificationPlan), card.verifiedConclusion ?? null, JSON.stringify(card.actions), JSON.stringify(card.verification), card.applicability ?? null, JSON.stringify(card.tags), safeConfidence, card.generatedBy, card.inferenceStatus, card.updatedAt,
+      (candidate_id,summary,problem_statement,facts_json,symptoms_json,hypothesis,verification_plan_json,verified_conclusion,actions_json,verification_json,applicability,tags_json,confidence,generated_by,inference_status,event_class,capture_reason,impact,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(candidate_id) DO UPDATE SET summary=excluded.summary,problem_statement=excluded.problem_statement,facts_json=excluded.facts_json,symptoms_json=excluded.symptoms_json,hypothesis=excluded.hypothesis,verification_plan_json=excluded.verification_plan_json,verified_conclusion=excluded.verified_conclusion,actions_json=excluded.actions_json,verification_json=excluded.verification_json,applicability=excluded.applicability,tags_json=excluded.tags_json,confidence=excluded.confidence,generated_by=excluded.generated_by,inference_status=excluded.inference_status,event_class=excluded.event_class,capture_reason=excluded.capture_reason,impact=excluded.impact,updated_at=excluded.updated_at`).run(
+      card.candidateId, card.summary, card.problemStatement, JSON.stringify(card.facts), JSON.stringify(card.symptoms), card.hypothesis, JSON.stringify(card.verificationPlan), card.verifiedConclusion ?? null, JSON.stringify(card.actions), JSON.stringify(card.verification), card.applicability ?? null, JSON.stringify(card.tags), safeConfidence, card.generatedBy, card.inferenceStatus, card.eventClass ?? null, card.captureReason ?? null, card.impact ?? null, card.updatedAt,
     );
     return card;
+  }
+
+  saveObservation(observation: { id: string; eventId: string; projectId?: string; eventClass: string; captureReason: string; problemStatement?: string; facts?: unknown[]; evidenceRefs?: string[]; sourceLocator: string; sourceSha256?: string; createdAt: string; updatedAt: string }): void {
+    this.db.prepare(`INSERT INTO knowledge_observations
+      (id,event_id,project_id,event_class,capture_reason,problem_statement,facts_json,evidence_refs_json,source_locator,source_sha256,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(event_id) DO UPDATE SET project_id=excluded.project_id,event_class=excluded.event_class,capture_reason=excluded.capture_reason,problem_statement=excluded.problem_statement,facts_json=excluded.facts_json,evidence_refs_json=excluded.evidence_refs_json,source_locator=excluded.source_locator,source_sha256=excluded.source_sha256,updated_at=excluded.updated_at`).run(
+      observation.id, observation.eventId, observation.projectId ?? null, observation.eventClass, observation.captureReason, observation.problemStatement ?? null, JSON.stringify(observation.facts ?? []), JSON.stringify(observation.evidenceRefs ?? []), observation.sourceLocator, observation.sourceSha256 ?? null, observation.createdAt, observation.updatedAt,
+    );
   }
 
   getScopeBinding(documentId: string): KnowledgeScopeBinding | undefined {

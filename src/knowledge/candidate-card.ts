@@ -10,6 +10,10 @@ export interface CandidateCardGenerationInput {
   candidateId?: string;
   evidenceRefs: string[];
   inference?: InferenceProvider;
+  eventClass?: string;
+  captureReason?: string;
+  problemStatement?: string;
+  impact?: string;
 }
 
 export interface CandidateCardGenerationResult {
@@ -81,7 +85,7 @@ function deterministicCard(input: CandidateCardGenerationInput, inferenceStatus:
   const card: CandidateCard = {
     candidateId: input.candidateId ?? `candidate-${event.id}`,
     summary,
-    problemStatement: error ? `${event.type} reported for ${subject}: ${error}` : `${event.type} was observed for ${subject}; the event payload is retained as Raw Event evidence.`,
+    problemStatement: input.problemStatement ?? (error ? `${event.type} reported for ${subject}: ${error}` : `${event.type} was observed for ${subject}; the event payload is retained as Raw Event evidence.`),
     facts: safeFacts(event, projectId),
     symptoms: [...new Set([...(error ? [error] : []), ...strings(event.payload.symptoms), ...strings(event.payload.observedSymptoms)])].slice(0, 20),
     hypothesis,
@@ -94,6 +98,9 @@ function deterministicCard(input: CandidateCardGenerationInput, inferenceStatus:
     confidence: verifiedConclusion ? 0.8 : 0.2,
     generatedBy: "deterministic-rule-v1",
     inferenceStatus,
+    eventClass: input.eventClass,
+    captureReason: input.captureReason,
+    impact: input.impact,
     updatedAt: new Date().toISOString(),
   };
   // Keep this validation explicit: deterministic output cannot claim a source

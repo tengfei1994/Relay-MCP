@@ -6,6 +6,7 @@ import { EvidenceStore } from "./evidence-store.js";
 import { KnowledgeRepository } from "./repository.js";
 import { candidateTitle, generateCandidateCard } from "./candidate-card.js";
 import type { InferenceProvider } from "./providers.js";
+import { classifyRelayEvent } from "./event-classifier.js";
 
 const MAX_CAPTURE_ATTEMPTS = 5;
 const PROJECT_RESOLUTION_RETRY_BASE_MS = 5_000;
@@ -207,6 +208,22 @@ function materializeEvidence(store: KnowledgeStore, event: KnowledgeOutboxEvent,
   return refs;
 }
 
+function materializeObservationEvidence(store: KnowledgeStore, event: KnowledgeOutboxEvent, projectId: string | number, observationId: string): string[] {
+  const values = collectEvidence(event.payload);
+  if (values.length === 0) return [];
+  const root = store.evidenceRoot ?? join(process.env.RELAY_STATE_ROOT ?? join(process.env.WORKSPACE_ROOT ?? ".", ".relay-mcp"), "knowledge-evidence");
+  const evidence = new EvidenceStore(store, root);
+  const refs: string[] = [];
+  const now = new Date().toISOString();
+  for (const item of values) {
+    const content = Buffer.isBuffer(item.value) ? item.value : typeof item.value === "string" ? Buffer.from(item.value, "utf8") : Buffer.from(JSON.stringify(item.value), "utf8");
+    const record = evidence.put({ content, mimeType: evidenceMime(item.key), sourceKind: evidenceSourceKind(item.key), projectId: String(projectId), locator: `relay-event:${event.id}:${item.key}` });
+    refs.push(record.id);
+    store.db.prepare("INSERT OR IGNORE INTO knowledge_entity_evidence(entity_type,entity_id,evidence_id,created_at) VALUES ('observation',?,?,?)").run(observationId, record.id, now);
+  }
+  return [...new Set(refs)];
+}
+
 /**
  * Materialize terminal operational events into Knowledge candidates. Project
  * resolution distinguishes temporary resolver outages from a project that is
@@ -243,12 +260,34 @@ export async function captureKnowledgeCandidates(
         continue;
       }
 
+      const classification = classifyRelayEvent(event);
+      // Routine successful executions are retained in the immutable event and
+      // audit trail but must not flood the Candidate review queue.
+      if (!classification.captureCandidate && !classification.storeObservation) {
+        store.audit({ projectId: event.projectId ? String(event.projectId) : undefined, action: "knowledge.event.classified", entityType: "event", entityId: event.id, details: { eventClass: classification.eventClass, captureReason: classification.captureReason } });
+        store.acknowledge(consumer, event.id, event.claimToken);
+        continue;
+      }
+
       let projectId: string | number;
       // Resolver outages are recoverable infrastructure failures. Resolve
       // before applying the poison-event cap so a long app.db outage cannot
       // permanently acknowledge and lose the candidate; a resolver that is
       // healthy but returns no project remains finite and dead-letterable.
       projectId = resolveProject(event, resolveProjectId);
+
+      if (!classification.captureCandidate && classification.storeObservation) {
+        const now = new Date().toISOString();
+        const body = candidateBody(event, projectId);
+        const digest = createHash("sha256").update(body, "utf8").digest("hex");
+        const observationId = `observation-${createHash("sha256").update(event.id, "utf8").digest("hex")}`;
+        const observationEvidenceRefs = materializeObservationEvidence(store, event, projectId, observationId);
+        store.saveObservation({ id: observationId, eventId: event.id, projectId: String(projectId), eventClass: classification.eventClass, captureReason: classification.captureReason, problemStatement: classification.problemStatement, facts: Object.entries(event.payload).filter(([, value]) => value !== undefined && value !== null && typeof value !== "object").slice(0, 30).map(([field, value]) => ({ field, value })), evidenceRefs: observationEvidenceRefs, sourceLocator: `relay-event:${event.id}`, sourceSha256: digest, createdAt: now, updatedAt: now });
+        store.audit({ projectId: String(projectId), action: "knowledge.observation.captured", entityType: "observation", entityId: observationId, details: { eventId: event.id, eventClass: classification.eventClass, evidenceCount: observationEvidenceRefs.length } });
+        store.acknowledge(consumer, event.id, event.claimToken);
+        count++;
+        continue;
+      }
 
       if (event.attempts >= MAX_CAPTURE_ATTEMPTS) {
         deadLetter(event, "max attempts exceeded");
@@ -288,7 +327,7 @@ export async function captureKnowledgeCandidates(
       const repository = new KnowledgeRepository(store);
       repository.saveCandidate(candidate);
       const evidenceRefs = materializeEvidence(store, event, projectId, candidateId);
-      const generated = await generateCandidateCard({ event, projectId, candidateId, evidenceRefs, inference: hooks?.inference });
+      const generated = await generateCandidateCard({ event, projectId, candidateId, evidenceRefs, inference: hooks?.inference, eventClass: classification.eventClass, captureReason: classification.captureReason, problemStatement: classification.problemStatement, impact: classification.problemStatement });
       store.saveCandidateCard(generated.card);
       // Re-upsert through the canonical store so chunk/FTS projections and
       // source metadata stay in sync with the semantic title.

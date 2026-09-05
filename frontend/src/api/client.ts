@@ -30,6 +30,7 @@ async function request<T>(
 }
 
 export const api = {
+  health: () => request<{ ok: boolean; version: string; commit: string; buildTime: string; process: string; ts: string }>("GET", "/health"),
   // Auth
   login: (username: string, password: string) =>
     request<{ token: string; user: { id: number; username: string; isAdmin: boolean } }>(

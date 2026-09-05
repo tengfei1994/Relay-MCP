@@ -62,8 +62,10 @@ export default function KnowledgePage() {
   const [diff, setDiff] = useState<any | null>(null);
   const [diffAgainst, setDiffAgainst] = useState("");
   const [diffReviewReason, setDiffReviewReason] = useState("");
+  const [buildInfo, setBuildInfo] = useState<any | null>(null);
 
   useEffect(() => {
+    api.health().then(setBuildInfo).catch(() => setBuildInfo(null));
     api.listProjects().then((response) => {
       setProjects(response.projects);
       if (response.projects[0]) setProjectId(response.projects[0].id);
@@ -266,6 +268,7 @@ export default function KnowledgePage() {
           <div className="mt-4 rounded-md border border-gray-800 bg-gray-900/40 p-4"><h2 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Recent ingest runs</h2>{ingestRuns.length ? <div className="mt-3 max-h-48 space-y-2 overflow-auto">{ingestRuns.map((run: any) => <div key={run.id} className="rounded border border-gray-800 p-2 text-xs"><div className="flex justify-between"><span className="text-gray-300">{run.status}</span><span className="text-gray-600">{run.started_at}</span></div><p className="mt-1 text-gray-500">{run.imported ?? 0} imported · {run.skipped ?? 0} unchanged · {run.failed ?? 0} failed</p>{run.error && <p className="mt-1 break-words text-rose-300">{run.error}</p>}</div>)}</div> : <p className="mt-3 text-xs text-gray-600">No ingestion runs recorded yet.</p>}</div>
         </aside>
       </div>
+      <footer className="border-t border-gray-800 px-8 py-3 text-[11px] text-gray-600">Web/API build {buildInfo?.version ?? "unknown"} · commit {buildInfo?.commit ?? "unknown"} · built {buildInfo?.buildTime ?? "unknown"}</footer>
     </div>
   );
 }

@@ -173,6 +173,9 @@ export class KnowledgeStore {
           } else if (migration.version === "014-deterministic-compiler" && /duplicate column name/i.test(String(error))) {
             // A crash after one ALTER TABLE statement is safe to resume; the
             // additive repair below ensures the remaining columns/tables exist.
+          } else if (migration.version === "016-product-document-governance" && /duplicate column name/i.test(String(error))) {
+            // Product document governance is additive; the repair pass below
+            // completes columns left behind by an interrupted migration.
           } else throw error;
         }
         insert.run(migration.version, this.now().toISOString());
@@ -192,6 +195,7 @@ export class KnowledgeStore {
       knowledge_candidates: [["status", "TEXT NOT NULL DEFAULT 'draft'"], ["reviewed_by", "INTEGER"], ["verified_at", "TEXT"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"]],
       knowledge_relations: [["project_id", "TEXT"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"], ["source_sha256", "TEXT"]],
       knowledge_candidate_cards: [["event_class", "TEXT"], ["capture_reason", "TEXT"], ["impact", "TEXT"]],
+      knowledge_product_documents: [["metadata_json", "TEXT NOT NULL DEFAULT '{}'"], ["diff_review_status", "TEXT NOT NULL DEFAULT 'not_reviewed'"], ["diff_reviewed_by", "INTEGER"], ["diff_reviewed_at", "TEXT"]],
     };
     for (const [table, definitions] of Object.entries(columns)) {
       const present = new Set((this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));

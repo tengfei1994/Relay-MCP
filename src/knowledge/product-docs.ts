@@ -3,6 +3,7 @@ import { readFileSync, readdirSync, statSync, mkdirSync, writeFileSync, rmSync }
 import { extname, relative, join, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { unzipSync } from "fflate";
+import { PDFParse } from "pdf-parse";
 import type { KnowledgeStore } from "./store.js";
 
 export interface ProductDocumentImportOptions {
@@ -22,7 +23,7 @@ function inferMetadata(path: string, body: string, explicitFamily?: string): Inf
   if (module) reasons.push(`module keyword '${module}' found in source`); else reasons.push("no known module keyword found");
   return { module, documentType, documentFamilyId: family, confidence: module ? 0.82 : 0.58, reasons };
 }
-export function importProductDocuments(store: KnowledgeStore, options: ProductDocumentImportOptions): ProductDocumentImportReport {
+export async function importProductDocuments(store: KnowledgeStore, options: ProductDocumentImportOptions): Promise<ProductDocumentImportReport> {
   if (statSync(options.root).isFile() && extname(options.root).toLowerCase() === ".zip") {
     const expanded = `${options.root}.expanded-${createHash("sha256").update(options.root).digest("hex").slice(0, 12)}`;
     mkdirSync(expanded, { recursive: true });
@@ -37,7 +38,7 @@ export function importProductDocuments(store: KnowledgeStore, options: ProductDo
         if (![".md", ".markdown", ".html", ".htm", ".pdf", ".yaml", ".yml"].includes(extension)) continue;
         mkdirSync(join(target, ".."), { recursive: true }); writeFileSync(target, content);
       }
-      return importProductDocuments(store, { ...options, root: expanded, manifestPath: options.manifestPath ? resolve(expanded, options.manifestPath) : undefined });
+      return await importProductDocuments(store, { ...options, root: expanded, manifestPath: options.manifestPath ? resolve(expanded, options.manifestPath) : undefined });
     } finally { rmSync(expanded, { recursive: true, force: true }); }
   }
   const runId = `product-docs-${createHash("sha256").update(JSON.stringify(options)).digest("hex").slice(0, 16)}`;
@@ -59,7 +60,8 @@ export function importProductDocuments(store: KnowledgeStore, options: ProductDo
   store.db.prepare("INSERT OR IGNORE INTO knowledge_ingest_runs(id,source_locator,status,started_at) VALUES (?,?,?,?)").run(runId, `product-docs:${options.root}`, "running", now);
   for (const path of files(options.root)) {
     try {
-      const ext = extname(path).toLowerCase(); const raw = readFileSync(path); const body = ext === ".pdf" ? `[PDF source: ${relative(options.root, path)}]` : raw.toString("utf8");
+      const ext = extname(path).toLowerCase(); const raw = readFileSync(path); let body = raw.toString("utf8");
+      if (ext === ".pdf") { const parser = new PDFParse({ data: raw }); try { body = (await parser.getText()).text; } finally { await parser.destroy(); } }
       const hash = createHash("sha256").update(raw).digest("hex"); const locator = `product-doc:${relative(options.root, path).replaceAll("\\", "/")}`;
       const id = `product-document-${hash}`; const inferred = inferMetadata(relative(options.root, path), body, defaults.documentFamilyId);
       const existing = store.db.prepare("SELECT source_sha256 FROM knowledge_product_documents WHERE id = ?").get(id) as { source_sha256?: string } | undefined;

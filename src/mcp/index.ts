@@ -109,6 +109,7 @@ recoveryTimer.unref?.();
 // materialized into candidate documents with lease/ownership semantics.
 const captureTimer = setInterval(() => {
   if (!knowledge || captureRunning) return;
+  try { knowledge.heartbeatConsumer("knowledge-capture"); } catch (error) { recordCaptureFailure(error); }
   captureRunning = true;
   let failureReported = false;
   void captureKnowledgeCandidates(knowledge, "knowledge-capture", 20, (actorId, projectName) => actorId === undefined ? undefined : resolveStableProjectIdForCapture(actorId, projectName), {

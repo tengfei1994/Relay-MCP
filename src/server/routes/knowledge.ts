@@ -194,11 +194,13 @@ function knowledgeHealth(store: ReturnType<typeof getKnowledgeStore>) {
   const fts = safeRows(() => Number((store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_fts").get() as { count?: number }).count ?? 0), 0);
   const vectors = safeRows(() => Number((store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_embeddings").get() as { count?: number }).count ?? 0), 0);
   const spool = relayEventSpoolHealth();
+  const heartbeat = safeRows(() => store.db.prepare("SELECT last_seen_at,active_until FROM knowledge_consumer_registry WHERE consumer_name = ?").get("knowledge-capture") as { last_seen_at?: string; active_until?: string } | undefined, undefined);
+  const workerStatus = heartbeat?.active_until && Date.parse(heartbeat.active_until) > Date.now() ? "running" : "stale_or_not_seen";
   return {
     database: { status: "available", checkedAt: new Date().toISOString() },
     fts: { status: fts > 0 ? "ready" : "empty", indexedRows: fts },
     vectors: { status: vectors > 0 ? "ready" : "disabled_or_empty", indexedRows: vectors },
-    captureWorker: { status: "managed_by_remote_ops_mcp", note: "Worker telemetry is reported by /mcp/diagnostics." },
+    captureWorker: { status: workerStatus, owner: "remote-ops-mcp", lastSeenAt: heartbeat?.last_seen_at, activeUntil: heartbeat?.active_until },
     spool,
   };
 }
@@ -515,9 +517,10 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   app.get("/api/knowledge/diagnostics", { onRequest: [app.authenticate] }, async (request, reply) => {
     try {
       const { store, projectId } = resolveProject(request.user.id, (request.query as Record<string, unknown>).projectId);
-      const spoolPath = `${store.evidenceRoot ? store.evidenceRoot.replace(/[\\/]evidence[\\/]?$/, "") : ".relay-mcp"}/knowledge-event-spool.jsonl.dead-letter`;
-      const deadLetters = safeRows(() => readFileSync(spoolPath, "utf8").split(/\r?\n/).filter(Boolean).slice(-20).map((line) => { try { return JSON.parse(line); } catch { return { raw: line }; } }), []);
-      return reply.send({ projectId, health: knowledgeHealth(store), deadLetters, checkedAt: new Date().toISOString() });
+      const stateRoot = store.evidenceRoot ? store.evidenceRoot.replace(/[\\/]evidence[\\/]?$/, "") : ".relay-mcp";
+      const paths = [`${stateRoot}/knowledge-event-spool.jsonl.dead-letter`, `${stateRoot}/knowledge-capture-dead-letter.jsonl`];
+      const deadLetters = paths.flatMap((path) => safeRows(() => readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).slice(-20).map((line) => { try { return { ...JSON.parse(line), sourcePath: path }; } catch { return { raw: line, sourcePath: path }; } }), []));
+      return reply.send({ projectId, health: knowledgeHealth(store), deadLetters: deadLetters.slice(-50), checkedAt: new Date().toISOString() });
     } catch (error) { return sendError(reply, error, 400); }
   });
 
@@ -536,7 +539,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     try {
       const root = body.data.root ?? (() => { const project = db.select().from(projects).where(and(eq(projects.id, body.data.projectId!), eq(projects.userId, request.user.id))).get(); if (!project) throw new Error("Project not found"); return resolveWorkspacePath(project.workspacePath, body.data.path!, { mustExist: true }); })();
       if (!existsSync(root)) return reply.status(403).send({ error: "An existing source directory is required" });
-      const store = getKnowledgeStore(); const report = importProductDocuments(store, { ...body.data, root, sampleManagerVersion: body.data.sampleManagerVersion ?? "" });
+      const store = getKnowledgeStore(); const report = await importProductDocuments(store, { ...body.data, root, sampleManagerVersion: body.data.sampleManagerVersion ?? "" });
       store.audit({ actorId: request.user.id, action: "knowledge.product_documents.import", entityType: "product_document_batch", entityId: report.runId, details: { ...report } });
       return reply.send(report);
     } catch (error) { return sendError(reply, error, 400); }

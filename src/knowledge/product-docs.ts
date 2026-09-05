@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, relative, join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import type { KnowledgeStore } from "./store.js";
 
 export interface ProductDocumentImportOptions {
-  root: string; product?: string; sampleManagerVersion: string; solution?: string; module?: string; language?: string; authority?: string; documentFamilyId?: string;
+  root: string; product?: string; sampleManagerVersion: string; solution?: string; module?: string; language?: string; authority?: string; documentFamilyId?: string; manifestPath?: string;
 }
 export interface ProductDocumentImportReport { runId: string; imported: number; unchanged: number; failed: number; warnings: string[]; documents: string[]; }
 type InferredMetadata = { module?: string; documentType: string; documentFamilyId: string; confidence: number; reasons: string[] };
@@ -24,16 +25,29 @@ export function importProductDocuments(store: KnowledgeStore, options: ProductDo
   const runId = `product-docs-${createHash("sha256").update(JSON.stringify(options)).digest("hex").slice(0, 16)}`;
   const report: ProductDocumentImportReport = { runId, imported: 0, unchanged: 0, failed: 0, warnings: [], documents: [] };
   const now = new Date().toISOString();
+  let manifest: Record<string, unknown> = {};
+  const manifestFile = options.manifestPath ?? join(options.root, "manifest.yaml");
+  try { if (statSync(manifestFile).isFile()) manifest = parseYaml(readFileSync(manifestFile, "utf8")) as Record<string, unknown> ?? {}; } catch { /* manifest is optional */ }
+  const defaults = {
+    product: options.product ?? (typeof manifest.product === "string" ? manifest.product : undefined),
+    sampleManagerVersion: options.sampleManagerVersion || (typeof manifest.sampleManagerVersion === "string" ? manifest.sampleManagerVersion : ""),
+    solution: options.solution ?? (typeof manifest.solution === "string" ? manifest.solution : undefined),
+    module: options.module ?? (typeof manifest.module === "string" ? manifest.module : undefined),
+    language: options.language ?? (typeof manifest.language === "string" ? manifest.language : undefined),
+    authority: options.authority ?? (typeof manifest.authority === "string" ? manifest.authority : undefined),
+    documentFamilyId: options.documentFamilyId,
+  };
+  if (!defaults.sampleManagerVersion) throw new Error("sampleManagerVersion is required (or provide it in manifest.yaml)");
   store.db.prepare("INSERT OR IGNORE INTO knowledge_ingest_runs(id,source_locator,status,started_at) VALUES (?,?,?,?)").run(runId, `product-docs:${options.root}`, "running", now);
   for (const path of files(options.root)) {
     try {
       const ext = extname(path).toLowerCase(); const raw = readFileSync(path); const body = ext === ".pdf" ? `[PDF source: ${relative(options.root, path)}]` : raw.toString("utf8");
       const hash = createHash("sha256").update(raw).digest("hex"); const locator = `product-doc:${relative(options.root, path).replaceAll("\\", "/")}`;
-      const id = `product-document-${hash}`; const inferred = inferMetadata(relative(options.root, path), body, options.documentFamilyId);
+      const id = `product-document-${hash}`; const inferred = inferMetadata(relative(options.root, path), body, defaults.documentFamilyId);
       const existing = store.db.prepare("SELECT source_sha256 FROM knowledge_product_documents WHERE id = ?").get(id) as { source_sha256?: string } | undefined;
       if (existing) { report.unchanged++; report.documents.push(id); continue; }
-      store.upsertDocument({ id, kind: "product_document", title: title(path, body), body, lifecycle: "approved", projectNameSnapshot: options.product, sampleManagerVersion: options.sampleManagerVersion, solution: options.solution, module: options.module ?? inferred.module, visibility: "global", scopeType: "version", scopeKey: options.sampleManagerVersion, locator, sha256: hash, createdAt: now, updatedAt: now });
-      store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,sections_json,metadata_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET sections_json=excluded.sections_json,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at`).run(id, inferred.documentFamilyId, inferred.documentType, options.language ?? "en", options.authority ?? "official", relative(options.root, path), hash, options.sampleManagerVersion, JSON.stringify(sections(body)), JSON.stringify({ ...inferred, module: options.module ?? inferred.module, explicit: { product: options.product, solution: options.solution, module: options.module, language: options.language, authority: options.authority } }), now, now);
+      store.upsertDocument({ id, kind: "product_document", title: title(path, body), body, lifecycle: "approved", projectNameSnapshot: defaults.product, sampleManagerVersion: defaults.sampleManagerVersion, solution: defaults.solution, module: defaults.module ?? inferred.module, visibility: "global", scopeType: "version", scopeKey: defaults.sampleManagerVersion, locator, sha256: hash, createdAt: now, updatedAt: now });
+      store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,sections_json,metadata_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET sections_json=excluded.sections_json,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at`).run(id, inferred.documentFamilyId, inferred.documentType, defaults.language ?? "en", defaults.authority ?? "official", relative(options.root, path), hash, defaults.sampleManagerVersion, JSON.stringify(sections(body)), JSON.stringify({ ...inferred, module: defaults.module ?? inferred.module, explicit: defaults }), now, now);
       report.imported++; report.documents.push(id);
     } catch (error) { report.failed++; report.warnings.push(`${path}: ${error instanceof Error ? error.message : String(error)}`); }
   }

@@ -530,13 +530,13 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   });
 
   app.post("/api/knowledge/product-docs/import", { onRequest: [app.authenticate] }, async (request, reply) => {
-    const body = z.object({ root: z.string().min(1).optional(), projectId: z.number().int().positive().optional(), path: z.string().min(1).optional(), product: z.string().max(200).optional(), sampleManagerVersion: z.string().min(1).max(80), solution: z.string().max(200).optional(), module: z.string().max(200).optional(), language: z.string().max(20).optional(), authority: z.string().max(80).optional(), documentFamilyId: z.string().max(200).optional() }).refine((value) => Boolean(value.root || (value.projectId && value.path)), "root or projectId/path is required").safeParse(request.body);
+    const body = z.object({ root: z.string().min(1).optional(), projectId: z.number().int().positive().optional(), path: z.string().min(1).optional(), product: z.string().max(200).optional(), sampleManagerVersion: z.string().min(1).max(80).optional(), solution: z.string().max(200).optional(), module: z.string().max(200).optional(), language: z.string().max(20).optional(), authority: z.string().max(80).optional(), documentFamilyId: z.string().max(200).optional(), manifestPath: z.string().min(1).optional() }).refine((value) => Boolean(value.root || (value.projectId && value.path)), "root or projectId/path is required").safeParse(request.body);
     if (!body.success) return reply.status(400).send({ error: "Invalid product document import", details: body.error.issues });
     if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
     try {
       const root = body.data.root ?? (() => { const project = db.select().from(projects).where(and(eq(projects.id, body.data.projectId!), eq(projects.userId, request.user.id))).get(); if (!project) throw new Error("Project not found"); return resolveWorkspacePath(project.workspacePath, body.data.path!, { mustExist: true }); })();
       if (!existsSync(root)) return reply.status(403).send({ error: "An existing source directory is required" });
-      const store = getKnowledgeStore(); const report = importProductDocuments(store, { ...body.data, root });
+      const store = getKnowledgeStore(); const report = importProductDocuments(store, { ...body.data, root, sampleManagerVersion: body.data.sampleManagerVersion ?? "" });
       store.audit({ actorId: request.user.id, action: "knowledge.product_documents.import", entityType: "product_document_batch", entityId: report.runId, details: { ...report } });
       return reply.send(report);
     } catch (error) { return sendError(reply, error, 400); }
@@ -564,6 +564,19 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     const store = getKnowledgeStore(); const exists = store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_product_documents WHERE id IN (?,?)").get(id, against) as { count?: number }; if (Number(exists.count) !== 2) return reply.status(404).send({ error: "Product document not found" });
     if (!store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id = ? AND can_read = 1 LIMIT 1").get(request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     return reply.send(productDocumentDiff(store, id, against));
+  });
+
+  app.patch("/api/knowledge/product-docs/metadata", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const body = z.object({ ids: z.array(z.string().min(1)).min(1).max(500), module: z.string().max(200).nullable().optional(), documentType: z.string().max(80).nullable().optional(), language: z.string().max(20).nullable().optional(), authority: z.string().max(80).nullable().optional(), reason: z.string().trim().min(1).max(2000) }).safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: "Invalid metadata correction", details: body.error.issues });
+    if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
+    try {
+      const store = getKnowledgeStore(); const now = new Date().toISOString(); let updated = 0;
+      const update = store.db.prepare("UPDATE knowledge_product_documents SET document_type = COALESCE(?, document_type), language = COALESCE(?, language), authority = COALESCE(?, authority), metadata_json = json_set(COALESCE(metadata_json,'{}'),'$.corrected',json('true'),'$.correctionReason',?), updated_at = ? WHERE id = ?");
+      store.db.transaction(() => { for (const id of body.data.ids) { const row = store.db.prepare("SELECT document_type,language,authority FROM knowledge_product_documents WHERE id = ?").get(id); if (!row) continue; updated += Number(update.run(body.data.documentType ?? null, body.data.language ?? null, body.data.authority ?? null, body.data.reason, now, id).changes); if (body.data.module !== undefined) store.db.prepare("UPDATE knowledge_documents SET module = ?, updated_at = ? WHERE id = ?").run(body.data.module, now, id); } })();
+      store.audit({ actorId: request.user.id, action: "knowledge.product_document.metadata_corrected", entityType: "product_document_batch", entityId: `batch-${now}`, details: { ids: body.data.ids, updated, reason: body.data.reason } });
+      return reply.send({ ok: true, updated, correctedAt: now });
+    } catch (error) { return sendError(reply, error, 400); }
   });
 
   app.post("/api/knowledge/product-docs/:id/diff-review", { onRequest: [app.authenticate] }, async (request, reply) => {

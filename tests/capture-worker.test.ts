@@ -219,7 +219,7 @@ test("capture worker dead-letters poison events after the maximum attempts", asy
   }
 });
 
-test("a permanently missing project is dead-lettered after finite retries", async (t) => {
+test("a routine success with an unresolvable project is acknowledged as telemetry", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "relay-capture-project-missing-"));
   const previous = process.env.RELAY_STATE_ROOT;
   process.env.RELAY_STATE_ROOT = root;
@@ -243,14 +243,9 @@ test("a permanently missing project is dead-lettered after finite retries", asyn
         jobId: "job-project-missing",
         payload: { userId: 7, status: "succeeded" },
       });
-      for (let attempt = 0; attempt <= 5; attempt++) {
-        assert.equal(await captureKnowledgeCandidates(store, "capture", 20, () => undefined), 0);
-        if (attempt < 5) now = new Date(now.getTime() + 40_000);
-      }
-      const deadLetter = readFileSync(join(root, "knowledge-capture-dead-letter.jsonl"), "utf8");
-      assert.match(deadLetter, /"event-project-missing"/);
-      assert.match(deadLetter, /project resolution not found/);
-      assert.equal(store.claim("capture").length, 0, "the permanently missing project is checkpointed after dead-lettering");
+      assert.equal(await captureKnowledgeCandidates(store, "capture", 20, () => { throw new Error("resolver must not be called for telemetry"); }), 0);
+      assert.equal(existsSync(join(root, "knowledge-capture-dead-letter.jsonl")), false);
+      assert.equal(store.claim("capture").length, 0, "telemetry is checkpointed without candidate materialization");
     } finally {
       store.close();
     }
@@ -260,7 +255,7 @@ test("a permanently missing project is dead-lettered after finite retries", asyn
   }
 });
 
-test("a project snapshot without actor identity is dead-lettered instead of retrying forever", async (t) => {
+test("a routine success without actor identity is acknowledged as telemetry", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "relay-capture-project-no-actor-"));
   const previous = process.env.RELAY_STATE_ROOT;
   process.env.RELAY_STATE_ROOT = root;
@@ -284,18 +279,10 @@ test("a project snapshot without actor identity is dead-lettered instead of retr
         jobId: "job-project-no-actor",
         payload: { status: "succeeded" },
       });
-      for (let attempt = 0; attempt <= 5; attempt++) {
-        assert.equal(
-          await captureKnowledgeCandidates(store, "capture", 20, () => {
-            throw new Error("the resolver must not be called without actor identity");
-          }),
-          0,
-        );
-        if (attempt < 5) now = new Date(now.getTime() + 40_000);
-      }
-      const deadLetter = readFileSync(join(root, "knowledge-capture-dead-letter.jsonl"), "utf8");
-      assert.match(deadLetter, /"event-project-no-actor"/);
-      assert.match(deadLetter, /project resolution not found/);
+      assert.equal(await captureKnowledgeCandidates(store, "capture", 20, () => {
+        throw new Error("the resolver must not be called without actor identity");
+      }), 0);
+      assert.equal(existsSync(join(root, "knowledge-capture-dead-letter.jsonl")), false);
       assert.equal(store.claim("capture").length, 0);
     } finally {
       store.close();

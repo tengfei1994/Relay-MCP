@@ -36,12 +36,10 @@ test("a separate process closes the Job/Deployment spool-to-Candidate loop", asy
     assert.equal(result.code, 0, stderr);
     const payload = JSON.parse(stdout) as { jobStatus: string; captured: number; documents: Array<{ kind: string; body: string }> };
     assert.equal(payload.jobStatus, "succeeded");
-    assert.equal(payload.captured, 2);
-    assert.equal(payload.documents.filter((document) => document.kind === "candidate").length, 2);
-    assert.ok(payload.documents.every((document) => document.body.includes("eventKey")));
+    assert.equal(payload.captured, 0, "routine success events are telemetry-only");
+    assert.equal(payload.documents.filter((document) => document.kind === "candidate").length, 0);
   } finally {
     if (child.exitCode === null) child.kill("SIGKILL");
     rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 });
   }
 });
-

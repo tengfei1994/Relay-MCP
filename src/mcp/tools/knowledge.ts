@@ -20,25 +20,35 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   const { server, user, knowledge, resolveProjectName } = ctx;
   const requireKnowledge = () => { if (!knowledge) throw new Error("Knowledge Plane is unavailable"); return knowledge; };
   const project = (name?: string) => resolveProjectName?.(name) ?? user.defaultProject;
-  server.tool("knowledge_search", "Search ACL- and SampleManager-version-filtered Case, Pattern, Playbook, and Candidate knowledge.", { project: z.string().optional(), query: z.string().min(1), limit: z.number().int().min(1).max(100).optional(), sampleManagerVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), environment: z.string().optional() }, async ({ project: projectName, query, limit, sampleManagerVersion, solution, module, environment }) => {
+  const canReadDocument = (store: KnowledgeStore, row: Record<string, unknown>, targetProjectId?: string): boolean => {
+    const sourceProjectId = row.project_id === null || row.project_id === undefined ? undefined : String(row.project_id);
+    const target = targetProjectId ?? sourceProjectId;
+    if (!target || !store.canRead(user.id, target)) return false;
+    if (sourceProjectId === target) return true;
+    const scope = store.getScopeBinding(String(row.id));
+    return Boolean(scope && (scope.visibility === "global" || scope.visibility === "organization") && ["verified", "approved"].includes(String(row.lifecycle)));
+  };
+  server.tool("knowledge_search", "Search ACL- and Scope-filtered Case, Pattern, Playbook, and Candidate knowledge.", { project: z.string().optional(), query: z.string().min(1), limit: z.number().int().min(1).max(100).optional(), sampleManagerVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), environment: z.string().optional(), scopeType: z.string().optional(), scopeKey: z.string().optional() }, async ({ project: projectName, query, limit, sampleManagerVersion, solution, module, environment, scopeType, scopeKey }) => {
     const store = requireKnowledge();
     const projectNameResolved = project(projectName);
     if (!projectNameResolved) throw new Error("No project selected");
     const projectId = user.defaultProjectId && projectNameResolved === user.defaultProject ? String(user.defaultProjectId) : projectNameResolved;
     store.grantAcl(projectId, user.id, false);
-    return { content: [{ type: "text", text: summarizeJson(await searchKnowledge(store, { userId: user.id, projectId, query, limit, sampleManagerVersion, solution, module, environment })) }] };
+    return { content: [{ type: "text", text: summarizeJson(await searchKnowledge(store, { userId: user.id, projectId, query, limit, sampleManagerVersion, solution, module, environment, scopeType, scopeKey })) }] };
   });
-  server.tool("knowledge_get", "Read a complete Knowledge document by id after project ACL enforcement.", { documentId: z.string() }, async ({ documentId }) => {
+  server.tool("knowledge_get", "Read a complete Knowledge document by id after project/scope ACL enforcement.", { documentId: z.string(), project: z.string().optional() }, async ({ documentId, project: projectName }) => {
     const store = requireKnowledge();
     const row = store.db.prepare("SELECT * FROM knowledge_documents WHERE id = ?").get(documentId) as Record<string, unknown> | undefined;
-    if (!row || !store.canRead(user.id, row.project_id ? String(row.project_id) : undefined)) throw new Error("Knowledge access denied");
-    return { content: [{ type: "text", text: summarizeJson({ id: row.id, kind: row.kind, title: row.title, body: row.body, lifecycle: row.lifecycle, projectId: row.project_id, sourceLocator: row.source_locator, sourceSha256: row.source_sha256, updatedAt: row.updated_at }) }] };
+    const name = project(projectName); const projectId = user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name;
+    if (!row || !canReadDocument(store, row, projectId)) throw new Error("Knowledge access denied");
+    return { content: [{ type: "text", text: summarizeJson({ id: row.id, kind: row.kind, title: row.title, body: row.body, lifecycle: row.lifecycle, projectId: row.project_id, scope: store.getScopeBinding(documentId), card: String(row.kind) === "candidate" ? store.getCandidateCard(documentId) : undefined, sourceLocator: row.source_locator, sourceSha256: row.source_sha256, updatedAt: row.updated_at }) }] };
   });
-  server.tool("knowledge_playbook_get", "Read a draft, approved, or deprecated Playbook with its steps and proposed Skill diff.", { playbookId: z.string() }, async ({ playbookId }) => {
+  server.tool("knowledge_playbook_get", "Read a draft, approved, or deprecated Playbook with its steps and proposed Skill diff.", { playbookId: z.string(), project: z.string().optional() }, async ({ playbookId, project: projectName }) => {
     const store = requireKnowledge();
     const row = store.db.prepare("SELECT d.*, p.steps_json, p.rollback, p.skill_diff FROM knowledge_documents d LEFT JOIN knowledge_playbooks p ON p.id = d.id WHERE d.id = ? AND d.kind = 'playbook'").get(playbookId) as Record<string, unknown> | undefined;
-    if (!row || !store.canRead(user.id, row.project_id ? String(row.project_id) : undefined)) throw new Error("Knowledge access denied");
-    return { content: [{ type: "text", text: summarizeJson({ id: row.id, kind: row.kind, title: row.title, body: row.body, lifecycle: row.lifecycle, projectId: row.project_id, steps: row.steps_json ? JSON.parse(String(row.steps_json)) : [], rollback: row.rollback, skillDiff: row.skill_diff, sourceLocator: row.source_locator, sourceSha256: row.source_sha256 }) }] };
+    const name = project(projectName); const projectId = user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name;
+    if (!row || !canReadDocument(store, row, projectId)) throw new Error("Knowledge access denied");
+    return { content: [{ type: "text", text: summarizeJson({ id: row.id, kind: row.kind, title: row.title, body: row.body, lifecycle: row.lifecycle, projectId: row.project_id, scope: store.getScopeBinding(playbookId), steps: row.steps_json ? JSON.parse(String(row.steps_json)) : [], rollback: row.rollback, skillDiff: row.skill_diff, sourceLocator: row.source_locator, sourceSha256: row.source_sha256 }) }] };
   });
   server.tool("knowledge_evidence_get", "Return metadata for Evidence; content is available through a bounded, audited read.", { evidenceId: z.string() }, async ({ evidenceId }) => {
     const store = requireKnowledge();
@@ -88,8 +98,9 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   server.resource("knowledge-document", new ResourceTemplate("knowledge://{kind}/{id}", { list: undefined }), async (uri, variables) => {
     const store = requireKnowledge(); const kind = String(variables.kind); const id = String(variables.id);
     const row = store.db.prepare("SELECT * FROM knowledge_documents WHERE id = ? AND kind = ?").get(id, kind) as Record<string, unknown> | undefined;
-    if (!row || !store.canRead(user.id, row.project_id ? String(row.project_id) : undefined)) throw new Error("Knowledge access denied");
+    const name = project(); const projectId = user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name;
+    if (!row || !canReadDocument(store, row, projectId)) throw new Error("Knowledge access denied");
     store.audit({ actorId: user.id, projectId: row.project_id ? String(row.project_id) : undefined, action: "knowledge.resource.read", entityType: kind, entityId: id });
-    return { contents: [{ uri: uri.toString(), mimeType: "application/json", text: JSON.stringify({ id: row.id, kind: row.kind, title: row.title, body: row.body, lifecycle: row.lifecycle, projectId: row.project_id, sourceLocator: row.source_locator, sourceSha256: row.source_sha256, updatedAt: row.updated_at }) }] };
+    return { contents: [{ uri: uri.toString(), mimeType: "application/json", text: JSON.stringify({ id: row.id, kind: row.kind, title: row.title, body: row.body, lifecycle: row.lifecycle, projectId: row.project_id, scope: store.getScopeBinding(id), card: kind === "candidate" ? store.getCandidateCard(id) : undefined, sourceLocator: row.source_locator, sourceSha256: row.source_sha256, updatedAt: row.updated_at }) }] };
   });
 }

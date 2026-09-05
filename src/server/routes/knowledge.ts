@@ -18,6 +18,7 @@ import {
   proposePlaybook,
   rejectCandidate,
   reviewDocument,
+  editCandidateCard,
 } from "../../knowledge/review-service.js";
 
 const projectIdSchema = z.coerce.number().int().positive();
@@ -38,12 +39,12 @@ function queryValue(query: Record<string, unknown>, key: string): string | undef
   return value === undefined || value === null || String(value).trim() === "" ? undefined : String(value);
 }
 
-function safeDocument(row: KnowledgeRow, includeBody = true): Record<string, unknown> {
+function safeDocument(row: KnowledgeRow, includeBody = true, card?: ReturnType<ReturnType<typeof getKnowledgeStore>["getCandidateCard"]>, scope?: ReturnType<ReturnType<typeof getKnowledgeStore>["getScopeBinding"]>): Record<string, unknown> {
   return {
     id: String(row.id),
     kind: String(row.kind),
     title: String(row.title ?? ""),
-    ...(includeBody ? { body: String(row.body ?? "") } : { summary: String(row.body ?? "").slice(0, 500) }),
+    ...(includeBody ? { body: String(row.body ?? "") } : { summary: card?.summary ?? String(row.body ?? "").slice(0, 500) }),
     lifecycle: String(row.lifecycle),
     projectId: row.project_id === null || row.project_id === undefined ? undefined : String(row.project_id),
     projectNameSnapshot: row.project_name_snapshot ? String(row.project_name_snapshot) : undefined,
@@ -51,12 +52,27 @@ function safeDocument(row: KnowledgeRow, includeBody = true): Record<string, unk
     solution: row.solution ? String(row.solution) : undefined,
     module: row.module ? String(row.module) : undefined,
     environment: row.environment ? String(row.environment) : undefined,
+    candidateType: row.candidate_type ? String(row.candidate_type) : undefined,
+    eventId: row.event_id ? String(row.event_id) : undefined,
+    jobId: row.job_id ? String(row.job_id) : undefined,
+    deploymentId: row.deployment_id ? String(row.deployment_id) : undefined,
+    evidenceCount: row.evidence_count === undefined ? undefined : Number(row.evidence_count),
     sourceLocator: String(row.source_locator ?? ""),
     sourceCommit: row.source_commit ? String(row.source_commit) : undefined,
     sourceSha256: row.source_sha256 ? String(row.source_sha256) : undefined,
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
+    ...(card ? { card } : {}),
+    ...(scope ? { scope } : {}),
   };
+}
+
+function enrichDocumentRow(store: ReturnType<typeof getKnowledgeStore>, row: KnowledgeRow): KnowledgeRow {
+  if (String(row.kind) !== "candidate") return row;
+  const candidate = store.db.prepare(`SELECT candidate_type,event_id,job_id,deployment_id,
+    (SELECT COUNT(*) FROM knowledge_entity_evidence e WHERE e.entity_type = 'candidate' AND e.entity_id = knowledge_candidates.id) AS evidence_count
+    FROM knowledge_candidates WHERE id = ?`).get(String(row.id)) as KnowledgeRow | undefined;
+  return { ...row, ...(candidate ?? {}) };
 }
 
 function safeEvidence(value: Record<string, unknown>): Record<string, unknown> {
@@ -157,13 +173,25 @@ function parseBoolean(raw: unknown): boolean | undefined {
   return raw === true || String(raw).toLowerCase() === "true";
 }
 
-function loadDocumentForUser(store: ReturnType<typeof getKnowledgeStore>, userId: number, documentId: string): KnowledgeRow {
+function canAccessDocument(store: ReturnType<typeof getKnowledgeStore>, userId: number, row: KnowledgeRow, targetProjectId?: string): boolean {
+  const sourceProjectId = row.project_id === null || row.project_id === undefined ? undefined : String(row.project_id);
+  const target = targetProjectId ?? sourceProjectId;
+  if (!target || !store.canRead(userId, target)) return false;
+  if (sourceProjectId === target) return true;
+  const scope = store.getScopeBinding(String(row.id));
+  return Boolean(scope && (scope.visibility === "global" || scope.visibility === "organization") && ["verified", "approved"].includes(String(row.lifecycle)));
+}
+
+function documentEvidenceRefs(store: ReturnType<typeof getKnowledgeStore>, row: KnowledgeRow, targetProjectId?: string): string[] {
+  const refs = (store.db.prepare("SELECT evidence_id FROM knowledge_entity_evidence WHERE entity_id = ? ORDER BY created_at").all(String(row.id)) as Array<{ evidence_id: string }>).map((item) => item.evidence_id);
+  const sourceProjectId = row.project_id === null || row.project_id === undefined ? undefined : String(row.project_id);
+  if (sourceProjectId === (targetProjectId ?? sourceProjectId)) return [...new Set(refs)];
+  return [...new Set(refs.filter((evidenceId) => Boolean(store.db.prepare("SELECT 1 FROM knowledge_evidence_acl WHERE evidence_id = ? AND project_id = ?").get(evidenceId, targetProjectId))))];
+}
+
+function loadDocumentForUser(store: ReturnType<typeof getKnowledgeStore>, userId: number, documentId: string, targetProjectId?: string): KnowledgeRow {
   const row = store.db.prepare("SELECT * FROM knowledge_documents WHERE id = ?").get(documentId) as KnowledgeRow | undefined;
-  if (!row || !row.project_id || !store.canRead(userId, String(row.project_id))) throw new Error("Knowledge document not found");
-  const numericProject = Number(row.project_id);
-  if (Number.isSafeInteger(numericProject) && numericProject > 0) {
-    try { resolveProject(userId, numericProject); } catch { throw new Error("Knowledge document not found"); }
-  }
+  if (!row || !canAccessDocument(store, userId, row, targetProjectId)) throw new Error("Knowledge document not found");
   return row;
 }
 
@@ -181,6 +209,8 @@ export async function knowledgeRoutes(app: FastifyInstance) {
         solution: queryValue(query, "solution"),
         module: queryValue(query, "module"),
         environment: queryValue(query, "environment"),
+        scopeType: queryValue(query, "scopeType"),
+        scopeKey: queryValue(query, "scopeKey"),
         kinds: parseKinds(query.kinds),
         includeDeprecated: parseBoolean(query.includeDeprecated) ?? false,
       });
@@ -192,10 +222,13 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     try {
       const store = getKnowledgeStore();
-      const row = loadDocumentForUser(store, request.user.id, id);
-      const evidenceRefs = store.db.prepare("SELECT evidence_id FROM knowledge_entity_evidence WHERE entity_id = ? ORDER BY created_at").all(id) as Array<{ evidence_id: string }>;
+      const query = request.query as Record<string, unknown>;
+      const targetProjectId = query.projectId === undefined ? undefined : resolveProject(request.user.id, query.projectId).projectId;
+      const row = loadDocumentForUser(store, request.user.id, id, targetProjectId);
+      const evidenceRefs = documentEvidenceRefs(store, row, targetProjectId);
       const reviews = store.db.prepare("SELECT id,reviewer_id,action,reason,before_json,after_json,created_at FROM knowledge_reviews WHERE entity_id = ? ORDER BY created_at DESC").all(id);
-      return reply.send({ document: safeDocument(row), evidenceRefs: evidenceRefs.map((item) => item.evidence_id), reviews });
+      const enriched = enrichDocumentRow(store, row);
+      return reply.send({ document: safeDocument(enriched, true, String(row.kind) === "candidate" ? store.getCandidateCard(id) : undefined, store.getScopeBinding(id)), evidenceRefs, reviews });
     } catch (error) { return sendError(reply, error, 404); }
   });
 
@@ -283,7 +316,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       if (status) { conditions.push("lifecycle = ?"); params.push(status); } else conditions.push("lifecycle <> 'deprecated'");
       const rows = store.db.prepare(`SELECT * FROM knowledge_documents WHERE ${conditions.join(" AND ")} ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset) as KnowledgeRow[];
       const total = store.db.prepare(`SELECT COUNT(*) AS count FROM knowledge_documents WHERE ${conditions.join(" AND ")}`).get(...params) as { count?: number };
-      return reply.send({ candidates: rows.map((row) => safeDocument(row, false)), page: { limit, offset, total: Number(total.count ?? 0) } });
+      return reply.send({ candidates: rows.map((row) => { const enriched = enrichDocumentRow(store, row); return safeDocument(enriched, false, store.getCandidateCard(String(row.id)), store.getScopeBinding(String(row.id))); }), page: { limit, offset, total: Number(total.count ?? 0) } });
     } catch (error) { return sendError(reply, error, 400); }
   });
 
@@ -307,11 +340,13 @@ export async function knowledgeRoutes(app: FastifyInstance) {
 
   app.post("/api/knowledge/reviews", { onRequest: [app.authenticate] }, async (request, reply) => {
     const body = z.object({
-      action: z.enum(["review", "accept", "reject", "edit", "merge", "promote", "deprecate", "playbook_proposal"]).default("review"),
+      action: z.enum(["review", "accept", "reject", "edit", "edit_card", "merge", "promote", "deprecate", "playbook_proposal"]).default("review"),
       documentId: z.string().min(1).optional(), lifecycle: z.enum(["reproduced", "verified", "approved", "deprecated"]).optional(), reason: z.string().trim().min(1).max(2_000),
       title: z.string().trim().min(1).max(500).optional(), body: z.string().max(100_000).optional(),
       sourceId: z.string().min(1).optional(), targetId: z.string().min(1).optional(), patternId: z.string().min(1).optional(), patternTitle: z.string().trim().min(1).max(500).optional(), patternBody: z.string().max(100_000).optional(),
       projectId: z.string().min(1).optional(), playbookId: z.string().min(1).optional(), skillDiff: z.string().max(100_000).optional(),
+      scopeType: z.enum(["system", "version", "solution", "module", "organization", "project", "environment"]).optional(), scopeKey: z.string().max(500).optional(), visibility: z.enum(["private", "project", "organization", "global"]).optional(), redactionStatus: z.enum(["unknown", "unredacted", "redacted"]).optional(),
+      card: z.object({ summary: z.string().max(2_000).optional(), problemStatement: z.string().max(10_000).optional(), facts: z.array(z.record(z.unknown())).max(50).optional(), symptoms: z.array(z.string().max(2_000)).max(50).optional(), hypothesis: z.string().max(10_000).optional(), verificationPlan: z.array(z.string().max(2_000)).max(50).optional(), verifiedConclusion: z.string().max(10_000).nullable().optional(), actions: z.array(z.string().max(2_000)).max(50).optional(), verification: z.array(z.string().max(2_000)).max(50).optional(), applicability: z.string().max(2_000).nullable().optional(), tags: z.array(z.string().max(200)).max(50).optional(), confidence: z.number().min(0).max(1).optional() }).optional(),
     }).safeParse(request.body);
     if (!body.success) return reply.status(400).send({ error: "Invalid review", details: body.error.issues });
     const store = getKnowledgeStore(); const data = body.data;
@@ -323,8 +358,9 @@ export async function knowledgeRoutes(app: FastifyInstance) {
         if (data.action === "reject") { rejectCandidate(store, request.user.id, documentId!, data.reason); return { ok: true, action: data.action, documentId }; }
         if (data.action === "deprecate") { deprecateDocument(store, request.user.id, documentId!, data.reason); return { ok: true, action: data.action, documentId }; }
         if (data.action === "edit") return { document: editDocument(store, request.user.id, documentId!, { title: data.title, body: data.body }, data.reason) };
+        if (data.action === "edit_card") return { card: editCandidateCard(store, request.user.id, documentId!, { ...data.card, applicability: data.card?.applicability ?? undefined, verifiedConclusion: data.card?.verifiedConclusion ?? undefined }, data.reason) };
         if (data.action === "merge") { if (!data.sourceId || !data.targetId) throw new Error("sourceId and targetId are required"); mergeCandidates(store, request.user.id, data.sourceId, data.targetId, data.reason); return { ok: true, action: data.action, sourceId: data.sourceId, targetId: data.targetId }; }
-        if (data.action === "promote") { if (!data.sourceId || !data.patternId || !data.patternTitle) throw new Error("sourceId, patternId and patternTitle are required"); return { document: promoteCaseToPattern(store, request.user.id, data.sourceId, { id: data.patternId, title: data.patternTitle, body: data.patternBody, reason: data.reason }) }; }
+        if (data.action === "promote") { if (!data.sourceId || !data.patternId || !data.patternTitle) throw new Error("sourceId, patternId and patternTitle are required"); return { document: promoteCaseToPattern(store, request.user.id, data.sourceId, { id: data.patternId, title: data.patternTitle, body: data.patternBody, reason: data.reason, scopeType: data.scopeType, scopeKey: data.scopeKey, visibility: data.visibility, redactionStatus: data.redactionStatus }) }; }
         if (data.action === "playbook_proposal") { if (!data.playbookId || !data.projectId || !data.title || data.body === undefined) throw new Error("playbookId, projectId, title and body are required"); return { document: proposePlaybook(store, request.user.id, { id: data.playbookId, projectId: data.projectId, title: data.title, body: data.body, skillDiff: data.skillDiff, reason: data.reason }) }; }
         if (!data.lifecycle) throw new Error("lifecycle is required for a review action");
         reviewDocument(store, request.user.id, documentId!, data.lifecycle, data.reason); return { ok: true, action: data.action, documentId, lifecycle: data.lifecycle };

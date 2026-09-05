@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { assertLifecycleTransition, assertReviewer, type KnowledgeDocument, type KnowledgeKind, type KnowledgeLifecycle } from "./domain.js";
+import { assertLifecycleTransition, assertReviewer, type CandidateCard, type KnowledgeDocument, type KnowledgeKind, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
 import type { KnowledgeStore } from "./store.js";
 
 type Row = Record<string, unknown>;
@@ -77,6 +77,31 @@ export function editDocument(store: KnowledgeStore, userId: number, documentId: 
   return { id: String(row.id), kind: row.kind as KnowledgeKind, title, body, lifecycle: row.lifecycle as KnowledgeLifecycle, projectId: row.project_id ? String(row.project_id) : undefined, locator: String(row.source_locator), createdAt: String(row.created_at), updatedAt: now };
 }
 
+export function editCandidateCard(store: KnowledgeStore, userId: number, candidateId: string, patch: Partial<Omit<CandidateCard, "candidateId" | "updatedAt" | "generatedBy" | "inferenceStatus">>, reason: string): CandidateCard {
+  if (!reason.trim()) throw new Error("Card edit reason is required");
+  const row = loadReviewerDocument(store, userId, candidateId);
+  if (row.kind !== "candidate") throw new Error("Only candidates have Knowledge Cards");
+  const existing = store.getCandidateCard(candidateId);
+  if (!existing) throw new Error("Candidate Knowledge Card not found");
+  if (patch.verifiedConclusion !== undefined && !["verified", "approved"].includes(String(row.lifecycle))) throw new Error("Verified conclusion requires a verified or approved lifecycle");
+  const before = { ...existing };
+  const next: CandidateCard = {
+    ...existing,
+    ...patch,
+    candidateId,
+    hypothesis: patch.hypothesis === undefined ? existing.hypothesis : (/^unconfirmed:/i.test(patch.hypothesis) ? patch.hypothesis : `unconfirmed: ${patch.hypothesis}`),
+    confidence: patch.confidence === undefined ? existing.confidence : Math.max(0, Math.min(1, patch.confidence)),
+    generatedBy: "reviewer-edit",
+    inferenceStatus: "deterministic",
+    updatedAt: new Date().toISOString(),
+  };
+  store.db.transaction(() => {
+    store.saveCandidateCard(next);
+    writeReview(store, row, userId, "edit.card", reason, before, next, next.updatedAt);
+  })();
+  return next;
+}
+
 export function mergeCandidates(store: KnowledgeStore, userId: number, sourceId: string, targetId: string, reason: string): void {
   if (sourceId === targetId) throw new Error("Cannot merge a document into itself");
   if (!reason.trim()) throw new Error("Merge reason is required");
@@ -100,19 +125,29 @@ export function mergeCandidates(store: KnowledgeStore, userId: number, sourceId:
   })();
 }
 
-export function promoteCaseToPattern(store: KnowledgeStore, userId: number, caseId: string, input: { id: string; title: string; body?: string; reason: string }): KnowledgeDocument {
+export function promoteCaseToPattern(store: KnowledgeStore, userId: number, caseId: string, input: { id: string; title: string; body?: string; reason: string; scopeType?: KnowledgeScopeType; scopeKey?: string; visibility?: KnowledgeVisibility; redactionStatus?: KnowledgeRedactionStatus }): KnowledgeDocument {
   const source = loadReviewerDocument(store, userId, caseId);
   if (source.kind !== "case" || !["verified", "approved"].includes(String(source.lifecycle))) throw new Error("Only verified or approved cases can be promoted");
   if (!input.reason.trim()) throw new Error("Promotion reason is required");
+  const visibility = input.visibility ?? "project";
+  const scopeType = input.scopeType ?? "project";
+  const redactionStatus = input.redactionStatus ?? "unknown";
+  if ((visibility === "global" || visibility === "organization") && redactionStatus !== "redacted") throw new Error("Cross-project Pattern promotion requires redactionStatus=redacted");
+  if ((visibility === "global" || visibility === "organization") && !input.body?.trim()) throw new Error("Cross-project Pattern promotion requires an explicit generalized body");
   const existing = store.db.prepare("SELECT project_id FROM knowledge_documents WHERE id = ?").get(input.id) as { project_id?: string } | undefined;
   if (existing && (existing.project_id ?? null) !== (source.project_id ?? null)) throw new Error("Cannot overwrite a document in another project");
   const now = new Date().toISOString();
-  const pattern: KnowledgeDocument = { id: input.id, kind: "pattern", title: input.title, body: input.body ?? String(source.body), lifecycle: "draft", projectId: source.project_id ? String(source.project_id) : undefined, projectNameSnapshot: source.project_name_snapshot ? String(source.project_name_snapshot) : undefined, sampleManagerVersion: source.samplemanager_version ? String(source.samplemanager_version) : undefined, solution: source.solution ? String(source.solution) : undefined, module: source.module ? String(source.module) : undefined, environment: source.environment ? String(source.environment) : undefined, locator: `promotion:${caseId}`, createdAt: now, updatedAt: now };
+  const sourceCase = store.db.prepare("SELECT deployment_id FROM knowledge_cases WHERE id = ?").get(caseId) as { deployment_id?: string } | undefined;
+  const sourceProjectId = source.project_id ? String(source.project_id) : undefined;
+  const scopeKey = input.scopeKey ?? (scopeType === "version" ? (source.samplemanager_version ? String(source.samplemanager_version) : "") : scopeType === "solution" ? (source.solution ? String(source.solution) : "") : scopeType === "module" ? (source.module ? String(source.module) : "") : scopeType === "project" ? (sourceProjectId ?? "") : "");
+  const pattern: KnowledgeDocument = { id: input.id, kind: "pattern", title: input.title, body: input.body ?? String(source.body), lifecycle: "draft", projectId: sourceProjectId, projectNameSnapshot: source.project_name_snapshot ? String(source.project_name_snapshot) : undefined, sampleManagerVersion: source.samplemanager_version ? String(source.samplemanager_version) : undefined, solution: source.solution ? String(source.solution) : undefined, module: source.module ? String(source.module) : undefined, environment: source.environment ? String(source.environment) : undefined, scopeType, scopeKey, visibility, sourceProjectId, sourceCaseId: caseId, sourceDeploymentId: sourceCase?.deployment_id ? String(sourceCase.deployment_id) : undefined, redactionStatus, locator: `promotion:${caseId}`, createdAt: now, updatedAt: now };
   store.upsertDocument(pattern);
   const sourceRefs = entityEvidenceRefs(store, "case", caseId);
-  store.db.prepare("UPDATE knowledge_patterns SET case_refs_json = ?, evidence_refs_json = ?, created_by = ?, updated_at = ? WHERE id = ?").run(JSON.stringify([caseId]), JSON.stringify(sourceRefs), userId, now, input.id);
-  for (const evidenceId of sourceRefs) store.db.prepare("INSERT OR IGNORE INTO knowledge_entity_evidence(entity_type,entity_id,evidence_id,created_at) VALUES ('pattern',?,?,?)").run(input.id, evidenceId, now);
+  const propagatedRefs = visibility === "global" || visibility === "organization" ? [] : sourceRefs;
+  store.db.prepare("UPDATE knowledge_patterns SET case_refs_json = ?, evidence_refs_json = ?, created_by = ?, updated_at = ? WHERE id = ?").run(JSON.stringify([caseId]), JSON.stringify(propagatedRefs), userId, now, input.id);
+  for (const evidenceId of propagatedRefs) store.db.prepare("INSERT OR IGNORE INTO knowledge_entity_evidence(entity_type,entity_id,evidence_id,created_at) VALUES ('pattern',?,?,?)").run(input.id, evidenceId, now);
   writeReview(store, source, userId, "promote.case_to_pattern", input.reason, { caseId }, { patternId: input.id }, now);
+  store.audit({ actorId: userId, projectId: sourceProjectId, action: "knowledge.scope.promoted", entityType: "pattern", entityId: input.id, details: { scopeType, scopeKey: pattern.scopeKey, visibility, sourceProjectId, sourceCaseId: caseId, redactionStatus, evidenceRefsPropagated: propagatedRefs.length } });
   return pattern;
 }
 

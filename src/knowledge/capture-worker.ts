@@ -4,6 +4,8 @@ import { dirname, join } from "path";
 import type { KnowledgeOutboxEvent, KnowledgeStore } from "./store.js";
 import { EvidenceStore } from "./evidence-store.js";
 import { KnowledgeRepository } from "./repository.js";
+import { candidateTitle, generateCandidateCard } from "./candidate-card.js";
+import type { InferenceProvider } from "./providers.js";
 
 const MAX_CAPTURE_ATTEMPTS = 5;
 const PROJECT_RESOLUTION_RETRY_BASE_MS = 5_000;
@@ -75,6 +77,8 @@ export interface CaptureWorkerHooks {
   onFailure?: (error: unknown, event?: KnowledgeOutboxEvent) => void;
   /** Called only after a cycle completes without an item or database failure. */
   onSuccess?: (count: number) => void;
+  /** Optional inference provider; failures fall back to deterministic cards. */
+  inference?: InferenceProvider;
 }
 
 function hasProjectId(projectId: string | number | undefined): boolean {
@@ -281,8 +285,15 @@ export async function captureKnowledgeCandidates(
         createdAt: now,
         updatedAt: now,
       };
-      new KnowledgeRepository(store).saveCandidate(candidate);
-      materializeEvidence(store, event, projectId, candidateId);
+      const repository = new KnowledgeRepository(store);
+      repository.saveCandidate(candidate);
+      const evidenceRefs = materializeEvidence(store, event, projectId, candidateId);
+      const generated = await generateCandidateCard({ event, projectId, candidateId, evidenceRefs, inference: hooks?.inference });
+      store.saveCandidateCard(generated.card);
+      // Re-upsert through the canonical store so chunk/FTS projections and
+      // source metadata stay in sync with the semantic title.
+      store.upsertDocument({ ...candidate, title: candidateTitle(event, generated.card), updatedAt: generated.card.updatedAt });
+      if (generated.providerError) store.audit({ projectId: String(projectId), action: "knowledge.candidate.card_provider_rejected", entityType: "candidate", entityId: candidateId, details: { eventId: event.id, error: generated.providerError } });
       store.acknowledge(consumer, event.id, event.claimToken);
       count++;
     } catch (error) {

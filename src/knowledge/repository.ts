@@ -62,6 +62,7 @@ export class KnowledgeRepository {
       deploymentId: value.deploymentId ?? null, jobId: value.jobId ?? null, evidenceRefs: JSON.stringify(value.evidenceRefs ?? []),
       sourceLocator: value.locator, sourceSha256: value.sha256 ?? null, createdAt: value.createdAt, updatedAt: value.updatedAt,
     });
+    if (value.card) this.store.saveCandidateCard(value.card);
     return value;
   }
 

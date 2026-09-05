@@ -28,7 +28,18 @@ export interface KnowledgeScope {
   solution?: string;
   module?: string;
   environment?: string;
+  scopeType?: KnowledgeScopeType;
+  scopeKey?: string;
+  visibility?: KnowledgeVisibility;
+  sourceProjectId?: string;
+  sourceCaseId?: string;
+  sourceDeploymentId?: string;
+  redactionStatus?: KnowledgeRedactionStatus;
 }
+
+export type KnowledgeScopeType = "system" | "version" | "solution" | "module" | "organization" | "project" | "environment";
+export type KnowledgeVisibility = "private" | "project" | "organization" | "global";
+export type KnowledgeRedactionStatus = "unknown" | "unredacted" | "redacted";
 
 export interface KnowledgeSource {
   locator: string;
@@ -94,6 +105,41 @@ export interface Candidate extends KnowledgeEntity {
   eventId?: string;
   deploymentId?: string;
   jobId?: string;
+  card?: CandidateCard;
+}
+
+export interface CandidateCard {
+  candidateId: string;
+  summary: string;
+  problemStatement: string;
+  facts: Array<Record<string, unknown>>;
+  symptoms: string[];
+  hypothesis: string;
+  verificationPlan: string[];
+  verifiedConclusion?: string;
+  actions: string[];
+  verification: string[];
+  applicability?: string;
+  tags: string[];
+  confidence?: number;
+  generatedBy: string;
+  inferenceStatus: "deterministic" | "provider" | "rejected";
+  updatedAt: string;
+}
+
+export interface KnowledgeScopeBinding {
+  id: string;
+  documentId: string;
+  scopeType: KnowledgeScopeType;
+  scopeKey: string;
+  visibility: KnowledgeVisibility;
+  sourceProjectId?: string;
+  sourceCaseId?: string;
+  sourceDeploymentId?: string;
+  redactionStatus: KnowledgeRedactionStatus;
+  createdBy?: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type FactStatus = "resolved" | "unresolved";

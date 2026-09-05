@@ -15,9 +15,11 @@ import { KNOWLEDGE_SEARCH_MIGRATION } from "./migrations/009-search.js";
 import { KNOWLEDGE_FACTS_SEARCH_MIGRATION } from "./migrations/010-facts-search.js";
 import { KNOWLEDGE_API_GOVERNANCE_MIGRATION } from "./migrations/011-api-governance.js";
 import { KNOWLEDGE_HYBRID_RETRIEVAL_MIGRATION } from "./migrations/011-hybrid-retrieval.js";
+import { KNOWLEDGE_CANDIDATE_CARD_MIGRATION } from "./migrations/012-candidate-card.js";
+import { KNOWLEDGE_SCOPE_MIGRATION } from "./migrations/013-knowledge-scope.js";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
-import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type KnowledgeDocument, type KnowledgeLifecycle } from "./domain.js";
+import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type CandidateCard, type KnowledgeDocument, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeBinding, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
 import { sanitizeAuditArguments } from "../shared/audit-sanitizer.js";
 
 function canonicalJson(value: unknown): string {
@@ -39,6 +41,8 @@ const KNOWLEDGE_MIGRATIONS = [
   KNOWLEDGE_FACTS_SEARCH_MIGRATION,
   KNOWLEDGE_API_GOVERNANCE_MIGRATION,
   KNOWLEDGE_HYBRID_RETRIEVAL_MIGRATION,
+  KNOWLEDGE_CANDIDATE_CARD_MIGRATION,
+  KNOWLEDGE_SCOPE_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(
@@ -168,7 +172,7 @@ export class KnowledgeStore {
     // Databases created by the early P01 preview may already carry the
     // 002-domain marker but not the type projections introduced later. Make
     // this additive repair safe and idempotent without rewriting user data.
-    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl"];
+    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl"];
     const missingTable = requiredTables.some((name) => !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
     if (missingTable) this.db.exec(KNOWLEDGE_DOMAIN_MIGRATION.sql);
     const columns: Record<string, Array<[string, string]>> = {
@@ -182,6 +186,19 @@ export class KnowledgeStore {
       const present = new Set((this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
       for (const [name, definition] of definitions) if (!present.has(name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
     }
+    this.backfillDefaultScopes();
+  }
+
+  private backfillDefaultScopes(): void {
+    const insert = this.db.prepare(`INSERT OR IGNORE INTO knowledge_scope_bindings
+      (id,document_id,scope_type,scope_key,visibility,source_project_id,source_case_id,source_deployment_id,redaction_status,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+    const now = this.now().toISOString();
+    const rows = this.db.prepare("SELECT id,project_id,created_at,updated_at FROM knowledge_documents WHERE NOT EXISTS (SELECT 1 FROM knowledge_scope_bindings s WHERE s.document_id = knowledge_documents.id)").all() as Array<Record<string, unknown>>;
+    this.db.transaction(() => rows.forEach((row) => {
+      const projectId = row.project_id === null || row.project_id === undefined ? "" : String(row.project_id);
+      insert.run(`scope-${String(row.id)}`, String(row.id), "project", projectId, projectId ? "project" : "private", projectId || null, null, null, "unknown", String(row.created_at ?? now), String(row.updated_at ?? now));
+    }))();
   }
 
   append(event: RelayDomainEventInput): void {
@@ -400,6 +417,7 @@ export class KnowledgeStore {
       this.db.prepare("UPDATE knowledge_candidates SET status=@status,source_locator=@sourceLocator,source_sha256=@sourceSha256,updated_at=@updatedAt WHERE id=@id").run(projection);
     }
     this.syncDocumentChunks(document);
+    this.syncScopeBinding(document);
     return document;
   }
 
@@ -422,6 +440,59 @@ export class KnowledgeStore {
         ftsInsert.run(document.id, `${document.title} [chunk ${ordinal + 1}]`, content);
       });
     })();
+  }
+
+  private syncScopeBinding(document: KnowledgeDocument): void {
+    const explicit = document.scopeType !== undefined || document.scopeKey !== undefined || document.visibility !== undefined || document.sourceProjectId !== undefined || document.sourceCaseId !== undefined || document.sourceDeploymentId !== undefined || document.redactionStatus !== undefined;
+    const scopeType: KnowledgeScopeType = document.scopeType ?? (document.environment ? "environment" : document.module ? "module" : document.solution ? "solution" : document.sampleManagerVersion ? "version" : "project");
+    const scopeKey = document.scopeKey ?? document.environment ?? document.module ?? document.solution ?? document.sampleManagerVersion ?? document.projectId ?? "";
+    const visibility: KnowledgeVisibility = document.visibility ?? (document.projectId ? "project" : "private");
+    const sourceProjectId = document.sourceProjectId ?? document.projectId;
+    const existing = this.db.prepare("SELECT id FROM knowledge_scope_bindings WHERE document_id = ? AND scope_type = ? AND scope_key = ?").get(document.id, scopeType, scopeKey) as { id?: string } | undefined;
+    if (existing && !explicit) return;
+    const id = existing?.id ?? `scope-${document.id}-${scopeType}-${createHash("sha256").update(scopeKey, "utf8").digest("hex").slice(0, 12)}`;
+    this.db.prepare(`INSERT INTO knowledge_scope_bindings
+      (id,document_id,scope_type,scope_key,visibility,source_project_id,source_case_id,source_deployment_id,redaction_status,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(document_id,scope_type,scope_key) DO UPDATE SET visibility=excluded.visibility,source_project_id=excluded.source_project_id,source_case_id=excluded.source_case_id,source_deployment_id=excluded.source_deployment_id,redaction_status=excluded.redaction_status,updated_at=excluded.updated_at`).run(
+      id, document.id, scopeType, scopeKey, visibility, sourceProjectId ?? null, document.sourceCaseId ?? null, document.sourceDeploymentId ?? null, document.redactionStatus ?? "unknown", document.createdAt, document.updatedAt,
+    );
+  }
+
+  getCandidateCard(candidateId: string): CandidateCard | undefined {
+    const row = this.db.prepare("SELECT * FROM knowledge_candidate_cards WHERE candidate_id = ?").get(candidateId) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    const parseArray = (value: unknown): unknown[] => { try { const parsed = JSON.parse(String(value ?? "[]")); return Array.isArray(parsed) ? parsed : []; } catch { return []; } };
+    return {
+      candidateId: String(row.candidate_id), summary: String(row.summary), problemStatement: String(row.problem_statement), facts: parseArray(row.facts_json) as Array<Record<string, unknown>>, symptoms: parseArray(row.symptoms_json).filter((item): item is string => typeof item === "string"), hypothesis: String(row.hypothesis), verificationPlan: parseArray(row.verification_plan_json).filter((item): item is string => typeof item === "string"), verifiedConclusion: row.verified_conclusion ? String(row.verified_conclusion) : undefined, actions: parseArray(row.actions_json).filter((item): item is string => typeof item === "string"), verification: parseArray(row.verification_json).filter((item): item is string => typeof item === "string"), applicability: row.applicability ? String(row.applicability) : undefined, tags: parseArray(row.tags_json).filter((item): item is string => typeof item === "string"), confidence: row.confidence === null || row.confidence === undefined ? undefined : Number(row.confidence), generatedBy: String(row.generated_by), inferenceStatus: row.inference_status as CandidateCard["inferenceStatus"], updatedAt: String(row.updated_at),
+    };
+  }
+
+  saveCandidateCard(card: CandidateCard): CandidateCard {
+    const safeConfidence = card.confidence === undefined ? null : Math.max(0, Math.min(1, card.confidence));
+    this.db.prepare(`INSERT INTO knowledge_candidate_cards
+      (candidate_id,summary,problem_statement,facts_json,symptoms_json,hypothesis,verification_plan_json,verified_conclusion,actions_json,verification_json,applicability,tags_json,confidence,generated_by,inference_status,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(candidate_id) DO UPDATE SET summary=excluded.summary,problem_statement=excluded.problem_statement,facts_json=excluded.facts_json,symptoms_json=excluded.symptoms_json,hypothesis=excluded.hypothesis,verification_plan_json=excluded.verification_plan_json,verified_conclusion=excluded.verified_conclusion,actions_json=excluded.actions_json,verification_json=excluded.verification_json,applicability=excluded.applicability,tags_json=excluded.tags_json,confidence=excluded.confidence,generated_by=excluded.generated_by,inference_status=excluded.inference_status,updated_at=excluded.updated_at`).run(
+      card.candidateId, card.summary, card.problemStatement, JSON.stringify(card.facts), JSON.stringify(card.symptoms), card.hypothesis, JSON.stringify(card.verificationPlan), card.verifiedConclusion ?? null, JSON.stringify(card.actions), JSON.stringify(card.verification), card.applicability ?? null, JSON.stringify(card.tags), safeConfidence, card.generatedBy, card.inferenceStatus, card.updatedAt,
+    );
+    return card;
+  }
+
+  getScopeBinding(documentId: string): KnowledgeScopeBinding | undefined {
+    const row = this.db.prepare("SELECT * FROM knowledge_scope_bindings WHERE document_id = ? ORDER BY CASE visibility WHEN 'global' THEN 1 WHEN 'organization' THEN 2 WHEN 'project' THEN 3 ELSE 4 END, updated_at DESC LIMIT 1").get(documentId) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    return { id: String(row.id), documentId: String(row.document_id), scopeType: row.scope_type as KnowledgeScopeType, scopeKey: String(row.scope_key), visibility: row.visibility as KnowledgeVisibility, sourceProjectId: row.source_project_id ? String(row.source_project_id) : undefined, sourceCaseId: row.source_case_id ? String(row.source_case_id) : undefined, sourceDeploymentId: row.source_deployment_id ? String(row.source_deployment_id) : undefined, redactionStatus: row.redaction_status as KnowledgeRedactionStatus, createdBy: row.created_by === null || row.created_by === undefined ? undefined : Number(row.created_by), createdAt: String(row.created_at), updatedAt: String(row.updated_at) };
+  }
+
+  saveScopeBinding(binding: Omit<KnowledgeScopeBinding, "id" | "createdAt" | "updatedAt"> & { id?: string; createdAt?: string; updatedAt?: string }): KnowledgeScopeBinding {
+    const now = binding.updatedAt ?? this.now().toISOString();
+    const result: KnowledgeScopeBinding = { ...binding, id: binding.id ?? `scope-${binding.documentId}-${binding.scopeType}-${binding.scopeKey || "default"}`, createdAt: binding.createdAt ?? now, updatedAt: now };
+    this.db.prepare(`INSERT INTO knowledge_scope_bindings
+      (id,document_id,scope_type,scope_key,visibility,source_project_id,source_case_id,source_deployment_id,redaction_status,created_by,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(document_id,scope_type,scope_key) DO UPDATE SET visibility=excluded.visibility,source_project_id=excluded.source_project_id,source_case_id=excluded.source_case_id,source_deployment_id=excluded.source_deployment_id,redaction_status=excluded.redaction_status,created_by=excluded.created_by,updated_at=excluded.updated_at`).run(result.id, result.documentId, result.scopeType, result.scopeKey, result.visibility, result.sourceProjectId ?? null, result.sourceCaseId ?? null, result.sourceDeploymentId ?? null, result.redactionStatus, result.createdBy ?? null, result.createdAt, result.updatedAt);
+    return result;
   }
 
   canRead(userId: number, projectId: string | undefined): boolean {

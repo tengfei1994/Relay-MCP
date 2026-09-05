@@ -11,6 +11,8 @@ export interface KnowledgeSearchRequest {
   solution?: string;
   module?: string;
   environment?: string;
+  scopeType?: string;
+  scopeKey?: string;
   kinds?: Array<"candidate" | "case" | "pattern" | "playbook" | "fact">;
   includeDeprecated?: boolean;
   typeQuotas?: Partial<Record<"candidate" | "case" | "pattern" | "playbook" | "fact", number>>;
@@ -32,6 +34,7 @@ export interface KnowledgeSearchResult {
     matchReasons: string[];
     applicability: { sampleManagerVersion?: string; solution?: string; module?: string; environment?: string };
     evidenceRefs: string[];
+    scope: { scopeType?: string; scopeKey?: string; visibility?: string; sourceProjectId?: string; redactionStatus?: string; specificity: number };
   }>;
 }
 
@@ -56,14 +59,35 @@ function evidenceRefs(store: KnowledgeStore, row: Record<string, unknown>): stri
   return [...new Set([...linked, ...projected])];
 }
 
+function scopeFor(store: KnowledgeStore, row: Record<string, unknown>): { scopeType?: string; scopeKey?: string; visibility?: string; sourceProjectId?: string; redactionStatus?: string; specificity: number } {
+  const binding = store.getScopeBinding(String(row.id));
+  const scopeType = binding?.scopeType;
+  const specificity = scopeType === "environment" ? 5 : scopeType === "project" ? 4 : scopeType === "module" || scopeType === "solution" ? 3 : scopeType === "version" ? 2 : scopeType === "system" ? 1 : 0;
+  return { scopeType, scopeKey: binding?.scopeKey, visibility: binding?.visibility, sourceProjectId: binding?.sourceProjectId, redactionStatus: binding?.redactionStatus, specificity };
+}
+
+function isCrossProjectGlobal(row: Record<string, unknown>, request: KnowledgeSearchRequest, scope: ReturnType<typeof scopeFor>): boolean {
+  return Boolean(scope.visibility === "global" || scope.visibility === "organization") && String(scope.sourceProjectId ?? row.project_id ?? "") !== String(request.projectId);
+}
+
+function visibleEvidenceRefs(store: KnowledgeStore, row: Record<string, unknown>, request: KnowledgeSearchRequest, scope: ReturnType<typeof scopeFor>): string[] {
+  const refs = evidenceRefs(store, row);
+  if (!isCrossProjectGlobal(row, request, scope)) return refs;
+  // Cross-project results may expose the card and provenance metadata, but
+  // private source Evidence never crosses the source Project ACL boundary.
+  return refs.filter((evidenceId) => Boolean(store.db.prepare("SELECT 1 FROM knowledge_evidence_acl WHERE evidence_id = ? AND project_id = ?").get(evidenceId, request.projectId)));
+}
+
 function readRows(store: KnowledgeStore, request: KnowledgeSearchRequest): Array<Record<string, unknown>> {
-  const conditions = ["d.project_id = @projectId"];
+  const conditions = ["(d.project_id = @projectId OR EXISTS (SELECT 1 FROM knowledge_scope_bindings sb WHERE sb.document_id = d.id AND sb.visibility IN ('global','organization') AND d.lifecycle IN ('verified','approved')))"];
   const params: Record<string, unknown> = { projectId: request.projectId };
   if (!request.includeDeprecated) conditions.push("d.lifecycle <> 'deprecated'");
   if (request.sampleManagerVersion) { conditions.push("(d.samplemanager_version IS NULL OR d.samplemanager_version = @sampleManagerVersion)"); params.sampleManagerVersion = request.sampleManagerVersion; }
   if (request.solution) { conditions.push("(d.solution IS NULL OR d.solution = @solution)"); params.solution = request.solution; }
   if (request.module) { conditions.push("(d.module IS NULL OR d.module = @module)"); params.module = request.module; }
   if (request.environment) { conditions.push("(d.environment IS NULL OR d.environment = @environment)"); params.environment = request.environment; }
+  if (request.scopeType) { conditions.push("EXISTS (SELECT 1 FROM knowledge_scope_bindings sf WHERE sf.document_id = d.id AND sf.scope_type = @scopeType)"); params.scopeType = request.scopeType; }
+  if (request.scopeKey) { conditions.push("EXISTS (SELECT 1 FROM knowledge_scope_bindings sk WHERE sk.document_id = d.id AND sk.scope_key = @scopeKey)"); params.scopeKey = request.scopeKey; }
   const documentKinds = request.kinds?.filter((kind) => kind !== "fact");
   if (request.kinds?.length && documentKinds?.length === 0) {
     // The caller explicitly requested facts only; avoid broadening the ACL
@@ -152,8 +176,9 @@ export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeS
     }
   } else if (!providers.embedding) degraded = true;
   const resultRows = rows.map((row) => {
-    const body = String(row.body ?? "");
-    const title = String(row.title ?? "");
+    const card = String(row.kind) === "candidate" ? store.getCandidateCard(String(row.id)) : undefined;
+    const body = card?.summary ?? String(row.body ?? "");
+    const title = card?.summary ? String(row.title ?? card.summary) : String(row.title ?? "");
     const overlap = tokenize(`${title} ${body}`).filter((token) => queryTokens.has(token)).length;
     const rank = Number(row.rank);
     const lexicalScore = Number.isFinite(rank) && rank !== 0 ? 1 / (1 + Math.max(0, rank)) + overlap / 100 : overlap / Math.max(1, queryTokens.size);
@@ -162,7 +187,8 @@ export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeS
     // Exact scope matches receive a small deterministic boost over unscoped
     // knowledge while still allowing generally applicable records through.
     const scopedBoost = request.sampleManagerVersion && row.samplemanager_version === request.sampleManagerVersion ? 0.1 : 0;
-    const score = Math.max(0, Math.min(1, (vectorScore === undefined ? lexicalScore : (0.55 * lexicalScore + 0.45 * ((vectorScore + 1) / 2))) + scopedBoost));
+    const scope = scopeFor(store, row);
+    const score = Math.max(0, Math.min(1, (vectorScore === undefined ? lexicalScore : (0.55 * lexicalScore + 0.45 * ((vectorScore + 1) / 2))) + scopedBoost + scope.specificity / 100));
     const reasons = overlap ? [`${overlap} query token${overlap === 1 ? "" : "s"} matched`] : ["FTS/lexical match"];
     if (versionMatch && request.sampleManagerVersion && row.samplemanager_version) reasons.push("SampleManager version matched");
     if (row.lifecycle === "verified" || row.lifecycle === "approved") reasons.push(`${row.lifecycle} knowledge`);
@@ -170,7 +196,8 @@ export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeS
       id: String(row.id), kind: String(row.kind), title, summary: body.length > 500 ? `${body.slice(0, 500)}…` : body,
       score, lifecycle: String(row.lifecycle), versionMatch, matchReasons: reasons,
       applicability: { sampleManagerVersion: row.samplemanager_version ? String(row.samplemanager_version) : undefined, solution: row.solution ? String(row.solution) : undefined, module: row.module ? String(row.module) : undefined, environment: row.environment ? String(row.environment) : undefined },
-      evidenceRefs: evidenceRefs(store, row),
+      evidenceRefs: visibleEvidenceRefs(store, row, request, scope),
+      scope,
     };
   });
   if (providers.rerank && resultRows.length > 1) {

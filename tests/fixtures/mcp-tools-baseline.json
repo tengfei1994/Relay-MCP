@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "generatedFrom": "McpServer tools/list",
   "sourceVersion": {
-    "gitCommit": "23f7c9bc58128a7d8375fd3f931b66e619637470",
+    "gitCommit": "6b359286e50c06c0e0830124c7d8559a4dfc9da4",
     "mcpSdkVersion": "1.29.0",
     "generationCommand": "npm run generate:mcp-baseline",
-    "generatedAt": "2026-09-05T01:39:19.498Z",
+    "generatedAt": "2026-09-05T03:59:06.990Z",
     "worktreeDirty": true
   },
   "tools": [
@@ -606,11 +606,14 @@
     },
     {
       "name": "knowledge_get",
-      "description": "Read a complete Knowledge document by id after project ACL enforcement.",
+      "description": "Read a complete Knowledge document by id after project/scope ACL enforcement.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "documentId": {
+            "type": "string"
+          },
+          "project": {
             "type": "string"
           }
         },
@@ -662,6 +665,9 @@
         "type": "object",
         "properties": {
           "playbookId": {
+            "type": "string"
+          },
+          "project": {
             "type": "string"
           }
         },
@@ -731,7 +737,7 @@
     },
     {
       "name": "knowledge_search",
-      "description": "Search ACL- and SampleManager-version-filtered Case, Pattern, Playbook, and Candidate knowledge.",
+      "description": "Search ACL- and Scope-filtered Case, Pattern, Playbook, and Candidate knowledge.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -757,6 +763,12 @@
             "type": "string"
           },
           "environment": {
+            "type": "string"
+          },
+          "scopeType": {
+            "type": "string"
+          },
+          "scopeKey": {
             "type": "string"
           }
         },

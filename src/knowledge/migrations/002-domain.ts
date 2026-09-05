@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
   samplemanager_version TEXT, solution TEXT, module TEXT, environment TEXT,
   source_locator TEXT NOT NULL, source_commit TEXT, source_sha256 TEXT,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-  CHECK(kind IN ('candidate','case','pattern','playbook','fact','evidence','relation')),
+  CHECK(kind IN ('candidate','case','pattern','playbook','product_document','fact','evidence','relation')),
   CHECK(lifecycle IN ('draft','reproduced','verified','approved','deprecated'))
 );
 CREATE TABLE IF NOT EXISTS knowledge_chunks (
@@ -127,3 +127,4 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_entity_evidence ON knowledge_entity_evi
 CREATE INDEX IF NOT EXISTS idx_knowledge_evidence_acl_project ON knowledge_evidence_acl(project_id, evidence_id);
 `;
 export const KNOWLEDGE_DOMAIN_MIGRATION = { version: "002-domain", sql: KNOWLEDGE_DOMAIN_SCHEMA };
+

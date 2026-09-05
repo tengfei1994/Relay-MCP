@@ -1,7 +1,7 @@
 /** States shared by every promotable knowledge object. */
 export const KNOWLEDGE_LIFECYCLE = ["draft", "reproduced", "verified", "approved", "deprecated"] as const;
 export type KnowledgeLifecycle = typeof KNOWLEDGE_LIFECYCLE[number];
-export type KnowledgeKind = "candidate" | "case" | "pattern" | "playbook" | "fact" | "evidence" | "relation";
+export type KnowledgeKind = "candidate" | "case" | "pattern" | "playbook" | "product_document" | "fact" | "evidence" | "relation";
 
 const transitions: Record<KnowledgeLifecycle, readonly KnowledgeLifecycle[]> = {
   draft: ["reproduced", "deprecated"],

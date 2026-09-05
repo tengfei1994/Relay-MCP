@@ -9,6 +9,8 @@ import { EvidenceStore } from "../../knowledge/evidence-store.js";
 import { importCasebook, importContextFacts } from "../../knowledge/importer.js";
 import { analyzeRelationImpact, queryRelations } from "../../knowledge/relations.js";
 import { searchKnowledge } from "../../knowledge/retriever.js";
+import { importProductDocuments, productDocumentDiff } from "../../knowledge/product-docs.js";
+import { existsSync } from "node:fs";
 import {
   acceptCandidate,
   deprecateDocument,
@@ -53,6 +55,11 @@ function safeDocument(row: KnowledgeRow, includeBody = true, card?: ReturnType<R
     module: row.module ? String(row.module) : undefined,
     environment: row.environment ? String(row.environment) : undefined,
     candidateType: row.candidate_type ? String(row.candidate_type) : undefined,
+    documentFamilyId: row.document_family_id ? String(row.document_family_id) : undefined,
+    documentType: row.document_type ? String(row.document_type) : undefined,
+    language: row.language ? String(row.language) : undefined,
+    authority: row.authority ? String(row.authority) : undefined,
+    sourcePath: row.source_path ? String(row.source_path) : undefined,
     eventId: row.event_id ? String(row.event_id) : undefined,
     sourceCandidateId: row.source_candidate_id ? String(row.source_candidate_id) : undefined,
     jobId: row.job_id ? String(row.job_id) : undefined,
@@ -451,4 +458,53 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       return reply.send({ projectId, stale: staleReasons.length > 0, staleReasons, indexCoverage, counts, lastIngest, checkedAt: new Date().toISOString() });
     } catch (error) { return sendError(reply, error, 400); }
   });
+
+  app.get("/api/knowledge/dashboard", { onRequest: [app.authenticate] }, async (request, reply) => {
+    try {
+      const { store, projectId } = resolveProject(request.user.id, (request.query as Record<string, unknown>).projectId);
+      const counts = store.db.prepare("SELECT kind, lifecycle, COUNT(*) AS count FROM knowledge_documents WHERE project_id = ? GROUP BY kind, lifecycle ORDER BY kind, lifecycle").all(projectId) as Array<Record<string, unknown>>;
+      const totals = store.db.prepare("SELECT kind, COUNT(*) AS count FROM knowledge_documents WHERE project_id = ? GROUP BY kind ORDER BY kind").all(projectId) as Array<Record<string, unknown>>;
+      const evidence = store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_evidence WHERE project_id = ? AND deleted_at IS NULL").get(projectId) as { count?: number };
+      const backlog = store.consumerBacklog("knowledge-capture");
+      const lastReview = store.db.prepare("SELECT id,action,entity_type,entity_id,created_at FROM knowledge_reviews r JOIN knowledge_documents d ON d.id = r.document_id WHERE d.project_id = ? ORDER BY r.created_at DESC LIMIT 1").get(projectId);
+      const lastIngest = store.db.prepare("SELECT id,status,imported,skipped,failed,started_at,finished_at,error FROM knowledge_ingest_runs ORDER BY started_at DESC LIMIT 1").get();
+      return reply.send({ projectId, totals: [...totals, { kind: "evidence", count: Number(evidence.count ?? 0) }], counts, recent: { lastReview, lastIngest }, capture: { backlog, workerManagedBy: "remote-ops-mcp", checkedAt: new Date().toISOString() } });
+    } catch (error) { return sendError(reply, error, 400); }
+  });
+
+  app.post("/api/knowledge/product-docs/import", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const body = z.object({ root: z.string().min(1), product: z.string().max(200).optional(), sampleManagerVersion: z.string().min(1).max(80), solution: z.string().max(200).optional(), module: z.string().max(200).optional(), language: z.string().max(20).optional(), authority: z.string().max(80).optional(), documentFamilyId: z.string().max(200).optional() }).safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: "Invalid product document import", details: body.error.issues });
+    if (!request.user.isAdmin || !existsSync(body.data.root)) return reply.status(403).send({ error: "Administrator access and an existing source directory are required" });
+    try {
+      const store = getKnowledgeStore(); const report = importProductDocuments(store, body.data);
+      store.audit({ actorId: request.user.id, action: "knowledge.product_documents.import", entityType: "product_document_batch", entityId: report.runId, details: { ...report } });
+      return reply.send(report);
+    } catch (error) { return sendError(reply, error, 400); }
+  });
+
+  app.get("/api/knowledge/product-docs", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>; const limit = parseBoundedInt(query.limit, 100, 1, 500); const params: unknown[] = []; const where = ["d.kind = 'product_document'"]; const add = (field: string, key: string) => { const value = queryValue(query, key); if (value) { where.push(`${field} = ?`); params.push(value); } };
+    add("d.samplemanager_version", "sampleManagerVersion"); add("d.solution", "solution"); add("d.module", "module"); add("p.document_type", "documentType"); add("p.language", "language"); add("p.authority", "authority"); add("p.document_family_id", "documentFamilyId");
+    const store = getKnowledgeStore();
+    if (!store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id = ? AND can_read = 1 LIMIT 1").get(request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
+    const rows = store.db.prepare(`SELECT d.id,d.title,d.body,d.lifecycle,d.project_id,d.project_name_snapshot,d.samplemanager_version,d.solution,d.module,d.environment,d.source_locator,d.source_commit,d.source_sha256,d.created_at,d.updated_at,p.document_family_id,p.document_type,p.language,p.authority,p.source_path,p.version,p.sections_json FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id = d.id WHERE ${where.join(" AND ")} ORDER BY d.updated_at DESC LIMIT ?`).all(...params, limit) as KnowledgeRow[];
+    return reply.send({ documents: rows.map((row) => safeDocument(row, false, undefined, store.getScopeBinding(String(row.id)))) });
+  });
+
+  app.get("/api/knowledge/product-docs/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const id = String((request.params as { id: string }).id); const store = getKnowledgeStore();
+    const row = store.db.prepare("SELECT d.*,p.document_family_id,p.document_type,p.language,p.authority,p.source_path,p.version,p.sections_json FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id = d.id WHERE d.id = ?").get(id) as KnowledgeRow | undefined;
+    if (!row) return reply.status(404).send({ error: "Product document not found" });
+    if (!store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id = ? AND can_read = 1 LIMIT 1").get(request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
+    return reply.send({ document: safeDocument(row, true, undefined, store.getScopeBinding(id)), sections: (() => { try { return JSON.parse(String(row.sections_json ?? "[]")); } catch { return []; } })() });
+  });
+
+  app.get("/api/knowledge/product-docs/:id/diff", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const id = String((request.params as { id: string }).id); const against = queryValue(request.query as Record<string, unknown>, "against"); if (!against) return reply.status(400).send({ error: "against is required" });
+    const store = getKnowledgeStore(); const exists = store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_product_documents WHERE id IN (?,?)").get(id, against) as { count?: number }; if (Number(exists.count) !== 2) return reply.status(404).send({ error: "Product document not found" });
+    if (!store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id = ? AND can_read = 1 LIMIT 1").get(request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
+    return reply.send(productDocumentDiff(store, id, against));
+  });
 }
+

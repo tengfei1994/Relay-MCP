@@ -338,6 +338,7 @@ test("migrations tolerate a partially applied event_key column", async (t) => {
         "012-candidate-card",
         "013-knowledge-scope",
         "014-deterministic-compiler",
+        "015-product-documents",
       ]);
       store.append({ id: "event-partial", type: "job.finished", eventKey: "job:partial:finished", ...eventDefaults });
       assert.equal(store.claim("capture").length, 1);
@@ -392,3 +393,4 @@ test("event-key backfill deduplicates historical events and dead-letters unident
     cleanup(root);
   }
 });
+

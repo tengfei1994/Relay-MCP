@@ -18,6 +18,7 @@ import { KNOWLEDGE_HYBRID_RETRIEVAL_MIGRATION } from "./migrations/011-hybrid-re
 import { KNOWLEDGE_CANDIDATE_CARD_MIGRATION } from "./migrations/012-candidate-card.js";
 import { KNOWLEDGE_SCOPE_MIGRATION } from "./migrations/013-knowledge-scope.js";
 import { DETERMINISTIC_COMPILER_MIGRATION } from "./migrations/014-deterministic-compiler.js";
+import { PRODUCT_DOCUMENTS_MIGRATION } from "./migrations/015-product-documents.js";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
 import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type CandidateCard, type KnowledgeDocument, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeBinding, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
@@ -46,6 +47,7 @@ const KNOWLEDGE_MIGRATIONS = [
   KNOWLEDGE_CANDIDATE_CARD_MIGRATION,
   KNOWLEDGE_SCOPE_MIGRATION,
   DETERMINISTIC_COMPILER_MIGRATION,
+  PRODUCT_DOCUMENTS_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(
@@ -178,7 +180,7 @@ export class KnowledgeStore {
     // Databases created by the early P01 preview may already carry the
     // 002-domain marker but not the type projections introduced later. Make
     // this additive repair safe and idempotent without rewriting user data.
-    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations"];
+    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_product_documents"];
     const missingTable = requiredTables.some((name) => !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
     if (missingTable) this.db.exec(KNOWLEDGE_DOMAIN_MIGRATION.sql);
     const columns: Record<string, Array<[string, string]>> = {

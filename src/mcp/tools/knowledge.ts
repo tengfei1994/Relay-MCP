@@ -23,7 +23,14 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   const canReadDocument = (store: KnowledgeStore, row: Record<string, unknown>, targetProjectId?: string): boolean => {
     const sourceProjectId = row.project_id === null || row.project_id === undefined ? undefined : String(row.project_id);
     const target = targetProjectId ?? sourceProjectId;
-    if (!target || !store.canRead(user.id, target)) return false;
+    if (!target || !store.canRead(user.id, target)) {
+      // Resource URIs do not carry a target Project. A verified global or
+      // organization document may still be opened by a user who has read ACL
+      // on any Project; its private source Evidence remains filtered elsewhere.
+      const reusable = store.getScopeBinding(String(row.id));
+      if (!(reusable && (reusable.visibility === "global" || reusable.visibility === "organization") && ["verified", "approved"].includes(String(row.lifecycle)) && store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id = ? AND can_read = 1 LIMIT 1").get(user.id))) return false;
+      return true;
+    }
     if (sourceProjectId === target) return true;
     const scope = store.getScopeBinding(String(row.id));
     return Boolean(scope && (scope.visibility === "global" || scope.visibility === "organization") && ["verified", "approved"].includes(String(row.lifecycle)));

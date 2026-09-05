@@ -34,6 +34,41 @@ test("read-path ACL mirroring preserves an existing reviewer grant", () => {
   } finally { store.close(); }
 });
 
+test("legacy candidates receive a deterministic Candidate Card on read", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-knowledge-legacy-card-"));
+  const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db"), appDbPath: join(root, "app.db") });
+  try {
+    const now = new Date().toISOString();
+    store.upsertDocument({ id: "legacy-candidate", kind: "candidate", title: "job.finished: old", body: JSON.stringify({ eventId: "event-old", eventType: "job.finished", occurredAt: now, projectId: "p1", payload: { status: "succeeded" } }), lifecycle: "draft", projectId: "p1", locator: "relay-event:event-old", createdAt: now, updatedAt: now });
+    const card = store.getCandidateCard("legacy-candidate");
+    assert.ok(card);
+    assert.equal(card.generatedBy, "deterministic-rule-v1");
+    assert.match(card.summary, /job\.finished captured/);
+    assert.ok(card.tags.includes("legacy-candidate"));
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_candidate_cards WHERE candidate_id = ?").get("legacy-candidate").count, 1);
+    // The second read is served from the persisted projection and does not
+    // regenerate or alter the legacy source document.
+    const bodyBefore = store.db.prepare("SELECT body FROM knowledge_documents WHERE id = ?").get("legacy-candidate").body;
+    assert.deepEqual(store.getCandidateCard("legacy-candidate"), card);
+    assert.equal(store.db.prepare("SELECT body FROM knowledge_documents WHERE id = ?").get("legacy-candidate").body, bodyBefore);
+  } finally { store.close(); }
+});
+
+test("plain-text legacy candidates still get a bounded, explicitly legacy card", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-knowledge-legacy-text-"));
+  const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db"), appDbPath: join(root, "app.db") });
+  try {
+    const now = new Date().toISOString();
+    const body = "legacy candidate output: ".padEnd(10_000, "x");
+    store.upsertDocument({ id: "legacy-text", kind: "candidate", title: "old candidate", body, lifecycle: "draft", projectId: "p1", locator: "legacy:text", createdAt: now, updatedAt: now });
+    const card = store.getCandidateCard("legacy-text");
+    assert.ok(card);
+    assert.ok(card.tags.includes("legacy-candidate"));
+    assert.ok(card.facts.some((fact) => fact.field === "legacyBody" && String(fact.value).length <= 500));
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_candidate_cards WHERE candidate_id = ?").get("legacy-text").count, 1);
+  } finally { store.close(); }
+});
+
 test("retrieval applies ACL, lifecycle and version filters before returning explainable results", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-knowledge-search-")); const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db"), appDbPath: join(root, "app.db") });
   try {

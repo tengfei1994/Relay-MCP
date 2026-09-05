@@ -17,6 +17,24 @@ export interface CandidateCardGenerationResult {
   providerError?: string;
 }
 
+export interface LegacyCandidateCardInput {
+  candidateId: string;
+  projectId: string | number;
+  body: string;
+  evidenceRefs: string[];
+  eventId?: string;
+  eventType?: string;
+  occurredAt?: string;
+  projectNameSnapshot?: string;
+  jobId?: string;
+  deploymentId?: string;
+  sampleManagerVersion?: string;
+  solution?: string;
+  module?: string;
+  environment?: string;
+  updatedAt?: string;
+}
+
 function text(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -81,6 +99,57 @@ function deterministicCard(input: CandidateCardGenerationInput, inferenceStatus:
   // Keep this validation explicit: deterministic output cannot claim a source
   // Evidence ID that was not materialized for this event.
   if (evidenceRefs.some((ref) => !ref || typeof ref !== "string")) throw new Error("Candidate Evidence references must be materialized IDs");
+  return card;
+}
+
+/** Build a reviewable card for legacy candidates that predate card persistence. */
+export function generateDeterministicCandidateCard(input: CandidateCardGenerationInput): CandidateCard {
+  return deterministicCard(input);
+}
+
+/**
+ * Reconstruct the event envelope used by candidates written before the
+ * Candidate Card projection existed. This keeps the original body untouched
+ * while giving legacy rows the same deterministic, reviewable projection as
+ * newly captured events.
+ */
+export function generateDeterministicCandidateCardFromLegacy(input: LegacyCandidateCardInput): CandidateCard {
+  let parsed: Record<string, unknown> = {};
+  try {
+    const value = JSON.parse(input.body);
+    if (value && typeof value === "object" && !Array.isArray(value)) parsed = value as Record<string, unknown>;
+  } catch {
+    // Older candidates may contain plain text rather than the canonical JSON
+    // envelope. Preserve a bounded copy as an unstructured payload fact.
+  }
+  const knownTypes = new Set([
+    "job.started", "job.retry", "job.finished", "job.failed", "job.unknown", "job.cancelled", "job.interrupted",
+    "deployment.started", "deployment.finished", "deployment.failed", "deployment.unknown", "deployment.rolled_back",
+    "deployment.interrupted", "deployment.needs_review", "deployment.pending_validation",
+  ]);
+  const parsedType = typeof parsed.eventType === "string" ? parsed.eventType : undefined;
+  const parsedPayload = parsed.payload && typeof parsed.payload === "object" && !Array.isArray(parsed.payload)
+    ? parsed.payload as Record<string, unknown>
+    : { legacyBody: input.body.slice(0, 2_000) };
+  const payload: Record<string, unknown> = { ...parsedPayload };
+  for (const [key, value] of [["sampleManagerVersion", input.sampleManagerVersion], ["solution", input.solution], ["module", input.module], ["environment", input.environment]] as const) {
+    if (payload[key] === undefined && value) payload[key] = value;
+  }
+  const event: RelayDomainEvent = {
+    id: String(parsed.eventId ?? input.eventId ?? input.candidateId),
+    type: (knownTypes.has(parsedType ?? "") ? parsedType : "job.unknown") as RelayDomainEvent["type"],
+    occurredAt: String(parsed.occurredAt ?? input.occurredAt ?? new Date().toISOString()),
+    projectId: String(parsed.projectId ?? input.projectId),
+    projectNameSnapshot: typeof parsed.projectNameSnapshot === "string" ? parsed.projectNameSnapshot : input.projectNameSnapshot,
+    jobId: String(parsed.jobId ?? input.jobId ?? "") || undefined,
+    deploymentId: String(parsed.deploymentId ?? input.deploymentId ?? "") || undefined,
+    payload,
+    eventKey: String(parsed.eventKey ?? `legacy:${input.candidateId}`),
+    actorId: typeof parsed.actorId === "number" ? parsed.actorId : undefined,
+  };
+  const card = deterministicCard({ event, projectId: input.projectId, candidateId: input.candidateId, evidenceRefs: input.evidenceRefs });
+  card.tags = [...new Set(["legacy-candidate", ...card.tags])].slice(0, 30);
+  if (input.updatedAt) card.updatedAt = input.updatedAt;
   return card;
 }
 

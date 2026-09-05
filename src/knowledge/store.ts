@@ -21,6 +21,7 @@ import { randomUUID } from "crypto";
 import { createHash } from "crypto";
 import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type CandidateCard, type KnowledgeDocument, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeBinding, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
 import { sanitizeAuditArguments } from "../shared/audit-sanitizer.js";
+import { generateDeterministicCandidateCardFromLegacy } from "./candidate-card.js";
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -461,7 +462,30 @@ export class KnowledgeStore {
 
   getCandidateCard(candidateId: string): CandidateCard | undefined {
     const row = this.db.prepare("SELECT * FROM knowledge_candidate_cards WHERE candidate_id = ?").get(candidateId) as Record<string, unknown> | undefined;
-    if (!row) return undefined;
+    if (!row) {
+      const legacy = this.db.prepare("SELECT d.*, c.event_id, c.job_id, c.deployment_id FROM knowledge_documents d LEFT JOIN knowledge_candidates c ON c.id = d.id WHERE d.id = ? AND d.kind = 'candidate'").get(candidateId) as Record<string, unknown> | undefined;
+      if (!legacy) return undefined;
+      const evidenceRefs = (this.db.prepare("SELECT evidence_id FROM knowledge_entity_evidence WHERE entity_type = 'candidate' AND entity_id = ? ORDER BY created_at").all(candidateId) as Array<{ evidence_id: string }>).map((item) => item.evidence_id);
+      const card = generateDeterministicCandidateCardFromLegacy({
+        candidateId,
+        projectId: String(legacy.project_id ?? ""),
+        body: String(legacy.body ?? ""),
+        evidenceRefs,
+        eventId: legacy.event_id ? String(legacy.event_id) : undefined,
+        jobId: legacy.job_id ? String(legacy.job_id) : undefined,
+        deploymentId: legacy.deployment_id ? String(legacy.deployment_id) : undefined,
+        sampleManagerVersion: legacy.samplemanager_version ? String(legacy.samplemanager_version) : undefined,
+        solution: legacy.solution ? String(legacy.solution) : undefined,
+        module: legacy.module ? String(legacy.module) : undefined,
+        environment: legacy.environment ? String(legacy.environment) : undefined,
+        occurredAt: legacy.created_at ? String(legacy.created_at) : undefined,
+        updatedAt: legacy.updated_at ? String(legacy.updated_at) : undefined,
+      });
+      // The projection is immutable-source compatible: only the derived card
+      // is written, while the original Raw Event body remains unchanged.
+      this.saveCandidateCard(card);
+      return card;
+    }
     const parseArray = (value: unknown): unknown[] => { try { const parsed = JSON.parse(String(value ?? "[]")); return Array.isArray(parsed) ? parsed : []; } catch { return []; } };
     return {
       candidateId: String(row.candidate_id), summary: String(row.summary), problemStatement: String(row.problem_statement), facts: parseArray(row.facts_json) as Array<Record<string, unknown>>, symptoms: parseArray(row.symptoms_json).filter((item): item is string => typeof item === "string"), hypothesis: String(row.hypothesis), verificationPlan: parseArray(row.verification_plan_json).filter((item): item is string => typeof item === "string"), verifiedConclusion: row.verified_conclusion ? String(row.verified_conclusion) : undefined, actions: parseArray(row.actions_json).filter((item): item is string => typeof item === "string"), verification: parseArray(row.verification_json).filter((item): item is string => typeof item === "string"), applicability: row.applicability ? String(row.applicability) : undefined, tags: parseArray(row.tags_json).filter((item): item is string => typeof item === "string"), confidence: row.confidence === null || row.confidence === undefined ? undefined : Number(row.confidence), generatedBy: String(row.generated_by), inferenceStatus: row.inference_status as CandidateCard["inferenceStatus"], updatedAt: String(row.updated_at),

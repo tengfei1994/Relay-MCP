@@ -7,9 +7,19 @@ export interface ProductDocumentImportOptions {
   root: string; product?: string; sampleManagerVersion: string; solution?: string; module?: string; language?: string; authority?: string; documentFamilyId?: string;
 }
 export interface ProductDocumentImportReport { runId: string; imported: number; unchanged: number; failed: number; warnings: string[]; documents: string[]; }
+type InferredMetadata = { module?: string; documentType: string; documentFamilyId: string; confidence: number; reasons: string[] };
 function files(root: string): string[] { const out: string[] = []; for (const entry of readdirSync(root)) { const path = join(root, entry); const stat = statSync(path); if (stat.isDirectory()) out.push(...files(path)); else if ([".md", ".markdown", ".html", ".htm", ".pdf"].includes(extname(entry).toLowerCase())) out.push(path); } return out; }
 function title(path: string, body: string): string { const heading = body.match(/^#\s+(.+)$/m)?.[1]?.trim(); return heading || path.split(/[\\/]/).pop()!.replace(/\.[^.]+$/, ""); }
 function sections(body: string): Array<{ key: string; title: string; text: string }> { const matches = [...body.matchAll(/^(#{1,6})\s+(.+)$/gm)]; return matches.map((m, i) => ({ key: `${m[1].length}:${m[2].trim().toLowerCase().replace(/\W+/g, "-")}`, title: m[2].trim(), text: body.slice(m.index! + m[0].length, matches[i + 1]?.index ?? body.length).trim() })); }
+function inferMetadata(path: string, body: string, explicitFamily?: string): InferredMetadata {
+  const normalized = `${path}\n${body.slice(0, 4000)}`.toLowerCase();
+  const module = ["samplemanager", "lims", "stability", "inventory", "quality", "environmental", "process", "security"].find((candidate) => normalized.includes(candidate));
+  const documentType = path.toLowerCase().endsWith(".pdf") ? "pdf" : /release\s*note|what's\s*new|changelog/.test(normalized) ? "release_notes" : /install|upgrade|deployment/.test(normalized) ? "deployment_guide" : /api|reference|command/.test(normalized) ? "reference" : "guide";
+  const family = explicitFamily ?? `family-${path.replace(/\.[^.]+$/, "").replace(/(?:[-_])?v?\d+(?:\.\d+)+$/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  const reasons = [`document type inferred from ${path.toLowerCase().endsWith(".pdf") ? "file extension" : "filename and content"}`];
+  if (module) reasons.push(`module keyword '${module}' found in source`); else reasons.push("no known module keyword found");
+  return { module, documentType, documentFamilyId: family, confidence: module ? 0.82 : 0.58, reasons };
+}
 export function importProductDocuments(store: KnowledgeStore, options: ProductDocumentImportOptions): ProductDocumentImportReport {
   const runId = `product-docs-${createHash("sha256").update(JSON.stringify(options)).digest("hex").slice(0, 16)}`;
   const report: ProductDocumentImportReport = { runId, imported: 0, unchanged: 0, failed: 0, warnings: [], documents: [] };
@@ -19,11 +29,11 @@ export function importProductDocuments(store: KnowledgeStore, options: ProductDo
     try {
       const ext = extname(path).toLowerCase(); const raw = readFileSync(path); const body = ext === ".pdf" ? `[PDF source: ${relative(options.root, path)}]` : raw.toString("utf8");
       const hash = createHash("sha256").update(raw).digest("hex"); const locator = `product-doc:${relative(options.root, path).replaceAll("\\", "/")}`;
-      const id = `product-document-${hash}`; const family = options.documentFamilyId ?? `family-${relative(options.root, path).replace(/\.[^.]+$/, "").replace(/(?:[-_])?v?\d+(?:\.\d+)+$/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+      const id = `product-document-${hash}`; const inferred = inferMetadata(relative(options.root, path), body, options.documentFamilyId);
       const existing = store.db.prepare("SELECT source_sha256 FROM knowledge_product_documents WHERE id = ?").get(id) as { source_sha256?: string } | undefined;
       if (existing) { report.unchanged++; report.documents.push(id); continue; }
-      store.upsertDocument({ id, kind: "product_document", title: title(path, body), body, lifecycle: "approved", projectNameSnapshot: options.product, sampleManagerVersion: options.sampleManagerVersion, solution: options.solution, module: options.module, visibility: "global", scopeType: "version", scopeKey: options.sampleManagerVersion, locator, sha256: hash, createdAt: now, updatedAt: now });
-      store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,sections_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET sections_json=excluded.sections_json,updated_at=excluded.updated_at`).run(id, family, ext === ".pdf" ? "pdf" : ext === ".html" || ext === ".htm" ? "html" : "markdown", options.language ?? "en", options.authority ?? "official", relative(options.root, path), hash, options.sampleManagerVersion, JSON.stringify(sections(body)), now, now);
+      store.upsertDocument({ id, kind: "product_document", title: title(path, body), body, lifecycle: "approved", projectNameSnapshot: options.product, sampleManagerVersion: options.sampleManagerVersion, solution: options.solution, module: options.module ?? inferred.module, visibility: "global", scopeType: "version", scopeKey: options.sampleManagerVersion, locator, sha256: hash, createdAt: now, updatedAt: now });
+      store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,sections_json,metadata_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET sections_json=excluded.sections_json,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at`).run(id, inferred.documentFamilyId, inferred.documentType, options.language ?? "en", options.authority ?? "official", relative(options.root, path), hash, options.sampleManagerVersion, JSON.stringify(sections(body)), JSON.stringify({ ...inferred, module: options.module ?? inferred.module, explicit: { product: options.product, solution: options.solution, module: options.module, language: options.language, authority: options.authority } }), now, now);
       report.imported++; report.documents.push(id);
     } catch (error) { report.failed++; report.warnings.push(`${path}: ${error instanceof Error ? error.message : String(error)}`); }
   }

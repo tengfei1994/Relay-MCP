@@ -19,6 +19,7 @@ import { KNOWLEDGE_CANDIDATE_CARD_MIGRATION } from "./migrations/012-candidate-c
 import { KNOWLEDGE_SCOPE_MIGRATION } from "./migrations/013-knowledge-scope.js";
 import { DETERMINISTIC_COMPILER_MIGRATION } from "./migrations/014-deterministic-compiler.js";
 import { PRODUCT_DOCUMENTS_MIGRATION } from "./migrations/015-product-documents.js";
+import { PRODUCT_DOCUMENT_GOVERNANCE_MIGRATION } from "./migrations/016-product-document-governance.js";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
 import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type CandidateCard, type KnowledgeDocument, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeBinding, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
@@ -48,6 +49,7 @@ const KNOWLEDGE_MIGRATIONS = [
   KNOWLEDGE_SCOPE_MIGRATION,
   DETERMINISTIC_COMPILER_MIGRATION,
   PRODUCT_DOCUMENTS_MIGRATION,
+  PRODUCT_DOCUMENT_GOVERNANCE_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(

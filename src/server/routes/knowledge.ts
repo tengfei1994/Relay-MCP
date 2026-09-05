@@ -62,6 +62,9 @@ function safeDocument(row: KnowledgeRow, includeBody = true, card?: ReturnType<R
     language: row.language ? String(row.language) : undefined,
     authority: row.authority ? String(row.authority) : undefined,
     sourcePath: row.source_path ? String(row.source_path) : undefined,
+    metadata: row.metadata_json ? safeRows(() => JSON.parse(String(row.metadata_json)), undefined) : undefined,
+    diffReviewStatus: row.diff_review_status ? String(row.diff_review_status) : undefined,
+    diffReviewedAt: row.diff_reviewed_at ? String(row.diff_reviewed_at) : undefined,
     eventId: row.event_id ? String(row.event_id) : undefined,
     sourceCandidateId: row.source_candidate_id ? String(row.source_candidate_id) : undefined,
     jobId: row.job_id ? String(row.job_id) : undefined,
@@ -544,13 +547,13 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     add("d.samplemanager_version", "sampleManagerVersion"); add("d.solution", "solution"); add("d.module", "module"); add("p.document_type", "documentType"); add("p.language", "language"); add("p.authority", "authority"); add("p.document_family_id", "documentFamilyId");
     const store = getKnowledgeStore();
     if (!store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id = ? AND can_read = 1 LIMIT 1").get(request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
-    const rows = store.db.prepare(`SELECT d.id,d.title,d.body,d.lifecycle,d.project_id,d.project_name_snapshot,d.samplemanager_version,d.solution,d.module,d.environment,d.source_locator,d.source_commit,d.source_sha256,d.created_at,d.updated_at,p.document_family_id,p.document_type,p.language,p.authority,p.source_path,p.version,p.sections_json FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id = d.id WHERE ${where.join(" AND ")} ORDER BY d.updated_at DESC LIMIT ?`).all(...params, limit) as KnowledgeRow[];
+    const rows = store.db.prepare(`SELECT d.id,d.title,d.body,d.lifecycle,d.project_id,d.project_name_snapshot,d.samplemanager_version,d.solution,d.module,d.environment,d.source_locator,d.source_commit,d.source_sha256,d.created_at,d.updated_at,p.document_family_id,p.document_type,p.language,p.authority,p.source_path,p.version,p.sections_json,p.metadata_json,p.diff_review_status,p.diff_reviewed_at FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id = d.id WHERE ${where.join(" AND ")} ORDER BY d.updated_at DESC LIMIT ?`).all(...params, limit) as KnowledgeRow[];
     return reply.send({ documents: rows.map((row) => safeDocument(row, false, undefined, store.getScopeBinding(String(row.id)))) });
   });
 
   app.get("/api/knowledge/product-docs/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
     const id = String((request.params as { id: string }).id); const store = getKnowledgeStore();
-    const row = store.db.prepare("SELECT d.*,p.document_family_id,p.document_type,p.language,p.authority,p.source_path,p.version,p.sections_json FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id = d.id WHERE d.id = ?").get(id) as KnowledgeRow | undefined;
+    const row = store.db.prepare("SELECT d.*,p.document_family_id,p.document_type,p.language,p.authority,p.source_path,p.version,p.sections_json,p.metadata_json,p.diff_review_status,p.diff_reviewed_at FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id = d.id WHERE d.id = ?").get(id) as KnowledgeRow | undefined;
     if (!row) return reply.status(404).send({ error: "Product document not found" });
     if (!store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id = ? AND can_read = 1 LIMIT 1").get(request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     return reply.send({ document: safeDocument(row, true, undefined, store.getScopeBinding(id)), sections: (() => { try { return JSON.parse(String(row.sections_json ?? "[]")); } catch { return []; } })() });
@@ -561,6 +564,23 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     const store = getKnowledgeStore(); const exists = store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_product_documents WHERE id IN (?,?)").get(id, against) as { count?: number }; if (Number(exists.count) !== 2) return reply.status(404).send({ error: "Product document not found" });
     if (!store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id = ? AND can_read = 1 LIMIT 1").get(request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     return reply.send(productDocumentDiff(store, id, against));
+  });
+
+  app.post("/api/knowledge/product-docs/:id/diff-review", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const id = String((request.params as { id: string }).id);
+    const body = z.object({ against: z.string().min(1), status: z.enum(["accepted", "rejected", "needs_review"]), reason: z.string().trim().min(1).max(2000) }).safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: "Invalid diff review", details: body.error.issues });
+    try {
+      const store = getKnowledgeStore();
+      const row = store.db.prepare("SELECT project_id FROM knowledge_documents WHERE id = ? AND kind = 'product_document'").get(id) as { project_id?: string } | undefined;
+      if (!row) return reply.status(404).send({ error: "Product document not found" });
+      const acl = row.project_id ? store.db.prepare("SELECT can_review FROM knowledge_acl WHERE project_id = ? AND user_id = ?").get(row.project_id, request.user.id) as { can_review?: number } | undefined : undefined;
+      if (!request.user.isAdmin && acl?.can_review !== 1) return reply.status(403).send({ error: "Reviewer access required" });
+      const now = new Date().toISOString();
+      store.db.prepare("UPDATE knowledge_product_documents SET diff_review_status = ?, diff_reviewed_by = ?, diff_reviewed_at = ?, updated_at = ? WHERE id = ?").run(body.data.status, request.user.id, now, now, id);
+      store.audit({ actorId: request.user.id, projectId: row.project_id, action: "knowledge.product_document.diff_review", entityType: "product_document", entityId: id, details: { against: body.data.against, status: body.data.status, reason: body.data.reason } });
+      return reply.send({ ok: true, id, against: body.data.against, status: body.data.status, reviewedAt: now });
+    } catch (error) { return sendError(reply, error, 400); }
   });
 }
 

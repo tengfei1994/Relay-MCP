@@ -1,0 +1,4 @@
+-- Executable copy is 001-initial.ts so it ships with the TypeScript build.
+-- This file documents the explicit initial Knowledge Plane migration.
+-- Tables: schema_migrations, relay_domain_events, knowledge_outbox,
+-- knowledge_consumer_checkpoint.

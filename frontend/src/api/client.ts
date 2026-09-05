@@ -7,12 +7,14 @@ function getToken() {
 async function request<T>(
   method: string,
   path: string,
-  body?: unknown
+  body?: unknown,
+  extraHeaders?: Record<string, string>
 ): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
+  Object.assign(headers, extraHeaders ?? {});
 
   const res = await fetch(`${BASE}${path}`, {
     method,
@@ -53,6 +55,42 @@ export const api = {
     request<{ path: string; entries: any[] }>(
       "GET", `/projects/${id}/files?path=${encodeURIComponent(path)}`
     ),
+
+  // Knowledge governance plane
+  knowledgeSearch: (params: { projectId: number; q: string; limit?: number; sampleManagerVersion?: string; solution?: string; module?: string; environment?: string; kinds?: string; includeDeprecated?: boolean }) => {
+    const query = new URLSearchParams({ projectId: String(params.projectId), q: params.q });
+    for (const key of ["limit", "sampleManagerVersion", "solution", "module", "environment", "kinds", "includeDeprecated"] as const) {
+      const value = params[key];
+      if (value !== undefined && value !== "") query.set(key, String(value));
+    }
+    return request<{ retrievalRunId: string; query: string; degraded: boolean; results: any[] }>("GET", `/knowledge/search?${query.toString()}`);
+  },
+  knowledgeDocument: (id: string) => request<{ document: any; evidenceRefs: string[]; reviews: any[] }>("GET", `/knowledge/documents/${encodeURIComponent(id)}`),
+  knowledgeEvidence: (id: string) => request<{ evidence: any }>("GET", `/knowledge/evidence/${encodeURIComponent(id)}`),
+  knowledgeEvidenceSession: (id: string, maxBytes?: number) => request<{ sessionId: string; evidenceId: string; expiresAt: string; maxBytes: number; mimeType: string; sizeBytes: number; sha256: string }>("POST", `/knowledge/evidence/${encodeURIComponent(id)}/download-session`, maxBytes ? { maxBytes } : {}),
+  knowledgeEvidenceContentUrl: (id: string, sessionId: string) => `/api/knowledge/evidence/${encodeURIComponent(id)}/content?sessionId=${encodeURIComponent(sessionId)}`,
+  knowledgeRelations: (params: { projectId: number; objectId?: string; relationType?: string; verifiedOnly?: boolean; limit?: number }) => {
+    const query = new URLSearchParams({ projectId: String(params.projectId) });
+    for (const key of ["objectId", "relationType", "verifiedOnly", "limit"] as const) {
+      const value = params[key];
+      if (value !== undefined && value !== "") query.set(key, String(value));
+    }
+    return request<{ relations: any[] }>("GET", `/knowledge/relations?${query.toString()}`);
+  },
+  knowledgeImpact: (params: { projectId: number; objectId: string; maxDepth?: number; direction?: "upstream" | "downstream" | "both"; verifiedOnly?: boolean }) => {
+    const query = new URLSearchParams({ projectId: String(params.projectId), objectId: params.objectId });
+    for (const key of ["maxDepth", "direction", "verifiedOnly"] as const) {
+      const value = params[key];
+      if (value !== undefined && value !== "") query.set(key, String(value));
+    }
+    return request<{ root: string; nodes: string[]; relations: any[] }>("GET", `/knowledge/relations/impact?${query.toString()}`);
+  },
+  knowledgeCandidates: (projectId: number, status?: string) => request<{ candidates: any[]; page: any }>("GET", `/knowledge/candidates?projectId=${projectId}${status ? `&status=${encodeURIComponent(status)}` : ""}`),
+  knowledgeIndexStatus: (projectId: number) => request<{ projectId: string; stale: boolean; counts: any[]; lastIngest?: any }>("GET", `/knowledge/index-status?projectId=${projectId}`),
+  knowledgeIngest: (projectId: number, casebookRoot?: string, contextFiles?: string[]) => request<any>("POST", "/knowledge/ingest", { projectId, casebookRoot, contextFiles }),
+  knowledgeReindex: (projectId: number) => request<any>("POST", "/knowledge/reindex", { projectId }),
+  knowledgeReview: (body: Record<string, unknown>, idempotencyKey?: string) => request<any>("POST", "/knowledge/reviews", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  knowledgeFeedback: (body: Record<string, unknown>, idempotencyKey?: string) => request<any>("POST", "/knowledge/feedback", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
 
   // Project-Server links
   listProjectServers: (projectId: number) =>

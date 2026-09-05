@@ -1,0 +1,58 @@
+{
+  "format": "relay-knowledge-fts-benchmark/v1",
+  "recordedAt": "2026-09-05T01:47:01.977Z",
+  "hardware": {
+    "platform": "win32",
+    "release": "10.0.26200",
+    "arch": "x64",
+    "cpus": [
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H",
+      "12th Gen Intel(R) Core(TM) i7-12800H"
+    ],
+    "cpuCount": 20,
+    "totalMemoryBytes": 16834945024,
+    "freeMemoryBytes": 1299439616,
+    "node": "v26.7.0"
+  },
+  "data": {
+    "chunkCount": 100000,
+    "index": "SQLite FTS5 knowledge_fts",
+    "cacheState": "hot: each query was executed once before timing",
+    "repetitionsPerQuery": 20
+  },
+  "queryTypes": [
+    "english",
+    "chinese",
+    "object-name",
+    "path",
+    "version"
+  ],
+  "latencyMs": {
+    "p50": 0.28650000000016007,
+    "p95": 0.3713999999999942,
+    "max": 0.6489000000001397,
+    "samples": 100
+  },
+  "threshold": {
+    "maxP95Ms": 200,
+    "passed": true
+  }
+}

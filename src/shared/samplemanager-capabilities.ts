@@ -222,6 +222,15 @@ export const SAMPLEMANAGER_ENTITY_CATALOG: SampleManagerEntityCatalogEntry[] = [
       { id: "schema", label: "Schema", status: "ready", readOnly: true, description: "Inspect SQL Server columns, keys, identity, defaults, and physical mappings.", plannedTool: "samplemanager_table_schema", evidenceKinds: ["schema", "sql"] },
     ],
   },
+  {
+    id: "diagnostic",
+    label: "Diagnostics",
+    description: "Read-only knowledge-assisted diagnosis and deterministic impact analysis.",
+    inspectors: [
+      { id: "read_only_diagnosis", label: "Read-only Diagnosis", status: "ready", readOnly: true, description: "Combine version-scoped Knowledge evidence with non-mutating SampleManager checks.", plannedTool: "samplemanager_diagnose", relatedEntities: ["form_task", "deployment", "instance"], evidenceKinds: ["sql", "schema", "artifact", "runtime", "logs"] },
+      { id: "impact_analysis", label: "Impact Analysis", status: "ready", readOnly: true, description: "Traverse source-backed Form, Task, Assembly, Menu, Control, Property, and Cache relations.", plannedTool: "samplemanager_impact_analysis", relatedEntities: ["form_task", "deployment"], evidenceKinds: ["schema", "artifact"] },
+    ],
+  },
 ];
 
 export const BUILTIN_SAMPLEMANAGER_ADAPTERS: SampleManagerAdapter[] = [

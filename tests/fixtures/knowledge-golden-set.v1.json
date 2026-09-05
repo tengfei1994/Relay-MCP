@@ -1,0 +1,10 @@
+{
+  "format": "relay-knowledge-golden-set/v1",
+  "version": "2026.09.05",
+  "description": "Seed regression set. Add real reviewed SampleManager cases with an evidence locator before release.",
+  "queries": [
+    { "id": "en-cache", "query": "FormsBin stale cache", "projectId": "p1", "userId": 7, "sampleManagerVersion": "21.1", "relevantIds": ["cache-211"], "forbiddenIds": ["cache-20", "cache-deprecated", "cache-other-project"] },
+    { "id": "zh-form", "query": "仪器保存 静态必填", "projectId": "p1", "userId": 7, "sampleManagerVersion": "21.1", "relevantIds": ["instrument-211"], "forbiddenIds": ["instrument-20", "instrument-deprecated", "instrument-other-project"] },
+    { "id": "path-object", "query": "C:\\ProgramData\\Thermo\\SampleManager FormsBin", "projectId": "p1", "userId": 7, "sampleManagerVersion": "21.1", "relevantIds": ["cache-211"], "forbiddenIds": ["cache-20", "cache-deprecated", "cache-other-project"] }
+  ]
+}

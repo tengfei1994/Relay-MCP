@@ -376,7 +376,7 @@ $items | ConvertTo-Json -Compress
       const defaultExclude = ["node_modules", ".git", "dist", ".env", "*.log"];
       const excludes = new Set([...defaultExclude, ...(options.exclude ?? [])]);
 
-      const status = await ssh.putDirectory(localDir, remoteDir, {
+      await ssh.putDirectory(localDir, remoteDir, {
         recursive: true,
         concurrency: 5,
         validate: (itemPath) => {

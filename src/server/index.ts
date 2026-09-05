@@ -19,6 +19,8 @@ import { agentRoutes } from "./routes/agents.js";
 import { agentTokenRoutes } from "./routes/agent-tokens.js";
 import { instanceRoutes } from "./routes/instances.js";
 import { toolRoutes } from "./routes/tools.js";
+import { knowledgeRoutes } from "./routes/knowledge.js";
+import { requireJwtSecret } from "../shared/auth-secret.js";
 
 declare module "@fastify/jwt" {
   interface FastifyJWT {
@@ -71,7 +73,7 @@ await app.register(fastifyCors, {
 });
 
 await app.register(fastifyJwt, {
-  secret: process.env.JWT_SECRET ?? "dev-secret-change-in-production",
+  secret: requireJwtSecret("relay-web"),
 });
 
 // Auth decorator
@@ -113,6 +115,7 @@ await app.register(agentRoutes);
 await app.register(agentTokenRoutes);
 await app.register(instanceRoutes);
 await app.register(toolRoutes);
+await app.register(knowledgeRoutes);
 
 // Health check
 app.get("/api/health", async () => ({

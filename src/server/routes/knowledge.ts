@@ -1,0 +1,385 @@
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { and, eq } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import { db } from "../db/index.js";
+import { projects } from "../db/schema.js";
+import { getKnowledgeStore } from "../knowledge-context.js";
+import { EvidenceStore } from "../../knowledge/evidence-store.js";
+import { importCasebook, importContextFacts } from "../../knowledge/importer.js";
+import { analyzeRelationImpact, queryRelations } from "../../knowledge/relations.js";
+import { searchKnowledge } from "../../knowledge/retriever.js";
+import {
+  acceptCandidate,
+  deprecateDocument,
+  editDocument,
+  mergeCandidates,
+  promoteCaseToPattern,
+  proposePlaybook,
+  rejectCandidate,
+  reviewDocument,
+} from "../../knowledge/review-service.js";
+
+const projectIdSchema = z.coerce.number().int().positive();
+const MAX_INLINE_EVIDENCE_BYTES = 5 * 1024 * 1024;
+const DEFAULT_DOWNLOAD_TTL_MS = 5 * 60 * 1000;
+
+type KnowledgeRow = Record<string, unknown>;
+
+function parseBoundedInt(raw: unknown, fallback: number, min: number, max: number): number {
+  const parsed = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(parsed)));
+}
+
+function queryValue(query: Record<string, unknown>, key: string): string | undefined {
+  const value = query[key];
+  if (Array.isArray(value)) return value[0] === undefined ? undefined : String(value[0]);
+  return value === undefined || value === null || String(value).trim() === "" ? undefined : String(value);
+}
+
+function safeDocument(row: KnowledgeRow, includeBody = true): Record<string, unknown> {
+  return {
+    id: String(row.id),
+    kind: String(row.kind),
+    title: String(row.title ?? ""),
+    ...(includeBody ? { body: String(row.body ?? "") } : { summary: String(row.body ?? "").slice(0, 500) }),
+    lifecycle: String(row.lifecycle),
+    projectId: row.project_id === null || row.project_id === undefined ? undefined : String(row.project_id),
+    projectNameSnapshot: row.project_name_snapshot ? String(row.project_name_snapshot) : undefined,
+    sampleManagerVersion: row.samplemanager_version ? String(row.samplemanager_version) : undefined,
+    solution: row.solution ? String(row.solution) : undefined,
+    module: row.module ? String(row.module) : undefined,
+    environment: row.environment ? String(row.environment) : undefined,
+    sourceLocator: String(row.source_locator ?? ""),
+    sourceCommit: row.source_commit ? String(row.source_commit) : undefined,
+    sourceSha256: row.source_sha256 ? String(row.source_sha256) : undefined,
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+function safeEvidence(value: Record<string, unknown>): Record<string, unknown> {
+  // storagePath is an implementation detail and must never be sent to a web client.
+  return {
+    id: value.id,
+    sha256: value.sha256,
+    mimeType: value.mimeType,
+    sizeBytes: value.sizeBytes,
+    sourceKind: value.sourceKind,
+    projectId: value.projectId,
+    locator: value.locator,
+    retention: value.retention,
+    createdAt: value.createdAt,
+    deletedAt: value.deletedAt,
+  };
+}
+
+function resolveProject(userId: number, raw: unknown) {
+  const parsed = projectIdSchema.safeParse(raw);
+  if (!parsed.success) throw new Error("projectId is required");
+  const project = db.select().from(projects).where(and(eq(projects.id, parsed.data), eq(projects.userId, userId))).get();
+  if (!project) throw new Error("Project not found");
+  const store = getKnowledgeStore();
+  // The control plane remains the source of identity. The Knowledge ACL is a
+  // mirrored grant and never broadens the user's project ownership.
+  store.grantAcl(String(project.id), userId, true);
+  return { project, store, projectId: String(project.id) };
+}
+
+/** Resolve a shared/deduplicated Evidence row without exposing other projects. */
+function resolveEvidenceProject(userId: number, store: ReturnType<typeof getKnowledgeStore>, evidenceId: string): string {
+  const row = store.db.prepare("SELECT project_id FROM knowledge_evidence WHERE id = ? AND deleted_at IS NULL").get(evidenceId) as { project_id?: string | null } | undefined;
+  if (!row) throw new Error("Evidence not found");
+  const acl = store.db.prepare("SELECT project_id FROM knowledge_evidence_acl WHERE evidence_id = ?").all(evidenceId) as Array<{ project_id: string }>;
+  const candidates = [...new Set([row.project_id ?? undefined, ...acl.map((item) => item.project_id)].filter((value): value is string => Boolean(value)))];
+  for (const projectId of candidates) {
+    const numeric = Number(projectId);
+    if (Number.isSafeInteger(numeric) && numeric > 0) {
+      try { resolveProject(userId, numeric); return projectId; } catch { /* try another shared project */ }
+    }
+    if (store.canRead(userId, projectId)) return projectId;
+  }
+  throw new Error("Evidence not found");
+}
+
+function idempotencyKey(req: FastifyRequest): string | undefined {
+  const raw = req.headers["idempotency-key"];
+  const key = Array.isArray(raw) ? raw[0] : raw;
+  if (key === undefined) return undefined;
+  const value = String(key).trim();
+  if (!value || value.length > 200 || /[\r\n]/.test(value)) throw new Error("Idempotency-Key must be 1-200 safe characters");
+  return value;
+}
+
+function replayOrRun<T>(store: ReturnType<typeof getKnowledgeStore>, userId: number, operation: string, key: string | undefined, work: () => T): T {
+  if (!key) return work();
+  const previous = store.db.prepare("SELECT response_json FROM knowledge_api_idempotency WHERE user_id = ? AND operation = ? AND idempotency_key = ?").get(userId, operation, key) as { response_json?: string } | undefined;
+  if (previous?.response_json) return JSON.parse(previous.response_json) as T;
+  const result = work();
+  try {
+    store.db.prepare("INSERT INTO knowledge_api_idempotency(user_id,operation,idempotency_key,response_json,created_at) VALUES (?,?,?,?,?)")
+      .run(userId, operation, key, JSON.stringify(result), new Date().toISOString());
+  } catch (error) {
+    // A concurrent identical request may have won the unique race. Return its
+    // durable response instead of executing a mutation twice.
+    const concurrent = store.db.prepare("SELECT response_json FROM knowledge_api_idempotency WHERE user_id = ? AND operation = ? AND idempotency_key = ?").get(userId, operation, key) as { response_json?: string } | undefined;
+    if (concurrent?.response_json) return JSON.parse(concurrent.response_json) as T;
+    throw error;
+  }
+  return result;
+}
+
+function sendError(reply: FastifyReply, error: unknown, status = 400) {
+  return reply.status(status).send({ error: error instanceof Error ? error.message : String(error) });
+}
+
+function parseKinds(raw: unknown): Array<"candidate" | "case" | "pattern" | "playbook" | "fact"> | undefined {
+  const value = raw === undefined || raw === null ? undefined : String(raw);
+  if (!value) return undefined;
+  const allowed = new Set(["candidate", "case", "pattern", "playbook", "fact"]);
+  const kinds = value.split(",").map((item) => item.trim()).filter((item): item is "candidate" | "case" | "pattern" | "playbook" | "fact" => allowed.has(item));
+  return kinds.length ? kinds : undefined;
+}
+
+function parseBoolean(raw: unknown): boolean | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  return raw === true || String(raw).toLowerCase() === "true";
+}
+
+function loadDocumentForUser(store: ReturnType<typeof getKnowledgeStore>, userId: number, documentId: string): KnowledgeRow {
+  const row = store.db.prepare("SELECT * FROM knowledge_documents WHERE id = ?").get(documentId) as KnowledgeRow | undefined;
+  if (!row || !row.project_id || !store.canRead(userId, String(row.project_id))) throw new Error("Knowledge document not found");
+  const numericProject = Number(row.project_id);
+  if (Number.isSafeInteger(numericProject) && numericProject > 0) {
+    try { resolveProject(userId, numericProject); } catch { throw new Error("Knowledge document not found"); }
+  }
+  return row;
+}
+
+export async function knowledgeRoutes(app: FastifyInstance) {
+  app.get("/api/knowledge/search", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    try {
+      const { store, projectId } = resolveProject(request.user.id, query.projectId);
+      const result = await searchKnowledge(store, {
+        userId: request.user.id,
+        projectId,
+        query: String(query.q ?? query.query ?? ""),
+        limit: parseBoundedInt(query.limit, 20, 1, 100),
+        sampleManagerVersion: queryValue(query, "sampleManagerVersion"),
+        solution: queryValue(query, "solution"),
+        module: queryValue(query, "module"),
+        environment: queryValue(query, "environment"),
+        kinds: parseKinds(query.kinds),
+        includeDeprecated: parseBoolean(query.includeDeprecated) ?? false,
+      });
+      return reply.send(result);
+    } catch (error) { return sendError(reply, error, error instanceof Error && error.message === "Project not found" ? 404 : 400); }
+  });
+
+  app.get("/api/knowledge/documents/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    try {
+      const store = getKnowledgeStore();
+      const row = loadDocumentForUser(store, request.user.id, id);
+      const evidenceRefs = store.db.prepare("SELECT evidence_id FROM knowledge_entity_evidence WHERE entity_id = ? ORDER BY created_at").all(id) as Array<{ evidence_id: string }>;
+      const reviews = store.db.prepare("SELECT id,reviewer_id,action,reason,before_json,after_json,created_at FROM knowledge_reviews WHERE entity_id = ? ORDER BY created_at DESC").all(id);
+      return reply.send({ document: safeDocument(row), evidenceRefs: evidenceRefs.map((item) => item.evidence_id), reviews });
+    } catch (error) { return sendError(reply, error, 404); }
+  });
+
+  app.get("/api/knowledge/evidence/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const store = getKnowledgeStore();
+    try {
+      resolveEvidenceProject(request.user.id, store, id);
+      const evidence = new EvidenceStore(store, store.evidenceRoot ?? "./data/evidence").metadata(request.user.id, id);
+      return reply.send({ evidence: safeEvidence(evidence as unknown as Record<string, unknown>) });
+    } catch { return reply.status(404).send({ error: "Evidence not found" }); }
+  });
+
+  app.post("/api/knowledge/evidence/:id/download-session", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = z.object({ maxBytes: z.number().int().positive().max(100 * 1024 * 1024).optional() }).safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid download session request" });
+    const store = getKnowledgeStore();
+    try {
+      const projectId = resolveEvidenceProject(request.user.id, store, id);
+      const evidence = new EvidenceStore(store, store.evidenceRoot ?? "./data/evidence").metadata(request.user.id, id);
+      const maxBytes = parsed.data.maxBytes ?? 100 * 1024 * 1024;
+      if (evidence.sizeBytes > maxBytes) return reply.status(413).send({ error: "Evidence exceeds requested download limit", sizeBytes: evidence.sizeBytes, maxBytes });
+      const sessionId = `knowledge-download-${randomUUID()}`;
+      const expiresAt = new Date(Date.now() + DEFAULT_DOWNLOAD_TTL_MS).toISOString();
+      store.db.prepare("INSERT INTO knowledge_download_sessions(id,evidence_id,user_id,project_id,expires_at,max_bytes,created_at) VALUES (?,?,?,?,?,?,?)")
+        .run(sessionId, id, request.user.id, projectId, expiresAt, maxBytes, new Date().toISOString());
+      store.audit({ actorId: request.user.id, projectId, action: "evidence.download_session_created", entityType: "evidence", entityId: id, details: { sessionId, expiresAt, maxBytes } });
+      return reply.status(201).send({ sessionId, evidenceId: id, expiresAt, maxBytes, mimeType: evidence.mimeType, sizeBytes: evidence.sizeBytes, sha256: evidence.sha256 });
+    } catch (error) { return sendError(reply, error, 404); }
+  });
+
+  app.get("/api/knowledge/evidence/:id/content", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const store = getKnowledgeStore();
+    try {
+      const evidenceStore = new EvidenceStore(store, store.evidenceRoot ?? "./data/evidence");
+      const header = request.headers["x-knowledge-download-session"];
+      const query = request.query as Record<string, unknown>;
+      const sessionId = (Array.isArray(header) ? header[0] : header) ?? query.sessionId;
+      const row = store.db.prepare("SELECT mime_type,size_bytes FROM knowledge_evidence WHERE id = ? AND deleted_at IS NULL").get(id) as { mime_type?: string; size_bytes?: number } | undefined;
+      if (!row) return reply.status(404).send({ error: "Evidence not found" });
+      let maxBytes = MAX_INLINE_EVIDENCE_BYTES;
+      if (sessionId) {
+        const session = store.db.prepare("SELECT id,max_bytes FROM knowledge_download_sessions WHERE id = ? AND evidence_id = ? AND user_id = ? AND used_at IS NULL AND expires_at > ?").get(String(sessionId), id, request.user.id, new Date().toISOString()) as { id: string; max_bytes: number } | undefined;
+        if (!session) return reply.status(403).send({ error: "Download session is invalid or expired" });
+        maxBytes = Number(session.max_bytes);
+        if (Number(row.size_bytes) > maxBytes) return reply.status(413).send({ error: "Evidence exceeds download session limit" });
+        const consumed = store.db.prepare("UPDATE knowledge_download_sessions SET used_at = ? WHERE id = ? AND used_at IS NULL").run(new Date().toISOString(), session.id);
+        if (consumed.changes !== 1) return reply.status(409).send({ error: "Download session has already been used" });
+      } else if (Number(row.size_bytes) > MAX_INLINE_EVIDENCE_BYTES) {
+        return reply.status(428).send({ error: "Create a download session before reading large Evidence" });
+      }
+      const projectId = resolveEvidenceProject(request.user.id, store, id);
+      const content = evidenceStore.download(request.user.id, id, maxBytes);
+      store.audit({ actorId: request.user.id, projectId, action: "evidence.download_http", entityType: "evidence", entityId: id, details: { bytes: content.length, sessionId: sessionId ?? undefined } });
+      return reply.type(row.mime_type ?? "application/octet-stream").header("Content-Length", String(content.length)).send(content);
+    } catch (error) { return sendError(reply, error, 403); }
+  });
+
+  app.get("/api/knowledge/relations", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    try {
+      const { store, projectId } = resolveProject(request.user.id, query.projectId);
+      return reply.send({ relations: queryRelations(store, { userId: request.user.id, projectId, objectId: queryValue(query, "objectId"), relationType: queryValue(query, "relationType"), verifiedOnly: parseBoolean(query.verifiedOnly) ?? false, limit: parseBoundedInt(query.limit, 100, 1, 500), sampleManagerVersion: queryValue(query, "sampleManagerVersion"), solution: queryValue(query, "solution"), module: queryValue(query, "module"), environment: queryValue(query, "environment") }) });
+    } catch (error) { return sendError(reply, error, 400); }
+  });
+
+  app.get("/api/knowledge/relations/impact", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    try {
+      const { store, projectId } = resolveProject(request.user.id, query.projectId);
+      const requestedDirection = queryValue(query, "direction");
+      const direction = requestedDirection === "upstream" || requestedDirection === "downstream" ? requestedDirection : "both";
+      return reply.send(analyzeRelationImpact(store, { userId: request.user.id, projectId, objectId: queryValue(query, "objectId"), relationType: queryValue(query, "relationType"), verifiedOnly: parseBoolean(query.verifiedOnly) ?? false, limit: parseBoundedInt(query.limit, 500, 1, 500), maxDepth: parseBoundedInt(query.maxDepth, 3, 0, 20), direction }));
+    } catch (error) { return sendError(reply, error, 400); }
+  });
+
+  app.get("/api/knowledge/candidates", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    try {
+      const { store, projectId } = resolveProject(request.user.id, query.projectId);
+      const limit = parseBoundedInt(query.limit, 50, 1, 200); const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000); const status = queryValue(query, "status");
+      const conditions = ["project_id = ?", "kind = 'candidate'"]; const params: unknown[] = [projectId];
+      if (status) { conditions.push("lifecycle = ?"); params.push(status); } else conditions.push("lifecycle <> 'deprecated'");
+      const rows = store.db.prepare(`SELECT * FROM knowledge_documents WHERE ${conditions.join(" AND ")} ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset) as KnowledgeRow[];
+      const total = store.db.prepare(`SELECT COUNT(*) AS count FROM knowledge_documents WHERE ${conditions.join(" AND ")}`).get(...params) as { count?: number };
+      return reply.send({ candidates: rows.map((row) => safeDocument(row, false)), page: { limit, offset, total: Number(total.count ?? 0) } });
+    } catch (error) { return sendError(reply, error, 400); }
+  });
+
+  app.get("/api/knowledge/reviews", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    try {
+      const { store, projectId } = resolveProject(request.user.id, query.projectId); const limit = parseBoundedInt(query.limit, 100, 1, 500); const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
+      const rows = store.db.prepare(`SELECT r.id,r.document_id,r.entity_type,r.entity_id,r.reviewer_id,r.action,r.reason,r.before_json,r.after_json,r.created_at FROM knowledge_reviews r JOIN knowledge_documents d ON d.id = r.document_id WHERE d.project_id = ? ORDER BY r.created_at DESC LIMIT ? OFFSET ?`).all(projectId, limit, offset);
+      return reply.send({ reviews: rows, page: { limit, offset } });
+    } catch (error) { return sendError(reply, error, 400); }
+  });
+
+  app.get("/api/knowledge/feedback", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    try {
+      const { store, projectId } = resolveProject(request.user.id, query.projectId); const limit = parseBoundedInt(query.limit, 100, 1, 500); const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
+      const rows = store.db.prepare(`SELECT f.id,f.document_id,f.entity_id,f.user_id,f.helpful,f.comment,f.created_at FROM knowledge_feedback f JOIN knowledge_documents d ON d.id = f.document_id WHERE d.project_id = ? ORDER BY f.created_at DESC LIMIT ? OFFSET ?`).all(projectId, limit, offset);
+      return reply.send({ feedback: rows, page: { limit, offset } });
+    } catch (error) { return sendError(reply, error, 400); }
+  });
+
+  app.post("/api/knowledge/reviews", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const body = z.object({
+      action: z.enum(["review", "accept", "reject", "edit", "merge", "promote", "deprecate", "playbook_proposal"]).default("review"),
+      documentId: z.string().min(1).optional(), lifecycle: z.enum(["reproduced", "verified", "approved", "deprecated"]).optional(), reason: z.string().trim().min(1).max(2_000),
+      title: z.string().trim().min(1).max(500).optional(), body: z.string().max(100_000).optional(),
+      sourceId: z.string().min(1).optional(), targetId: z.string().min(1).optional(), patternId: z.string().min(1).optional(), patternTitle: z.string().trim().min(1).max(500).optional(), patternBody: z.string().max(100_000).optional(),
+      projectId: z.string().min(1).optional(), playbookId: z.string().min(1).optional(), skillDiff: z.string().max(100_000).optional(),
+    }).safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: "Invalid review", details: body.error.issues });
+    const store = getKnowledgeStore(); const data = body.data;
+    try {
+      const documentId = data.documentId ?? data.sourceId;
+      if (data.action !== "playbook_proposal" && !documentId && data.action !== "merge" && data.action !== "promote") throw new Error("documentId is required");
+      const result = replayOrRun(store, request.user.id, `review:${data.action}`, idempotencyKey(request), () => {
+        if (data.action === "accept") { acceptCandidate(store, request.user.id, documentId!, data.reason); return { ok: true, action: data.action, documentId }; }
+        if (data.action === "reject") { rejectCandidate(store, request.user.id, documentId!, data.reason); return { ok: true, action: data.action, documentId }; }
+        if (data.action === "deprecate") { deprecateDocument(store, request.user.id, documentId!, data.reason); return { ok: true, action: data.action, documentId }; }
+        if (data.action === "edit") return { document: editDocument(store, request.user.id, documentId!, { title: data.title, body: data.body }, data.reason) };
+        if (data.action === "merge") { if (!data.sourceId || !data.targetId) throw new Error("sourceId and targetId are required"); mergeCandidates(store, request.user.id, data.sourceId, data.targetId, data.reason); return { ok: true, action: data.action, sourceId: data.sourceId, targetId: data.targetId }; }
+        if (data.action === "promote") { if (!data.sourceId || !data.patternId || !data.patternTitle) throw new Error("sourceId, patternId and patternTitle are required"); return { document: promoteCaseToPattern(store, request.user.id, data.sourceId, { id: data.patternId, title: data.patternTitle, body: data.patternBody, reason: data.reason }) }; }
+        if (data.action === "playbook_proposal") { if (!data.playbookId || !data.projectId || !data.title || data.body === undefined) throw new Error("playbookId, projectId, title and body are required"); return { document: proposePlaybook(store, request.user.id, { id: data.playbookId, projectId: data.projectId, title: data.title, body: data.body, skillDiff: data.skillDiff, reason: data.reason }) }; }
+        if (!data.lifecycle) throw new Error("lifecycle is required for a review action");
+        reviewDocument(store, request.user.id, documentId!, data.lifecycle, data.reason); return { ok: true, action: data.action, documentId, lifecycle: data.lifecycle };
+      });
+      return reply.send(result);
+    } catch (error) { return sendError(reply, error, 403); }
+  });
+
+  app.post("/api/knowledge/feedback", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const body = z.object({ documentId: z.string().min(1), helpful: z.boolean().optional(), comment: z.string().max(2_000).optional() }).safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: "Invalid feedback", details: body.error.issues });
+    const store = getKnowledgeStore();
+    try {
+      const row = loadDocumentForUser(store, request.user.id, body.data.documentId);
+      const result = replayOrRun(store, request.user.id, "feedback", idempotencyKey(request), () => {
+        const id = `feedback-${randomUUID()}`; const createdAt = new Date().toISOString();
+        store.db.prepare("INSERT INTO knowledge_feedback(id,document_id,entity_id,user_id,helpful,comment,created_at) VALUES (?,?,?,?,?,?,?)").run(id, body.data.documentId, body.data.documentId, request.user.id, body.data.helpful === undefined ? null : body.data.helpful ? 1 : 0, body.data.comment ?? null, createdAt);
+        store.audit({ actorId: request.user.id, projectId: String(row.project_id), action: "knowledge.feedback", entityType: "document", entityId: body.data.documentId, details: { helpful: body.data.helpful } });
+        return { ok: true, id, documentId: body.data.documentId, createdAt };
+      });
+      return reply.send(result);
+    } catch (error) { return sendError(reply, error, 404); }
+  });
+
+  app.post("/api/knowledge/ingest", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const body = z.object({ projectId: z.number().int().positive(), casebookRoot: z.string().optional(), contextFiles: z.array(z.string()).optional() }).safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: "Invalid ingestion request", details: body.error.issues });
+    try {
+      const { store, projectId } = resolveProject(request.user.id, body.data.projectId);
+      const result = replayOrRun(store, request.user.id, "ingest", idempotencyKey(request), () => {
+        const report = importCasebook(store, { root: body.data.casebookRoot ?? store.casebookRoot ?? "./casebook", projectId, projectNameSnapshot: String(body.data.projectId), evidenceRoot: store.evidenceRoot });
+        const facts = body.data.contextFiles?.length ? importContextFacts(store, { files: body.data.contextFiles, userId: request.user.id, projectId, projectNameSnapshot: String(body.data.projectId) }) : undefined;
+        return { report, facts };
+      });
+      return reply.send(result);
+    } catch (error) { return sendError(reply, error, 400); }
+  });
+
+  app.post("/api/knowledge/reindex", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const body = z.object({ projectId: z.number().int().positive() }).safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: "projectId is required" });
+    try {
+      const { store, projectId } = resolveProject(request.user.id, body.data.projectId);
+      const result = replayOrRun(store, request.user.id, "reindex", idempotencyKey(request), () => {
+        const documents = Number((store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_documents WHERE project_id = ?").get(projectId) as { count?: number } | undefined)?.count ?? 0);
+        const facts = Number((store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_facts WHERE project_id = ?").get(projectId) as { count?: number } | undefined)?.count ?? 0);
+        store.db.transaction(() => {
+          store.db.prepare("DELETE FROM knowledge_fts WHERE rowid IN (SELECT rowid FROM knowledge_documents WHERE project_id = ?)").run(projectId);
+          store.db.prepare("INSERT INTO knowledge_fts(rowid,document_id,title,body) SELECT rowid,id,title,body FROM knowledge_documents WHERE project_id = ?").run(projectId);
+          store.db.prepare("DELETE FROM knowledge_facts_fts WHERE rowid IN (SELECT rowid FROM knowledge_facts WHERE project_id = ?)").run(projectId);
+          store.db.prepare("INSERT INTO knowledge_facts_fts(rowid,fact_id,text,tags) SELECT rowid,id,text,tags_json FROM knowledge_facts WHERE project_id = ?").run(projectId);
+        })();
+        store.audit({ actorId: request.user.id, projectId, action: "knowledge.reindex", entityType: "index", entityId: `project:${projectId}`, details: { documents, facts } });
+        return { ok: true, projectId, documents, facts, completedAt: new Date().toISOString() };
+      });
+      return reply.send(result);
+    } catch (error) { return sendError(reply, error, 400); }
+  });
+
+  app.get("/api/knowledge/index-status", { onRequest: [app.authenticate] }, async (request, reply) => {
+    try {
+      const { store, projectId } = resolveProject(request.user.id, (request.query as Record<string, unknown>).projectId);
+      const counts = store.db.prepare("SELECT kind, lifecycle, COUNT(*) AS count FROM knowledge_documents WHERE project_id = ? GROUP BY kind,lifecycle ORDER BY kind,lifecycle").all(projectId);
+      const lastIngest = store.db.prepare("SELECT id,status,imported,skipped,failed,started_at,finished_at,error FROM knowledge_ingest_runs ORDER BY started_at DESC LIMIT 1").get();
+      return reply.send({ projectId, stale: false, counts, lastIngest, checkedAt: new Date().toISOString() });
+    } catch (error) { return sendError(reply, error, 400); }
+  });
+}

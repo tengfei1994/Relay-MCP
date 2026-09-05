@@ -1,0 +1,3798 @@
+{
+  "schemaVersion": 1,
+  "generatedFrom": "McpServer tools/list",
+  "sourceVersion": {
+    "gitCommit": "23f7c9bc58128a7d8375fd3f931b66e619637470",
+    "mcpSdkVersion": "1.29.0",
+    "generationCommand": "npm run generate:mcp-baseline",
+    "generatedAt": "2026-09-05T01:39:19.498Z",
+    "worktreeDirty": true
+  },
+  "tools": [
+    {
+      "name": "cleanup_workspace_staging",
+      "description": "Preview or remove old entries from the reserved .relay-staging directory in a project workspace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "olderThanMinutes": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Only include entries older than this age; default 1440"
+          },
+          "dryRun": {
+            "type": "boolean",
+            "description": "Preview without deleting; default true"
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "context_record_fact",
+      "description": "Record a durable project fact so future LLM calls do not need chat history",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string",
+            "description": "Short fact, pitfall, path, or project convention"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "context_search",
+      "description": "Search durable project facts recorded on the MCP server",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "create_workspace_upload",
+      "description": "Create a short-lived authenticated upload URL for streaming a large local binary file into the Relay workspace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "Relative destination path in the Relay workspace"
+          },
+          "maxBytes": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "expectedSha256": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{64}$"
+          },
+          "ttlSeconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 3600
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "delete_workspace_file",
+      "description": "Delete a file or directory from a Relay project workspace. Recursive directory deletion must be explicitly enabled.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "Allow recursive directory deletion; default false"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "deploy",
+      "description": "Update a remote Git checkout and optionally restart PM2 or Docker workloads. Returns a deployment run record with commits and rollback status.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "rollbackOnFailure": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "download_remote_file",
+      "description": "Download a remote file into the Relay project workspace and create a short-lived URL for streaming it into the agent's local workspace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "remotePath": {
+            "type": "string"
+          },
+          "workspacePath": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "overwrite": {
+            "type": "boolean"
+          },
+          "ttlSeconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 3600
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          }
+        },
+        "required": [
+          "remotePath",
+          "workspacePath"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "exec_remote",
+      "description": "LEGACY compatibility tool. Prefer relay_exec_remote for new calls; this tool still executes through Relay MCP.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name. Optional when the MCP token has a default project."
+          },
+          "command": {
+            "type": "string",
+            "description": "Shell command to run"
+          },
+          "environment": {
+            "type": "string",
+            "description": "Target environment (default: production)"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID. Use project_server_links_list to discover it."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name, matched case-insensitively."
+          },
+          "timeoutMs": {
+            "type": "number",
+            "description": "Command timeout in milliseconds (default 60000)"
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as an async job and return a jobId."
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "exec_remote_powershell",
+      "description": "LEGACY compatibility tool. Prefer relay_exec_remote_powershell for new calls; this tool still executes through Relay MCP using EncodedCommand.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name. Optional when the MCP token has a default project."
+          },
+          "script": {
+            "type": "string",
+            "description": "PowerShell script content to execute"
+          },
+          "environment": {
+            "type": "string",
+            "description": "Target environment (default: production)"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID. Use project_server_links_list to discover it."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name, matched case-insensitively."
+          },
+          "timeoutMs": {
+            "type": "number",
+            "description": "Command timeout in milliseconds (default 120000)"
+          },
+          "outputFormat": {
+            "type": "string",
+            "enum": [
+              "text",
+              "json"
+            ],
+            "description": "Output format. Use json when the script emits objects through ConvertTo-Json."
+          },
+          "maxDepth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "description": "Maximum JSON object depth returned; default 6."
+          },
+          "maxArrayItems": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000,
+            "description": "Maximum items retained per JSON array; default 200."
+          },
+          "maxStringLength": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 100000,
+            "description": "Maximum characters retained per JSON string; default 8000."
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as an async job and return a jobId."
+          }
+        },
+        "required": [
+          "script"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "exec_remote_script",
+      "description": "LEGACY compatibility tool. Prefer relay_exec_remote_script for new calls; this tool still executes through Relay MCP.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name. Optional when the MCP token has a default project."
+          },
+          "script": {
+            "type": "string",
+            "description": "PowerShell script content to write and execute"
+          },
+          "environment": {
+            "type": "string",
+            "description": "Target environment (default: production)"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID. Use project_server_links_list to discover it."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name, matched case-insensitively."
+          },
+          "remotePath": {
+            "type": "string",
+            "description": "Optional absolute remote .ps1 path; defaults to C:\\Windows\\Temp\\relay-mcp-*.ps1"
+          },
+          "timeoutMs": {
+            "type": "number",
+            "description": "Script timeout in milliseconds (default 120000)"
+          },
+          "cleanup": {
+            "type": "boolean",
+            "description": "Remove the remote script after execution. Default true."
+          },
+          "preserveOnFailure": {
+            "type": "boolean",
+            "description": "Keep the remote script when execution fails. Default false."
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as an async job and return a jobId. Default true."
+          }
+        },
+        "required": [
+          "script"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "fetch_logs",
+      "description": "Fetch recent file, Windows, systemd, PM2, or Docker logs from the linked server.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "number",
+            "description": "Number of lines (default: 100)"
+          },
+          "logPath": {
+            "type": "string",
+            "description": "Custom log file path"
+          },
+          "since": {
+            "type": "string",
+            "description": "ISO-8601 start time. For file logs this filters files by modification time; journald supports line-level filtering."
+          },
+          "until": {
+            "type": "string",
+            "description": "Optional ISO-8601 end time."
+          },
+          "deploymentId": {
+            "type": "string",
+            "description": "Use the time window of a prior deploy run."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "job_cancel",
+      "description": "Request cancellation of a running asynchronous Relay-MCP job and close its active SSH command when supported.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "description": "Running job id returned by an async tool"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Optional bounded reason retained with the cancellation event"
+          }
+        },
+        "required": [
+          "jobId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "job_list",
+      "description": "List recent asynchronous Relay-MCP jobs for the current user",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "number",
+            "description": "Maximum jobs to return (default 20)"
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "job_status",
+      "description": "Get status/result for an asynchronous Relay-MCP job",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "description": "Job id returned by an async tool"
+          }
+        },
+        "required": [
+          "jobId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "job_wait",
+      "description": "Wait for an asynchronous Relay-MCP job to finish or change phase. A wait deadline returns the latest snapshot instead of changing the job status.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "description": "Job id returned by an async tool"
+          },
+          "waitMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 110000,
+            "description": "Maximum long-poll wait; default 90000."
+          },
+          "pollMs": {
+            "type": "integer",
+            "minimum": 50,
+            "maximum": 5000,
+            "description": "Polling interval; default 500."
+          },
+          "returnOnPhaseChange": {
+            "type": "boolean",
+            "description": "Return when phase changes even if the job remains running."
+          }
+        },
+        "required": [
+          "jobId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_evidence_get",
+      "description": "Return metadata for Evidence; content is available through a bounded, audited read.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "evidenceId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidenceId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_feedback",
+      "description": "Record whether a Knowledge result was useful; this never mutates the source casebook.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentId": {
+            "type": "string"
+          },
+          "helpful": {
+            "type": "boolean"
+          },
+          "comment": {
+            "type": "string",
+            "maxLength": 2000
+          }
+        },
+        "required": [
+          "documentId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_get",
+      "description": "Read a complete Knowledge document by id after project ACL enforcement.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "documentId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_ingest",
+      "description": "Import Git-managed Casebook Markdown/YAML and legacy context JSONL idempotently.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "casebookRoot": {
+            "type": "string"
+          },
+          "contextFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "casebookRoot"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_playbook_get",
+      "description": "Read a draft, approved, or deprecated Playbook with its steps and proposed Skill diff.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "playbookId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "playbookId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_reindex",
+      "description": "Rebuild project-scoped FTS and invalidate cached embeddings after a controlled model or source change.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "invalidateEmbeddings": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_relation_query",
+      "description": "Query deterministic, source-backed SampleManager object relations.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "objectId": {
+            "type": "string"
+          },
+          "relationType": {
+            "type": "string"
+          },
+          "verifiedOnly": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_search",
+      "description": "Search ACL- and SampleManager-version-filtered Case, Pattern, Playbook, and Candidate knowledge.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "sampleManagerVersion": {
+            "type": "string"
+          },
+          "solution": {
+            "type": "string"
+          },
+          "module": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "list_projects",
+      "description": "List all projects for the current user",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {}
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "list_remote_files",
+      "description": "List files in a directory on the remote server",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "remotePath": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "remotePath"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "list_workspace_files",
+      "description": "List files and directories in a Relay project workspace with optional bounded recursion.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "Relative directory path; defaults to workspace root"
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "Recursively list descendants; default false"
+          },
+          "maxEntries": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Maximum entries returned; default 500, maximum 5000"
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "move_workspace_file",
+      "description": "Move or rename a file or directory inside the same Relay project workspace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string",
+            "description": "Existing relative source path"
+          },
+          "to": {
+            "type": "string",
+            "description": "Relative destination path"
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "Replace an existing destination; default false"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "patch_remote_file",
+      "description": "Apply a unified diff (patch) to a file on the remote server. Far more token-efficient than rewriting the whole file — only send what changed. The diff must be in standard unified diff format (diff -u / git diff).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "remotePath": {
+            "type": "string",
+            "description": "Absolute path to the file on the remote server"
+          },
+          "diff": {
+            "type": "string",
+            "description": "Unified diff string (output of `diff -u old new` or `git diff`)"
+          },
+          "environment": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "remotePath",
+          "diff"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "playwright_artifact_download",
+      "description": "Stream a Playwright artifact from the Agent through Relay into the project workspace with byte and SHA-256 verification, then return a short-lived download URL.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name. Optional when the MCP token has a default project."
+          },
+          "environment": {
+            "type": "string",
+            "description": "Exact project environment key."
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server name."
+          },
+          "artifactPath": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Relative path returned by playwright_artifact_list."
+          },
+          "workspacePath": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Relative destination path in the Relay project workspace."
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "Replace an existing workspace file. Default false."
+          },
+          "ttlSeconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 3600,
+            "description": "Download URL lifetime; default 900 seconds."
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Agent transfer timeout; default 1800000."
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Return a Relay job immediately; default true."
+          }
+        },
+        "required": [
+          "artifactPath",
+          "workspacePath"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "playwright_artifact_list",
+      "description": "List bounded Playwright artifact metadata on the selected Agent without returning the binary contents.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name. Optional when the MCP token has a default project."
+          },
+          "environment": {
+            "type": "string",
+            "description": "Exact project environment key."
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server name."
+          },
+          "maximum": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000,
+            "description": "Maximum artifacts to list; default 250."
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Agent dispatch timeout; default 30000."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "playwright_run_status",
+      "description": "Read the formal Playwright run record created by the Agent, including pass/fail state, output, duration, and artifact directory.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name. Optional when the MCP token has a default project."
+          },
+          "environment": {
+            "type": "string",
+            "description": "Exact project environment key."
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server name."
+          },
+          "runId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Agent dispatch timeout; default 30000."
+          }
+        },
+        "required": [
+          "runId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "playwright_run_suite",
+      "description": "Queue a dedicated Playwright test run on the selected Agent. It creates a formal run record for the Agent Client Test Runs page; it does not execute through PowerShell.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name. Optional when the MCP token has a default project."
+          },
+          "environment": {
+            "type": "string",
+            "description": "Exact project environment key."
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server name."
+          },
+          "suiteId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Agent queue dispatch timeout; default 120000."
+          }
+        },
+        "required": [
+          "suiteId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "playwright_runtime_status",
+      "description": "Inspect the Agent-owned Node.js, Playwright, Chromium, cache, and installation state without using remote PowerShell.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name. Optional when the MCP token has a default project."
+          },
+          "environment": {
+            "type": "string",
+            "description": "Exact project environment key."
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server name."
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Agent dispatch timeout; default 30000."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "playwright_suite_list",
+      "description": "List Playwright suites stored by the selected Relay Agent. This reads the Agent Playwright store directly.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name. Optional when the MCP token has a default project."
+          },
+          "environment": {
+            "type": "string",
+            "description": "Exact project environment key."
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server name."
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Agent dispatch timeout; default 30000."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "playwright_suite_upload",
+      "description": "Upload a Playwright test file and suite metadata to the selected Agent with a SHA-256 gate. The Agent writes the file into its service-owned Playwright tests directory.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name. Optional when the MCP token has a default project."
+          },
+          "environment": {
+            "type": "string",
+            "description": "Exact project environment key."
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server name."
+          },
+          "suite": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "maxLength": 160
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "baseUrl": {
+                "type": "string",
+                "format": "uri"
+              },
+              "testFile": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "headless": {
+                "type": "boolean",
+                "default": true
+              },
+              "timeoutSeconds": {
+                "type": "integer",
+                "minimum": 10,
+                "maximum": 3600,
+                "default": 120
+              },
+              "retries": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 5,
+                "default": 0
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true
+              }
+            },
+            "required": [
+              "name",
+              "baseUrl",
+              "testFile"
+            ],
+            "additionalProperties": false
+          },
+          "testFileContent": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 5000000,
+            "description": "UTF-8 Playwright test source."
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{64}$",
+            "description": "Expected SHA-256 of the UTF-8 test source. If omitted, Relay calculates it."
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Agent dispatch timeout; default 120000."
+          }
+        },
+        "required": [
+          "suite",
+          "testFileContent"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "project_create",
+      "description": "Create a Relay-MCP project workspace, optionally link it to a server and create the remote directory",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[a-zA-Z0-9_-]+$"
+          },
+          "description": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "number",
+            "description": "Optional existing server id to link"
+          },
+          "remotePath": {
+            "type": "string",
+            "description": "Remote project directory to create when serverId is supplied"
+          },
+          "environment": {
+            "type": "string",
+            "description": "Environment name for the server link, default production"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "project_server_links_list",
+      "description": "List selectable server links for one project or every allowed project, including exact environment keys and bound LIMS instances.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Optional project name. Omit to list links for every allowed project."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "read_local_file",
+      "description": "Read a file from the project workspace on the MCP server",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "Relative path within project workspace"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "read_remote_file",
+      "description": "Read a text file from the remote server. Use async=true for large or slow files so the job can be checked without retrying the remote read.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "remotePath": {
+            "type": "string",
+            "description": "Absolute path on remote server"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "number"
+          },
+          "async": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "remotePath"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "relay_core_tools",
+      "description": "Return the stable preferred Relay MCP tools and legacy aliases. This tool is read-only and does not contact a remote server.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {}
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "relay_exec_remote",
+      "description": "PREFERRED: execute a shell command through Relay MCP on the selected linked server.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name. Optional when the MCP token has a default project."
+          },
+          "command": {
+            "type": "string",
+            "description": "Shell command to run"
+          },
+          "environment": {
+            "type": "string",
+            "description": "Target environment (default: production)"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID. Use project_server_links_list to discover it."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name, matched case-insensitively."
+          },
+          "timeoutMs": {
+            "type": "number",
+            "description": "Command timeout in milliseconds (default 60000)"
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as an async job and return a jobId."
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "relay_exec_remote_powershell",
+      "description": "PREFERRED: execute EncodedCommand PowerShell through Relay MCP on the selected linked server.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name. Optional when the MCP token has a default project."
+          },
+          "script": {
+            "type": "string",
+            "description": "PowerShell script content to execute"
+          },
+          "environment": {
+            "type": "string",
+            "description": "Target environment (default: production)"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID. Use project_server_links_list to discover it."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name, matched case-insensitively."
+          },
+          "timeoutMs": {
+            "type": "number",
+            "description": "Command timeout in milliseconds (default 120000)"
+          },
+          "outputFormat": {
+            "type": "string",
+            "enum": [
+              "text",
+              "json"
+            ],
+            "description": "Output format. Use json when the script emits objects through ConvertTo-Json."
+          },
+          "maxDepth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "description": "Maximum JSON object depth returned; default 6."
+          },
+          "maxArrayItems": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000,
+            "description": "Maximum items retained per JSON array; default 200."
+          },
+          "maxStringLength": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 100000,
+            "description": "Maximum characters retained per JSON string; default 8000."
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as an async job and return a jobId."
+          }
+        },
+        "required": [
+          "script"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "relay_exec_remote_script",
+      "description": "PREFERRED: upload and execute a PowerShell script through Relay MCP on the selected linked server.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name. Optional when the MCP token has a default project."
+          },
+          "script": {
+            "type": "string",
+            "description": "PowerShell script content to write and execute"
+          },
+          "environment": {
+            "type": "string",
+            "description": "Target environment (default: production)"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID. Use project_server_links_list to discover it."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name, matched case-insensitively."
+          },
+          "remotePath": {
+            "type": "string",
+            "description": "Optional absolute remote .ps1 path; defaults to C:\\Windows\\Temp\\relay-mcp-*.ps1"
+          },
+          "timeoutMs": {
+            "type": "number",
+            "description": "Script timeout in milliseconds (default 120000)"
+          },
+          "cleanup": {
+            "type": "boolean",
+            "description": "Remove the remote script after execution. Default true."
+          },
+          "preserveOnFailure": {
+            "type": "boolean",
+            "description": "Keep the remote script when execution fails. Default false."
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as an async job and return a jobId. Default true."
+          }
+        },
+        "required": [
+          "script"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "relay_mcp_info",
+      "description": "Return Relay MCP route metadata so clients can verify they are calling the Relay server rather than a local shell.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {}
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "relay_project_server_links_list",
+      "description": "PREFERRED: list selectable project server links through Relay MCP.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Optional project name. Omit to list links for every allowed project."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "relay_route_check",
+      "description": "Check that the request is being handled by Relay MCP and optionally resolve a project/server target without executing a remote command.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Optional project name."
+          },
+          "environment": {
+            "type": "string",
+            "description": "Optional exact environment key."
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Optional exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Optional exact linked server name."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "relay_unicode_check",
+      "description": "Run a read-only SQL/PowerShell/Agent Unicode round-trip diagnostic for the selected LIMS database.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name."
+          },
+          "environment": {
+            "type": "string",
+            "description": "Exact project environment key."
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
+          "database": {
+            "type": "string",
+            "description": "Optional database override; must match the bound instance when one is configured."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "restart_service",
+      "description": "Restart Windows services, systemd units, PM2 processes, or Docker containers using a structured service selector.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string",
+            "description": "Service name or 'all' for all project services"
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_apply_change_set",
+      "description": "Apply multiple SQL changes atomically with dry-run, rollback, verification, idempotency, and deployment recovery state.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "deploymentId": {
+            "type": "string"
+          },
+          "dryRun": {
+            "type": "boolean",
+            "description": "Execute and roll back by default. Set false to commit."
+          },
+          "createBackup": {
+            "type": "boolean"
+          },
+          "maxRows": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 1000
+          },
+          "verifySql": {
+            "type": "string",
+            "description": "Read-only verification SQL executed in the same transaction."
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "idempotencyKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "operation": {
+                  "type": "string",
+                  "enum": [
+                    "insert",
+                    "update",
+                    "delete"
+                  ]
+                },
+                "table": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "values": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                },
+                "where": {
+                  "type": "string"
+                },
+                "parameters": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "idempotencyKey",
+                "operation",
+                "table"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 50
+          }
+        },
+        "required": [
+          "changes"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_build_deploy_assembly",
+      "description": "Build a .NET project, deploy one assembly with SHA-256 verification and backup, optionally restart the instance, and track every phase under a deploymentId.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "projectOrSolutionPath": {
+            "type": "string"
+          },
+          "assemblyPath": {
+            "type": "string",
+            "description": "Absolute built DLL path on the linked server"
+          },
+          "instance": {
+            "type": "string",
+            "description": "Optional when the project environment is bound to a LIMS instance."
+          },
+          "targetRelativePath": {
+            "type": "string",
+            "description": "Destination under SolutionAssemblies; defaults to assembly filename"
+          },
+          "configuration": {
+            "type": "string",
+            "description": "Default Release"
+          },
+          "msbuildPath": {
+            "type": "string"
+          },
+          "msbuildProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Additional validated MSBuild properties, passed as /p:name=value."
+          },
+          "environmentVariables": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Nonsecret environment variables applied only to the remote build process. Preconfigure secrets on the target service account."
+          },
+          "preflightOnly": {
+            "type": "boolean",
+            "description": "Validate build inputs and target context without building, deploying, or restarting."
+          },
+          "restart": {
+            "type": "boolean",
+            "description": "Restart SampleManager after deploy. Default true."
+          },
+          "rollbackOnFailure": {
+            "type": "boolean",
+            "description": "Restore the timestamped backup if a later phase fails. Default true."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "deploymentId": {
+            "type": "string",
+            "description": "Existing running deploymentId to reuse. If omitted, a new deployment is created."
+          },
+          "timeoutMs": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Build timeout; default 600000"
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Return jobId and deploymentId immediately. Default true."
+          }
+        },
+        "required": [
+          "projectOrSolutionPath",
+          "assemblyPath"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_build_dotnet",
+      "description": "Build a classic SampleManager .NET project or solution with MSBuild on the linked Windows server.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "projectOrSolutionPath": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "description": "Optional SampleManager instance used to derive build paths and properties."
+          },
+          "configuration": {
+            "type": "string",
+            "description": "Default Release"
+          },
+          "msbuildPath": {
+            "type": "string",
+            "description": "Optional explicit MSBuild.exe path"
+          },
+          "msbuildProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Additional validated MSBuild properties, passed as /p:name=value."
+          },
+          "environmentVariables": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Nonsecret environment variables applied only to the remote build process. Preconfigure secrets on the target service account."
+          },
+          "preflightOnly": {
+            "type": "boolean",
+            "description": "Validate project, build tool, instance paths, and effective context without running a build."
+          },
+          "expectedAssemblyPath": {
+            "type": "string",
+            "description": "Expected output assembly path reported by preflight."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "deploymentId": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Default 600000"
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as an async job; recommended"
+          }
+        },
+        "required": [
+          "projectOrSolutionPath"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_capabilities",
+      "description": "Resolve the versioned SampleManager Capability Pack for a bound instance and list ready, planned, and unavailable semantic inspectors.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer"
+          },
+          "serverName": {
+            "type": "string"
+          },
+          "includeAdapters": {
+            "type": "boolean",
+            "description": "Include every built-in version adapter. Default false."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_clear_form_cache",
+      "description": "Recursively clear and verify compiled FormsBin cache entries for one exact SampleManager form identity, including Translation subdirectories.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "description": "Optional when the project environment is bound to a LIMS instance."
+          },
+          "formName": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as an async tracked job and return a jobId."
+          }
+        },
+        "required": [
+          "formName"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_convert_tables",
+      "description": "Run convert_table.exe once per SampleManager table using structured, validated table names.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "description": "Optional when the project environment is bound to a LIMS instance."
+          },
+          "tables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "environment": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Timeout per table; default 600000"
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as an async job; recommended"
+          }
+        },
+        "required": [
+          "tables"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_create_deployment_manifest",
+      "description": "Create a read-only deployment manifest in the Relay workspace with SHA-256 metadata for selected source files and explicit target provenance. Does not build or deploy.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer"
+          },
+          "serverName": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string"
+          },
+          "deploymentId": {
+            "type": "string"
+          },
+          "outputPath": {
+            "type": "string",
+            "description": "Relative workspace path, e.g. manifests/deploy-123.json"
+          },
+          "sourceFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500
+          },
+          "label": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "outputPath",
+          "sourceFiles"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_create_entity_definition",
+      "description": "Run CreateEntityDefinition.exe for a SampleManager instance after controlled structure source changes.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "description": "Optional when the project environment is bound to a LIMS instance."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Default 600000"
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as an async job; recommended"
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_deploy_file",
+      "description": "Copy a staged remote file into a SampleManager instance area and create a timestamped backup of the replaced file.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "description": "Optional when the project environment is bound to a LIMS instance."
+          },
+          "sourcePath": {
+            "type": "string",
+            "description": "Absolute source file path already present on the remote server"
+          },
+          "area": {
+            "type": "string",
+            "enum": [
+              "exe",
+              "solutionAssemblies",
+              "forms",
+              "resourceIcon",
+              "data"
+            ]
+          },
+          "targetRelativePath": {
+            "type": "string"
+          },
+          "backup": {
+            "type": "boolean",
+            "description": "Create backup before replacement; default true"
+          },
+          "skipIfUnchanged": {
+            "type": "boolean",
+            "description": "Skip the copy when source and target SHA-256 already match; default true"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "deploymentId": {
+            "type": "string"
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as an async job"
+          }
+        },
+        "required": [
+          "sourcePath",
+          "area",
+          "targetRelativePath"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_deploy_table_loader_package",
+      "description": "Upload, hash-verify, preflight, optionally back up, and sequentially load table-loader CSV files under one deploymentId.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "workspacePath": {
+                  "type": "string",
+                  "description": "Relative file path in the Relay workspace"
+                },
+                "remotePath": {
+                  "type": "string",
+                  "description": "Optional remote path; defaults to the stable Relay staging directory"
+                },
+                "mode": {
+                  "type": "string",
+                  "description": "Table-loader mode; default overwrite_table"
+                }
+              },
+              "required": [
+                "workspacePath"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1
+          },
+          "environment": {
+            "type": "string"
+          },
+          "deploymentId": {
+            "type": "string",
+            "description": "Existing deploymentId. If omitted, one is created."
+          },
+          "backupSql": {
+            "type": "string",
+            "description": "Optional explicit backup SQL supplied by the caller; executed as a mutation and recorded."
+          },
+          "verifySql": {
+            "type": "string",
+            "description": "Optional verification SQL executed after all loads."
+          },
+          "timeoutMs": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Timeout per upload/load step; default 300000"
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Return a jobId immediately; default true"
+          }
+        },
+        "required": [
+          "username",
+          "files"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_deployment_finish",
+      "description": "Mark a manually orchestrated SampleManager deploymentId succeeded or failed after all linked operations complete.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "deploymentId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "failed"
+            ]
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deploymentId",
+          "status"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_deployment_start",
+      "description": "Create a SampleManager deploymentId that correlates SQL, build, deploy, restart, hashes, backups, logs, and rollback evidence.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "description": "Optional when the project environment is bound to a LIMS instance."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_deployment_status",
+      "description": "Return the current SampleManager deployment record, phase results, artifacts, hashes, backup, and rollback status.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "deploymentId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deploymentId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_diagnose",
+      "description": "Read-only SampleManager diagnosis combining version-scoped Knowledge retrieval with Form/Task/Assembly checks. It never deploys, restarts, clears cache, or mutates SQL.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "formName": {
+            "type": "string"
+          },
+          "taskName": {
+            "type": "string"
+          },
+          "controlNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "includeRecentErrors": {
+            "type": "boolean"
+          },
+          "recentErrorMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1440
+          },
+          "databaseTable": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_discover_build_tools",
+      "description": "Discover compatible MSBuild installations in VS2022, VS2019, .NET Framework, then PATH priority order.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_impact_analysis",
+      "description": "Compute a read-only, source-backed impact graph for a SampleManager Form/Task/Assembly/Menu object.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "objectId": {
+            "type": "string"
+          },
+          "relationType": {
+            "type": "string"
+          },
+          "verifiedOnly": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "maxDepth": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "upstream",
+              "downstream",
+              "both"
+            ]
+          }
+        },
+        "required": [
+          "objectId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_inspect_assembly_type",
+      "description": "Inspect one .NET assembly type with bounded metadata reflection. Returns only flattened type, property, method, event, version, dependency, and SHA-256 evidence.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer"
+          },
+          "serverName": {
+            "type": "string"
+          },
+          "assemblyPath": {
+            "type": "string"
+          },
+          "typeName": {
+            "type": "string"
+          },
+          "memberFilter": {
+            "type": "string"
+          },
+          "includeInherited": {
+            "type": "boolean"
+          },
+          "includeNonPublic": {
+            "type": "boolean"
+          },
+          "maxMembers": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job. Default false."
+          }
+        },
+        "required": [
+          "assemblyPath",
+          "typeName"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_recent_errors",
+      "description": "Search recent SampleManager logs and return a compact error-focused result",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "description": "Optional when the project environment is bound to a LIMS instance."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "minutes": {
+            "type": "number"
+          },
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_restart_instance",
+      "description": "Restart a SampleManager instance on a linked Windows server and stop stuck client task hosts",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "description": "Optional when the project environment is bound to a LIMS instance."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "deploymentId": {
+            "type": "string"
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as an async job and return a jobId"
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_restore_backup",
+      "description": "Restore a specific timestamped SampleManager backup file to an explicit remote target path.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "backupPath": {
+            "type": "string"
+          },
+          "targetPath": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "async": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "backupPath",
+          "targetPath"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_run_command",
+      "description": "Run SampleManagerCommand.exe from the instance Exe folder with structured arguments.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "description": "Optional when the project environment is bound to a LIMS instance."
+          },
+          "username": {
+            "type": "string",
+            "description": "SampleManager username used by SampleManagerCommand.exe"
+          },
+          "task": {
+            "type": "string",
+            "description": "SampleManager command task, e.g. VGL"
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Additional arguments, e.g. ['-report', '$table_loader', '-prompts', '(C:\\\\file.csv,overwrite_table)']"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "number",
+            "description": "Command timeout in milliseconds. Default 120000."
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as an async job and return a jobId."
+          }
+        },
+        "required": [
+          "username",
+          "task"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_run_utility",
+      "description": "Run an allowlisted SampleManager utility with structured arguments. Use dedicated tools for CreateEntityDefinition and convert_table.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "description": "Optional when the project environment is bound to a LIMS instance."
+          },
+          "utility": {
+            "type": "string",
+            "enum": [
+              "FormImport.exe",
+              "BuildFormDefinition.exe",
+              "DeployPackageTask.exe"
+            ]
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "environment": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Default 300000"
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as an async job"
+          }
+        },
+        "required": [
+          "utility"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_sql_execute_file",
+      "description": "Run a SQL file from the relay project workspace against a SampleManager SQL Server database. Mutations require allowMutation=true.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string",
+            "description": "Optional when the bound LIMS instance has a configured database."
+          },
+          "path": {
+            "type": "string",
+            "description": "Relative SQL file path within the relay project workspace"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "allowMutation": {
+            "type": "boolean"
+          },
+          "maxRows": {
+            "type": "number",
+            "description": "Maximum rows returned per result set, capped at 1000. Default 100."
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based result row offset for pagination. Use nextOffset from the previous response."
+          },
+          "includeResultSets": {
+            "type": "boolean",
+            "description": "Include full resultSets payload. Default false."
+          },
+          "parameters": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            },
+            "description": "Named SQL parameters without '@', referenced as @name in SQL."
+          },
+          "identifiers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Identifiers substituted into {{name}} placeholders and escaped with SQL Server brackets."
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_sql_mutation",
+      "description": "Run a structured parameterized SQL mutation with before/after result sets, dry-run rollback, and optional backup table.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string",
+            "description": "Optional when the bound LIMS instance has a configured database."
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "insert",
+              "update",
+              "delete"
+            ]
+          },
+          "table": {
+            "type": "string",
+            "description": "Schema-qualified table name when possible"
+          },
+          "values": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "where": {
+            "type": "string",
+            "description": "Single SQL predicate without WHERE keyword; required for update/delete"
+          },
+          "parameters": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "dryRun": {
+            "type": "boolean",
+            "description": "Execute inside a transaction and roll back. Default true."
+          },
+          "createBackup": {
+            "type": "boolean",
+            "description": "Create a timestamped RELAY_BACKUP table before update/delete. Default true."
+          },
+          "maxRows": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 1000
+          },
+          "environment": {
+            "type": "string"
+          },
+          "deploymentId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "table"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_sql_query",
+      "description": "Run a compact SQL query against a SampleManager SQL Server database. Read-only by default.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string",
+            "description": "Optional when the bound LIMS instance has a configured database."
+          },
+          "sql": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "allowMutation": {
+            "type": "boolean"
+          },
+          "maxRows": {
+            "type": "number",
+            "description": "Maximum rows returned per result set, capped at 1000. Default 100."
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based result row offset for pagination. Use nextOffset from the previous response."
+          },
+          "includeResultSets": {
+            "type": "boolean",
+            "description": "Include full resultSets payload. Default false."
+          },
+          "resultSet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer",
+                "minimum": 0
+              }
+            ],
+            "description": "Return only one named result set or zero-based result-set index."
+          },
+          "parameters": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            },
+            "description": "Named SQL parameters without '@', referenced as @name in SQL."
+          },
+          "identifiers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Identifiers substituted into {{name}} placeholders and escaped with SQL Server brackets."
+          }
+        },
+        "required": [
+          "sql"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_table_loader",
+      "description": "Load a remote table-loader CSV through SampleManagerCommand.exe and the built-in $table_loader VGL report.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "description": "Optional when the project environment is bound to a LIMS instance."
+          },
+          "username": {
+            "type": "string"
+          },
+          "remoteCsvPath": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "description": "Table-loader mode; default overwrite_table"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "deploymentId": {
+            "type": "string",
+            "description": "Correlate upload, load, verification, and audit evidence."
+          },
+          "timeoutMs": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Default 300000"
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as an async job; recommended"
+          }
+        },
+        "required": [
+          "username",
+          "remoteCsvPath"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_table_schema",
+      "description": "Return SQL Server column, type, primary key, identity, computed, default, and physical mapping metadata for a SampleManager table.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string",
+            "description": "Optional when the bound LIMS instance has a configured database."
+          },
+          "table": {
+            "type": "string",
+            "description": "Table name, optionally schema-qualified, e.g. dbo.TEST_INSTRUMENT_USAGE_RECORD"
+          },
+          "environment": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "table"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_validate_form_task_contract",
+      "description": "Read-only Form Task preflight across FORM/TASK/MASTER_MENU, the exact form XML, requested controls, compiled cache, and an optional assembly type contract.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer"
+          },
+          "serverName": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string"
+          },
+          "formName": {
+            "type": "string"
+          },
+          "taskName": {
+            "type": "string"
+          },
+          "assemblyPath": {
+            "type": "string"
+          },
+          "typeName": {
+            "type": "string"
+          },
+          "controlNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100
+          },
+          "maxMembers": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job. Default true."
+          }
+        },
+        "required": [
+          "formName",
+          "taskName"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "sync_workspace",
+      "description": "Sync the entire project workspace to the linked remote server via SFTP (no size limit). Excludes node_modules, .git, dist, .env by default.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "remoteDir": {
+            "type": "string",
+            "description": "Override remote destination path (default: project's remotePath)"
+          },
+          "exclude": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Additional patterns to exclude"
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "upload_workspace_file",
+      "description": "Upload one Relay workspace file to the linked server and verify local/remote SHA-256.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "localPath": {
+            "type": "string",
+            "description": "Relative path within project workspace"
+          },
+          "remotePath": {
+            "type": "string",
+            "description": "Absolute destination path on remote server"
+          },
+          "environment": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "localPath",
+          "remotePath"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "workspace_file_stat",
+      "description": "Return size, timestamps, type, and optional SHA-256 for a Relay workspace file.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "boolean",
+            "description": "Calculate SHA-256 for files; default false"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "workspace_info",
+      "description": "Show the Relay workspace root and bounded file listing so callers can distinguish Relay workspace paths from Codex local paths.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "Relative path inside the Relay workspace; default project root"
+          },
+          "maxDepth": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5,
+            "description": "Maximum directory depth; default 2"
+          },
+          "maxEntries": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum entries returned; default 200"
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "write_local_binary",
+      "description": "Write a small binary file to the Relay project workspace from Base64. Use create_workspace_upload for large files.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "Relative destination path within the project workspace"
+          },
+          "base64": {
+            "type": "string",
+            "description": "Base64-encoded file content"
+          }
+        },
+        "required": [
+          "path",
+          "base64"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "write_local_file",
+      "description": "Write (or append) a file to the project workspace. Use append=true for chunked writes of large files — call repeatedly with sequential chunks, then upload_workspace_file or sync_workspace once done.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "Relative path within project workspace"
+          },
+          "content": {
+            "type": "string",
+            "description": "File content (or next chunk if append=true)"
+          },
+          "append": {
+            "type": "boolean",
+            "description": "If true, append to existing file instead of overwriting. Default false."
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "write_remote_file",
+      "description": "Write content to a file on the remote server",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "remotePath": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "remotePath",
+          "content"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    }
+  ],
+  "legacyAliases": {
+    "exec_remote": "relay_exec_remote",
+    "exec_remote_powershell": "relay_exec_remote_powershell",
+    "exec_remote_script": "relay_exec_remote_script",
+    "project_server_links_list": "relay_project_server_links_list"
+  },
+  "capabilityMatrix": [
+    {
+      "name": "list_projects",
+      "category": "project"
+    },
+    {
+      "name": "project_server_links_list",
+      "category": "project"
+    },
+    {
+      "name": "relay_mcp_info",
+      "category": "project"
+    },
+    {
+      "name": "relay_core_tools",
+      "category": "project"
+    },
+    {
+      "name": "relay_route_check",
+      "category": "project"
+    },
+    {
+      "name": "relay_unicode_check",
+      "category": "remote-execution"
+    },
+    {
+      "name": "relay_project_server_links_list",
+      "category": "project"
+    },
+    {
+      "name": "project_create",
+      "category": "project"
+    },
+    {
+      "name": "exec_remote",
+      "category": "remote-execution"
+    },
+    {
+      "name": "exec_remote_powershell",
+      "category": "remote-execution"
+    },
+    {
+      "name": "exec_remote_script",
+      "category": "remote-execution"
+    },
+    {
+      "name": "relay_exec_remote",
+      "category": "remote-execution"
+    },
+    {
+      "name": "relay_exec_remote_powershell",
+      "category": "remote-execution"
+    },
+    {
+      "name": "relay_exec_remote_script",
+      "category": "remote-execution"
+    },
+    {
+      "name": "playwright_runtime_status",
+      "category": "playwright"
+    },
+    {
+      "name": "playwright_suite_list",
+      "category": "playwright"
+    },
+    {
+      "name": "playwright_suite_upload",
+      "category": "playwright"
+    },
+    {
+      "name": "playwright_run_suite",
+      "category": "playwright"
+    },
+    {
+      "name": "playwright_run_status",
+      "category": "playwright"
+    },
+    {
+      "name": "playwright_artifact_list",
+      "category": "playwright"
+    },
+    {
+      "name": "playwright_artifact_download",
+      "category": "playwright"
+    },
+    {
+      "name": "deploy",
+      "category": "remote-execution"
+    },
+    {
+      "name": "fetch_logs",
+      "category": "remote-execution"
+    },
+    {
+      "name": "restart_service",
+      "category": "remote-execution"
+    },
+    {
+      "name": "read_remote_file",
+      "category": "remote-files"
+    },
+    {
+      "name": "download_remote_file",
+      "category": "remote-files"
+    },
+    {
+      "name": "write_remote_file",
+      "category": "remote-files"
+    },
+    {
+      "name": "list_remote_files",
+      "category": "remote-files"
+    },
+    {
+      "name": "patch_remote_file",
+      "category": "remote-files"
+    },
+    {
+      "name": "read_local_file",
+      "category": "workspace"
+    },
+    {
+      "name": "workspace_info",
+      "category": "workspace"
+    },
+    {
+      "name": "write_local_file",
+      "category": "workspace"
+    },
+    {
+      "name": "write_local_binary",
+      "category": "workspace"
+    },
+    {
+      "name": "list_workspace_files",
+      "category": "workspace"
+    },
+    {
+      "name": "workspace_file_stat",
+      "category": "workspace"
+    },
+    {
+      "name": "move_workspace_file",
+      "category": "workspace"
+    },
+    {
+      "name": "delete_workspace_file",
+      "category": "workspace"
+    },
+    {
+      "name": "create_workspace_upload",
+      "category": "workspace"
+    },
+    {
+      "name": "cleanup_workspace_staging",
+      "category": "workspace"
+    },
+    {
+      "name": "sync_workspace",
+      "category": "workspace"
+    },
+    {
+      "name": "upload_workspace_file",
+      "category": "workspace"
+    },
+    {
+      "name": "job_status",
+      "category": "jobs"
+    },
+    {
+      "name": "job_wait",
+      "category": "jobs"
+    },
+    {
+      "name": "job_list",
+      "category": "jobs"
+    },
+    {
+      "name": "job_cancel",
+      "category": "jobs"
+    },
+    {
+      "name": "context_record_fact",
+      "category": "context"
+    },
+    {
+      "name": "context_search",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_search",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_get",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_playbook_get",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_evidence_get",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_relation_query",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_feedback",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_ingest",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_reindex",
+      "category": "context"
+    },
+    {
+      "name": "samplemanager_diagnose",
+      "category": "samplemanager",
+      "entity": "diagnostic",
+      "capability": "read_only_diagnosis"
+    },
+    {
+      "name": "samplemanager_impact_analysis",
+      "category": "samplemanager",
+      "entity": "diagnostic",
+      "capability": "impact_analysis"
+    },
+    {
+      "name": "samplemanager_capabilities",
+      "category": "samplemanager",
+      "entity": "instance",
+      "capability": "capabilities"
+    },
+    {
+      "name": "samplemanager_inspect_assembly_type",
+      "category": "samplemanager",
+      "entity": "deployment",
+      "capability": "runtime_drift"
+    },
+    {
+      "name": "samplemanager_validate_form_task_contract",
+      "category": "samplemanager",
+      "entity": "form_task",
+      "capability": "contract"
+    },
+    {
+      "name": "samplemanager_create_deployment_manifest",
+      "category": "samplemanager",
+      "entity": "deployment",
+      "capability": "rollback_readiness"
+    },
+    {
+      "name": "samplemanager_restart_instance",
+      "category": "samplemanager",
+      "entity": "instance",
+      "capability": "readiness"
+    },
+    {
+      "name": "samplemanager_deployment_start",
+      "category": "samplemanager",
+      "entity": "deployment",
+      "capability": "runtime_drift"
+    },
+    {
+      "name": "samplemanager_clear_form_cache",
+      "category": "samplemanager",
+      "entity": "instance",
+      "capability": "readiness"
+    },
+    {
+      "name": "samplemanager_recent_errors",
+      "category": "samplemanager",
+      "entity": "instance",
+      "capability": "readiness"
+    },
+    {
+      "name": "samplemanager_table_schema",
+      "category": "samplemanager",
+      "entity": "data_model",
+      "capability": "schema"
+    },
+    {
+      "name": "samplemanager_sql_query",
+      "category": "samplemanager",
+      "entity": "data_model",
+      "capability": "schema"
+    },
+    {
+      "name": "samplemanager_sql_execute_file",
+      "category": "samplemanager",
+      "entity": "data_model",
+      "capability": "schema"
+    },
+    {
+      "name": "samplemanager_sql_mutation",
+      "category": "samplemanager",
+      "entity": "data_model",
+      "capability": "schema"
+    },
+    {
+      "name": "samplemanager_apply_change_set",
+      "category": "samplemanager",
+      "entity": "deployment",
+      "capability": "rollback_readiness"
+    },
+    {
+      "name": "samplemanager_run_command",
+      "category": "samplemanager",
+      "entity": "instance",
+      "capability": "readiness"
+    },
+    {
+      "name": "samplemanager_create_entity_definition",
+      "category": "samplemanager",
+      "entity": "data_model",
+      "capability": "schema"
+    },
+    {
+      "name": "samplemanager_convert_tables",
+      "category": "samplemanager",
+      "entity": "data_model",
+      "capability": "schema"
+    },
+    {
+      "name": "samplemanager_table_loader",
+      "category": "samplemanager",
+      "entity": "data_model",
+      "capability": "schema"
+    },
+    {
+      "name": "samplemanager_deploy_table_loader_package",
+      "category": "samplemanager",
+      "entity": "deployment",
+      "capability": "rollback_readiness"
+    },
+    {
+      "name": "samplemanager_run_utility",
+      "category": "samplemanager",
+      "entity": "instance",
+      "capability": "readiness"
+    },
+    {
+      "name": "samplemanager_discover_build_tools",
+      "category": "samplemanager",
+      "entity": "deployment",
+      "capability": "runtime_drift"
+    },
+    {
+      "name": "samplemanager_build_dotnet",
+      "category": "samplemanager",
+      "entity": "deployment",
+      "capability": "runtime_drift"
+    },
+    {
+      "name": "samplemanager_build_deploy_assembly",
+      "category": "samplemanager",
+      "entity": "deployment",
+      "capability": "runtime_drift"
+    },
+    {
+      "name": "samplemanager_deployment_status",
+      "category": "samplemanager",
+      "entity": "deployment",
+      "capability": "runtime_drift"
+    },
+    {
+      "name": "samplemanager_deployment_finish",
+      "category": "samplemanager",
+      "entity": "deployment",
+      "capability": "runtime_drift"
+    },
+    {
+      "name": "samplemanager_deploy_file",
+      "category": "samplemanager",
+      "entity": "deployment",
+      "capability": "runtime_drift"
+    },
+    {
+      "name": "samplemanager_restore_backup",
+      "category": "samplemanager",
+      "entity": "deployment",
+      "capability": "rollback_readiness"
+    }
+  ]
+}

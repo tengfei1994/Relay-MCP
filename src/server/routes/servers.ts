@@ -5,7 +5,7 @@ import { servers } from "../db/schema.js";
 import { z } from "zod";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { mkdirSync, readFileSync, existsSync } from "fs";
+import { mkdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { NodeSSH } from "node-ssh";
 import { quotePosix, quotePowerShell } from "../../shared/shell-utils.js";

@@ -62,9 +62,17 @@ export interface LimsInstanceInfo {
 
 export class ProjectRegistry {
   private db: Database.Database;
+  private closed = false;
 
   constructor() {
     this.db = new Database(DB_PATH, { readonly: false });
+  }
+
+  /** Release the SQLite handle held by this process-level registry. */
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.db.close();
   }
 
   getUserByToken(userId: number): { id: number; username: string } | undefined {
@@ -226,6 +234,22 @@ export class ProjectRegistry {
       } : undefined,
     }));
   }
+}
+
+// Tool registration happens per MCP request because each request has its own
+// transport/server instance. The registry itself is process-scoped: opening a
+// new SQLite handle for every request eventually exhausts handles on Windows.
+let sharedProjectRegistry: ProjectRegistry | undefined;
+
+export function getSharedProjectRegistry(): ProjectRegistry {
+  if (!sharedProjectRegistry) sharedProjectRegistry = new ProjectRegistry();
+  return sharedProjectRegistry;
+}
+
+export function closeSharedProjectRegistry(): void {
+  const registry = sharedProjectRegistry;
+  sharedProjectRegistry = undefined;
+  registry?.close();
 }
 
 function mapProject(row: any): ProjectInfo {

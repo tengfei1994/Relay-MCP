@@ -1,4 +1,3 @@
-import { compactText } from "./output.js";
 import { ensureRemoteSuccess, type RemoteExecutionOptions, type RemoteRunner } from "./remote-runner.js";
 import { instancePaths, type SampleManagerInstanceRef } from "./samplemanager-tools.js";
 

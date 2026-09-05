@@ -8,6 +8,14 @@
 
 Relay MCP 让 Codex、Claude 等 MCP 客户端通过一台自托管 Relay，按受控的项目、服务器和环境范围执行远程运维与 SampleManager 开发任务。目标服务器既可以使用 SSH，也可以运行仅需出站 HTTP 的 Relay Agent。
 
+### Authentication compatibility
+
+MCP defaults to `Authorization: Bearer <token>`. Legacy `?token=` query
+authentication is disabled by default since v0.6.3; enable
+`RELAY_MCP_ALLOW_QUERY_TOKEN=true` only for clients that cannot send headers.
+This is a compatibility-breaking security change because query tokens may
+leak through URLs, proxy logs, browser history, and monitoring systems.
+
 ## v0.6.3
 
 - Agent 通过 `artifact-upload` job 将远程文件流式上传到 Relay，不再把大型二进制塞进 Base64/JSON。
@@ -46,6 +54,14 @@ Relay 管理层中的对象彼此独立：
 - **LIMS Instance**：某台 Server 上独立的 SampleManager 实例，保存版本、路径、数据库、服务和构建配置。
 - **MCP Token**：授权 Codex 等 MCP 客户端访问哪些 Project 和 Server。
 - **Agent Token**：仅用于一个 Relay Agent 注册、轮询 job 和回传结果，不授予 MCP 客户端权限。
+
+### MCP 组合根与 Knowledge 事件边界
+
+`src/mcp/index.ts` 只处理 HTTP Transport、认证、依赖组装和审计入口；MCP 工具注册位于 `src/mcp/register-tools.ts`。新增工具必须放入相应的域 registrar，不能再直接追加到入口文件，以保持工具名称、参数、注解、权限和 legacy alias 的兼容边界。
+
+Knowledge Plane 使用独立的 `knowledge.db`（默认锚定到 `RELAY_STATE_ROOT/knowledge.db`，可通过 `KNOWLEDGE_DB_PATH` 配置），其迁移位于 `src/knowledge/migrations/`。启动时会对 Knowledge DB 与 `DB_PATH` 做规范化路径比较；两者相同会拒绝启动。Job 和 Deployment 仅通过失败隔离的 domain-event outbox 通知 Knowledge Plane：知识库或消费者不可用时，不会改变远程执行、部署、审计或回滚主路径。消费者以 event ID checkpoint 幂等确认；项目解析故障采用指数退避并保留在 outbox 中，不会因普通 poison-event 上限而丢失 Candidate。
+
+Knowledge 检索的版本化黄金集、质量门槛和 10 万 chunk FTS5 基线见 [质量基线说明](docs/knowledge-quality-baseline.md)。
 
 ## 核心能力
 
@@ -187,7 +203,9 @@ default_tools_approval_mode = "prompt"
 }
 ```
 
-生产环境应使用 HTTPS，避免在 URL query 中携带 token，并通过反向代理限制 Web 与 MCP 入口。
+注意：`?token=` 属于 legacy 传输（query 中的 token 会进入代理日志与浏览器历史），**默认已禁用**。仅当客户端无法设置请求头时，才显式设置 `RELAY_MCP_ALLOW_QUERY_TOKEN=true` 启用。
+
+生产环境应使用 HTTPS，优先使用 `Authorization: Bearer`，并通过反向代理限制 Web 与 MCP 入口。
 
 ## 目标选择
 
@@ -281,6 +299,8 @@ SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备�
 
 ## MCP 工具目录
 
+Knowledge 审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [`docs/knowledge-governance.md`](docs/knowledge-governance.md)；可复用 Case/Pattern/Playbook 模板位于 [`docs/templates/`](docs/templates/)。
+
 下表与 `src/shared/tool-catalog.ts` 保持同步，测试会检查注册工具是否出现在 README 中。
 
 | 分类 | 工具 | 说明 |
@@ -332,7 +352,17 @@ SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备�
 | Jobs | `job_cancel` | 请求取消运行中的 SSH job。 |
 | Context | `context_record_fact` | 保存持久化 Project fact。 |
 | Context | `context_search` | 搜索持久化 Project fact。 |
+| Context | `knowledge_search` | 按 Project、SampleManager 版本、解决方案、模块和环境检索 Case、Pattern、Playbook、Candidate 与 Fact。 |
+| Context | `knowledge_get` | 在 Project ACL 校验后读取 Knowledge 文档完整正文和来源。 |
+| Context | `knowledge_playbook_get` | 读取 Playbook 的步骤、回滚说明、生命周期和提议的 Skill diff。 |
+| Context | `knowledge_evidence_get` | 读取 Evidence 元数据；内容通过受控、审计的下载路径访问。 |
+| Context | `knowledge_relation_query` | 查询带来源、置信度和验证状态的 SampleManager 对象关系。 |
+| Context | `knowledge_feedback` | 记录检索结果是否有帮助，不直接修改 Casebook 或生产 Skill。 |
+| Context | `knowledge_ingest` | 幂等导入 Git Casebook Markdown/YAML 与 legacy context JSONL。 |
+| Context | `knowledge_reindex` | 重建 Project 范围的 FTS 索引，并可受控地失效 embedding 缓存。 |
 | SampleManager | `samplemanager_capabilities` | 解析实例使用的版本化 Capability Pack，并列出已就绪、规划中和不可用的语义检查能力。 |
+| SampleManager | `samplemanager_diagnose` | 组合版本过滤的 Knowledge 检索与 Form/Task/Assembly 只读检查；不执行 deploy、restart、clear 或 SQL mutation。 |
+| SampleManager | `samplemanager_impact_analysis` | 根据确定性、带来源的关系计算只读影响范围。 |
 | SampleManager | `samplemanager_inspect_assembly_type` | 对单一程序集类型执行受限反射，返回扁平化属性、方法、事件、依赖、版本和 SHA-256 证据。 |
 | SampleManager | `samplemanager_validate_form_task_contract` | 只读核对 FORM/TASK/MASTER_MENU、目标 Form XML/控件、FormsBin cache 与可选程序集类型契约。 |
 | SampleManager | `samplemanager_create_deployment_manifest` | 在 Relay workspace 生成含明确目标与源文件 SHA-256 的只读部署 manifest，不执行构建或部署。 |
@@ -365,10 +395,18 @@ SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备�
 |---|---|---|
 | `PORT` | `3000` | Web API/UI 端口。 |
 | `MCP_PORT` | `3001` | MCP HTTP endpoint 端口。 |
-| `JWT_SECRET` | 必填 | Web JWT 与 token 签名密钥。 |
+| `JWT_SECRET` | 必填 | Web JWT 与 token 签名密钥。非 `development`/`test` 环境下未设置会拒绝启动。 |
+| `RELAY_MCP_ALLOW_QUERY_TOKEN` | `false` | 是否允许 `/mcp?token=` legacy query 认证（仅无法设置请求头的客户端）。 |
 | `MCP_SECRET` | 可选 | MCP 相关独立 secret。 |
 | `MCP_OUTPUT_LIMIT` | `12000` | 工具紧凑输出字符上限。 |
+| `RELAY_MCP_VERSION` | `0.6.3` | MCP server 与 `/mcp/health` 使用的协议元数据版本。 |
 | `DB_PATH` | `./data/app.db` | SQLite 数据库路径。 |
+| `KNOWLEDGE_DB_PATH` | `${RELAY_STATE_ROOT}/knowledge.db` | 独立 Knowledge SQLite 路径；不能与 `DB_PATH` 指向同一规范化文件。 |
+| `KNOWLEDGE_CAPTURE_INTERVAL_MS` | `1000` | Knowledge Capture Worker 轮询间隔（250–60000）。 |
+| `KNOWLEDGE_OUTBOX_PRUNE_INTERVAL_MS` | `3600000` | Knowledge outbox retention 清理间隔（60000–86400000）。 |
+| `KNOWLEDGE_OUTBOX_RETENTION_MS` | `2592000000` | Knowledge outbox 保留时长（至少 1 小时）。非法值回退到 30 天。 |
+| `KNOWLEDGE_CONSUMER_HEARTBEAT_MS` | `604800000` | Knowledge consumer 活跃租约时长（默认 7 天）；超过租约未 heartbeat 的 consumer 不会永久阻塞 outbox retention。 |
+| `RELAY_MCP_SHUTDOWN_GRACE_MS` | `10000` | MCP 收到 SIGTERM/SIGINT 后等待 HTTP 连接关闭的最长毫秒数（250–60000）；超时后会关闭连接并退出。 |
 | `WORKSPACE_ROOT` | `/workspace` | Project workspace 根目录。 |
 | `RELAY_STATE_ROOT` | `/workspace/.relay-mcp` | job、audit、staging 和 context 状态目录。 |
 | `SSH_KEYS_DIR` | `/workspace/.ssh-keys` | Relay SSH key 目录。 |
@@ -397,6 +435,22 @@ npm --prefix frontend install
 npm test
 npm run build
 ```
+
+`npm test` and `npm run build` automatically run `npm run check:mcp-boundary`,
+which is the P00 CI gate for the MCP composition root: it
+limits `src/mcp/index.ts` to 350 lines, prevents direct tool registration there,
+and verifies that registrar tool names and `TOOL_CATALOG` remain an exact union.
+The versioned `tests/fixtures/mcp-tools-baseline.json` additionally freezes the
+runtime `tools/list` schemas, descriptions, annotations, aliases, and capability
+metadata so a registrar refactor cannot silently remove or alter a tool.
+Regenerate it only after reviewing an intentional contract change:
+
+```bash
+npm run generate:mcp-baseline
+```
+
+The snapshot records its source Git commit, MCP SDK version, generation command,
+timestamp, and whether the worktree was dirty when it was generated.
 
 常用开发命令：
 

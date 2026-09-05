@@ -1,5 +1,5 @@
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
-import { FolderOpen, Server, LogOut, Users, KeyRound, Boxes, TerminalSquare } from "lucide-react";
+import { FolderOpen, Server, LogOut, Users, KeyRound, Boxes, TerminalSquare, GitBranch } from "lucide-react";
 import { useAuth } from "../App";
 
 export default function Layout() {
@@ -48,6 +48,10 @@ export default function Layout() {
           <NavLink to="/tools" className={navCls}>
             <TerminalSquare size={15} />
             MCP Tools
+          </NavLink>
+          <NavLink to="/knowledge" className={navCls}>
+            <GitBranch size={15} />
+            Knowledge
           </NavLink>
           <NavLink to="/tokens" className={navCls}>
             <KeyRound size={15} />

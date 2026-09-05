@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { extname, relative, join } from "node:path";
+import { readFileSync, readdirSync, statSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { extname, relative, join, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { unzipSync } from "fflate";
 import type { KnowledgeStore } from "./store.js";
 
 export interface ProductDocumentImportOptions {
@@ -22,6 +23,23 @@ function inferMetadata(path: string, body: string, explicitFamily?: string): Inf
   return { module, documentType, documentFamilyId: family, confidence: module ? 0.82 : 0.58, reasons };
 }
 export function importProductDocuments(store: KnowledgeStore, options: ProductDocumentImportOptions): ProductDocumentImportReport {
+  if (statSync(options.root).isFile() && extname(options.root).toLowerCase() === ".zip") {
+    const expanded = `${options.root}.expanded-${createHash("sha256").update(options.root).digest("hex").slice(0, 12)}`;
+    mkdirSync(expanded, { recursive: true });
+    try {
+      const archive = unzipSync(readFileSync(options.root));
+      const rootResolved = resolve(expanded);
+      for (const [entry, content] of Object.entries(archive)) {
+        const target = resolve(expanded, entry);
+        if (target !== rootResolved && !target.startsWith(rootResolved + sep)) throw new Error(`ZIP entry escapes extraction root: ${entry}`);
+        if (entry.endsWith("/")) continue;
+        const extension = extname(entry).toLowerCase();
+        if (![".md", ".markdown", ".html", ".htm", ".pdf", ".yaml", ".yml"].includes(extension)) continue;
+        mkdirSync(join(target, ".."), { recursive: true }); writeFileSync(target, content);
+      }
+      return importProductDocuments(store, { ...options, root: expanded, manifestPath: options.manifestPath ? resolve(expanded, options.manifestPath) : undefined });
+    } finally { rmSync(expanded, { recursive: true, force: true }); }
+  }
   const runId = `product-docs-${createHash("sha256").update(JSON.stringify(options)).digest("hex").slice(0, 16)}`;
   const report: ProductDocumentImportReport = { runId, imported: 0, unchanged: 0, failed: 0, warnings: [], documents: [] };
   const now = new Date().toISOString();
@@ -30,7 +48,7 @@ export function importProductDocuments(store: KnowledgeStore, options: ProductDo
   try { if (statSync(manifestFile).isFile()) manifest = parseYaml(readFileSync(manifestFile, "utf8")) as Record<string, unknown> ?? {}; } catch { /* manifest is optional */ }
   const defaults = {
     product: options.product ?? (typeof manifest.product === "string" ? manifest.product : undefined),
-    sampleManagerVersion: options.sampleManagerVersion || (typeof manifest.sampleManagerVersion === "string" ? manifest.sampleManagerVersion : ""),
+    sampleManagerVersion: options.sampleManagerVersion || (manifest.sampleManagerVersion === undefined ? "" : String(manifest.sampleManagerVersion)),
     solution: options.solution ?? (typeof manifest.solution === "string" ? manifest.solution : undefined),
     module: options.module ?? (typeof manifest.module === "string" ? manifest.module : undefined),
     language: options.language ?? (typeof manifest.language === "string" ? manifest.language : undefined),

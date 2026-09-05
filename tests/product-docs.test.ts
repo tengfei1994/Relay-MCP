@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
+import { zipSync, strToU8 } from "fflate";
 import { createKnowledgeStore } from "../src/knowledge/store.ts";
 import { importProductDocuments, productDocumentDiff } from "../src/knowledge/product-docs.ts";
 
@@ -32,5 +33,17 @@ test("product document diff detects section changes and moves", () => {
     const diff = productDocumentDiff(store, left, right);
     assert.ok(diff.changes.some((item) => item.status === "renamed" || item.status === "moved"));
     assert.ok(diff.changes.some((item) => item.status === "added"));
+  } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("product document import expands ZIP batches and rejects traversal", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-product-zip-"));
+  const archive = join(root, "batch.zip");
+  writeFileSync(archive, zipSync({ "manifest.yaml": strToU8("sampleManagerVersion: 21.2\nproduct: SampleManager\n"), "docs/install.md": strToU8("# Install\n\nRun setup.\n") }));
+  const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });
+  try {
+    const report = importProductDocuments(store, { root: archive, sampleManagerVersion: "" });
+    assert.equal(report.imported, 1);
+    assert.equal((store.db.prepare("SELECT samplemanager_version FROM knowledge_documents WHERE kind='product_document'").get() as { samplemanager_version: string }).samplemanager_version, "21.2");
   } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });

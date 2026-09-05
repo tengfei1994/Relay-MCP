@@ -10,7 +10,9 @@ import { importCasebook, importContextFacts } from "../../knowledge/importer.js"
 import { analyzeRelationImpact, queryRelations } from "../../knowledge/relations.js";
 import { searchKnowledge } from "../../knowledge/retriever.js";
 import { importProductDocuments, productDocumentDiff } from "../../knowledge/product-docs.js";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { resolveWorkspacePath } from "../../shared/workspace-path.js";
+import { relayEventSpoolHealth } from "../../knowledge/event-sink.js";
 import {
   acceptCandidate,
   deprecateDocument,
@@ -179,6 +181,23 @@ function replayOrRun<T>(store: ReturnType<typeof getKnowledgeStore>, userId: num
 
 function sendError(reply: FastifyReply, error: unknown, status = 400) {
   return reply.status(status).send({ error: error instanceof Error ? error.message : String(error) });
+}
+
+function safeRows<T>(work: () => T, fallback: T): T {
+  try { return work(); } catch { return fallback; }
+}
+
+function knowledgeHealth(store: ReturnType<typeof getKnowledgeStore>) {
+  const fts = safeRows(() => Number((store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_fts").get() as { count?: number }).count ?? 0), 0);
+  const vectors = safeRows(() => Number((store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_embeddings").get() as { count?: number }).count ?? 0), 0);
+  const spool = relayEventSpoolHealth();
+  return {
+    database: { status: "available", checkedAt: new Date().toISOString() },
+    fts: { status: fts > 0 ? "ready" : "empty", indexedRows: fts },
+    vectors: { status: vectors > 0 ? "ready" : "disabled_or_empty", indexedRows: vectors },
+    captureWorker: { status: "managed_by_remote_ops_mcp", note: "Worker telemetry is reported by /mcp/diagnostics." },
+    spool,
+  };
 }
 
 function parseKinds(raw: unknown): Array<"candidate" | "case" | "pattern" | "playbook" | "fact"> | undefined {
@@ -462,22 +481,44 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   app.get("/api/knowledge/dashboard", { onRequest: [app.authenticate] }, async (request, reply) => {
     try {
       const { store, projectId } = resolveProject(request.user.id, (request.query as Record<string, unknown>).projectId);
-      const counts = store.db.prepare("SELECT kind, lifecycle, COUNT(*) AS count FROM knowledge_documents WHERE project_id = ? GROUP BY kind, lifecycle ORDER BY kind, lifecycle").all(projectId) as Array<Record<string, unknown>>;
-      const totals = store.db.prepare("SELECT kind, COUNT(*) AS count FROM knowledge_documents WHERE project_id = ? GROUP BY kind ORDER BY kind").all(projectId) as Array<Record<string, unknown>>;
-      const evidence = store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_evidence WHERE project_id = ? AND deleted_at IS NULL").get(projectId) as { count?: number };
-      const backlog = store.consumerBacklog("knowledge-capture");
-      const lastReview = store.db.prepare("SELECT id,action,entity_type,entity_id,created_at FROM knowledge_reviews r JOIN knowledge_documents d ON d.id = r.document_id WHERE d.project_id = ? ORDER BY r.created_at DESC LIMIT 1").get(projectId);
-      const lastIngest = store.db.prepare("SELECT id,status,imported,skipped,failed,started_at,finished_at,error FROM knowledge_ingest_runs ORDER BY started_at DESC LIMIT 1").get();
-      return reply.send({ projectId, totals: [...totals, { kind: "evidence", count: Number(evidence.count ?? 0) }], counts, recent: { lastReview, lastIngest }, capture: { backlog, workerManagedBy: "remote-ops-mcp", checkedAt: new Date().toISOString() } });
+      const kinds = ["product_document", "candidate", "case", "pattern", "playbook", "fact", "evidence"];
+      const counts = safeRows(() => store.db.prepare("SELECT kind, lifecycle, COUNT(*) AS count FROM knowledge_documents WHERE project_id = ? GROUP BY kind, lifecycle ORDER BY kind, lifecycle").all(projectId) as Array<Record<string, unknown>>, []);
+      const globalProductCount = safeRows(() => Number((store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_documents d WHERE d.kind = 'product_document' AND EXISTS (SELECT 1 FROM knowledge_scope_bindings s WHERE s.document_id=d.id AND s.visibility='global')").get() as { count?: number }).count ?? 0), 0);
+      const evidenceCount = safeRows(() => Number((store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_evidence WHERE project_id = ? AND deleted_at IS NULL").get(projectId) as { count?: number }).count ?? 0), 0);
+      const totals = kinds.map((kind) => ({ kind, count: kind === "product_document" ? globalProductCount : kind === "evidence" ? evidenceCount : counts.filter((item) => String(item.kind) === kind).reduce((sum, item) => sum + Number(item.count ?? 0), 0) }));
+      const backlog = safeRows(() => store.consumerBacklog("knowledge-capture"), { count: 0 });
+      const lastReview = safeRows(() => store.db.prepare("SELECT r.id,r.action,r.entity_type,r.entity_id,r.created_at FROM knowledge_reviews r JOIN knowledge_documents d ON d.id = r.document_id WHERE d.project_id = ? ORDER BY r.created_at DESC LIMIT 1").get(projectId), undefined);
+      const lastIngest = safeRows(() => store.db.prepare("SELECT id,status,imported,skipped,failed,started_at,finished_at,error FROM knowledge_ingest_runs ORDER BY started_at DESC LIMIT 1").get(), undefined);
+      const recentEvents = safeRows(() => store.db.prepare("SELECT id,type,occurred_at,job_id,deployment_id FROM relay_domain_events WHERE project_id = ? ORDER BY occurred_at DESC LIMIT 10").all(projectId), []);
+      return reply.send({ projectId, totals, counts, scope: { globalProductDocuments: globalProductCount, projectDocuments: counts.reduce((sum, item) => sum + Number(item.count ?? 0), 0) }, recent: { lastReview, lastIngest, events: recentEvents }, health: knowledgeHealth(store), capture: { backlog, workerManagedBy: "remote-ops-mcp", checkedAt: new Date().toISOString() } });
+    } catch (error) { return sendError(reply, error, 400); }
+  });
+
+  app.get("/api/knowledge/diagnostics", { onRequest: [app.authenticate] }, async (request, reply) => {
+    try {
+      const { store, projectId } = resolveProject(request.user.id, (request.query as Record<string, unknown>).projectId);
+      const spoolPath = `${store.evidenceRoot ? store.evidenceRoot.replace(/[\\/]evidence[\\/]?$/, "") : ".relay-mcp"}/knowledge-event-spool.jsonl.dead-letter`;
+      const deadLetters = safeRows(() => readFileSync(spoolPath, "utf8").split(/\r?\n/).filter(Boolean).slice(-20).map((line) => { try { return JSON.parse(line); } catch { return { raw: line }; } }), []);
+      return reply.send({ projectId, health: knowledgeHealth(store), deadLetters, checkedAt: new Date().toISOString() });
+    } catch (error) { return sendError(reply, error, 400); }
+  });
+
+  app.get("/api/knowledge/ingest-runs", { onRequest: [app.authenticate] }, async (request, reply) => {
+    try {
+      const { store } = resolveProject(request.user.id, (request.query as Record<string, unknown>).projectId);
+      const limit = parseBoundedInt((request.query as Record<string, unknown>).limit, 50, 1, 200);
+      return reply.send({ runs: safeRows(() => store.db.prepare("SELECT id,source_locator,status,imported,skipped,failed,started_at,finished_at,error FROM knowledge_ingest_runs ORDER BY started_at DESC LIMIT ?").all(limit), []) });
     } catch (error) { return sendError(reply, error, 400); }
   });
 
   app.post("/api/knowledge/product-docs/import", { onRequest: [app.authenticate] }, async (request, reply) => {
-    const body = z.object({ root: z.string().min(1), product: z.string().max(200).optional(), sampleManagerVersion: z.string().min(1).max(80), solution: z.string().max(200).optional(), module: z.string().max(200).optional(), language: z.string().max(20).optional(), authority: z.string().max(80).optional(), documentFamilyId: z.string().max(200).optional() }).safeParse(request.body);
+    const body = z.object({ root: z.string().min(1).optional(), projectId: z.number().int().positive().optional(), path: z.string().min(1).optional(), product: z.string().max(200).optional(), sampleManagerVersion: z.string().min(1).max(80), solution: z.string().max(200).optional(), module: z.string().max(200).optional(), language: z.string().max(20).optional(), authority: z.string().max(80).optional(), documentFamilyId: z.string().max(200).optional() }).refine((value) => Boolean(value.root || (value.projectId && value.path)), "root or projectId/path is required").safeParse(request.body);
     if (!body.success) return reply.status(400).send({ error: "Invalid product document import", details: body.error.issues });
-    if (!request.user.isAdmin || !existsSync(body.data.root)) return reply.status(403).send({ error: "Administrator access and an existing source directory are required" });
+    if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
     try {
-      const store = getKnowledgeStore(); const report = importProductDocuments(store, body.data);
+      const root = body.data.root ?? (() => { const project = db.select().from(projects).where(and(eq(projects.id, body.data.projectId!), eq(projects.userId, request.user.id))).get(); if (!project) throw new Error("Project not found"); return resolveWorkspacePath(project.workspacePath, body.data.path!, { mustExist: true }); })();
+      if (!existsSync(root)) return reply.status(403).send({ error: "An existing source directory is required" });
+      const store = getKnowledgeStore(); const report = importProductDocuments(store, { ...body.data, root });
       store.audit({ actorId: request.user.id, action: "knowledge.product_documents.import", entityType: "product_document_batch", entityId: report.runId, details: { ...report } });
       return reply.send(report);
     } catch (error) { return sendError(reply, error, 400); }

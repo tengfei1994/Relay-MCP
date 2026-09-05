@@ -57,11 +57,21 @@ export default function KnowledgePage() {
   }, []);
 
   useEffect(() => {
-    if (!projectId) return;
+    api.productDocuments({ sampleManagerVersion: version || undefined })
+      .then((response) => setProductDocs(response.documents.map((item: any) => ({ ...item, kind: "product_document", summary: item.summary ?? item.title }))))
+      .catch(() => setProductDocs([]));
+  }, [version]);
+
+  useEffect(() => {
+    if (!projectId) {
+      setStatus(null);
+      setDashboard(null);
+      setCandidates([]);
+      return;
+    }
     api.knowledgeIndexStatus(projectId).then(setStatus).catch(() => setStatus(null));
     api.knowledgeDashboard(projectId).then(setDashboard).catch(() => setDashboard(null));
     api.knowledgeCandidates(projectId).then((response) => setCandidates(response.candidates)).catch(() => setCandidates([]));
-    api.productDocuments({ sampleManagerVersion: version || undefined }).then((response) => setProductDocs(response.documents.map((item: any) => ({ ...item, kind: "product_document", summary: item.summary ?? item.title })))) .catch(() => setProductDocs([]));
   }, [projectId]);
 
   const search = async (event?: React.FormEvent) => {

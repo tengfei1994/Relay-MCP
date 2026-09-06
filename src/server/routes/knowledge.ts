@@ -12,6 +12,7 @@ import { analyzeRelationImpact, queryRelations } from "../../knowledge/relations
 import { searchKnowledge } from "../../knowledge/retriever.js";
 import { importKnowledgeProducts, searchKnowledgeProducts, diffKnowledgeProducts, updateProductDocumentLifecycle } from "../../knowledge/knowledge-products.js";
 import { classifyRelayEvent } from "../../knowledge/event-classifier.js";
+import { readDeadLetterPage } from "../../knowledge/dead-letter-page.js";
 import { existsSync, readFileSync } from "node:fs";
 import { resolveWorkspacePath } from "../../shared/workspace-path.js";
 import { relayEventSpoolHealth } from "../../knowledge/event-sink.js";
@@ -981,11 +982,13 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     const query = request.query as Record<string, unknown>; const store = getKnowledgeStore(); const projectId = query.projectId ? resolveProject(request.user.id, query.projectId).projectId : undefined; const limit = parseBoundedInt(query.limit, 100, 1, 500); const params: unknown[] = [];
     const where = ["1=1"]; if (projectId) { where.push("project_id=?"); params.push(projectId); } else if (!request.user.isAdmin) {
       const owned = db.select({ id: projects.id }).from(projects).where(eq(projects.userId, request.user.id)).all().map((row) => String(row.id));
-      if (!owned.length) return reply.send({ events: [] });
+      if (!owned.length) return reply.send({ events: [], page: { limit, offset: 0, total: 0 } });
       where.push(`project_id IN (${owned.map(() => "?").join(",")})`); params.push(...owned);
     }
-    const rows = store.db.prepare(`SELECT id,type,occurred_at,project_id,project_name_snapshot,job_id,deployment_id,event_key,payload_json FROM relay_domain_events WHERE ${where.join(" AND ")} ORDER BY occurred_at DESC LIMIT ?`).all(...params, limit) as KnowledgeRow[];
-    return reply.send({ events: rows.map((row) => ({ id: row.id, type: row.type, occurredAt: row.occurred_at, projectId: row.project_id, projectName: row.project_name_snapshot, jobId: row.job_id, deploymentId: row.deployment_id, eventKey: row.event_key, payloadKeys: safeRows(() => Object.keys(JSON.parse(String(row.payload_json ?? "{}"))), []) })) });
+    const offset = parseBoundedInt(query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+    const total = Number((store.db.prepare(`SELECT COUNT(*) AS count FROM relay_domain_events WHERE ${where.join(" AND ")}`).get(...params) as { count: number }).count);
+    const rows = store.db.prepare(`SELECT id,type,occurred_at,project_id,project_name_snapshot,job_id,deployment_id,event_key,payload_json FROM relay_domain_events WHERE ${where.join(" AND ")} ORDER BY occurred_at DESC,id DESC LIMIT ? OFFSET ?`).all(...params, limit, offset) as KnowledgeRow[];
+    return reply.send({ page: { limit, offset, total }, events: rows.map((row) => ({ id: row.id, type: row.type, occurredAt: row.occurred_at, projectId: row.project_id, projectName: row.project_name_snapshot, jobId: row.job_id, deploymentId: row.deployment_id, eventKey: row.event_key, payloadKeys: safeRows(() => Object.keys(JSON.parse(String(row.payload_json ?? "{}"))), []) })) });
   });
 
   app.get("/api/knowledge/operations/capture/queue", { onRequest: [app.authenticate] }, async (request, reply) => {
@@ -1015,7 +1018,16 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     return reply.send({ ok: true, ...result, dryRun: Boolean(body.data.dryRun), queuedFor: "knowledge-capture", note: body.data.dryRun ? "No events were changed." : "Events are queued for the Capture Worker." });
   });
 
-  app.get("/api/knowledge/operations/capture/dead-letter", { onRequest: [app.authenticate] }, async (request, reply) => { const store = getKnowledgeStore(); if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" }); return reply.send({ deadLetters: readDeadLetters(store, 200) }); });
+  app.get("/api/knowledge/operations/capture/dead-letter", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const store = getKnowledgeStore();
+    if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
+    const query = request.query as Record<string, unknown>;
+    const limit = parseBoundedInt(query.limit, 10, 1, 100);
+    const offset = parseBoundedInt(query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+    const stateRoot = store.evidenceRoot ? store.evidenceRoot.replace(/[\\/]evidence[\\/]?$/, "") : ".relay-mcp";
+    const owned = request.user.isAdmin ? undefined : db.select({ id: projects.id }).from(projects).where(eq(projects.userId, request.user.id)).all().map((row) => String(row.id));
+    return reply.send(await readDeadLetterPage([`${stateRoot}/knowledge-event-spool.jsonl.dead-letter`, `${stateRoot}/knowledge-capture-dead-letter.jsonl`], limit, offset, owned));
+  });
 
   app.post("/api/knowledge/operations/capture/smoke-test", { onRequest: [app.authenticate] }, async (request, reply) => {
     if (!request.user.isAdmin && !knowledgeReviewAllowed(getKnowledgeStore(), request.user.id)) return reply.status(403).send({ error: "Reviewer access required" });

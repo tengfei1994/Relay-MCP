@@ -92,7 +92,7 @@ export const api = {
     const query = new URLSearchParams({ projectId: String(params.projectId), objectId: params.objectId });
     for (const key of ["maxDepth", "direction", "verifiedOnly"] as const) {
       const value = params[key];
-      if (value !== undefined && value !== "") query.set(key, String(value));
+      if (value !== undefined) query.set(key, String(value));
     }
     return request<{ root: string; nodes: string[]; relations: any[] }>("GET", `/knowledge/relations/impact?${query.toString()}`);
   },
@@ -121,9 +121,9 @@ export const api = {
   knowledgeReview: (body: Record<string, unknown>, idempotencyKey?: string) => request<any>("POST", "/knowledge/reviews", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
   knowledgeFeedback: (body: Record<string, unknown>, idempotencyKey?: string) => request<any>("POST", "/knowledge/feedback", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
   knowledgeOperationsCapture: () => request<any>("GET", "/knowledge/operations/capture"),
-  knowledgeOperationsCaptureEvents: (limit = 20) => request<any>("GET", `/knowledge/operations/capture/events?limit=${limit}`),
+  knowledgeOperationsCaptureEvents: (limit = 10, offset = 0) => request<any>("GET", `/knowledge/operations/capture/events?limit=${limit}&offset=${offset}`),
   knowledgeOperationsCaptureQueue: (limit = 20) => request<any>("GET", `/knowledge/operations/capture/queue?limit=${limit}`),
-  knowledgeOperationsDeadLetters: () => request<any>("GET", "/knowledge/operations/capture/dead-letter"),
+  knowledgeOperationsDeadLetters: (limit = 10, offset = 0) => request<any>("GET", `/knowledge/operations/capture/dead-letter?limit=${limit}&offset=${offset}`),
   knowledgeOperationsSmokeTest: (body: Record<string, unknown> = {}, idempotencyKey?: string) => request<any>("POST", "/knowledge/operations/capture/smoke-test", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
   knowledgeOperationsReplayCapture: (body: Record<string, unknown>, idempotencyKey?: string) => request<any>("POST", "/knowledge/operations/capture/replay", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
   knowledgeOperationsIngestRuns: (limit = 50) => request<any>("GET", `/knowledge/operations/ingest-runs?limit=${limit}`),

@@ -340,6 +340,7 @@ test("migrations tolerate a partially applied event_key column", async (t) => {
         "014-deterministic-compiler",
         "015-product-documents",
         "016-product-document-governance",
+        "017-product-document-operations",
       ]);
       store.append({ id: "event-partial", type: "job.finished", eventKey: "job:partial:finished", ...eventDefaults });
       assert.equal(store.claim("capture").length, 1);

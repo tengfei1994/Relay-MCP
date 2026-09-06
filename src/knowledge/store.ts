@@ -20,6 +20,7 @@ import { KNOWLEDGE_SCOPE_MIGRATION } from "./migrations/013-knowledge-scope.js";
 import { DETERMINISTIC_COMPILER_MIGRATION } from "./migrations/014-deterministic-compiler.js";
 import { PRODUCT_DOCUMENTS_MIGRATION } from "./migrations/015-product-documents.js";
 import { PRODUCT_DOCUMENT_GOVERNANCE_MIGRATION } from "./migrations/016-product-document-governance.js";
+import { PRODUCT_DOCUMENT_OPERATIONS_MIGRATION } from "./migrations/017-product-document-operations.js";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
 import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type CandidateCard, type KnowledgeDocument, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeBinding, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
@@ -50,6 +51,7 @@ const KNOWLEDGE_MIGRATIONS = [
   DETERMINISTIC_COMPILER_MIGRATION,
   PRODUCT_DOCUMENTS_MIGRATION,
   PRODUCT_DOCUMENT_GOVERNANCE_MIGRATION,
+  PRODUCT_DOCUMENT_OPERATIONS_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(
@@ -176,6 +178,9 @@ export class KnowledgeStore {
           } else if (migration.version === "016-product-document-governance" && /duplicate column name/i.test(String(error))) {
             // Product document governance is additive; the repair pass below
             // completes columns left behind by an interrupted migration.
+          } else if (migration.version === "017-product-document-operations" && /duplicate column name/i.test(String(error))) {
+            // Product operation metadata is additive; the repair pass below
+            // completes columns/tables left behind by an interrupted migration.
           } else throw error;
         }
         insert.run(migration.version, this.now().toISOString());
@@ -185,7 +190,7 @@ export class KnowledgeStore {
     // Databases created by the early P01 preview may already carry the
     // 002-domain marker but not the type projections introduced later. Make
     // this additive repair safe and idempotent without rewriting user data.
-    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_product_documents"];
+    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions"];
     const missingTable = requiredTables.some((name) => !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
     if (missingTable) this.db.exec(KNOWLEDGE_DOMAIN_MIGRATION.sql);
     const columns: Record<string, Array<[string, string]>> = {
@@ -196,6 +201,7 @@ export class KnowledgeStore {
       knowledge_relations: [["project_id", "TEXT"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"], ["source_sha256", "TEXT"]],
       knowledge_candidate_cards: [["event_class", "TEXT"], ["capture_reason", "TEXT"], ["impact", "TEXT"]],
       knowledge_product_documents: [["metadata_json", "TEXT NOT NULL DEFAULT '{}'"], ["diff_review_status", "TEXT NOT NULL DEFAULT 'not_reviewed'"], ["diff_reviewed_by", "INTEGER"], ["diff_reviewed_at", "TEXT"]],
+      knowledge_ingest_runs: [["operation_idempotency_key", "TEXT"], ["batch_metadata_json", "TEXT NOT NULL DEFAULT '{}'"], ["source_root", "TEXT"], ["source_commit", "TEXT"], ["source_sha256", "TEXT"]],
     };
     for (const [table, definitions] of Object.entries(columns)) {
       const present = new Set((this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
@@ -207,6 +213,25 @@ export class KnowledgeStore {
       evidence_refs_json TEXT NOT NULL DEFAULT '[]', source_locator TEXT NOT NULL, source_sha256 TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     ); CREATE INDEX IF NOT EXISTS idx_knowledge_observations_project ON knowledge_observations(project_id, created_at);`);
+    this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_ingest_idempotency
+      ON knowledge_ingest_runs(operation_idempotency_key)
+      WHERE operation_idempotency_key IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS knowledge_product_document_items (
+        id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES knowledge_ingest_runs(id) ON DELETE CASCADE,
+        relative_path TEXT NOT NULL, document_id TEXT REFERENCES knowledge_documents(id) ON DELETE SET NULL,
+        status TEXT NOT NULL, source_sha256 TEXT, metadata_json TEXT NOT NULL DEFAULT '{}', warning TEXT, error TEXT,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(run_id, relative_path),
+        CHECK(status IN ('queued','running','imported','updated','unchanged','deprecated','failed','warning'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_product_document_items_run ON knowledge_product_document_items(run_id, status, relative_path);
+      CREATE TABLE IF NOT EXISTS knowledge_product_document_revisions (
+        id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+        against_document_id TEXT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+        report_json TEXT NOT NULL, review_status TEXT NOT NULL DEFAULT 'not_reviewed', reviewed_by INTEGER,
+        reviewed_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(document_id, against_document_id), CHECK(review_status IN ('not_reviewed','accepted','rejected','needs_review'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_product_document_revisions_review ON knowledge_product_document_revisions(review_status, updated_at);`);
     this.backfillDefaultScopes();
   }
 

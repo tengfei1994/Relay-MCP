@@ -1,84 +1,19 @@
-import { Outlet, NavLink, useNavigate } from "react-router-dom";
-import { FolderOpen, Server, LogOut, Users, KeyRound, Boxes, TerminalSquare, GitBranch } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Boxes, ChevronDown, ChevronRight, FolderOpen, GitBranch, KeyRound, LogOut, Menu, Server, TerminalSquare, Users, X } from "lucide-react";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../App";
 
+const knowledgeLinks = [
+  ["Overview", "/knowledge"], ["Product Documents", "/knowledge/product-docs"], ["Imports", "/knowledge/product-docs/imports"], ["Versions", "/knowledge/product-docs/versions"], ["Search", "/knowledge/product-docs/search"], ["Evidence", "/knowledge/evidence"], ["Candidates", "/knowledge/candidates"], ["Cases", "/knowledge/cases"], ["Patterns", "/knowledge/patterns"], ["Playbooks", "/knowledge/playbooks"], ["Capture operations", "/knowledge/operations/capture"], ["Ingest operations", "/knowledge/operations/ingest"], ["Index & providers", "/knowledge/operations/index"],
+] as const;
+
 export default function Layout() {
-  const { user, logout } = useAuth();
-  const navigate = useNavigate();
-
-  const handleLogout = () => {
-    logout();
-    navigate("/login");
-  };
-
-  const navCls = ({ isActive }: { isActive: boolean }) =>
-    `flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${
-      isActive
-        ? "bg-indigo-600 text-white"
-        : "text-gray-400 hover:bg-gray-800 hover:text-gray-100"
-    }`;
-
-  return (
-    <div className="flex h-screen bg-gray-950 text-gray-100">
-      <aside className="w-56 flex flex-col bg-gray-900 border-r border-gray-800">
-        <div className="p-4 border-b border-gray-800">
-          <div className="flex items-center gap-3">
-            <img src="/relay-mcp-icon.png" alt="" className="h-10 w-10 shrink-0" />
-            <div className="min-w-0">
-              <h1 className="text-sm font-semibold text-gray-100">Remote Ops</h1>
-              <p className="text-[11px] text-cyan-400">Relay MCP</p>
-            </div>
-          </div>
-          <p className="mt-3 truncate text-xs text-gray-500">{user?.username}{user?.isAdmin && <span className="ml-1 text-indigo-500">· admin</span>}</p>
-        </div>
-
-        <nav className="flex-1 p-3 space-y-1">
-          <NavLink to="/projects" className={navCls}>
-            <FolderOpen size={15} />
-            Projects
-          </NavLink>
-          <NavLink to="/servers" className={navCls}>
-            <Server size={15} />
-            Servers
-          </NavLink>
-          <NavLink to="/instances" className={navCls}>
-            <Boxes size={15} />
-            LIMS Instances
-          </NavLink>
-          <NavLink to="/tools" className={navCls}>
-            <TerminalSquare size={15} />
-            MCP Tools
-          </NavLink>
-          <NavLink to="/knowledge" className={navCls}>
-            <GitBranch size={15} />
-            Knowledge
-          </NavLink>
-          <NavLink to="/tokens" className={navCls}>
-            <KeyRound size={15} />
-            API Keys
-          </NavLink>
-          {user?.isAdmin && (
-            <NavLink to="/users" className={navCls}>
-              <Users size={15} />
-              Users
-            </NavLink>
-          )}
-        </nav>
-
-        <div className="p-3 border-t border-gray-800">
-          <button
-            onClick={handleLogout}
-            className="flex items-center gap-2 w-full px-3 py-2 rounded-md text-sm text-gray-400 hover:bg-gray-800 hover:text-gray-100 transition-colors"
-          >
-            <LogOut size={15} />
-            Logout
-          </button>
-        </div>
-      </aside>
-
-      <main className="flex-1 overflow-auto">
-        <Outlet />
-      </main>
-    </div>
-  );
+  const { user, logout } = useAuth(); const navigate = useNavigate(); const location = useLocation(); const inKnowledge = location.pathname.startsWith("/knowledge"); const [knowledgeOpen, setKnowledgeOpen] = useState(() => localStorage.getItem("knowledge.nav.open") !== "false"); const [mobileOpen, setMobileOpen] = useState(false);
+  useEffect(() => { if (inKnowledge) setKnowledgeOpen(true); }, [inKnowledge]); useEffect(() => { localStorage.setItem("knowledge.nav.open", String(knowledgeOpen)); }, [knowledgeOpen]); useEffect(() => { setMobileOpen(false); }, [location.pathname]);
+  const navCls = ({ isActive }: { isActive: boolean }) => `flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors ${isActive ? "bg-indigo-600 text-white" : "text-gray-400 hover:bg-gray-800 hover:text-gray-100"}`;
+  const knowledgeParentCls = inKnowledge ? "bg-indigo-950/70 text-indigo-100" : "text-gray-300 hover:bg-gray-800";
+  const handleLogout = () => { logout(); navigate("/login"); };
+  const visibleKnowledgeLinks = knowledgeLinks.filter(([label]) => user?.isAdmin || label !== "Imports");
+  const navContent = <><div className="border-b border-gray-800 p-4"><div className="flex items-center gap-3"><img src="/relay-mcp-icon.png" alt="" className="h-10 w-10 shrink-0" /><div className="min-w-0"><h1 className="text-sm font-semibold text-gray-100">Remote Ops</h1><p className="text-[11px] text-cyan-400">Relay MCP</p></div></div><p className="mt-3 truncate text-xs text-gray-500">{user?.username}{user?.isAdmin && <span className="ml-1 text-indigo-500">· admin</span>}</p></div><nav className="flex-1 space-y-1 overflow-y-auto p-3"><NavLink to="/projects" className={navCls}><FolderOpen size={15} />Projects</NavLink><NavLink to="/servers" className={navCls}><Server size={15} />Servers</NavLink><NavLink to="/instances" className={navCls}><Boxes size={15} />LIMS Instances</NavLink><NavLink to="/tools" className={navCls}><TerminalSquare size={15} />MCP Tools</NavLink><div><button onClick={() => setKnowledgeOpen((open) => !open)} className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-sm transition-colors ${knowledgeParentCls}`}><span className="flex items-center gap-2"><GitBranch size={15} />Knowledge</span>{knowledgeOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</button>{knowledgeOpen && <div className="mt-1 space-y-0.5 border-l border-gray-800 pl-3">{visibleKnowledgeLinks.map(([label, to]) => <NavLink key={to} to={to} end={to === "/knowledge"} className={navCls}>{label}</NavLink>)}</div>}</div><NavLink to="/tokens" className={navCls}><KeyRound size={15} />API Keys</NavLink>{user?.isAdmin && <NavLink to="/users" className={navCls}><Users size={15} />Users</NavLink>}</nav><div className="border-t border-gray-800 p-3"><button onClick={handleLogout} className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-gray-400 transition-colors hover:bg-gray-800 hover:text-gray-100"><LogOut size={15} />Logout</button></div></>;
+  return <div className="flex h-screen bg-gray-950 text-gray-100"><aside className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-gray-800 bg-gray-900 transition-transform md:static md:w-64 md:translate-x-0 ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}>{navContent}</aside>{mobileOpen && <button aria-label="Close navigation" onClick={() => setMobileOpen(false)} className="fixed inset-0 z-30 bg-black/60 md:hidden" />}<main className="flex min-w-0 flex-1 flex-col overflow-auto"><div className="sticky top-0 z-20 flex items-center gap-3 border-b border-gray-800 bg-gray-950/95 px-4 py-3 backdrop-blur md:hidden"><button aria-label="Open navigation" onClick={() => setMobileOpen(true)} className="rounded-md border border-gray-700 p-2 text-gray-300"><Menu size={17} /></button><span className="text-sm font-medium text-gray-200">Remote Ops</span>{inKnowledge && <span className="truncate text-xs text-indigo-300">/ Knowledge</span>}<button aria-label="Close navigation" onClick={() => setMobileOpen(false)} className="ml-auto rounded-md p-2 text-gray-500"><X size={16} /></button></div><Outlet /></main></div>;
 }

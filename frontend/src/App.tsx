@@ -8,7 +8,10 @@ import UsersPage from "./pages/Users";
 import TokensPage from "./pages/Tokens";
 import InstancesPage from "./pages/Instances";
 import ToolsPage from "./pages/Tools";
-import KnowledgePage from "./pages/Knowledge";
+import KnowledgeOverview from "./pages/KnowledgeOverview";
+import KnowledgeProduct from "./pages/KnowledgeProduct";
+import KnowledgeProject from "./pages/KnowledgeProject";
+import KnowledgeOperations from "./pages/KnowledgeOperations";
 import Layout from "./components/Layout";
 
 interface AuthCtx {
@@ -78,7 +81,19 @@ export default function App() {
           <Route path="servers" element={<ServersPage />} />
           <Route path="instances" element={<InstancesPage />} />
           <Route path="tools" element={<ToolsPage />} />
-          <Route path="knowledge" element={<KnowledgePage />} />
+          <Route path="knowledge" element={<KnowledgeOverview />} />
+          <Route path="knowledge/product-docs" element={<KnowledgeProduct />} />
+          <Route path="knowledge/product-docs/imports" element={<KnowledgeProduct />} />
+          <Route path="knowledge/product-docs/versions" element={<KnowledgeProduct />} />
+          <Route path="knowledge/product-docs/search" element={<KnowledgeProduct />} />
+          <Route path="knowledge/evidence" element={<KnowledgeProject />} />
+          <Route path="knowledge/candidates" element={<KnowledgeProject />} />
+          <Route path="knowledge/cases" element={<KnowledgeProject />} />
+          <Route path="knowledge/patterns" element={<KnowledgeProject />} />
+          <Route path="knowledge/playbooks" element={<KnowledgeProject />} />
+          <Route path="knowledge/operations/capture" element={<KnowledgeOperations />} />
+          <Route path="knowledge/operations/ingest" element={<KnowledgeOperations />} />
+          <Route path="knowledge/operations/index" element={<KnowledgeOperations />} />
           <Route path="tokens" element={<TokensPage />} />
           <Route path="users" element={user?.isAdmin ? <UsersPage /> : <Navigate to="/projects" replace />} />
         </Route>

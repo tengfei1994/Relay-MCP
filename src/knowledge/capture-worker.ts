@@ -6,7 +6,7 @@ import { EvidenceStore } from "./evidence-store.js";
 import { KnowledgeRepository } from "./repository.js";
 import { candidateTitle, generateCandidateCard } from "./candidate-card.js";
 import type { InferenceProvider } from "./providers.js";
-import { classifyRelayEvent } from "./event-classifier.js";
+import { classifyRelayEvent, extractExecutionObservationSignals } from "./event-classifier.js";
 
 const MAX_CAPTURE_ATTEMPTS = 5;
 const PROJECT_RESOLUTION_RETRY_BASE_MS = 5_000;
@@ -193,6 +193,29 @@ function eventEnvironment(event: KnowledgeOutboxEvent): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function observationFacts(payload: Record<string, unknown>): Array<Record<string, unknown>> {
+  const signals = extractExecutionObservationSignals(payload);
+  const facts: Array<Record<string, unknown>> = [];
+  if (signals.stdout) facts.push({ field: "stdout", value: signals.stdout });
+  if (signals.stderr) facts.push({ field: "stderr", value: signals.stderr });
+  if (meaningfulObservationValue(signals.output)) facts.push({ field: "output", value: signals.output });
+  signals.logs.slice(0, 20).forEach((message, index) => facts.push({ field: `log[${index}]`, value: message }));
+
+  const hasStructuredOutput = Boolean(signals.stdout || signals.stderr || meaningfulObservationValue(signals.output) || signals.logs.length);
+  for (const [field, value] of Object.entries(payload)) {
+    if (value === undefined || value === null || typeof value === "object") continue;
+    if (field === "summary" && hasStructuredOutput) continue;
+    facts.push({ field, value });
+    if (facts.length >= 30) break;
+  }
+  return facts.slice(0, 30);
+}
+
+function meaningfulObservationValue(value: unknown): boolean {
+  if (typeof value === "string") return Boolean(value.trim()) && !/^\(empty\)$/i.test(value.trim());
+  return value !== undefined && value !== null;
+}
+
 function materializeEvidence(store: KnowledgeStore, event: KnowledgeOutboxEvent, projectId: string | number, candidateId: string): string[] {
   const values = collectEvidence(event.payload);
   if (values.length === 0) {
@@ -287,7 +310,7 @@ export async function captureKnowledgeCandidates(
         const digest = createHash("sha256").update(body, "utf8").digest("hex");
         const observationId = `observation-${createHash("sha256").update(event.id, "utf8").digest("hex")}`;
         const observationEvidenceRefs = materializeObservationEvidence(store, event, projectId, observationId);
-        store.saveObservation({ id: observationId, eventId: event.id, projectId: String(projectId), eventClass: classification.eventClass, captureReason: classification.captureReason, problemStatement: classification.problemStatement, facts: Object.entries(event.payload).filter(([, value]) => value !== undefined && value !== null && typeof value !== "object").slice(0, 30).map(([field, value]) => ({ field, value })), evidenceRefs: observationEvidenceRefs, sourceLocator: `relay-event:${event.id}`, sourceSha256: digest, createdAt: now, updatedAt: now });
+        store.saveObservation({ id: observationId, eventId: event.id, projectId: String(projectId), eventClass: classification.eventClass, captureReason: classification.captureReason, problemStatement: classification.problemStatement, facts: observationFacts(event.payload), evidenceRefs: observationEvidenceRefs, sourceLocator: `relay-event:${event.id}`, sourceSha256: digest, createdAt: now, updatedAt: now });
         store.audit({ projectId: String(projectId), action: "knowledge.observation.captured", entityType: "observation", entityId: observationId, details: { eventId: event.id, eventClass: classification.eventClass, evidenceCount: observationEvidenceRefs.length } });
         store.acknowledge(consumer, event.id, event.claimToken);
         count++;

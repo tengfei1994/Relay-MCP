@@ -4,6 +4,7 @@ import { validateStateId } from "./state-id.js";
 import { RemoteCommandTimeoutError } from "./remote-runner.js";
 import { emitRelayEvent, type RelayEventSink } from "../knowledge/event-sink.js";
 import { sanitizeAuditArguments } from "./audit-sanitizer.js";
+import { extractExecutionSummaryStreams } from "./output.js";
 import "dotenv/config";
 
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT ?? "/workspace";
@@ -110,6 +111,7 @@ function boundedSanitizedText(value: string, limit: number): string {
 function knowledgeTerminalPayload(
   job: Pick<JobRecord, "status" | "kind" | "errorCategory" | "error" | "summary" | "phase" | "retrySafe" | "cancelRequestedAt" | "cancelReason" | "retryOf" | "retryAttempt" | "retryReason" | "input" | "logs">,
 ): Record<string, unknown> {
+  const executionStreams = extractExecutionSummaryStreams(job.summary);
   const logs = (job.logs ?? []).slice(-50).map((entry) => ({
     at: entry.at,
     level: entry.level,
@@ -130,6 +132,9 @@ function knowledgeTerminalPayload(
     retryReason: job.retryReason,
     input: sanitizeAuditArguments(job.input),
     logs,
+    ...(executionStreams.stdout ? { stdout: executionStreams.stdout } : {}),
+    ...(executionStreams.stderr ? { stderr: executionStreams.stderr } : {}),
+    ...(executionStreams.exitCode !== undefined ? { exitCode: executionStreams.exitCode } : {}),
   }) as Record<string, unknown>;
 }
 

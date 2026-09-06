@@ -42,6 +42,32 @@ export function summarizeExec(command: string, result: ExecResult, limit = DEFAU
   ].join("\n");
 }
 
+export interface ExecutionSummaryStreams {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number;
+}
+
+function meaningfulExecutionStream(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed || /^\(empty\)$/i.test(trimmed)) return undefined;
+  return trimmed;
+}
+
+/** Extract the bounded streams emitted by summarizeExec for event consumers. */
+export function extractExecutionSummaryStreams(summary: string | undefined): ExecutionSummaryStreams {
+  if (!summary) return {};
+  const stdoutMatch = summary.match(/(?:^|\r?\n)--- stdout ---\s*\r?\n?([\s\S]*?)(?=\r?\n--- stderr ---|$)/i);
+  const stderrMatch = summary.match(/(?:^|\r?\n)--- stderr ---\s*\r?\n?([\s\S]*)$/i);
+  const exitMatch = summary.match(/(?:^|\r?\n)exit=(-?\d+)(?:\r?\n|$)/i);
+  const exitCode = exitMatch ? Number(exitMatch[1]) : undefined;
+  return {
+    stdout: meaningfulExecutionStream(stdoutMatch?.[1]),
+    stderr: meaningfulExecutionStream(stderrMatch?.[1]),
+    ...(exitCode !== undefined && Number.isFinite(exitCode) ? { exitCode } : {}),
+  };
+}
+
 export function summarizeJson(value: unknown, limit = DEFAULT_LIMIT): string {
   const serialized = JSON.stringify(value, null, 2);
   if (serialized.length <= limit) return serialized;

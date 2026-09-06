@@ -5,6 +5,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { RemoteCommandTimeoutError } from "../src/shared/remote-runner.ts";
 import { readFileSync } from "fs";
+import { summarizeExec } from "../src/shared/output.ts";
 
 test("job store records logs and cancels an active job", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-job-"));
@@ -170,6 +171,33 @@ test("job store persists structured error evidence in a failed job summary", asy
     assert.equal(event.payload.phase, "failed");
     assert.equal(event.payload.retrySafe, true);
     assert.deepEqual(JSON.parse(event.payload.summary), failure.evidence);
+    store.configureJobStore({});
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("job terminal events expose streams embedded in execution summaries", async () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-job-structured-output-"));
+  process.env.RELAY_STATE_ROOT = root;
+  try {
+    const store = await import(`../src/shared/job-store.ts?structured-output=${Date.now()}`);
+    const events: any[] = [];
+    store.configureJobStore({ eventSink: { append: (event: any) => events.push(event) } });
+    const job = store.startJob(
+      { id: 13, username: "tester" },
+      "project",
+      "exec_remote_script",
+      {},
+      async () => summarizeExec("powershell -File <remote script>", { stdout: "observed output", stderr: "", code: 0 }),
+    );
+    const completed = await store.waitForJobRecord(job.id, 13, { waitMs: 2000, pollMs: 10 });
+    assert.equal(completed.job.status, "succeeded");
+    const event = events.find((candidate) => candidate.type === "job.finished" && candidate.jobId === job.id);
+    assert.ok(event);
+    assert.equal(event.payload.stdout, "observed output");
+    assert.equal(event.payload.exitCode, 0);
+    assert.equal("stderr" in event.payload, false, "empty stderr should not be persisted as a signal");
     store.configureJobStore({});
   } finally {
     rmSync(root, { recursive: true, force: true });

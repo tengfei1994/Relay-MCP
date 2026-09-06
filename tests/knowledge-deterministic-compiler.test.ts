@@ -26,6 +26,31 @@ test("deterministic classifier keeps routine success telemetry-only", async () =
   });
 });
 
+test("legacy execution summaries become observations when they contain captured stdout", async () => {
+  const summary = [
+    "$ powershell -File <remote script>",
+    "exit=0",
+    "--- stdout ---",
+    '[{"Name":"DAVLandingPage.xml"}]',
+    "--- stderr ---",
+    "(empty)",
+  ].join("\n");
+  const result = classifyRelayEvent({ id: "e-output", type: "job.finished", occurredAt: new Date().toISOString(), projectId: "p1", jobId: "j-output", payload: { status: "succeeded", kind: "exec_remote_script", summary }, eventKey: "job:j-output:finished" });
+  assert.equal(result.eventClass, "observation");
+  assert.equal(result.storeObservation, true);
+  assert.match(result.captureReason, /captured execution output/i);
+
+  await withStore(async (_root, store) => {
+    store.append({ id: "e-output", type: "job.finished", occurredAt: "2026-09-03T00:00:00.000Z", projectId: "p1", jobId: "j-output", payload: { status: "succeeded", kind: "exec_remote_script", summary }, eventKey: "job:j-output:finished" });
+    assert.equal(await captureKnowledgeCandidates(store), 1);
+    const row = store.db.prepare("SELECT event_class,facts_json FROM knowledge_observations WHERE event_id = ?").get("e-output") as { event_class: string; facts_json: string };
+    assert.equal(row.event_class, "observation");
+    const facts = JSON.parse(row.facts_json) as Array<{ field: string; value: string }>;
+    assert.equal(facts.find((fact) => fact.field === "stdout")?.value, '[{"Name":"DAVLandingPage.xml"}]');
+    assert.equal(facts.some((fact) => fact.field === "summary"), false, "parsed output should not be duplicated as one opaque summary fact");
+  });
+});
+
 test("warnings materialize idempotent observations with immutable evidence", async () => {
   await withStore(async (_root, store) => {
     const event = { id: "e-warning", type: "job.finished" as const, occurredAt: "2026-09-03T00:00:00.000Z", projectId: "p1", jobId: "j-warning", payload: { status: "succeeded", warning: "slow", log: "warning details" } };

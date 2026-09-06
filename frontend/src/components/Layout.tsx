@@ -6,7 +6,7 @@ import { useAuth } from "../App";
 const knowledgeGroups = [
   ["", [["Overview", "/knowledge"]]],
   ["Product Knowledge", [["Product Documents", "/knowledge/product-docs"], ["Import Runs", "/knowledge/product-docs/imports"], ["Versions & Diffs", "/knowledge/product-docs/versions"], ["Product Search", "/knowledge/product-docs/search"]]],
-  ["Project Knowledge", [["Evidence", "/knowledge/evidence"], ["Candidate Inbox", "/knowledge/candidates"], ["Cases", "/knowledge/cases"], ["Patterns", "/knowledge/patterns"], ["Playbooks", "/knowledge/playbooks"]]],
+  ["Project Knowledge", [["Evidence", "/knowledge/evidence"], ["Observations", "/knowledge/observations"], ["Candidate Inbox", "/knowledge/candidates"], ["Cases", "/knowledge/cases"], ["Patterns", "/knowledge/patterns"], ["Playbooks", "/knowledge/playbooks"]]],
   ["Operations", [["Capture Health", "/knowledge/operations/capture"], ["Ingest Runs", "/knowledge/operations/ingest"], ["Index & Providers", "/knowledge/operations/index"]]],
 ] as const;
 

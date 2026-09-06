@@ -1,6 +1,7 @@
 import type { InferenceProvider } from "./providers.js";
 import type { CandidateCard } from "./domain.js";
 import type { RelayDomainEvent } from "./store.js";
+import { eventClassLabel, lifecycleHumanStatus } from "./display-projection.js";
 
 const SECRET_KEY = /(password|passwd|pwd|token|secret|api[_-]?key|credential|authorization|connection|string)/i;
 
@@ -101,6 +102,14 @@ function deterministicCard(input: CandidateCardGenerationInput, inferenceStatus:
     eventClass: input.eventClass,
     captureReason: input.captureReason,
     impact: input.impact,
+    recordType: "candidate",
+    displayTitle: summary,
+    displaySummary: input.problemStatement ?? summary,
+    unknowns: ["Root cause has not been verified.", "Impact and reuse boundaries still need reviewer confirmation."],
+    nextAction: actions[0] ?? verificationPlan[0],
+    captureReasonText: input.captureReason ?? `Captured because the event was classified as ${eventClassLabel(input.eventClass)}.`,
+    humanStatus: lifecycleHumanStatus("draft", "candidate"),
+    provenance: { eventId: event.id, jobId: event.jobId, deploymentId: event.deploymentId, sourceLocator: `relay-event:${event.id}` },
     updatedAt: new Date().toISOString(),
   };
   // Keep this validation explicit: deterministic output cannot claim a source

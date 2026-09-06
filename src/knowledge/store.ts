@@ -22,11 +22,14 @@ import { PRODUCT_DOCUMENTS_MIGRATION } from "./migrations/015-product-documents.
 import { PRODUCT_DOCUMENT_GOVERNANCE_MIGRATION } from "./migrations/016-product-document-governance.js";
 import { PRODUCT_DOCUMENT_OPERATIONS_MIGRATION } from "./migrations/017-product-document-operations.js";
 import { EVIDENCE_METADATA_MIGRATION } from "./migrations/018-evidence-metadata.js";
+import { HUMAN_DISPLAY_PROJECTION_MIGRATION } from "./migrations/019-human-display-projection.js";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
 import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type CandidateCard, type KnowledgeDocument, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeBinding, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
 import { sanitizeAuditArguments } from "../shared/audit-sanitizer.js";
 import { generateDeterministicCandidateCardFromLegacy } from "./candidate-card.js";
+import type { Observation } from "./domain.js";
+import { candidateDisplayProjection, eventClassLabel, lifecycleHumanStatus } from "./display-projection.js";
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -54,6 +57,7 @@ const KNOWLEDGE_MIGRATIONS = [
   PRODUCT_DOCUMENT_GOVERNANCE_MIGRATION,
   PRODUCT_DOCUMENT_OPERATIONS_MIGRATION,
   EVIDENCE_METADATA_MIGRATION,
+  HUMAN_DISPLAY_PROJECTION_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(
@@ -186,6 +190,9 @@ export class KnowledgeStore {
           } else if (migration.version === "018-evidence-metadata" && /duplicate column name/i.test(String(error))) {
             // Evidence scope metadata is additive; the repair pass below
             // completes the index when a process stopped after the ALTER.
+          } else if (migration.version === "019-human-display-projection" && /duplicate column name/i.test(String(error))) {
+            // Display projections are additive; the repair pass below fills
+            // columns left behind by an interrupted migration.
           } else throw error;
         }
         insert.run(migration.version, this.now().toISOString());
@@ -204,7 +211,8 @@ export class KnowledgeStore {
       knowledge_playbooks: [["status", "TEXT NOT NULL DEFAULT 'draft'"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"]],
       knowledge_candidates: [["status", "TEXT NOT NULL DEFAULT 'draft'"], ["reviewed_by", "INTEGER"], ["verified_at", "TEXT"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"]],
       knowledge_relations: [["project_id", "TEXT"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"], ["source_sha256", "TEXT"]],
-      knowledge_candidate_cards: [["event_class", "TEXT"], ["capture_reason", "TEXT"], ["impact", "TEXT"]],
+      knowledge_candidate_cards: [["event_class", "TEXT"], ["capture_reason", "TEXT"], ["impact", "TEXT"], ["record_type", "TEXT NOT NULL DEFAULT 'candidate'"], ["display_title", "TEXT"], ["display_summary", "TEXT"], ["unknowns_json", "TEXT NOT NULL DEFAULT '[]'"], ["next_action", "TEXT"], ["capture_reason_text", "TEXT"], ["human_status", "TEXT"], ["provenance_json", "TEXT NOT NULL DEFAULT '{}'"]],
+      knowledge_observations: [["record_type", "TEXT NOT NULL DEFAULT 'observation'"], ["display_title", "TEXT"], ["display_summary", "TEXT"], ["unknowns_json", "TEXT NOT NULL DEFAULT '[]'"], ["next_action", "TEXT"], ["human_status", "TEXT"], ["provenance_json", "TEXT NOT NULL DEFAULT '{}'"]],
       knowledge_product_documents: [["metadata_json", "TEXT NOT NULL DEFAULT '{}'"], ["diff_review_status", "TEXT NOT NULL DEFAULT 'not_reviewed'"], ["diff_reviewed_by", "INTEGER"], ["diff_reviewed_at", "TEXT"]],
       knowledge_ingest_runs: [["operation_idempotency_key", "TEXT"], ["batch_metadata_json", "TEXT NOT NULL DEFAULT '{}'"], ["source_root", "TEXT"], ["source_commit", "TEXT"], ["source_sha256", "TEXT"]],
       knowledge_evidence: [["environment", "TEXT"]],
@@ -536,32 +544,63 @@ export class KnowledgeStore {
       // The projection is immutable-source compatible: only the derived card
       // is written, while the original Raw Event body remains unchanged.
       this.saveCandidateCard(card);
-      return card;
+      return this.getCandidateCard(candidateId);
     }
     const parseArray = (value: unknown): unknown[] => { try { const parsed = JSON.parse(String(value ?? "[]")); return Array.isArray(parsed) ? parsed : []; } catch { return []; } };
-    return {
+    const result: CandidateCard = {
       candidateId: String(row.candidate_id), summary: String(row.summary), problemStatement: String(row.problem_statement), facts: parseArray(row.facts_json) as Array<Record<string, unknown>>, symptoms: parseArray(row.symptoms_json).filter((item): item is string => typeof item === "string"), hypothesis: String(row.hypothesis), verificationPlan: parseArray(row.verification_plan_json).filter((item): item is string => typeof item === "string"), verifiedConclusion: row.verified_conclusion ? String(row.verified_conclusion) : undefined, actions: parseArray(row.actions_json).filter((item): item is string => typeof item === "string"), verification: parseArray(row.verification_json).filter((item): item is string => typeof item === "string"), applicability: row.applicability ? String(row.applicability) : undefined, tags: parseArray(row.tags_json).filter((item): item is string => typeof item === "string"), confidence: row.confidence === null || row.confidence === undefined ? undefined : Number(row.confidence), generatedBy: String(row.generated_by), inferenceStatus: row.inference_status as CandidateCard["inferenceStatus"], updatedAt: String(row.updated_at),
       eventClass: row.event_class ? String(row.event_class) : undefined, captureReason: row.capture_reason ? String(row.capture_reason) : undefined, impact: row.impact ? String(row.impact) : undefined,
+      recordType: row.record_type ? String(row.record_type) as "candidate" : "candidate",
+      displayTitle: row.display_title ? String(row.display_title) : undefined,
+      displaySummary: row.display_summary ? String(row.display_summary) : undefined,
+      unknowns: parseArray(row.unknowns_json).filter((item): item is string => typeof item === "string"),
+      nextAction: row.next_action ? String(row.next_action) : undefined,
+      captureReasonText: row.capture_reason_text ? String(row.capture_reason_text) : undefined,
+      humanStatus: row.human_status ? String(row.human_status) : undefined,
+      provenance: (() => { try { const parsed = JSON.parse(String(row.provenance_json ?? "{}")); return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : undefined; } catch { return undefined; } })(),
     };
+    if (!row.event_class && !row.capture_reason && String(row.generated_by) === "deterministic-rule-v1") {
+      delete result.recordType;
+      delete result.displayTitle;
+      delete result.displaySummary;
+      delete result.unknowns;
+      delete result.nextAction;
+      delete result.captureReasonText;
+      delete result.humanStatus;
+      delete result.provenance;
+    } else if (!result.displayTitle || !result.captureReasonText || !result.nextAction) {
+      const projection = candidateDisplayProjection(result, { lifecycle: "draft", sourceLocator: undefined });
+      result.displayTitle ??= projection.displayTitle;
+      result.displaySummary ??= projection.displaySummary;
+      result.unknowns ??= projection.unknowns;
+      result.nextAction ??= projection.nextAction;
+      result.captureReasonText ??= projection.captureReasonText;
+      result.humanStatus ??= projection.humanStatus;
+    }
+    return result;
   }
 
   saveCandidateCard(card: CandidateCard): CandidateCard {
     const safeConfidence = card.confidence === undefined ? null : Math.max(0, Math.min(1, card.confidence));
     this.db.prepare(`INSERT INTO knowledge_candidate_cards
-      (candidate_id,summary,problem_statement,facts_json,symptoms_json,hypothesis,verification_plan_json,verified_conclusion,actions_json,verification_json,applicability,tags_json,confidence,generated_by,inference_status,event_class,capture_reason,impact,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(candidate_id) DO UPDATE SET summary=excluded.summary,problem_statement=excluded.problem_statement,facts_json=excluded.facts_json,symptoms_json=excluded.symptoms_json,hypothesis=excluded.hypothesis,verification_plan_json=excluded.verification_plan_json,verified_conclusion=excluded.verified_conclusion,actions_json=excluded.actions_json,verification_json=excluded.verification_json,applicability=excluded.applicability,tags_json=excluded.tags_json,confidence=excluded.confidence,generated_by=excluded.generated_by,inference_status=excluded.inference_status,event_class=excluded.event_class,capture_reason=excluded.capture_reason,impact=excluded.impact,updated_at=excluded.updated_at`).run(
-      card.candidateId, card.summary, card.problemStatement, JSON.stringify(card.facts), JSON.stringify(card.symptoms), card.hypothesis, JSON.stringify(card.verificationPlan), card.verifiedConclusion ?? null, JSON.stringify(card.actions), JSON.stringify(card.verification), card.applicability ?? null, JSON.stringify(card.tags), safeConfidence, card.generatedBy, card.inferenceStatus, card.eventClass ?? null, card.captureReason ?? null, card.impact ?? null, card.updatedAt,
+      (candidate_id,summary,problem_statement,facts_json,symptoms_json,hypothesis,verification_plan_json,verified_conclusion,actions_json,verification_json,applicability,tags_json,confidence,generated_by,inference_status,event_class,capture_reason,impact,record_type,display_title,display_summary,unknowns_json,next_action,capture_reason_text,human_status,provenance_json,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(candidate_id) DO UPDATE SET summary=excluded.summary,problem_statement=excluded.problem_statement,facts_json=excluded.facts_json,symptoms_json=excluded.symptoms_json,hypothesis=excluded.hypothesis,verification_plan_json=excluded.verification_plan_json,verified_conclusion=excluded.verified_conclusion,actions_json=excluded.actions_json,verification_json=excluded.verification_json,applicability=excluded.applicability,tags_json=excluded.tags_json,confidence=excluded.confidence,generated_by=excluded.generated_by,inference_status=excluded.inference_status,event_class=excluded.event_class,capture_reason=excluded.capture_reason,impact=excluded.impact,record_type=excluded.record_type,display_title=excluded.display_title,display_summary=excluded.display_summary,unknowns_json=excluded.unknowns_json,next_action=excluded.next_action,capture_reason_text=excluded.capture_reason_text,human_status=excluded.human_status,provenance_json=excluded.provenance_json,updated_at=excluded.updated_at`).run(
+      card.candidateId, card.summary, card.problemStatement, JSON.stringify(card.facts), JSON.stringify(card.symptoms), card.hypothesis, JSON.stringify(card.verificationPlan), card.verifiedConclusion ?? null, JSON.stringify(card.actions), JSON.stringify(card.verification), card.applicability ?? null, JSON.stringify(card.tags), safeConfidence, card.generatedBy, card.inferenceStatus, card.eventClass ?? null, card.captureReason ?? null, card.impact ?? null, card.recordType ?? "candidate", card.displayTitle ?? card.summary, card.displaySummary ?? card.problemStatement, JSON.stringify(card.unknowns ?? []), card.nextAction ?? card.actions[0] ?? card.verificationPlan[0] ?? null, card.captureReasonText ?? card.captureReason ?? null, card.humanStatus ?? lifecycleHumanStatus("draft", "candidate"), JSON.stringify(card.provenance ?? {}), card.updatedAt,
     );
     return card;
   }
 
-  saveObservation(observation: { id: string; eventId: string; projectId?: string; eventClass: string; captureReason: string; problemStatement?: string; facts?: unknown[]; evidenceRefs?: string[]; sourceLocator: string; sourceSha256?: string; createdAt: string; updatedAt: string }): void {
+  saveObservation(observation: Observation & { facts?: unknown[]; evidenceRefs?: string[] }): void {
+    const displayTitle = eventClassLabel(observation.eventClass);
+    const displaySummary = observation.problemStatement ?? observation.captureReason;
+    const unknowns = ["No reusable conclusion has been verified yet."];
+    const nextAction = "Review the linked Evidence and decide whether this observation should become a Candidate.";
     this.db.prepare(`INSERT INTO knowledge_observations
-      (id,event_id,project_id,event_class,capture_reason,problem_statement,facts_json,evidence_refs_json,source_locator,source_sha256,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(event_id) DO UPDATE SET project_id=excluded.project_id,event_class=excluded.event_class,capture_reason=excluded.capture_reason,problem_statement=excluded.problem_statement,facts_json=excluded.facts_json,evidence_refs_json=excluded.evidence_refs_json,source_locator=excluded.source_locator,source_sha256=excluded.source_sha256,updated_at=excluded.updated_at`).run(
-      observation.id, observation.eventId, observation.projectId ?? null, observation.eventClass, observation.captureReason, observation.problemStatement ?? null, JSON.stringify(observation.facts ?? []), JSON.stringify(observation.evidenceRefs ?? []), observation.sourceLocator, observation.sourceSha256 ?? null, observation.createdAt, observation.updatedAt,
+      (id,event_id,project_id,event_class,capture_reason,problem_statement,facts_json,evidence_refs_json,source_locator,source_sha256,record_type,display_title,display_summary,unknowns_json,next_action,human_status,provenance_json,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(event_id) DO UPDATE SET project_id=excluded.project_id,event_class=excluded.event_class,capture_reason=excluded.capture_reason,problem_statement=excluded.problem_statement,facts_json=excluded.facts_json,evidence_refs_json=excluded.evidence_refs_json,source_locator=excluded.source_locator,source_sha256=excluded.source_sha256,display_title=excluded.display_title,display_summary=excluded.display_summary,unknowns_json=excluded.unknowns_json,next_action=excluded.next_action,human_status=excluded.human_status,provenance_json=excluded.provenance_json,updated_at=excluded.updated_at`).run(
+      observation.id, observation.eventId, observation.projectId ?? null, observation.eventClass, observation.captureReason, observation.problemStatement ?? null, JSON.stringify(observation.facts ?? []), JSON.stringify(observation.evidenceRefs ?? []), observation.sourceLocator, observation.sourceSha256 ?? null, "observation", displayTitle, displaySummary, JSON.stringify(unknowns), nextAction, lifecycleHumanStatus("draft", "observation"), JSON.stringify({ eventId: observation.eventId, sourceLocator: observation.sourceLocator }), observation.createdAt, observation.updatedAt,
     );
   }
 

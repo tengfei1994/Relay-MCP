@@ -87,6 +87,7 @@ export default function App() {
           <Route path="knowledge/product-docs/versions" element={<KnowledgeProduct />} />
           <Route path="knowledge/product-docs/search" element={<KnowledgeProduct />} />
           <Route path="knowledge/evidence" element={<KnowledgeProject />} />
+          <Route path="knowledge/observations" element={<KnowledgeProject />} />
           <Route path="knowledge/candidates" element={<KnowledgeProject />} />
           <Route path="knowledge/cases" element={<KnowledgeProject />} />
           <Route path="knowledge/patterns" element={<KnowledgeProject />} />

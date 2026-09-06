@@ -129,6 +129,29 @@ export interface CandidateCard {
   eventClass?: string;
   captureReason?: string;
   impact?: string;
+  recordType?: "candidate";
+  displayTitle?: string;
+  displaySummary?: string;
+  unknowns?: string[];
+  nextAction?: string;
+  captureReasonText?: string;
+  humanStatus?: string;
+  provenance?: Record<string, unknown>;
+  updatedAt: string;
+}
+
+export interface Observation {
+  id: string;
+  eventId: string;
+  projectId?: string;
+  eventClass: string;
+  captureReason: string;
+  problemStatement?: string;
+  facts: Array<Record<string, unknown>>;
+  evidenceRefs: string[];
+  sourceLocator: string;
+  sourceSha256?: string;
+  createdAt: string;
   updatedAt: string;
 }
 
@@ -168,6 +191,8 @@ export interface Evidence extends KnowledgeScope {
   retention: NonNullable<EvidenceInput["retention"]>;
   createdAt: string;
   deletedAt?: string;
+  displayTitle?: string;
+  displaySummary?: string;
 }
 
 export type RelationType = string;

@@ -32,7 +32,9 @@ test("Knowledge planes keep global Product and project runtime scope distinct", 
   assert.match(project, /ScopeBanner/);
   assert.match(project, /Accept & create Case/);
   assert.match(project, /Supporting Cases/);
-  assert.match(project, /Proposed Skill diff/);
+  assert.match(project, /Proposed Skill diff|Skill diff proposal/);
+  assert.match(project, /Runtime Observation/);
+  assert.match(project, /Technical details/);
   assert.match(project, /Manage Evidence links/);
   assert.match(project, /Environment/);
   assert.match(operations, /dead-letter/i);

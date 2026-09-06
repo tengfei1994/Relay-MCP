@@ -15,6 +15,7 @@ import { classifyRelayEvent } from "../../knowledge/event-classifier.js";
 import { existsSync, readFileSync } from "node:fs";
 import { resolveWorkspacePath } from "../../shared/workspace-path.js";
 import { relayEventSpoolHealth } from "../../knowledge/event-sink.js";
+import { evidenceDisplaySummary, evidenceDisplayTitle, lifecycleHumanStatus } from "../../knowledge/display-projection.js";
 import {
   acceptCandidate,
   deprecateDocument,
@@ -50,6 +51,7 @@ function safeDocument(row: KnowledgeRow, includeBody = true, card?: ReturnType<R
     if (Array.isArray(value)) return value;
     try { const parsed = JSON.parse(String(value ?? "[]")); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
   };
+  const recordType = String(row.record_type ?? row.kind ?? "");
   return {
     id: String(row.id),
     kind: String(row.kind),
@@ -83,6 +85,14 @@ function safeDocument(row: KnowledgeRow, includeBody = true, card?: ReturnType<R
     skillDiff: row.skill_diff ? String(row.skill_diff) : undefined,
     applicability: row.applicability ? String(row.applicability) : undefined,
     confidence: row.confidence === null || row.confidence === undefined ? undefined : Number(row.confidence),
+    recordType: recordType || undefined,
+    displayTitle: row.display_title ? String(row.display_title) : card?.displayTitle ?? card?.summary,
+    displaySummary: row.display_summary ? String(row.display_summary) : card?.displaySummary ?? card?.problemStatement,
+    unknowns: row.unknowns_json === undefined ? card?.unknowns : parseList(row.unknowns_json),
+    nextAction: row.next_action ? String(row.next_action) : card?.nextAction,
+    captureReasonText: row.capture_reason_text ? String(row.capture_reason_text) : card?.captureReasonText ?? card?.captureReason,
+    humanStatus: row.human_status ? String(row.human_status) : card?.humanStatus ?? lifecycleHumanStatus(row.lifecycle ? String(row.lifecycle) : undefined, recordType),
+    provenance: row.provenance_json ? safeRows(() => JSON.parse(String(row.provenance_json)), undefined) : card?.provenance,
     sourceLocator: String(row.source_locator ?? ""),
     sourceCommit: row.source_commit ? String(row.source_commit) : undefined,
     sourceSha256: row.source_sha256 ? String(row.source_sha256) : undefined,
@@ -133,6 +143,8 @@ function safeEvidence(value: Record<string, unknown>): Record<string, unknown> {
     projectId: value.projectId,
     environment: value.environment,
     locator: value.locator,
+    displayTitle: evidenceDisplayTitle({ locator: String(value.locator ?? ""), sourceKind: value.sourceKind as any, mimeType: String(value.mimeType ?? "") }),
+    displaySummary: evidenceDisplaySummary({ locator: String(value.locator ?? ""), sourceKind: value.sourceKind as any }),
     retention: value.retention,
     linkedCount: value.linkedCount === undefined ? undefined : Number(value.linkedCount),
     createdAt: value.createdAt,
@@ -207,6 +219,38 @@ function replayOrRun<T>(store: ReturnType<typeof getKnowledgeStore>, userId: num
 
 function sendError(reply: FastifyReply, error: unknown, status = 400) {
   return reply.status(status).send({ error: error instanceof Error ? error.message : String(error) });
+}
+
+function safeObservation(row: KnowledgeRow): Record<string, unknown> {
+  const parse = (value: unknown): unknown[] => {
+    try {
+      const parsed = JSON.parse(String(value ?? "[]"));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+  return {
+    id: String(row.id),
+    recordType: "observation",
+    eventId: String(row.event_id),
+    projectId: row.project_id ? String(row.project_id) : undefined,
+    eventClass: String(row.event_class),
+    displayTitle: String(row.display_title ?? row.event_class),
+    displaySummary: String(row.display_summary ?? row.problem_statement ?? row.capture_reason),
+    problemStatement: row.problem_statement ? String(row.problem_statement) : undefined,
+    facts: parse(row.facts_json),
+    unknowns: parse(row.unknowns_json),
+    nextAction: row.next_action ? String(row.next_action) : undefined,
+    captureReasonText: String(row.capture_reason),
+    humanStatus: String(row.human_status ?? "captured"),
+    evidenceRefs: parse(row.evidence_refs_json),
+    sourceLocator: String(row.source_locator),
+    sourceSha256: row.source_sha256 ? String(row.source_sha256) : undefined,
+    provenance: row.provenance_json ? safeRows(() => JSON.parse(String(row.provenance_json)), undefined) : { eventId: row.event_id, sourceLocator: row.source_locator },
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
 }
 
 function safeRows<T>(work: () => T, fallback: T): T {
@@ -373,6 +417,16 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     } catch (error) { return sendError(reply, error, 404); }
   });
 
+  app.get("/api/knowledge/observations/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const id = String((request.params as { id: string }).id);
+    const store = getKnowledgeStore();
+    try {
+      const row = store.db.prepare("SELECT * FROM knowledge_observations WHERE id = ?").get(id) as KnowledgeRow | undefined;
+      if (!row || !row.project_id || !store.canRead(request.user.id, String(row.project_id))) throw new Error("Observation not found");
+      return reply.send({ observation: safeObservation(row) });
+    } catch (error) { return sendError(reply, error, 404); }
+  });
+
   app.post("/api/knowledge/documents/:id/evidence", { onRequest: [app.authenticate] }, async (request, reply) => {
     const id = String((request.params as { id: string }).id);
     const body = z.object({ evidenceId: z.string().trim().min(1).max(300), operation: z.enum(["attach", "detach"]), reason: z.string().trim().min(1).max(2_000) }).safeParse(request.body);
@@ -498,6 +552,18 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       const rows = store.db.prepare(`SELECT d.*,c.candidate_type,c.event_id,c.job_id,c.deployment_id,(SELECT COUNT(*) FROM knowledge_entity_evidence e WHERE e.entity_type='candidate' AND e.entity_id=d.id) AS evidence_count FROM knowledge_documents d LEFT JOIN knowledge_candidates c ON c.id=d.id WHERE ${conditions.join(" AND ")} ORDER BY d.updated_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset) as KnowledgeRow[];
       const total = store.db.prepare(`SELECT COUNT(*) AS count FROM knowledge_documents d LEFT JOIN knowledge_candidates c ON c.id=d.id WHERE ${conditions.join(" AND ")}`).get(...params) as { count?: number };
       return reply.send({ candidates: rows.map((row) => { const enriched = enrichDocumentRow(store, row); return safeDocument(enriched, false, store.getCandidateCard(String(row.id)), store.getScopeBinding(String(row.id))); }), page: { limit, offset, total: Number(total.count ?? 0) } });
+    } catch (error) { return sendError(reply, error, 400); }
+  });
+
+  app.get("/api/knowledge/observations", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    try {
+      const { store, projectId } = resolveProject(request.user.id, query.projectId);
+      const limit = parseBoundedInt(query.limit, 50, 1, 200);
+      const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
+      const rows = store.db.prepare("SELECT * FROM knowledge_observations WHERE project_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?").all(projectId, limit, offset) as KnowledgeRow[];
+      const total = store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_observations WHERE project_id = ?").get(projectId) as { count?: number };
+      return reply.send({ observations: rows.map(safeObservation), page: { limit, offset, total: Number(total.count ?? 0) } });
     } catch (error) { return sendError(reply, error, 400); }
   });
 

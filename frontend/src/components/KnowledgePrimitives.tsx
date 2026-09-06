@@ -52,6 +52,7 @@ export function ScopeBanner({ project, environment, scope = "project runtime", a
 
 const pipeline = [
   ["Evidence", "/knowledge/evidence", ShieldCheck],
+  ["Observation", "/knowledge/observations", Clock3],
   ["Candidate", "/knowledge/candidates", FileText],
   ["Case", "/knowledge/cases", CheckCircle2],
   ["Pattern", "/knowledge/patterns", GitBranch],
@@ -65,4 +66,3 @@ export function LifecyclePipeline({ current }: { current?: string }) {
 export function formatDate(value: unknown): string { const date = new Date(String(value ?? "")); return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString(); }
 export function confidenceLabel(value: unknown): string { const score = Number(value); if (!Number.isFinite(score)) return "Not scored"; if (score < 0.4) return "Low · signal only"; if (score < 0.7) return "Medium · needs validation"; return "High · evidence-backed"; }
 export function jsonValue(value: unknown, fallback: unknown = {}): any { if (value && typeof value === "object") return value; try { return JSON.parse(String(value ?? "")); } catch { return fallback; } }
-

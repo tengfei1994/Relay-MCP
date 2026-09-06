@@ -6,6 +6,7 @@ import {
   quoteSqlIdentifier,
   renderSqlIdentifiers,
   instancePaths,
+  inspectSampleManagerInstance,
   restartSampleManagerInstance,
   SampleManagerRestartError,
   buildSettingsMetadata,
@@ -114,6 +115,43 @@ test("form cache cleanup forwards tracked execution options", async () => {
   await clearFormCache(runner, "VGSM", "Stocks", execution);
 
   assert.equal(receivedExecution, execution);
+});
+
+test("instance preflight combines bounded read-only checks in one PowerShell call", async () => {
+  let calls = 0;
+  let script = "";
+  const runner = {
+    execPowerShell: async (value: string) => {
+      calls++;
+      script = value;
+      return {
+        stdout: JSON.stringify({ instance: "VGSM", summary: { healthy: true }, files: [], services: [] }),
+        stderr: "",
+        code: 0,
+      };
+    },
+  } as any;
+
+  const result = JSON.parse(await inspectSampleManagerInstance(runner, {
+    name: "VGSM",
+    rootPath: "D:\\LIMS\\VGSM",
+    formsBinPath: "D:\\LIMS\\VGSM\\FormsBin",
+    logfilePath: "D:\\LIMS\\VGSM\\Logs",
+    services: [{ name: "smpVGSM" }],
+  }, {
+    filePaths: ["D:\\LIMS\\VGSM\\Exe\\Sample.dll", "D:\\LIMS\\VGSM\\Forms\\Stocks.xml"],
+    formNames: ["Stocks"],
+    logMinutes: 15,
+  }));
+
+  assert.equal(calls, 1);
+  assert.equal(result.summary.healthy, true);
+  assert.match(script, /Get-FileHash/);
+  assert.match(script, /ConvertTo-Json -Depth 8 -Compress/);
+  assert.match(script, /\.binform/);
+  assert.match(script, /Get-Service/);
+  assert.match(script, /Get-CimInstance Win32_Process/);
+  assert.match(script, /AddMinutes\(-15\)/);
 });
 
 test("sqlContainsMutation identifies statements that change data or permissions", () => {

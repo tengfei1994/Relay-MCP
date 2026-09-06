@@ -450,6 +450,158 @@ if ($remaining.Count -gt 0) {
   return compactText(result.stdout || result.stderr);
 }
 
+export interface SampleManagerInstancePreflightOptions {
+  filePaths?: string[];
+  formNames?: string[];
+  logMinutes?: number;
+  maxErrors?: number;
+  execution?: RemoteExecutionOptions;
+}
+
+export async function inspectSampleManagerInstance(
+  runner: RemoteRunner,
+  instance: SampleManagerInstanceRef,
+  options: SampleManagerInstancePreflightOptions = {}
+): Promise<string> {
+  const name = instanceName(instance);
+  const paths = instancePaths(instance);
+  const configuredServices = typeof instance === "string" ? [] : (instance.services ?? []).map((service) => service.name);
+  const suffix = name.toLowerCase();
+  const serviceNames = configuredServices.length > 0
+    ? configuredServices
+    : [`smptq${suffix}`, `smpSTAT${suffix}`, `smp${suffix}`, `SMDaemon${suffix}`];
+  const filePaths = [...new Set(options.filePaths ?? [])].slice(0, 200);
+  const formNames = [...new Set(options.formNames ?? [])].slice(0, 100);
+  const logMinutes = Math.max(1, Math.min(Math.trunc(options.logMinutes ?? 30), 24 * 60));
+  const maxErrors = Math.max(1, Math.min(Math.trunc(options.maxErrors ?? 20), 200));
+  const script = `
+$ErrorActionPreference = "Stop"
+$instanceName = ${psQuote(name)}
+$instanceRoot = ${psQuote(paths.root)}
+$formsBin = ${psQuote(paths.formsBin)}
+$logRoot = ${psQuote(paths.logfile)}
+$requestedFiles = ${psArray(filePaths)}
+$formNames = ${psArray(formNames)}
+$serviceNames = ${psArray(serviceNames)}
+$since = (Get-Date).AddMinutes(-${logMinutes})
+$startedAt = Get-Date
+
+$pathChecks = @(
+  [pscustomobject]@{ name = "root"; path = $instanceRoot; exists = Test-Path -LiteralPath $instanceRoot -PathType Container }
+  [pscustomobject]@{ name = "exe"; path = ${psQuote(paths.exe)}; exists = Test-Path -LiteralPath ${psQuote(paths.exe)} -PathType Container }
+  [pscustomobject]@{ name = "forms"; path = ${psQuote(paths.forms)}; exists = Test-Path -LiteralPath ${psQuote(paths.forms)} -PathType Container }
+  [pscustomobject]@{ name = "formsBin"; path = $formsBin; exists = Test-Path -LiteralPath $formsBin -PathType Container }
+  [pscustomobject]@{ name = "solutionAssemblies"; path = ${psQuote(paths.solutionAssemblies)}; exists = Test-Path -LiteralPath ${psQuote(paths.solutionAssemblies)} -PathType Container }
+  [pscustomobject]@{ name = "logfile"; path = $logRoot; exists = Test-Path -LiteralPath $logRoot -PathType Container }
+  [pscustomobject]@{ name = "data"; path = ${psQuote(paths.data)}; exists = Test-Path -LiteralPath ${psQuote(paths.data)} -PathType Container }
+)
+
+$files = @()
+foreach ($path in $requestedFiles) {
+  $exists = Test-Path -LiteralPath $path -PathType Leaf
+  $entry = [ordered]@{ path = $path; exists = $exists; bytes = $null; modifiedAt = $null; sha256 = $null; fileVersion = $null; xmlValid = $null; xmlError = $null }
+  if ($exists) {
+    $item = Get-Item -LiteralPath $path -ErrorAction Stop
+    $entry.bytes = [long]$item.Length
+    $entry.modifiedAt = $item.LastWriteTimeUtc.ToString("o")
+    $entry.sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+    if ($item.Extension -in ".dll", ".exe") {
+      try { $entry.fileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($item.FullName).FileVersion } catch { $entry.fileVersion = $null }
+    }
+    if ($item.Extension -in ".xml", ".frm") {
+      try {
+        [xml]$document = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        $null = $document.DocumentElement
+        $entry.xmlValid = $true
+      } catch {
+        $entry.xmlValid = $false
+        $entry.xmlError = $_.Exception.Message
+      }
+    }
+  }
+  $files += [pscustomobject]$entry
+}
+
+$cache = @()
+if ((Test-Path -LiteralPath $formsBin -PathType Container) -and $formNames.Count -gt 0) {
+  $expected = @($formNames | ForEach-Object { "$_.binform" })
+  $cache = @(Get-ChildItem -LiteralPath $formsBin -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $expected -icontains $_.Name } |
+    ForEach-Object { [pscustomobject]@{ form = $_.BaseName; path = $_.FullName; modifiedAt = $_.LastWriteTimeUtc.ToString("o"); bytes = [long]$_.Length } })
+}
+
+$services = @($serviceNames | ForEach-Object {
+  $service = Get-Service -Name $_ -ErrorAction SilentlyContinue
+  [pscustomobject]@{ name = $_; exists = [bool]$service; status = if ($service) { [string]$service.Status } else { "Missing" } }
+})
+
+$processes = @()
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+  Where-Object {
+    ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($instanceRoot, [StringComparison]::OrdinalIgnoreCase)) -or
+    ($_.CommandLine -and $_.CommandLine.IndexOf($instanceName, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+  } |
+  Select-Object -First 100 |
+  ForEach-Object { $processes += [pscustomobject]@{ id = [int]$_.ProcessId; name = $_.Name; executablePath = $_.ExecutablePath } }
+
+$errors = @()
+$filesScanned = 0
+if (Test-Path -LiteralPath $logRoot -PathType Container) {
+  Get-ChildItem -LiteralPath $logRoot -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTime -ge $since -and ($_.Extension -in ".log", ".txt", ".lis" -or $_.Name -like "*log*") } |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 10 |
+    ForEach-Object {
+      $filesScanned++
+      $logFile = $_
+      Get-Content -LiteralPath $logFile.FullName -Tail 500 -ErrorAction SilentlyContinue |
+        Select-String -Pattern "ERROR|Exception|Fatal" -CaseSensitive:$false |
+        Select-Object -Last ${maxErrors} |
+        ForEach-Object { $errors += [pscustomobject]@{ file = $logFile.FullName; line = $_.LineNumber; text = $_.Line } }
+    }
+}
+$errors = @($errors | Select-Object -Last ${maxErrors})
+$missingPaths = @($pathChecks | Where-Object { -not $_.exists } | ForEach-Object { $_.name })
+$missingFiles = @($files | Where-Object { -not $_.exists } | ForEach-Object { $_.path })
+$invalidXml = @($files | Where-Object { $_.xmlValid -eq $false } | ForEach-Object { $_.path })
+$unhealthyServices = @($services | Where-Object { $_.status -ne "Running" } | ForEach-Object { $_.name })
+
+[pscustomobject]@{
+  instance = $instanceName
+  startedAt = $startedAt.ToUniversalTime().ToString("o")
+  finishedAt = (Get-Date).ToUniversalTime().ToString("o")
+  paths = $pathChecks
+  files = $files
+  cache = $cache
+  services = $services
+  processes = $processes
+  logs = [pscustomobject]@{ searchedFrom = $since.ToUniversalTime().ToString("o"); filesScanned = $filesScanned; errors = $errors }
+  summary = [pscustomobject]@{
+    pathCount = $pathChecks.Count
+    missingPaths = $missingPaths
+    requestedFileCount = $requestedFiles.Count
+    missingFiles = $missingFiles
+    invalidXml = $invalidXml
+    cacheEntryCount = $cache.Count
+    processCount = $processes.Count
+    unhealthyServices = $unhealthyServices
+    errorCount = $errors.Count
+    healthy = ($missingPaths.Count -eq 0 -and $missingFiles.Count -eq 0 -and $invalidXml.Count -eq 0 -and $unhealthyServices.Count -eq 0 -and $errors.Count -eq 0)
+  }
+} | ConvertTo-Json -Depth 8 -Compress
+`;
+  const result = await runner.execPowerShell(script, 90000, options.execution);
+  ensureRemoteSuccess(result);
+  const output = (result.stdout || result.stderr).trim();
+  if (!output) throw new Error("SampleManager instance preflight returned no JSON evidence");
+  try {
+    JSON.parse(output);
+  } catch {
+    throw new Error(`SampleManager instance preflight returned invalid JSON: ${compactText(output, 1000)}`);
+  }
+  return output;
+}
+
 export async function recentErrors(
   runner: RemoteRunner,
   instance: SampleManagerInstanceRef,

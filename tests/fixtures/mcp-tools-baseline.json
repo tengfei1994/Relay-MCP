@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "generatedFrom": "McpServer tools/list",
   "sourceVersion": {
-    "gitCommit": "6b359286e50c06c0e0830124c7d8559a4dfc9da4",
+    "gitCommit": "93eab33e22c3ea719b92c5f7d500a6e4380d4ed9",
     "mcpSdkVersion": "1.29.0",
     "generationCommand": "npm run generate:mcp-baseline",
-    "generatedAt": "2026-09-05T03:59:06.990Z",
+    "generatedAt": "2026-09-06T13:57:11.895Z",
     "worktreeDirty": true
   },
   "tools": [
@@ -1734,6 +1734,14 @@
           "environment": {
             "type": "string"
           },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
           "deploymentId": {
             "type": "string"
           },
@@ -1882,6 +1890,14 @@
           },
           "environment": {
             "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
           },
           "deploymentId": {
             "type": "string",
@@ -2032,9 +2048,21 @@
           "environment": {
             "type": "string"
           },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
+          "deploymentId": {
+            "type": "string",
+            "description": "Correlate cache cleanup with a running deployment."
+          },
           "async": {
             "type": "boolean",
-            "description": "Run as an async tracked job and return a jobId."
+            "description": "Run as an async tracked job and return a jobId; default true."
           }
         },
         "required": [
@@ -2235,12 +2263,20 @@
           "environment": {
             "type": "string"
           },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
           "deploymentId": {
             "type": "string"
           },
           "async": {
             "type": "boolean",
-            "description": "Run as an async job"
+            "description": "Run as an async job; default true."
           }
         },
         "required": [
@@ -2298,6 +2334,14 @@
           },
           "environment": {
             "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
           },
           "deploymentId": {
             "type": "string",
@@ -2383,6 +2427,14 @@
           },
           "environment": {
             "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
           },
           "label": {
             "type": "string"
@@ -2604,6 +2656,76 @@
       }
     },
     {
+      "name": "samplemanager_instance_preflight",
+      "description": "Run one bounded, read-only instance preflight for paths, selected files, XML validity, FormsBin entries, services, processes, and recent error summaries.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
+          "instance": {
+            "type": "string",
+            "description": "Optional when the project environment is bound to a LIMS instance."
+          },
+          "filePaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "description": "Exact remote files to check for existence, SHA-256, version, and XML validity."
+          },
+          "formNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "description": "Exact form identities whose recursive FormsBin entries should be listed."
+          },
+          "logMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1440,
+            "description": "Recent log window in minutes; default 30."
+          },
+          "maxErrors": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "description": "Maximum compact error lines; default 20."
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job; default true."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
       "name": "samplemanager_recent_errors",
       "description": "Search recent SampleManager logs and return a compact error-focused result",
       "inputSchema": {
@@ -2618,6 +2740,14 @@
           },
           "environment": {
             "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
           },
           "minutes": {
             "type": "number"
@@ -2653,12 +2783,20 @@
           "environment": {
             "type": "string"
           },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
           "deploymentId": {
             "type": "string"
           },
           "async": {
             "type": "boolean",
-            "description": "Run as an async job and return a jobId"
+            "description": "Run as an async job and return a jobId; default true."
           }
         },
         "additionalProperties": false,
@@ -2826,6 +2964,14 @@
           "environment": {
             "type": "string"
           },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
           "allowMutation": {
             "type": "boolean"
           },
@@ -2940,6 +3086,14 @@
           "environment": {
             "type": "string"
           },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
           "deploymentId": {
             "type": "string"
           }
@@ -2974,6 +3128,14 @@
           },
           "environment": {
             "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
           },
           "allowMutation": {
             "type": "boolean"
@@ -3060,6 +3222,14 @@
           "environment": {
             "type": "string"
           },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
           "deploymentId": {
             "type": "string",
             "description": "Correlate upload, load, verification, and audit evidence."
@@ -3105,6 +3275,14 @@
           },
           "environment": {
             "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
           }
         },
         "required": [
@@ -3222,7 +3400,7 @@
     },
     {
       "name": "upload_workspace_file",
-      "description": "Upload one Relay workspace file to the linked server and verify local/remote SHA-256.",
+      "description": "Upload one Relay workspace file through a verified temporary path, skip identical targets, and atomically replace the destination.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3239,6 +3417,22 @@
           },
           "environment": {
             "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
+          "deploymentId": {
+            "type": "string",
+            "description": "Optional running deployment to receive upload evidence."
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job; default true."
           }
         },
         "required": [
@@ -3655,6 +3849,12 @@
       "category": "samplemanager",
       "entity": "instance",
       "capability": "capabilities"
+    },
+    {
+      "name": "samplemanager_instance_preflight",
+      "category": "samplemanager",
+      "entity": "instance",
+      "capability": "readiness"
     },
     {
       "name": "samplemanager_inspect_assembly_type",

@@ -6,7 +6,7 @@ import { ensureRemoteSuccess } from "../../shared/remote-runner.js";
 import { startJob, writeAudit, type JobContext } from "../../shared/job-store.js";
 import { compactTextWithMetadata, sanitizeStructuredOutput, summarizeExec, summarizeJson } from "../../shared/output.js";
 import { runUnicodeCheck } from "../../shared/samplemanager-tools.js";
-import type { GetRunner, ResolveProjectName, SampleManagerDatabaseTarget, WaitForTrackedJob } from "../tool-context.js";
+import type { GetRunner, ProjectSelector, ResolveProjectName, SampleManagerDatabaseTarget, WaitForTrackedJob } from "../tool-context.js";
 
 export interface RemoteToolsContext {
   server: McpServer;
@@ -16,7 +16,7 @@ export interface RemoteToolsContext {
   relayRoute: (tool: string, extra?: Record<string, unknown>) => Record<string, unknown>;
   executionForJob: (context?: JobContext) => Record<string, unknown>;
   waitForTrackedJob: WaitForTrackedJob;
-  getSampleManagerDatabaseTarget: (project?: string, environment?: string, database?: string) => SampleManagerDatabaseTarget;
+  getSampleManagerDatabaseTarget: (project?: string, environment?: string, database?: string, selector?: ProjectSelector) => SampleManagerDatabaseTarget;
 }
 
 /** Remote execution registration boundary. Legacy implementations are injected by the composition root. */
@@ -349,7 +349,7 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
     },
     async ({ project: projectName, environment, serverId, serverName, database }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const target = getSampleManagerDatabaseTarget(projectName, environment, database);
+      const target = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
       if (serverId !== undefined || serverName) {
         const selected = getRunner(resolvedProjectName, environment, { serverId, serverName });
         if (selected.ps.server.id !== target.ps.server.id) {

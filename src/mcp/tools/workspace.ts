@@ -6,8 +6,9 @@ import { compactTextWithMetadata, summarizeJson } from "../../shared/output.js";
 import { startJob, writeAudit, type JobContext } from "../../shared/job-store.js";
 import { basename, dirname, join, relative } from "path";
 import { appendFileSync, createReadStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { ensureRemoteSuccess } from "../../shared/remote-runner.js";
+import { getDeployment, updateDeployment } from "../../shared/deployment-store.js";
 import { createDownloadSession } from "../../shared/download-store.js";
 import { createUploadSession, getUploadSession, publicUploadSession } from "../../shared/upload-store.js";
 import { getAgentStore } from "../../shared/agent-store.js";
@@ -151,46 +152,100 @@ export function registerWorkspaceTools(context: WorkspaceToolsContext, legacy?: 
 
   server.tool(
     "upload_workspace_file",
-    "Upload one Relay workspace file to the linked server and verify local/remote SHA-256.",
+    "Upload one Relay workspace file through a verified temporary path, skip identical targets, and atomically replace the destination.",
     {
       project: z.string().optional(),
       localPath: z.string().describe("Relative path within project workspace"),
       remotePath: z.string().describe("Absolute destination path on remote server"),
       environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
+      deploymentId: z.string().optional().describe("Optional running deployment to receive upload evidence."),
+      async: z.boolean().optional().describe("Run as a tracked job; default true."),
     },
-    async ({ project: projectName, localPath: relPath, remotePath, environment }) => {
-      const { project, ps, runner } = getRunner(projectName, environment);
+    async ({ project: projectName, localPath: relPath, remotePath, environment, serverId, serverName, deploymentId, async = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const { project, ps, runner } = getRunner(projectName, environment, { serverId, serverName });
       const fullLocal = resolveWorkspacePath(project.workspacePath, relPath, { mustExist: true });
       const stat = statSync(fullLocal);
       if (!stat.isFile()) throw new Error(`Workspace path is not a file: ${relPath}`);
-      const digest = createHash("sha256");
-      for await (const chunk of createReadStream(fullLocal)) digest.update(chunk);
-      const localSha256 = digest.digest("hex");
-      await runner.uploadFile(fullLocal, remotePath);
-      const hashResult = ps.server.os === "windows"
-        ? await runner.execPowerShell(
-            `[Console]::Write((Get-FileHash -LiteralPath ${quotePowerShell(remotePath)} -Algorithm SHA256).Hash.ToLowerInvariant())`,
-            60000
-          )
-        : await runner.exec(`sha256sum -- ${quotePosix(remotePath)} | awk '{print $1}'`, 60000);
-      ensureRemoteSuccess(hashResult);
-      const remoteSha256 = hashResult.stdout.trim().toLowerCase();
-      if (remoteSha256 !== localSha256) {
-        throw new Error(`Upload SHA-256 mismatch: local=${localSha256}, remote=${remoteSha256}`);
+      if (deploymentId) {
+        const deployment = getDeployment(deploymentId);
+        if (!deployment || deployment.userId !== user.id || deployment.project !== resolvedProjectName) throw new Error(`Deployment '${deploymentId}' not found for project '${resolvedProjectName}'`);
+        if (deployment.status !== "running") throw new Error(`Deployment '${deploymentId}' is '${deployment.status}' and cannot accept uploads`);
+        if (deployment.environment.localeCompare(ps.environment, undefined, { sensitivity: "accent" }) !== 0) throw new Error(`Deployment '${deploymentId}' environment '${deployment.environment}' does not match '${ps.environment}'`);
+        if (deployment.target?.serverId !== undefined && deployment.target.serverId !== ps.server.id) throw new Error(`Deployment '${deploymentId}' serverId '${deployment.target.serverId}' does not match '${ps.server.id}'`);
+        if (deployment.target?.projectServerId !== undefined && deployment.target.projectServerId !== ps.id) throw new Error(`Deployment '${deploymentId}' project server link '${deployment.target.projectServerId}' does not match '${ps.id}'`);
       }
-      return {
-        content: [{
-          type: "text",
-          text: summarizeJson({
-            localPath: relPath,
-            remotePath,
-            bytes: stat.size,
-            localSha256,
-            remoteSha256,
-            verified: true,
-          }),
-        }],
+      const work = async (context?: JobContext) => {
+        context?.phase("hashing_local");
+        const digest = createHash("sha256");
+        for await (const chunk of createReadStream(fullLocal)) digest.update(chunk);
+        const localSha256 = digest.digest("hex");
+        const hashCommand = (path: string) => ps.server.os === "windows"
+          ? runner.execPowerShell(`if (Test-Path -LiteralPath ${quotePowerShell(path)} -PathType Leaf) { [Console]::Write((Get-FileHash -LiteralPath ${quotePowerShell(path)} -Algorithm SHA256).Hash.ToLowerInvariant()) }`, 60000)
+          : runner.exec(`if [ -f ${quotePosix(path)} ]; then sha256sum -- ${quotePosix(path)} | awk '{print $1}'; fi`, 60000);
+        context?.phase("checking_remote_hash");
+        const previousHashResult = await hashCommand(remotePath);
+        ensureRemoteSuccess(previousHashResult);
+        const previousSha256 = previousHashResult.stdout.trim().toLowerCase() || undefined;
+        const skipped = previousSha256 === localSha256;
+        const temporaryPath = `${remotePath}.relay-upload-${randomUUID()}.tmp`;
+        if (!skipped) {
+          context?.phase("uploading");
+          await runner.uploadFile(fullLocal, temporaryPath);
+          context?.phase("verifying_staged_file");
+          const stagedHashResult = await hashCommand(temporaryPath);
+          ensureRemoteSuccess(stagedHashResult);
+          const stagedSha256 = stagedHashResult.stdout.trim().toLowerCase();
+          if (stagedSha256 !== localSha256) {
+            if (ps.server.os === "windows") await runner.execPowerShell(`Remove-Item -LiteralPath ${quotePowerShell(temporaryPath)} -Force -ErrorAction SilentlyContinue`, 30000);
+            else await runner.exec(`rm -f -- ${quotePosix(temporaryPath)}`, 30000);
+            throw new Error(`Upload SHA-256 mismatch: local=${localSha256}, staged=${stagedSha256}`);
+          }
+          context?.phase("replacing_target");
+          const replaceResult = ps.server.os === "windows"
+            ? await runner.execPowerShell(`Move-Item -LiteralPath ${quotePowerShell(temporaryPath)} -Destination ${quotePowerShell(remotePath)} -Force -ErrorAction Stop`, 60000)
+            : await runner.exec(`mv -f -- ${quotePosix(temporaryPath)} ${quotePosix(remotePath)}`, 60000);
+          ensureRemoteSuccess(replaceResult);
+        }
+        context?.phase("verifying_target");
+        const finalHashResult = await hashCommand(remotePath);
+        ensureRemoteSuccess(finalHashResult);
+        const remoteSha256 = finalHashResult.stdout.trim().toLowerCase();
+        if (remoteSha256 !== localSha256) throw new Error(`Final upload SHA-256 mismatch: local=${localSha256}, remote=${remoteSha256}`);
+        const result = {
+          project: resolvedProjectName,
+          environment: ps.environment,
+          projectServerId: ps.id,
+          serverId: ps.server.id,
+          serverName: ps.server.name,
+          localPath: relPath,
+          remotePath,
+          bytes: stat.size,
+          previousSha256,
+          localSha256,
+          remoteSha256,
+          changed: !skipped,
+          skipped,
+          verified: true,
+          deploymentId,
+        };
+        if (deploymentId) {
+          const deployment = getDeployment(deploymentId)!;
+          const uploads = Array.isArray(deployment.artifacts?.uploads) ? deployment.artifacts.uploads : [];
+          updateDeployment(deploymentId, { artifacts: { uploads: [...uploads, result] } });
+        }
+        writeAudit({ userId: user.id, username: user.username, tool: "upload_workspace_file", ...result });
+        context?.phase("completed");
+        return summarizeJson(result);
       };
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "upload_workspace_file", { localPath: relPath, remotePath, bytes: stat.size, environment: ps.environment, serverId: ps.server.id, projectServerId: ps.id, deploymentId }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, deploymentId, status: job.status, target: { project: resolvedProjectName, environment: ps.environment, projectServerId: ps.id, serverId: ps.server.id, serverName: ps.server.name } }) }] };
+      }
+      const result = JSON.parse(await work()) as Record<string, unknown>;
+      return { structuredContent: result, content: [{ type: "text", text: summarizeJson(result) }] };
     }
   );
 

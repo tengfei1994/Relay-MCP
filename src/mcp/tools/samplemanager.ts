@@ -24,6 +24,7 @@ import {
   createEntityDefinition,
   deploySampleManagerFile,
   discoverBuildTools,
+  inspectSampleManagerInstance,
   instancePaths,
   loadTableLoaderFile,
   recentErrors,
@@ -49,7 +50,7 @@ import {
   createSampleManagerInspectionEnvelope,
 } from "../../shared/samplemanager-capabilities.js";
 import type { ProjectRegistry } from "../project-registry.js";
-import type { GetRunner, ResolveProjectName, SampleManagerDatabaseTarget } from "../tool-context.js";
+import type { GetRunner, ProjectSelector, ResolveProjectName, RunnerConnection, SampleManagerDatabaseTarget } from "../tool-context.js";
 
 const sampleManagerCapabilityRegistry = new SampleManagerCapabilityRegistry();
 
@@ -60,7 +61,7 @@ export interface SampleManagerToolsContext {
   getRunner: GetRunner;
   registry: ProjectRegistry;
   executionForJob: (context?: JobContext) => Record<string, unknown>;
-  getSampleManagerDatabaseTarget: (project?: string, environment?: string, database?: string) => SampleManagerDatabaseTarget;
+  getSampleManagerDatabaseTarget: (project?: string, environment?: string, database?: string, selector?: ProjectSelector) => SampleManagerDatabaseTarget;
 }
 
 /** SampleManager registration boundary. */
@@ -72,9 +73,10 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
     projectName?: string,
     environment?: string,
     requestedInstance?: string,
-    requestedDatabase?: string
+    requestedDatabase?: string,
+    selector: ProjectSelector = {}
   ) {
-    const connection = getRunner(projectName, environment);
+    const connection = getRunner(projectName, environment, selector);
     const configured = connection.ps.limsInstance;
     if (configured && requestedInstance && configured.name.toLowerCase() !== requestedInstance.toLowerCase()) {
       throw new Error(
@@ -103,17 +105,40 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
     };
   }
 
+  function deploymentTarget(connection: RunnerConnection) {
+    const configured = connection.ps.limsInstance;
+    return {
+      projectServerId: connection.ps.id,
+      serverId: connection.ps.server.id,
+      serverName: connection.ps.server.name,
+      connectionMode: connection.ps.connectionMode,
+      instanceRoot: configured?.rootPath,
+      databaseHost: configured?.databaseHost,
+      databaseName: configured?.databaseName,
+    };
+  }
+
   async function withDeploymentStep<T>(
     deploymentId: string | undefined,
     projectName: string,
     name: string,
-    work: () => Promise<T>
+    work: () => Promise<T>,
+    target?: { connection: RunnerConnection; instanceName: string }
   ): Promise<T> {
     if (!deploymentId) return work();
-    const deployment = getDeployment(deploymentId);
-    if (!deployment || deployment.userId !== user.id || deployment.project !== projectName) {
-      throw new Error(`Deployment '${deploymentId}' not found for project '${projectName}'`);
-    }
+    const deployment = target
+      ? requireRunningDeployment(deploymentId, {
+          userId: user.id,
+          project: projectName,
+          environment: target.connection.ps.environment,
+          instance: target.instanceName,
+          projectServerId: target.connection.ps.id,
+          serverId: target.connection.ps.server.id,
+          databaseHost: target.connection.ps.limsInstance?.databaseHost,
+          databaseName: target.connection.ps.limsInstance?.databaseName,
+        })
+      : getDeployment(deploymentId);
+    if (!deployment || deployment.userId !== user.id || deployment.project !== projectName) throw new Error(`Deployment '${deploymentId}' not found for project '${projectName}'`);
     const steps = [...(deployment.steps ?? []), {
       name,
       status: "running" as const,
@@ -346,17 +371,79 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
   );
 
   server.tool(
+    "samplemanager_instance_preflight",
+    "Run one bounded, read-only instance preflight for paths, selected files, XML validity, FormsBin entries, services, processes, and recent error summaries.",
+    {
+      project: z.string().optional(),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
+      instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
+      filePaths: z.array(z.string()).max(200).optional().describe("Exact remote files to check for existence, SHA-256, version, and XML validity."),
+      formNames: z.array(z.string()).max(100).optional().describe("Exact form identities whose recursive FormsBin entries should be listed."),
+      logMinutes: z.number().int().min(1).max(1440).optional().describe("Recent log window in minutes; default 30."),
+      maxErrors: z.number().int().min(1).max(200).optional().describe("Maximum compact error lines; default 20."),
+      async: z.boolean().optional().describe("Run as a tracked job; default true."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async ({ project: projectName, environment, serverId, serverName, instance, filePaths, formNames, logMinutes, maxErrors, async = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const target = getSampleManagerTarget(projectName, environment, instance, undefined, { serverId, serverName });
+      const provenance = {
+        project: resolvedProjectName,
+        environment: target.ps.environment,
+        projectServerId: target.ps.id,
+        serverId: target.ps.server.id,
+        serverName: target.ps.server.name,
+        connectionMode: target.ps.connectionMode,
+        instance: target.instanceName,
+        instanceRoot: instancePaths(target.instance).root,
+        databaseHost: target.configuredInstance?.databaseHost,
+        databaseName: target.configuredInstance?.databaseName,
+      };
+      const work = async (context?: JobContext) => inspectSampleManagerInstance(target.runner, target.instance, {
+        filePaths,
+        formNames,
+        logMinutes,
+        maxErrors,
+        execution: executionForJob(context),
+      });
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        tool: "samplemanager_instance_preflight",
+        ...provenance,
+        fileCount: filePaths?.length ?? 0,
+        formCount: formNames?.length ?? 0,
+        logMinutes: logMinutes ?? 30,
+        readOnly: true,
+        mutationAttempted: false,
+      });
+      if (async) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_instance_preflight", { ...provenance, filePaths, formNames, logMinutes, maxErrors }, work);
+        return { structuredContent: { jobId: job.id, status: job.status, target: provenance }, content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status, target: provenance }) }] };
+      }
+      const evidence = JSON.parse(await work()) as Record<string, unknown>;
+      const response = { provenance, evidence };
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson(response) }] };
+    }
+  );
+
+  server.tool(
     "samplemanager_deployment_start",
     "Create a SampleManager deploymentId that correlates SQL, build, deploy, restart, hashes, backups, logs, and rollback evidence.",
     {
       project: z.string().optional(),
       instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
       label: z.string().optional(),
     },
-    async ({ project: projectName, instance, environment, label }) => {
+    async ({ project: projectName, instance, environment, serverId, serverName, label }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { ps, instanceName } = getSampleManagerTarget(projectName, environment, instance);
+      const target = getSampleManagerTarget(projectName, environment, instance, undefined, { serverId, serverName });
+      const { ps, instanceName } = target;
       const run = startDeployment({
         userId: user.id,
         username: user.username,
@@ -365,11 +452,12 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         host: ps.server.host || ps.server.agentId || ps.server.name,
         kind: "samplemanager-assembly",
         instance: instanceName,
+        target: deploymentTarget(target),
         steps: [],
         artifacts: label ? { label } : {},
         rollbackRequested: false,
       });
-      return { content: [{ type: "text", text: summarizeJson({ deploymentId: run.id, status: run.status }) }] };
+      return { structuredContent: { ...run }, content: [{ type: "text", text: summarizeJson({ deploymentId: run.id, status: run.status, target: run.target }) }] };
     }
   );
 
@@ -380,21 +468,25 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       project: z.string().optional(),
       instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
       deploymentId: z.string().optional(),
-      async: z.boolean().optional().describe("Run as an async job and return a jobId"),
+      async: z.boolean().optional().describe("Run as an async job and return a jobId; default true."),
     },
-    async ({ project: projectName, instance, environment, deploymentId, async = false }) => {
+    async ({ project: projectName, instance, environment, serverId, serverName, deploymentId, async = true }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner, instance: target, instanceName } = getSampleManagerTarget(projectName, environment, instance);
+      const connection = getSampleManagerTarget(projectName, environment, instance, undefined, { serverId, serverName });
+      const { runner, instance: target, instanceName } = connection;
       const work = (context?: JobContext) => withDeploymentStep(
         deploymentId,
         resolvedProjectName,
         "restart",
-        () => restartSampleManagerInstance(runner, target, executionForJob(context))
+        () => restartSampleManagerInstance(runner, target, executionForJob(context)),
+        { connection, instanceName }
       );
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_restart_instance", { instance: instanceName, environment, deploymentId }, work);
-        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+        const job = startJob(user, resolvedProjectName, "samplemanager_restart_instance", { instance: instanceName, environment: connection.ps.environment, serverId: connection.ps.server.id, projectServerId: connection.ps.id, deploymentId }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, deploymentId, status: job.status, target: deploymentTarget(connection) }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
     }
@@ -408,7 +500,10 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       formName: z.string(),
       environment: z.string().optional(),
-      async: z.boolean().optional().describe("Run as an async tracked job and return a jobId."),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
+      deploymentId: z.string().optional().describe("Correlate cache cleanup with a running deployment."),
+      async: z.boolean().optional().describe("Run as an async tracked job and return a jobId; default true."),
     },
     {
       readOnlyHint: false,
@@ -416,14 +511,16 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       idempotentHint: true,
       openWorldHint: false,
     },
-    async ({ project: projectName, instance, formName, environment, async = false }) => {
+    async ({ project: projectName, instance, formName, environment, serverId, serverName, deploymentId, async = true }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner, instance: target, instanceName } = getSampleManagerTarget(projectName, environment, instance);
-      const work = (context?: JobContext) => clearFormCache(
-        runner,
-        target,
-        formName,
-        executionForJob(context)
+      const connection = getSampleManagerTarget(projectName, environment, instance, undefined, { serverId, serverName });
+      const { runner, instance: target, instanceName } = connection;
+      const work = (context?: JobContext) => withDeploymentStep(
+        deploymentId,
+        resolvedProjectName,
+        `clear-form-cache:${formName}`,
+        () => clearFormCache(runner, target, formName, executionForJob(context)),
+        { connection, instanceName }
       );
       writeAudit({
         userId: user.id,
@@ -432,16 +529,22 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         tool: "samplemanager_clear_form_cache",
         instance: instanceName,
         formName,
-        environment,
+        environment: connection.ps.environment,
+        serverId: connection.ps.server.id,
+        projectServerId: connection.ps.id,
+        deploymentId,
         async,
       });
       if (async) {
         const job = startJob(user, resolvedProjectName, "samplemanager_clear_form_cache", {
           instance: instanceName,
           formName,
-          environment,
+          environment: connection.ps.environment,
+          serverId: connection.ps.server.id,
+          projectServerId: connection.ps.id,
+          deploymentId,
         }, work);
-        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, deploymentId, status: job.status, target: deploymentTarget(connection) }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
     }
@@ -454,11 +557,13 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       project: z.string().optional(),
       instance: z.string().optional().describe("Optional when the project environment is bound to a LIMS instance."),
       environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
       minutes: z.number().optional(),
       keywords: z.array(z.string()).optional(),
     },
-    async ({ project: projectName, instance, environment, minutes = 30, keywords }) => {
-      const { runner, instance: target } = getSampleManagerTarget(projectName, environment, instance);
+    async ({ project: projectName, instance, environment, serverId, serverName, minutes = 30, keywords }) => {
+      const { runner, instance: target } = getSampleManagerTarget(projectName, environment, instance, undefined, { serverId, serverName });
       return { content: [{ type: "text", text: await recentErrors(runner, target, minutes, keywords) }] };
     }
   );
@@ -471,10 +576,12 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       database: z.string().optional().describe("Optional when the bound LIMS instance has a configured database."),
       table: z.string().describe("Table name, optionally schema-qualified, e.g. dbo.TEST_INSTRUMENT_USAGE_RECORD"),
       environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
     },
-    async ({ project: projectName, database, table, environment }) => {
+    async ({ project: projectName, database, table, environment, serverId, serverName }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner, database: targetDatabase, databaseHost } = getSampleManagerDatabaseTarget(projectName, environment, database);
+      const { runner, database: targetDatabase, databaseHost, ps } = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
       const text = await sampleManagerTableSchema(runner, targetDatabase, table, databaseHost);
       writeAudit({
         userId: user.id,
@@ -483,6 +590,8 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         tool: "samplemanager_table_schema",
         database: targetDatabase,
         databaseHost,
+        serverId: ps.server.id,
+        projectServerId: ps.id,
         table,
       });
       return { content: [{ type: "text", text }] };
@@ -497,6 +606,8 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       database: z.string().optional().describe("Optional when the bound LIMS instance has a configured database."),
       sql: z.string(),
       environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
       allowMutation: z.boolean().optional(),
       maxRows: z.number().optional().describe("Maximum rows returned per result set, capped at 1000. Default 100."),
       offset: z.number().int().nonnegative().optional().describe("Zero-based result row offset for pagination. Use nextOffset from the previous response."),
@@ -505,9 +616,9 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       parameters: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional().describe("Named SQL parameters without '@', referenced as @name in SQL."),
       identifiers: z.record(z.string()).optional().describe("Identifiers substituted into {{name}} placeholders and escaped with SQL Server brackets."),
     },
-    async ({ project: projectName, database, sql, environment, allowMutation = false, maxRows, offset, includeResultSets, resultSet, parameters, identifiers }) => {
+    async ({ project: projectName, database, sql, environment, serverId, serverName, allowMutation = false, maxRows, offset, includeResultSets, resultSet, parameters, identifiers }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const target = getSampleManagerDatabaseTarget(projectName, environment, database);
+      const target = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
       const { runner, database: targetDatabase, databaseHost, configuredInstance, ps } = target;
       const queryId = `query-${Date.now()}-${randomUUID().slice(0, 8)}`;
       const startedAt = new Date().toISOString();
@@ -624,6 +735,8 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       database: z.string().optional().describe("Optional when the bound LIMS instance has a configured database."),
       path: z.string().describe("Relative SQL file path within the relay project workspace"),
       environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
       allowMutation: z.boolean().optional(),
       maxRows: z.number().optional().describe("Maximum rows returned per result set, capped at 1000. Default 100."),
       offset: z.number().int().nonnegative().optional().describe("Zero-based result row offset for pagination. Use nextOffset from the previous response."),
@@ -631,7 +744,7 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       parameters: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional().describe("Named SQL parameters without '@', referenced as @name in SQL."),
       identifiers: z.record(z.string()).optional().describe("Identifiers substituted into {{name}} placeholders and escaped with SQL Server brackets."),
     },
-    async ({ project: projectName, database, path: relPath, environment, allowMutation = false, maxRows, offset, includeResultSets, parameters, identifiers }) => {
+    async ({ project: projectName, database, path: relPath, environment, serverId, serverName, allowMutation = false, maxRows, offset, includeResultSets, parameters, identifiers }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const project = registry.getProject(user.id, resolvedProjectName);
       if (!project) throw new Error(`Project '${resolvedProjectName}' not found`);
@@ -641,7 +754,7 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         throw new Error(`SQL file '${relPath}' does not exist in project '${resolvedProjectName}'`);
       }
 
-      const { runner, database: targetDatabase, databaseHost } = getSampleManagerDatabaseTarget(projectName, environment, database);
+      const { runner, database: targetDatabase, databaseHost, ps } = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
       const sql = readFileSync(fullPath, "utf8");
       const text = await runSql(runner, targetDatabase, sql, { allowMutation, maxRows, offset, includeResultSets, parameters, identifiers, databaseHost });
       writeAudit({
@@ -651,6 +764,8 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         tool: "samplemanager_sql_execute_file",
         database: targetDatabase,
         databaseHost,
+        serverId: ps.server.id,
+        projectServerId: ps.id,
         path: relPath,
         allowMutation,
         maxRows,
@@ -781,6 +896,8 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       remoteCsvPath: z.string(),
       mode: z.string().optional().describe("Table-loader mode; default overwrite_table"),
       environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
       deploymentId: z.string().optional().describe("Correlate upload, load, verification, and audit evidence."),
       timeoutMs: z.number().positive().optional().describe("Default 300000"),
       async: z.boolean().optional().describe("Run as an async job; recommended"),
@@ -792,12 +909,15 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       remoteCsvPath,
       mode = "overwrite_table",
       environment,
+      serverId,
+      serverName,
       deploymentId,
       timeoutMs = 300000,
       async = true,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner, instance: target, instanceName } = getSampleManagerTarget(projectName, environment, instance);
+      const connection = getSampleManagerTarget(projectName, environment, instance, undefined, { serverId, serverName });
+      const { runner, instance: target, instanceName } = connection;
       const work = (context?: JobContext) => withDeploymentStep(
         deploymentId,
         resolvedProjectName,
@@ -810,12 +930,13 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
           mode,
           timeoutMs,
           executionForJob(context)
-        )
+        ),
+        { connection, instanceName }
       );
-      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_table_loader", instance: instanceName, remoteCsvPath, mode, deploymentId, async, mutationAttempted: true, mutationKind: "data" });
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_table_loader", environment: connection.ps.environment, serverId: connection.ps.server.id, projectServerId: connection.ps.id, instance: instanceName, remoteCsvPath, mode, deploymentId, async, mutationAttempted: true, mutationKind: "data" });
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_table_loader", { instance: instanceName, username, remoteCsvPath, mode, environment, deploymentId, timeoutMs }, work);
-        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, deploymentId, status: job.status }) }] };
+        const job = startJob(user, resolvedProjectName, "samplemanager_table_loader", { instance: instanceName, username, remoteCsvPath, mode, environment: connection.ps.environment, serverId: connection.ps.server.id, projectServerId: connection.ps.id, deploymentId, timeoutMs }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, deploymentId, status: job.status, target: deploymentTarget(connection) }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
     }
@@ -834,6 +955,8 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         mode: z.string().optional().describe("Table-loader mode; default overwrite_table"),
       })).min(1),
       environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
       deploymentId: z.string().optional().describe("Existing deploymentId. If omitted, one is created."),
       backupSql: z.string().optional().describe("Optional explicit backup SQL supplied by the caller; executed as a mutation and recorded."),
       verifySql: z.string().optional().describe("Optional verification SQL executed after all loads."),
@@ -846,6 +969,8 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       username,
       files,
       environment,
+      serverId,
+      serverName,
       deploymentId: requestedDeploymentId,
       backupSql,
       verifySql,
@@ -853,9 +978,19 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       async = true,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { project, ps, runner, instance: target, instanceName } = getSampleManagerTarget(projectName, environment, instance);
+      const connection = getSampleManagerTarget(projectName, environment, instance, undefined, { serverId, serverName });
+      const { project, ps, runner, instance: target, instanceName } = connection;
       const run = requestedDeploymentId
-        ? getDeployment(requestedDeploymentId)
+        ? requireRunningDeployment(requestedDeploymentId, {
+            userId: user.id,
+            project: resolvedProjectName,
+            environment: ps.environment,
+            instance: instanceName,
+            projectServerId: ps.id,
+            serverId: ps.server.id,
+            databaseHost: connection.configuredInstance?.databaseHost,
+            databaseName: connection.configuredInstance?.databaseName,
+          })
         : startDeployment({
             userId: user.id,
             username: user.username,
@@ -864,6 +999,7 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
             host: ps.server.host || ps.server.agentId || ps.server.name,
             kind: "samplemanager-assembly",
             instance: instanceName,
+            target: deploymentTarget(connection),
             rollbackRequested: false,
           });
       if (!run || run.userId !== user.id || run.project !== resolvedProjectName) {
@@ -895,25 +1031,26 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
             ensureRemoteSuccess(hashResult);
             const remoteSha256 = hashResult.stdout.trim().toLowerCase();
             if (remoteSha256 !== localSha256) throw new Error(`SHA-256 mismatch for ${file.workspacePath}: local=${localSha256}, remote=${remoteSha256}`);
-          });
+          }, { connection, instanceName });
           return { workspacePath: file.workspacePath, remotePath, bytes: localStat.size, localSha256 };
         };
         if (backupSql) {
           await withDeploymentStep(run.id, resolvedProjectName, "backup", async () => {
-            const result = await runSql(runner, getSampleManagerDatabaseTarget(projectName, environment).database, backupSql, { allowMutation: true, includeResultSets: false, databaseHost: getSampleManagerDatabaseTarget(projectName, environment).databaseHost });
+            const databaseTarget = getSampleManagerDatabaseTarget(projectName, environment, undefined, { serverId: ps.server.id });
+            const result = await runSql(runner, databaseTarget.database, backupSql, { allowMutation: true, includeResultSets: false, databaseHost: databaseTarget.databaseHost });
             writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_deploy_table_loader_package", deploymentId: run.id, mutationAttempted: true, mutationKind: "schema-or-data", phase: "backup" });
             return result;
-          });
+          }, { connection, instanceName });
         }
         for (let index = 0; index < files.length; index++) {
           const staged = await stage(files[index], index);
-          const loaded = await withDeploymentStep(run.id, resolvedProjectName, `load:${files[index].workspacePath}`, () => loadTableLoaderFile(runner, target, username, staged.remotePath, files[index].mode ?? "overwrite_table", timeoutMs, executionForJob(context)));
+          const loaded = await withDeploymentStep(run.id, resolvedProjectName, `load:${files[index].workspacePath}`, () => loadTableLoaderFile(runner, target, username, staged.remotePath, files[index].mode ?? "overwrite_table", timeoutMs, executionForJob(context)), { connection, instanceName });
           results.push({ ...staged, mode: files[index].mode ?? "overwrite_table", load: loaded });
         }
         let verification: unknown;
         if (verifySql) {
-          const dbTarget = getSampleManagerDatabaseTarget(projectName, environment);
-          verification = await withDeploymentStep(run.id, resolvedProjectName, "verify", () => runSql(dbTarget.runner, dbTarget.database, verifySql, { allowMutation: false, includeResultSets: true, databaseHost: dbTarget.databaseHost }));
+          const dbTarget = getSampleManagerDatabaseTarget(projectName, environment, undefined, { serverId: ps.server.id });
+          verification = await withDeploymentStep(run.id, resolvedProjectName, "verify", () => runSql(dbTarget.runner, dbTarget.database, verifySql, { allowMutation: false, includeResultSets: true, databaseHost: dbTarget.databaseHost }), { connection, instanceName });
         }
         updateDeployment(run.id, { artifacts: { files: results, stagingRoot, verification, backupSqlProvided: Boolean(backupSql) } });
         finishDeployment(run.id, { status: "succeeded", rollback: run.rollback, artifacts: { files: results, stagingRoot, verification, backupSqlProvided: Boolean(backupSql) } });
@@ -934,8 +1071,8 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         }
       };
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_deploy_table_loader_package", { instance: instanceName, username, files, environment, deploymentId: run.id, timeoutMs }, work);
-        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, deploymentId: run.id, status: job.status }) }] };
+        const job = startJob(user, resolvedProjectName, "samplemanager_deploy_table_loader_package", { instance: instanceName, username, files, environment: ps.environment, serverId: ps.server.id, projectServerId: ps.id, deploymentId: run.id, timeoutMs }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, deploymentId: run.id, status: job.status, target: deploymentTarget(connection) }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
     }
@@ -1006,6 +1143,8 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       createBackup: z.boolean().optional().describe("Create a timestamped RELAY_BACKUP table before update/delete. Default true."),
       maxRows: z.number().int().positive().max(1000).optional(),
       environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
       deploymentId: z.string().optional(),
     },
     async ({
@@ -1020,10 +1159,13 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       createBackup = true,
       maxRows,
       environment,
+      serverId,
+      serverName,
       deploymentId,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner, database: targetDatabase, databaseHost } = getSampleManagerDatabaseTarget(projectName, environment, database);
+      const target = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
+      const { runner, database: targetDatabase, databaseHost, ps, configuredInstance } = target;
       const text = await withDeploymentStep(
         deploymentId,
         resolvedProjectName,
@@ -1039,6 +1181,8 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
           maxRows,
           databaseHost,
         })
+        ,
+        configuredInstance ? { connection: target, instanceName: configuredInstance.name } : undefined
       );
       writeAudit({
         userId: user.id,
@@ -1047,6 +1191,8 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         tool: "samplemanager_sql_mutation",
         database: targetDatabase,
         databaseHost,
+        serverId: ps.server.id,
+        projectServerId: ps.id,
         operation,
         table,
         where,
@@ -1069,6 +1215,8 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       project: z.string().optional(),
       database: z.string().optional(),
       environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
       deploymentId: z.string().optional(),
       dryRun: z.boolean().optional().describe("Execute and roll back by default. Set false to commit."),
       createBackup: z.boolean().optional(),
@@ -1083,9 +1231,9 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         parameters: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
       })).min(1).max(50),
     },
-    async ({ project: projectName, database, environment, deploymentId: requestedDeploymentId, dryRun = true, createBackup = true, maxRows, verifySql, changes }) => {
+    async ({ project: projectName, database, environment, serverId, serverName, deploymentId: requestedDeploymentId, dryRun = true, createBackup = true, maxRows, verifySql, changes }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const target = getSampleManagerDatabaseTarget(projectName, environment, database);
+      const target = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
       let deploymentId = requestedDeploymentId;
       let run = deploymentId ? getDeployment(deploymentId) : undefined;
       if (deploymentId && (!run || run.userId !== user.id || run.project !== resolvedProjectName)) {
@@ -1093,6 +1241,18 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       }
       if (run?.status === "unknown") {
         throw new Error(`Deployment '${run.id}' has unknown execution state. Verify the database and call samplemanager_deployment_status before retrying.`);
+      }
+      if (run?.status === "running" && target.configuredInstance) {
+        run = requireRunningDeployment(run.id, {
+          userId: user.id,
+          project: resolvedProjectName,
+          environment: target.ps.environment,
+          instance: target.configuredInstance.name,
+          projectServerId: target.ps.id,
+          serverId: target.ps.server.id,
+          databaseHost: target.databaseHost,
+          databaseName: target.database,
+        });
       }
       if (!run) {
         run = startDeployment({
@@ -1103,6 +1263,7 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
           host: target.ps.server.host || target.ps.server.agentId || target.ps.server.name,
           kind: "samplemanager-change-set",
           instance: target.configuredInstance?.name,
+          target: deploymentTarget(target),
           steps: [{ name: "change-set", status: "pending" }, { name: "verify", status: verifySql ? "pending" : "succeeded" }],
           artifacts: { database: target.database, databaseHost: target.databaseHost },
           rollbackRequested: true,
@@ -1255,6 +1416,8 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       restart: z.boolean().optional().describe("Restart SampleManager after deploy. Default true."),
       rollbackOnFailure: z.boolean().optional().describe("Restore the timestamped backup if a later phase fails. Default true."),
       environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
       deploymentId: z.string().optional().describe("Existing running deploymentId to reuse. If omitted, a new deployment is created."),
       timeoutMs: z.number().positive().optional().describe("Build timeout; default 600000"),
       async: z.boolean().optional().describe("Return jobId and deploymentId immediately. Default true."),
@@ -1273,13 +1436,15 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       restart = true,
       rollbackOnFailure = true,
       environment,
+      serverId,
+      serverName,
       deploymentId: requestedDeploymentId,
       timeoutMs = 600000,
       async = true,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { ps, runner, instance: instanceTarget, instanceName, configuredInstance } =
-        getSampleManagerTarget(projectName, environment, instance);
+      const connection = getSampleManagerTarget(projectName, environment, instance, undefined, { serverId, serverName });
+      const { ps, runner, instance: instanceTarget, instanceName, configuredInstance } = connection;
       const resolvedEnvironment = ps.environment;
       const buildProfile = configuredInstance?.buildProfile ?? {};
       const validatedEnvironmentVariables = validateBuildEnvironmentVariables(environmentVariables);
@@ -1303,6 +1468,10 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
             project: resolvedProjectName,
             environment: resolvedEnvironment,
             instance: instanceName,
+            projectServerId: ps.id,
+            serverId: ps.server.id,
+            databaseHost: configuredInstance?.databaseHost,
+            databaseName: configuredInstance?.databaseName,
           })
         : startDeployment({
             userId: user.id,
@@ -1312,6 +1481,7 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
             host: ps.server.host || ps.server.agentId || ps.server.name,
             kind: "samplemanager-assembly",
             instance: instanceName,
+            target: deploymentTarget(connection),
             steps: operationSteps,
             artifacts: { projectOrSolutionPath, assemblyPath, targetRelativePath: target },
             rollbackRequested: rollbackOnFailure,
@@ -1565,6 +1735,8 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
           environmentVariables: buildSettingsMetadata(validatedEnvironmentVariables),
           preflightOnly,
           environment,
+          serverId: ps.server.id,
+          projectServerId: ps.id,
           timeoutMs,
         }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, deploymentId: run.id, status: job.status }) }] };
@@ -1631,12 +1803,15 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       backup: z.boolean().optional().describe("Create backup before replacement; default true"),
       skipIfUnchanged: z.boolean().optional().describe("Skip the copy when source and target SHA-256 already match; default true"),
       environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
       deploymentId: z.string().optional(),
-      async: z.boolean().optional().describe("Run as an async job"),
+      async: z.boolean().optional().describe("Run as an async job; default true."),
     },
-    async ({ project: projectName, instance, sourcePath, area, targetRelativePath, backup = true, skipIfUnchanged = true, environment, deploymentId, async = false }) => {
+    async ({ project: projectName, instance, sourcePath, area, targetRelativePath, backup = true, skipIfUnchanged = true, environment, serverId, serverName, deploymentId, async = true }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner, instance: target, instanceName } = getSampleManagerTarget(projectName, environment, instance);
+      const connection = getSampleManagerTarget(projectName, environment, instance, undefined, { serverId, serverName });
+      const { runner, instance: target, instanceName } = connection;
       const work = (context?: JobContext) => withDeploymentStep(
         deploymentId,
         resolvedProjectName,
@@ -1650,12 +1825,13 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
           backup,
           skipIfUnchanged,
           executionForJob(context)
-        )
+        ),
+        { connection, instanceName }
       );
-      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_deploy_file", instance: instanceName, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, async });
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_deploy_file", environment: connection.ps.environment, serverId: connection.ps.server.id, projectServerId: connection.ps.id, deploymentId, instance: instanceName, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, async });
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_deploy_file", { instance: instanceName, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, environment, deploymentId }, work);
-        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status }) }] };
+        const job = startJob(user, resolvedProjectName, "samplemanager_deploy_file", { instance: instanceName, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, environment: connection.ps.environment, serverId: connection.ps.server.id, projectServerId: connection.ps.id, deploymentId }, work);
+        return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, deploymentId, status: job.status, target: deploymentTarget(connection) }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };
     }

@@ -61,6 +61,15 @@ test("deployment store validates an existing running deployment for reuse", asyn
       host: "server-1",
       kind: "samplemanager-change-set",
       instance: "VGSM",
+      target: {
+        projectServerId: 11,
+        serverId: 1,
+        serverName: "PT35 Demo",
+        connectionMode: "agent",
+        instanceRoot: "C:\\Thermo\\SampleManager\\Server\\VGSM",
+        databaseHost: "localhost\\SQLEXPRESS",
+        databaseName: "VGSM",
+      },
       steps: [{ name: "sql", status: "succeeded" }],
       rollbackRequested: true,
     });
@@ -70,6 +79,10 @@ test("deployment store validates an existing running deployment for reuse", asyn
       project: "PT35",
       environment: "demo",
       instance: "vgsm",
+      projectServerId: 11,
+      serverId: 1,
+      databaseHost: "localhost\\SQLEXPRESS",
+      databaseName: "VGSM",
     });
     assert.equal(reused.id, started.id);
     assert.equal(reused.steps?.[0].name, "sql");
@@ -78,7 +91,31 @@ test("deployment store validates an existing running deployment for reuse", asyn
       project: "PT35",
       environment: "production",
       instance: "VGSM",
+      projectServerId: 11,
+      serverId: 1,
+      databaseHost: "localhost\\SQLEXPRESS",
+      databaseName: "VGSM",
     }), /environment/i);
+    assert.throws(() => store.requireRunningDeployment(started.id, {
+      userId: 7,
+      project: "PT35",
+      environment: "Demo",
+      instance: "VGSM",
+      projectServerId: 11,
+      serverId: 2,
+      databaseHost: "localhost\\SQLEXPRESS",
+      databaseName: "VGSM",
+    }), /serverId/i);
+    assert.throws(() => store.requireRunningDeployment(started.id, {
+      userId: 7,
+      project: "PT35",
+      environment: "Demo",
+      instance: "VGSM",
+      projectServerId: 12,
+      serverId: 1,
+      databaseHost: "localhost\\SQLEXPRESS",
+      databaseName: "VGSM",
+    }), /server link/i);
 
     const instanceLess = store.startDeployment({
       userId: 7,
@@ -104,6 +141,10 @@ test("deployment store validates an existing running deployment for reuse", asyn
       project: "PT35",
       environment: "Demo",
       instance: "VGSM",
+      projectServerId: 11,
+      serverId: 1,
+      databaseHost: "localhost\\SQLEXPRESS",
+      databaseName: "VGSM",
     }), /cannot accept/i);
   } finally {
     rmSync(root, { recursive: true, force: true });

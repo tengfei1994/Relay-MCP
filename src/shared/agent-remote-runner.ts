@@ -1,5 +1,6 @@
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
+import { closeSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, join, relative } from "path";
+import { tmpdir } from "os";
 import {
   cleanPowerShellText,
   RemoteRunner,
@@ -56,27 +57,48 @@ export class AgentRemoteRunner extends RemoteRunner {
   }
 
   override async writeFile(remotePath: string, content: string): Promise<void> {
-    const base64 = Buffer.from(content, "utf8").toString("base64");
-    const script = `
-$path = ${psQuote(remotePath)}
-$parent = Split-Path -Parent $path
-if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
-[IO.File]::WriteAllBytes($path, [Convert]::FromBase64String('${base64}'))
-`;
-    const result = await this.execPowerShell(script, 120000);
-    if (result.code !== 0) throw new Error(result.stderr || result.stdout);
+    const tempPath = join(tmpdir(), `relay-agent-write-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
+    writeFileSync(tempPath, content, "utf8");
+    try {
+      await this.uploadFile(tempPath, remotePath);
+    } finally {
+      try { unlinkSync(tempPath); } catch {}
+    }
   }
 
   override async uploadFile(localPath: string, remotePath: string): Promise<void> {
-    const base64 = readFileSync(localPath).toString("base64");
-    const script = `
+    const chunkBytes = Math.max(64 * 1024, Math.min(Number(process.env.RELAY_AGENT_UPLOAD_CHUNK_BYTES ?? 256 * 1024), 1024 * 1024));
+    const initialize = await this.execPowerShell(`
 $path = ${psQuote(remotePath)}
 $parent = Split-Path -Parent $path
 if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
-[IO.File]::WriteAllBytes($path, [Convert]::FromBase64String('${base64}'))
-`;
-    const result = await this.execPowerShell(script, 300000);
-    if (result.code !== 0) throw new Error(result.stderr || result.stdout);
+[IO.File]::WriteAllBytes($path, [byte[]]@())
+`, 120000);
+    if (initialize.code !== 0) throw new Error(initialize.stderr || initialize.stdout);
+
+    const handle = openSync(localPath, "r");
+    const buffer = Buffer.allocUnsafe(chunkBytes);
+    let offset = 0;
+    try {
+      while (true) {
+        const bytesRead = readSync(handle, buffer, 0, buffer.length, offset);
+        if (bytesRead === 0) break;
+        const base64 = buffer.subarray(0, bytesRead).toString("base64");
+        const append = await this.execPowerShell(`
+$path = ${psQuote(remotePath)}
+$bytes = [Convert]::FromBase64String('${base64}')
+$stream = [IO.File]::Open($path, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+`, 120000);
+        if (append.code !== 0) throw new Error(append.stderr || append.stdout);
+        offset += bytesRead;
+      }
+    } catch (error) {
+      try { await this.execPowerShell(`Remove-Item -LiteralPath ${psQuote(remotePath)} -Force -ErrorAction SilentlyContinue`, 30000); } catch {}
+      throw error;
+    } finally {
+      closeSync(handle);
+    }
   }
 
   override async downloadFile(remotePath: string, localPath: string): Promise<{ bytes: number }> {

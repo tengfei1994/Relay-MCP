@@ -155,9 +155,10 @@ export function registerToolsForUser(user: McpUser, dependencies: ToolRegistrati
   function getSampleManagerDatabaseTarget(
     projectName?: string,
     environment?: string,
-    requestedDatabase?: string
+    requestedDatabase?: string,
+    selector: ProjectSelector = {}
   ): SampleManagerDatabaseTarget {
-    const connection = getRunner(projectName, environment);
+    const connection = getRunner(projectName, environment, selector);
     const configured = connection.ps.limsInstance;
     if (
       configured?.databaseName &&

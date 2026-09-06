@@ -12,6 +12,16 @@ let resolveProjectId: ((userId: number, projectName: string) => number | undefin
 
 export type DeploymentStatus = "running" | "succeeded" | "failed" | "unknown" | "needs-review" | "pending-validation";
 
+export interface DeploymentTargetSnapshot {
+  projectServerId?: number;
+  serverId?: number;
+  serverName?: string;
+  connectionMode?: "ssh" | "agent";
+  instanceRoot?: string;
+  databaseHost?: string;
+  databaseName?: string;
+}
+
 export interface DeploymentRecord {
   id: string;
   userId: number;
@@ -22,6 +32,7 @@ export interface DeploymentRecord {
   branch?: string;
   kind?: "git" | "samplemanager-assembly" | "samplemanager-change-set";
   instance?: string;
+  target?: DeploymentTargetSnapshot;
   status: DeploymentStatus;
   startedAt: string;
   /** Persisted once the started event has been durably written to the spool. */
@@ -96,6 +107,10 @@ export interface DeploymentReuseTarget {
   project: string;
   environment: string;
   instance: string;
+  projectServerId?: number;
+  serverId?: number;
+  databaseHost?: string;
+  databaseName?: string;
 }
 
 function resolveProjectIdSnapshot(userId: number, projectName: string): string | undefined {
@@ -109,7 +124,7 @@ function resolveProjectIdSnapshot(userId: number, projectName: string): string |
   }
 }
 
-function startedDeploymentEvent(record: Pick<DeploymentRecord, "id" | "userId" | "project" | "environment" | "instance" | "kind" | "startedAt" | "projectIdSnapshot">): Parameters<typeof emitRelayEvent>[1] {
+function startedDeploymentEvent(record: Pick<DeploymentRecord, "id" | "userId" | "project" | "environment" | "instance" | "kind" | "target" | "startedAt" | "projectIdSnapshot">): Parameters<typeof emitRelayEvent>[1] {
   return {
     type: "deployment.started",
     eventKey: `deployment:${record.id}:started`,
@@ -118,7 +133,7 @@ function startedDeploymentEvent(record: Pick<DeploymentRecord, "id" | "userId" |
     projectId: record.projectIdSnapshot,
     projectNameSnapshot: record.project,
     deploymentId: record.id,
-    payload: { environment: record.environment, instance: record.instance, kind: record.kind },
+    payload: { environment: record.environment, instance: record.instance, kind: record.kind, target: record.target },
   };
 }
 
@@ -156,6 +171,7 @@ function terminalDeploymentEvent(record: DeploymentRecord): Parameters<typeof em
       kind: record.kind,
       environment: record.environment,
       instance: record.instance,
+      target: record.target,
       branch: record.branch,
       commitBefore: record.commitBefore,
       commitAfter: record.commitAfter,
@@ -277,6 +293,7 @@ export function startDeployment(input: Omit<DeploymentRecord, "id" | "status" | 
     branch: input.branch,
     kind: input.kind,
     instance: input.instance,
+    target: input.target,
     steps: input.steps,
     artifacts: input.artifacts,
     status: "running",
@@ -364,6 +381,19 @@ export function requireRunningDeployment(
   }
   if (!deployment.instance || deployment.instance.localeCompare(target.instance, undefined, { sensitivity: "accent" }) !== 0) {
     throw new Error(`Deployment '${id}' instance '${deployment.instance}' does not match '${target.instance}'`);
+  }
+  const snapshot = deployment.target;
+  if (snapshot?.serverId !== undefined && snapshot.serverId !== target.serverId) {
+    throw new Error(`Deployment '${id}' serverId '${snapshot.serverId}' does not match '${target.serverId ?? "unspecified"}'`);
+  }
+  if (snapshot?.projectServerId !== undefined && snapshot.projectServerId !== target.projectServerId) {
+    throw new Error(`Deployment '${id}' project server link '${snapshot.projectServerId}' does not match '${target.projectServerId ?? "unspecified"}'`);
+  }
+  if (snapshot?.databaseHost && snapshot.databaseHost.localeCompare(target.databaseHost ?? "", undefined, { sensitivity: "accent" }) !== 0) {
+    throw new Error(`Deployment '${id}' database host '${snapshot.databaseHost}' does not match '${target.databaseHost ?? "unspecified"}'`);
+  }
+  if (snapshot?.databaseName && snapshot.databaseName.localeCompare(target.databaseName ?? "", undefined, { sensitivity: "accent" }) !== 0) {
+    throw new Error(`Deployment '${id}' database '${snapshot.databaseName}' does not match '${target.databaseName ?? "unspecified"}'`);
   }
   return deployment;
 }

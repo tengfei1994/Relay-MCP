@@ -264,6 +264,8 @@ npm run relay-download -- --url <url> --token <token> \
 
 ## 异步 Job
 
+通用远程部署的目标锁定、预检、上传、异步等待、幂等和日志规范见 [`docs/deployment-command-guide.md`](docs/deployment-command-guide.md)。
+
 长时间命令应设置 `async: true`。工具立即返回 `jobId`，随后使用：
 
 - `job_status`：查看 queued/running/completed/failed、结果、错误和近期日志。
@@ -345,7 +347,7 @@ Knowledge 审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [`d
 | Workspace | `create_workspace_upload` | 创建大型本地文件的短期流式上传 session。 |
 | Workspace | `cleanup_workspace_staging` | 预览或清理旧 `.relay-staging` 内容。 |
 | Workspace | `sync_workspace` | 通过 SFTP 同步 workspace 到远端目录。 |
-| Workspace | `upload_workspace_file` | 上传单个 workspace 文件到远端。 |
+| Workspace | `upload_workspace_file` | 通过临时路径上传，校验 SHA-256，相同文件跳过并原子替换目标；可关联 deploymentId。 |
 | Jobs | `job_status` | 查询异步 job 的状态、结果、错误和日志。 |
 | Jobs | `job_wait` | 有界等待 job 终态或阶段变化；等待到期时返回最新快照而不是制造新的执行超时。 |
 | Jobs | `job_list` | 列出当前用户的近期 job。 |
@@ -361,6 +363,7 @@ Knowledge 审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [`d
 | Context | `knowledge_ingest` | 幂等导入 Git Casebook Markdown/YAML 与 legacy context JSONL。 |
 | Context | `knowledge_reindex` | 重建 Project 范围的 FTS 索引，并可受控地失效 embedding 缓存。 |
 | SampleManager | `samplemanager_capabilities` | 解析实例使用的版本化 Capability Pack，并列出已就绪、规划中和不可用的语义检查能力。 |
+| SampleManager | `samplemanager_instance_preflight` | 一次性只读检查实例目录、指定文件哈希/XML、FormsBin、服务、进程和近期错误摘要。 |
 | SampleManager | `samplemanager_diagnose` | 组合版本过滤的 Knowledge 检索与 Form/Task/Assembly 只读检查；不执行 deploy、restart、clear 或 SQL mutation。 |
 | SampleManager | `samplemanager_impact_analysis` | 根据确定性、带来源的关系计算只读影响范围。 |
 | SampleManager | `samplemanager_inspect_assembly_type` | 对单一程序集类型执行受限反射，返回扁平化属性、方法、事件、依赖、版本和 SHA-256 证据。 |

@@ -988,6 +988,13 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     return reply.send({ events: rows.map((row) => ({ id: row.id, type: row.type, occurredAt: row.occurred_at, projectId: row.project_id, projectName: row.project_name_snapshot, jobId: row.job_id, deploymentId: row.deployment_id, eventKey: row.event_key, payloadKeys: safeRows(() => Object.keys(JSON.parse(String(row.payload_json ?? "{}"))), []) })) });
   });
 
+  app.get("/api/knowledge/operations/capture/queue", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const store = getKnowledgeStore(); const query = request.query as Record<string, unknown>; const limit = parseBoundedInt(query.limit, 20, 1, 100);
+    const rows = store.db.prepare("SELECT c.event_id, c.attempts, c.available_at, c.claimed_until, c.last_error, e.type, e.occurred_at, e.project_id, e.job_id, e.deployment_id FROM knowledge_outbox_claims c JOIN relay_domain_events e ON e.id = c.event_id WHERE c.consumer_name = ? AND c.consumed_at IS NULL ORDER BY c.available_at ASC LIMIT ?").all("knowledge-capture", limit) as KnowledgeRow[];
+    const backlog = store.consumerBacklog("knowledge-capture");
+    return reply.send({ consumer: "knowledge-capture", pending: backlog.count, oldestAvailableAt: backlog.oldestAvailableAt, entries: rows.map((row) => ({ eventId: row.event_id, type: row.type, occurredAt: row.occurred_at, projectId: row.project_id, jobId: row.job_id, deploymentId: row.deployment_id, attempts: row.attempts, availableAt: row.available_at, claimedUntil: row.claimed_until, lastError: row.last_error })) });
+  });
+
   app.post("/api/knowledge/operations/capture/replay", { onRequest: [app.authenticate] }, async (request, reply) => {
     const store = getKnowledgeStore();
     if (!request.user.isAdmin && !knowledgeReviewAllowed(store, request.user.id)) return reply.status(403).send({ error: "Reviewer access required" });

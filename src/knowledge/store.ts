@@ -366,6 +366,31 @@ export class KnowledgeStore {
     return { count: Number(row.count), oldestAvailableAt: row.oldestAvailableAt ?? undefined };
   }
 
+  /** Re-queue immutable historical events for a controlled capture replay. */
+  replayCaptureEvents(options: { eventIds?: string[]; projectId?: string; type?: string; from?: string; to?: string; limit?: number; dryRun?: boolean } = {}): { matched: number; queued: number; eventIds: string[] } {
+    const where: string[] = ["length(trim(event_key)) > 0"];
+    const params: unknown[] = [];
+    if (options.eventIds?.length) { where.push(`id IN (${options.eventIds.map(() => "?").join(",")})`); params.push(...options.eventIds); }
+    if (options.projectId) { where.push("project_id = ?"); params.push(options.projectId); }
+    if (options.type) { where.push("type = ?"); params.push(options.type); }
+    if (options.from) { where.push("occurred_at >= ?"); params.push(options.from); }
+    if (options.to) { where.push("occurred_at <= ?"); params.push(options.to); }
+    const limit = Math.max(1, Math.min(options.limit ?? 500, 5000));
+    const rows = this.db.prepare(`SELECT id FROM relay_domain_events WHERE ${where.join(" AND ")} ORDER BY occurred_at ASC LIMIT ?`).all(...params, limit) as Array<{ id: string }>;
+    if (options.dryRun) return { matched: rows.length, queued: 0, eventIds: rows.map((row) => row.id) };
+    const now = this.now().toISOString();
+    const queue = this.db.transaction(() => {
+      let queued = 0;
+      for (const row of rows) {
+        this.db.prepare("DELETE FROM knowledge_consumer_checkpoint WHERE event_id = ? AND consumer_name = 'knowledge-capture'").run(row.id);
+        this.db.prepare("DELETE FROM knowledge_outbox_claims WHERE event_id = ? AND consumer_name = 'knowledge-capture'").run(row.id);
+        queued += Number(this.db.prepare("INSERT OR IGNORE INTO knowledge_outbox(event_id, available_at) VALUES (?, ?)").run(row.id, now).changes);
+      }
+      return queued;
+    });
+    return { matched: rows.length, queued: queue(), eventIds: rows.map((row) => row.id) };
+  }
+
   /** Remove acknowledged delivery metadata older than the replay retention window. */
   pruneOutbox(retentionMs = 30 * 24 * 60 * 60 * 1000, consumers = ["knowledge-capture"]): { outbox: number; claims: number; checkpoints: number } {
     const effectiveRetentionMs = parseBoundedNumber(String(retentionMs), 30 * 24 * 60 * 60 * 1000, 60_000, 10 * 365 * 24 * 60 * 60 * 1000);

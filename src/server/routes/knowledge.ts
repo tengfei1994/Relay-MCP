@@ -988,6 +988,26 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     return reply.send({ events: rows.map((row) => ({ id: row.id, type: row.type, occurredAt: row.occurred_at, projectId: row.project_id, projectName: row.project_name_snapshot, jobId: row.job_id, deploymentId: row.deployment_id, eventKey: row.event_key, payloadKeys: safeRows(() => Object.keys(JSON.parse(String(row.payload_json ?? "{}"))), []) })) });
   });
 
+  app.post("/api/knowledge/operations/capture/replay", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const store = getKnowledgeStore();
+    if (!request.user.isAdmin && !knowledgeReviewAllowed(store, request.user.id)) return reply.status(403).send({ error: "Reviewer access required" });
+    const body = z.object({
+      eventIds: z.array(z.string().min(1)).max(5000).optional(),
+      projectId: z.number().int().positive().optional(),
+      type: z.string().min(1).max(100).optional(),
+      from: z.string().datetime().optional(),
+      to: z.string().datetime().optional(),
+      limit: z.number().int().min(1).max(5000).optional(),
+      dryRun: z.boolean().optional(),
+    }).safeParse(request.body ?? {});
+    if (!body.success) return reply.status(400).send({ error: "Invalid capture replay request", details: body.error.issues });
+    const projectId = body.data.projectId ? String(resolveProject(request.user.id, body.data.projectId).projectId) : undefined;
+    if (!body.data.eventIds?.length && !projectId && !body.data.type && !body.data.from && !body.data.to) return reply.status(400).send({ error: "At least one replay filter is required" });
+    const result = replayOrRun(store, request.user.id, "operations:capture-replay", idempotencyKey(request), () => store.replayCaptureEvents({ ...body.data, projectId }), body.data);
+    store.audit({ actorId: request.user.id, projectId, action: "knowledge.operations.capture_replay", entityType: "capture", entityId: `replay:${Date.now()}`, details: { ...result, dryRun: Boolean(body.data.dryRun) } });
+    return reply.send({ ok: true, ...result, dryRun: Boolean(body.data.dryRun), queuedFor: "knowledge-capture", note: body.data.dryRun ? "No events were changed." : "Events are queued for the Capture Worker." });
+  });
+
   app.get("/api/knowledge/operations/capture/dead-letter", { onRequest: [app.authenticate] }, async (request, reply) => { const store = getKnowledgeStore(); if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" }); return reply.send({ deadLetters: readDeadLetters(store, 200) }); });
 
   app.post("/api/knowledge/operations/capture/smoke-test", { onRequest: [app.authenticate] }, async (request, reply) => {

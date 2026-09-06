@@ -20,6 +20,7 @@ export class KnowledgeRepository {
       confidence: value.confidence ?? null, evidenceRefs: JSON.stringify(value.evidenceRefs ?? []), sourceLocator: value.locator,
       sourceSha256: value.sha256 ?? null, createdAt: value.createdAt, updatedAt: value.updatedAt,
     });
+    for (const evidenceId of value.evidenceRefs ?? []) this.store.db.prepare("INSERT OR IGNORE INTO knowledge_entity_evidence(entity_type,entity_id,evidence_id,created_at) VALUES ('case',?,?,?)").run(value.id, evidenceId, value.createdAt);
     return value;
   }
 
@@ -35,6 +36,7 @@ export class KnowledgeRepository {
       evidenceRefs: JSON.stringify(value.evidenceRefs ?? []), sourceLocator: value.locator, sourceSha256: value.sha256 ?? null,
       createdAt: value.createdAt, updatedAt: value.updatedAt,
     });
+    for (const evidenceId of value.evidenceRefs ?? []) this.store.db.prepare("INSERT OR IGNORE INTO knowledge_entity_evidence(entity_type,entity_id,evidence_id,created_at) VALUES ('pattern',?,?,?)").run(value.id, evidenceId, value.createdAt);
     return value;
   }
 
@@ -50,6 +52,7 @@ export class KnowledgeRepository {
       evidenceRefs: JSON.stringify(value.evidenceRefs ?? []), sourceLocator: value.locator, sourceSha256: value.sha256 ?? null,
       createdAt: value.createdAt, updatedAt: value.updatedAt,
     });
+    for (const evidenceId of value.evidenceRefs ?? []) this.store.db.prepare("INSERT OR IGNORE INTO knowledge_entity_evidence(entity_type,entity_id,evidence_id,created_at) VALUES ('playbook',?,?,?)").run(value.id, evidenceId, value.createdAt);
     return value;
   }
 
@@ -64,6 +67,7 @@ export class KnowledgeRepository {
       sourceLocator: value.locator, sourceSha256: value.sha256 ?? null, createdAt: value.createdAt, updatedAt: value.updatedAt,
     });
     if (value.card) this.store.saveCandidateCard(value.card);
+    for (const evidenceId of value.evidenceRefs ?? []) this.store.db.prepare("INSERT OR IGNORE INTO knowledge_entity_evidence(entity_type,entity_id,evidence_id,created_at) VALUES ('candidate',?,?,?)").run(value.id, evidenceId, value.createdAt);
     return value;
   }
 
@@ -78,7 +82,7 @@ export class KnowledgeRepository {
   }
 
   saveEvidence(value: Evidence): Evidence {
-    const existingById = this.store.db.prepare("SELECT id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,source_locator,retention,created_at,deleted_at FROM knowledge_evidence WHERE id = ?").get(value.id) as Record<string, unknown> | undefined;
+    const existingById = this.store.db.prepare("SELECT id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,environment,source_locator,retention,created_at,deleted_at FROM knowledge_evidence WHERE id = ?").get(value.id) as Record<string, unknown> | undefined;
     if (existingById) {
       const immutableMatches = String(existingById.sha256) === value.sha256
         && String(existingById.storage_path) === value.storagePath
@@ -89,16 +93,16 @@ export class KnowledgeRepository {
       if (value.projectId) this.store.db.prepare("INSERT OR IGNORE INTO knowledge_evidence_acl(evidence_id,project_id,created_at) VALUES (?,?,?)").run(value.id, value.projectId, value.createdAt);
       return value;
     }
-    const existing = this.store.db.prepare("SELECT id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,source_locator,retention,created_at,deleted_at FROM knowledge_evidence WHERE sha256 = ?").get(value.sha256) as Record<string, unknown> | undefined;
+    const existing = this.store.db.prepare("SELECT id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,environment,source_locator,retention,created_at,deleted_at FROM knowledge_evidence WHERE sha256 = ?").get(value.sha256) as Record<string, unknown> | undefined;
     if (existing && String(existing.id) !== value.id) {
       if (value.projectId) this.store.db.prepare("INSERT OR IGNORE INTO knowledge_evidence_acl(evidence_id,project_id,created_at) VALUES (?,?,?)").run(existing.id, value.projectId, value.createdAt);
       if (value.retention !== "standard" && String(existing.retention) === "standard") this.store.db.prepare("UPDATE knowledge_evidence SET retention = ? WHERE id = ?").run(value.retention, existing.id);
       const retention = value.retention !== "standard" && String(existing.retention) === "standard" ? value.retention : existing.retention as Evidence["retention"];
       return { ...value, id: String(existing.id), storagePath: String(existing.storage_path), mimeType: String(existing.mime_type), sizeBytes: Number(existing.size_bytes), sourceKind: existing.source_kind as Evidence["sourceKind"], retention, deletedAt: existing.deleted_at ? String(existing.deleted_at) : undefined };
     }
-    this.store.db.prepare(`INSERT INTO knowledge_evidence(id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,source_locator,retention,created_at,deleted_at)
-      VALUES (@id,@sha256,@storagePath,@mimeType,@sizeBytes,@sourceKind,@projectId,@locator,@retention,@createdAt,@deletedAt)`).run({
-      id: value.id, sha256: value.sha256, storagePath: value.storagePath, mimeType: value.mimeType, sizeBytes: value.sizeBytes, sourceKind: value.sourceKind, projectId: value.projectId ?? null, locator: value.locator, retention: value.retention, createdAt: value.createdAt, deletedAt: value.deletedAt ?? null,
+    this.store.db.prepare(`INSERT INTO knowledge_evidence(id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,environment,source_locator,retention,created_at,deleted_at)
+      VALUES (@id,@sha256,@storagePath,@mimeType,@sizeBytes,@sourceKind,@projectId,@environment,@locator,@retention,@createdAt,@deletedAt)`).run({
+      id: value.id, sha256: value.sha256, storagePath: value.storagePath, mimeType: value.mimeType, sizeBytes: value.sizeBytes, sourceKind: value.sourceKind, projectId: value.projectId ?? null, environment: value.environment ?? null, locator: value.locator, retention: value.retention, createdAt: value.createdAt, deletedAt: value.deletedAt ?? null,
     });
     if (value.projectId) this.store.db.prepare("INSERT OR IGNORE INTO knowledge_evidence_acl(evidence_id,project_id,created_at) VALUES (?,?,?)").run(value.id, value.projectId, value.createdAt);
     return value;
@@ -134,6 +138,26 @@ export class KnowledgeRepository {
     this.store.db.prepare("INSERT OR IGNORE INTO knowledge_entity_evidence(entity_type,entity_id,evidence_id,created_at) VALUES (?,?,?,?)")
       .run(entityType, entityId, evidenceId, new Date().toISOString());
     if (entity.project_id) this.store.db.prepare("INSERT OR IGNORE INTO knowledge_evidence_acl(evidence_id,project_id,created_at) VALUES (?,?,?)").run(evidenceId, entity.project_id, new Date().toISOString());
+    const table = entityType === "candidate" ? "knowledge_candidates" : entityType === "case" ? "knowledge_cases" : entityType === "pattern" ? "knowledge_patterns" : entityType === "playbook" ? "knowledge_playbooks" : undefined;
+    if (table) {
+      const row = this.store.db.prepare(`SELECT evidence_refs_json FROM ${table} WHERE id = ?`).get(entityId) as { evidence_refs_json?: string } | undefined;
+      let refs: string[] = [];
+      try { const parsed = row?.evidence_refs_json ? JSON.parse(row.evidence_refs_json) : []; if (Array.isArray(parsed)) refs = parsed.filter((value): value is string => typeof value === "string"); } catch { /* malformed legacy metadata remains readable */ }
+      this.store.db.prepare(`UPDATE ${table} SET evidence_refs_json = ? WHERE id = ?`).run(JSON.stringify([...new Set([...refs, evidenceId])]), entityId);
+    }
+  }
+
+  detachEvidence(entityType: KnowledgeKind, entityId: string, evidenceId: string): void {
+    const entity = this.store.db.prepare("SELECT id,kind FROM knowledge_documents WHERE id = ?").get(entityId) as { id?: string; kind?: string } | undefined;
+    if (!entity || entity.kind !== entityType) throw new Error("Knowledge entity not found or kind mismatch");
+    this.store.db.prepare("DELETE FROM knowledge_entity_evidence WHERE entity_type = ? AND entity_id = ? AND evidence_id = ?").run(entityType, entityId, evidenceId);
+    const table = entityType === "candidate" ? "knowledge_candidates" : entityType === "case" ? "knowledge_cases" : entityType === "pattern" ? "knowledge_patterns" : entityType === "playbook" ? "knowledge_playbooks" : undefined;
+    if (table) {
+      const row = this.store.db.prepare(`SELECT evidence_refs_json FROM ${table} WHERE id = ?`).get(entityId) as { evidence_refs_json?: string } | undefined;
+      let refs: string[] = [];
+      try { const parsed = row?.evidence_refs_json ? JSON.parse(row.evidence_refs_json) : []; if (Array.isArray(parsed)) refs = parsed.filter((value): value is string => typeof value === "string" && value !== evidenceId); } catch { /* malformed legacy metadata remains readable */ }
+      this.store.db.prepare(`UPDATE ${table} SET evidence_refs_json = ? WHERE id = ?`).run(JSON.stringify(refs), entityId);
+    }
   }
 
   recordFeedback(value: Omit<Feedback, "id" | "createdAt"> & { id?: string; createdAt?: string }): Feedback {

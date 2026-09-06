@@ -21,6 +21,7 @@ import { DETERMINISTIC_COMPILER_MIGRATION } from "./migrations/014-deterministic
 import { PRODUCT_DOCUMENTS_MIGRATION } from "./migrations/015-product-documents.js";
 import { PRODUCT_DOCUMENT_GOVERNANCE_MIGRATION } from "./migrations/016-product-document-governance.js";
 import { PRODUCT_DOCUMENT_OPERATIONS_MIGRATION } from "./migrations/017-product-document-operations.js";
+import { EVIDENCE_METADATA_MIGRATION } from "./migrations/018-evidence-metadata.js";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
 import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type CandidateCard, type KnowledgeDocument, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeBinding, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
@@ -52,6 +53,7 @@ const KNOWLEDGE_MIGRATIONS = [
   PRODUCT_DOCUMENTS_MIGRATION,
   PRODUCT_DOCUMENT_GOVERNANCE_MIGRATION,
   PRODUCT_DOCUMENT_OPERATIONS_MIGRATION,
+  EVIDENCE_METADATA_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(
@@ -181,6 +183,9 @@ export class KnowledgeStore {
           } else if (migration.version === "017-product-document-operations" && /duplicate column name/i.test(String(error))) {
             // Product operation metadata is additive; the repair pass below
             // completes columns/tables left behind by an interrupted migration.
+          } else if (migration.version === "018-evidence-metadata" && /duplicate column name/i.test(String(error))) {
+            // Evidence scope metadata is additive; the repair pass below
+            // completes the index when a process stopped after the ALTER.
           } else throw error;
         }
         insert.run(migration.version, this.now().toISOString());
@@ -202,6 +207,7 @@ export class KnowledgeStore {
       knowledge_candidate_cards: [["event_class", "TEXT"], ["capture_reason", "TEXT"], ["impact", "TEXT"]],
       knowledge_product_documents: [["metadata_json", "TEXT NOT NULL DEFAULT '{}'"], ["diff_review_status", "TEXT NOT NULL DEFAULT 'not_reviewed'"], ["diff_reviewed_by", "INTEGER"], ["diff_reviewed_at", "TEXT"]],
       knowledge_ingest_runs: [["operation_idempotency_key", "TEXT"], ["batch_metadata_json", "TEXT NOT NULL DEFAULT '{}'"], ["source_root", "TEXT"], ["source_commit", "TEXT"], ["source_sha256", "TEXT"]],
+      knowledge_evidence: [["environment", "TEXT"]],
     };
     for (const [table, definitions] of Object.entries(columns)) {
       const present = new Set((this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
@@ -213,6 +219,7 @@ export class KnowledgeStore {
       evidence_refs_json TEXT NOT NULL DEFAULT '[]', source_locator TEXT NOT NULL, source_sha256 TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     ); CREATE INDEX IF NOT EXISTS idx_knowledge_observations_project ON knowledge_observations(project_id, created_at);`);
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_knowledge_evidence_environment ON knowledge_evidence(environment, created_at);");
     this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_ingest_idempotency
       ON knowledge_ingest_runs(operation_idempotency_key)
       WHERE operation_idempotency_key IS NOT NULL;

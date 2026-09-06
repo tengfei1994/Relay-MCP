@@ -188,6 +188,11 @@ function evidenceSourceKind(key: string): "log" | "artifact" | "manifest" | "tes
   if (/artifact|backup|hash/i.test(key)) return "artifact";
   return "other";
 }
+function eventEnvironment(event: KnowledgeOutboxEvent): string | undefined {
+  const value = event.payload.environment ?? event.payload.env;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function materializeEvidence(store: KnowledgeStore, event: KnowledgeOutboxEvent, projectId: string | number, candidateId: string): string[] {
   const values = collectEvidence(event.payload);
   if (values.length === 0) {
@@ -199,7 +204,7 @@ function materializeEvidence(store: KnowledgeStore, event: KnowledgeOutboxEvent,
   const refs: string[] = [];
   for (const item of values) {
     const content = Buffer.isBuffer(item.value) ? item.value : typeof item.value === "string" ? Buffer.from(item.value, "utf8") : Buffer.from(JSON.stringify(item.value), "utf8");
-    const record = evidence.put({ content, mimeType: evidenceMime(item.key), sourceKind: evidenceSourceKind(item.key), projectId: String(projectId), locator: `relay-event:${event.id}:${item.key}` });
+    const record = evidence.put({ content, mimeType: evidenceMime(item.key), sourceKind: evidenceSourceKind(item.key), projectId: String(projectId), environment: eventEnvironment(event), locator: `relay-event:${event.id}:${item.key}` });
     refs.push(record.id);
     store.db.prepare("INSERT OR IGNORE INTO knowledge_entity_evidence(entity_type,entity_id,evidence_id,created_at) VALUES ('candidate',?,?,?)").run(candidateId, record.id, new Date().toISOString());
   }
@@ -217,7 +222,7 @@ function materializeObservationEvidence(store: KnowledgeStore, event: KnowledgeO
   const now = new Date().toISOString();
   for (const item of values) {
     const content = Buffer.isBuffer(item.value) ? item.value : typeof item.value === "string" ? Buffer.from(item.value, "utf8") : Buffer.from(JSON.stringify(item.value), "utf8");
-    const record = evidence.put({ content, mimeType: evidenceMime(item.key), sourceKind: evidenceSourceKind(item.key), projectId: String(projectId), locator: `relay-event:${event.id}:${item.key}` });
+    const record = evidence.put({ content, mimeType: evidenceMime(item.key), sourceKind: evidenceSourceKind(item.key), projectId: String(projectId), environment: eventEnvironment(event), locator: `relay-event:${event.id}:${item.key}` });
     refs.push(record.id);
     store.db.prepare("INSERT OR IGNORE INTO knowledge_entity_evidence(entity_type,entity_id,evidence_id,created_at) VALUES ('observation',?,?,?)").run(observationId, record.id, now);
   }

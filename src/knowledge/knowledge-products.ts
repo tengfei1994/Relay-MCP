@@ -152,7 +152,7 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
   const hasIdempotencyColumn = hasColumn(store, "knowledge_ingest_runs", "operation_idempotency_key");
   const existingRun = options.idempotencyKey && hasIdempotencyColumn ? store.db.prepare("SELECT id,status,imported,skipped,failed,error FROM knowledge_ingest_runs WHERE operation_idempotency_key = ?").get(options.idempotencyKey) as Record<string, unknown> | undefined : undefined;
   if (existingRun) return { ...report, runId: String(existingRun.id), status: String(existingRun.status) as ProductDocumentImportReport["status"], imported: Number(existingRun.imported ?? 0), unchanged: Number(existingRun.skipped ?? 0), failed: Number(existingRun.failed ?? 0), errors: safeJson(existingRun.error, []) as ProductDocumentImportReport["errors"] };
-  const batchMeta = JSON.stringify({ product: base.product, sampleManagerVersion: base.sampleManagerVersion, solution: base.solution, module: base.module, language: base.language, authority: base.authority });
+  const batchMeta = JSON.stringify({ product: base.product, sampleManagerVersion: base.sampleManagerVersion, solution: base.solution, module: base.module, language: base.language, authority: base.authority, documentFamilyId: base.documentFamilyId, manifestPath: options.manifestPath });
   if (hasIdempotencyColumn && hasColumn(store, "knowledge_ingest_runs", "batch_metadata_json") && hasColumn(store, "knowledge_ingest_runs", "source_root") && hasColumn(store, "knowledge_ingest_runs", "source_commit")) store.db.prepare("INSERT OR IGNORE INTO knowledge_ingest_runs(id,source_locator,status,started_at,operation_idempotency_key,batch_metadata_json,source_root,source_commit) VALUES (?,?,?,?,?,?,?,?)").run(runId, `product-docs:${options.root}`, "queued", now, options.idempotencyKey ?? null, batchMeta, root, options.sourceCommit ?? null);
   else store.db.prepare("INSERT OR IGNORE INTO knowledge_ingest_runs(id,source_locator,status,started_at) VALUES (?,?,?,?)").run(runId, `product-docs:${options.root}`, "queued", now);
   store.db.prepare("UPDATE knowledge_ingest_runs SET status=? WHERE id=?").run("running", runId); report.status = "running";
@@ -168,7 +168,7 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
       const body = ext === ".pdf" ? pdfToText(raw) : ext === ".html" || ext === ".htm" ? htmlToText(raw.toString("utf8")) : raw.toString("utf8");
       const sourceHash = sha256(raw);
       sourceHashes.push(`${relativePath}:${sourceHash}`);
-      const parsed = infer(relativePath, body, local.documentFamilyId, rule.documentType, local.module);
+      const parsed = infer(relativePath, body, local.documentFamilyId, local.documentType, local.module);
       const familyId = parsed.familyId;
       const version = String(local.sampleManagerVersion);
       const id = `product-document-${sha256(`${familyId}\0${version}\0${relativePath}\0${sourceHash}`).slice(0, 32)}`;
@@ -214,7 +214,19 @@ export function searchKnowledgeProducts(store: KnowledgeStore, request: ProductD
       rows = like ? store.db.prepare(`SELECT d.id,d.title,d.lifecycle,d.samplemanager_version,d.solution,d.module,d.project_name_snapshot,d.source_locator,d.source_commit,d.source_sha256,d.created_at,d.updated_at,p.document_family_id,p.document_type,p.language,p.authority,p.source_path,p.version,p.sections_json,p.metadata_json,p.diff_review_status,d.body AS snippet,0 AS rank FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE (${like}) AND ${conditions.join(" AND ")} ORDER BY d.updated_at DESC LIMIT ${limit}`).all(params) as Array<Record<string, unknown>> : [];
     }
   } else rows = store.db.prepare(`SELECT d.id,d.title,d.lifecycle,d.samplemanager_version,d.solution,d.module,d.project_name_snapshot,d.source_locator,d.source_commit,d.source_sha256,d.created_at,d.updated_at,p.document_family_id,p.document_type,p.language,p.authority,p.source_path,p.version,p.sections_json,p.metadata_json,p.diff_review_status FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE ${conditions.join(" AND ")} ORDER BY d.updated_at DESC LIMIT ${limit}`).all(params) as Array<Record<string, unknown>>;
-  return rows.map((row) => ({ ...row, summary: String(row.snippet ?? row.title ?? ""), sections: safeJson(row.sections_json, []), metadata: safeJson(row.metadata_json, {}) }));
+  return rows.map((row) => {
+    const sections = safeJson(row.sections_json, []) as Array<Record<string, unknown>>;
+    const firstSection = Array.isArray(sections) ? sections[0] : undefined;
+    return {
+      ...row,
+      summary: String(row.snippet ?? row.title ?? ""),
+      sectionPath: firstSection?.path ? String(firstSection.path) : undefined,
+      sectionTitle: firstSection?.title ? String(firstSection.title) : undefined,
+      sectionAnchor: firstSection?.anchor ? String(firstSection.anchor) : undefined,
+      sections,
+      metadata: safeJson(row.metadata_json, {}),
+    };
+  });
 }
 
 export type ProductDiffStatus = "unchanged" | "added" | "removed" | "modified" | "moved" | "renamed" | "metadata_only";

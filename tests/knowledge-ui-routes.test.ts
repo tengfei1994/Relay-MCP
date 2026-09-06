@@ -16,7 +16,7 @@ test("Knowledge information architecture exposes every #37 route", () => {
   for (const route of requiredRoutes) assert.match(app, new RegExp(`path=\\"${route.replaceAll("/", "\\/")}\\"`));
   assert.match(layout, /knowledge\.nav\.open/);
   assert.match(layout, /Product Documents/);
-  assert.match(layout, /Capture operations/);
+  assert.match(layout, /Capture Health/);
 });
 
 test("Knowledge planes keep global Product and project runtime scope distinct", () => {
@@ -25,9 +25,20 @@ test("Knowledge planes keep global Product and project runtime scope distinct", 
   const operations = readFileSync(join(root, "pages", "KnowledgeOperations.tsx"), "utf8");
   assert.match(product, /global Product Knowledge|Global, versioned, authoritative/);
   assert.match(product, /sampleManagerVersion/);
+  assert.match(product, /Refresh Index/);
+  assert.match(product, /Copy citation/);
+  assert.match(product, /Batch-correct low-confidence/);
+  assert.match(product, /useSearchParams/);
   assert.match(project, /ScopeBanner/);
   assert.match(project, /Accept & create Case/);
+  assert.match(project, /Supporting Cases/);
+  assert.match(project, /Proposed Skill diff/);
+  assert.match(project, /Manage Evidence links/);
+  assert.match(project, /Environment/);
   assert.match(operations, /dead-letter/i);
   assert.match(operations, /Invalidate embeddings/);
+  assert.match(operations, /extraction/);
+  assert.match(operations, /eventLossRisk/);
+  assert.match(operations, /Last call/);
+  assert.match(operations, /Error rate/);
 });
-

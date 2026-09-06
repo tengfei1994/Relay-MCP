@@ -19,6 +19,7 @@ function sanitise(input: EvidenceInput): Buffer {
 type EvidenceRow = {
   id: string; sha256: string; storage_path: string; mime_type: string;
   size_bytes: number; source_kind: EvidenceInput["sourceKind"]; project_id: string | null;
+  environment?: string | null;
   source_locator: string; retention: NonNullable<EvidenceInput["retention"]>;
   created_at: string; deleted_at: string | null;
 };
@@ -29,7 +30,7 @@ export class EvidenceStore {
   constructor(private readonly store: KnowledgeStore, private readonly root: string) { mkdirSync(root, { recursive: true }); }
   private row(evidenceId: string, includeDeleted = false): EvidenceRow | undefined {
     const suffix = includeDeleted ? "" : " AND deleted_at IS NULL";
-    return this.store.db.prepare(`SELECT id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,source_locator,retention,created_at,deleted_at FROM knowledge_evidence WHERE id = ?${suffix}`).get(evidenceId) as EvidenceRow | undefined;
+    return this.store.db.prepare(`SELECT id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,environment,source_locator,retention,created_at,deleted_at FROM knowledge_evidence WHERE id = ?${suffix}`).get(evidenceId) as EvidenceRow | undefined;
   }
   private projectIds(row: EvidenceRow): string[] {
     const acl = this.store.db.prepare("SELECT project_id FROM knowledge_evidence_acl WHERE evidence_id = ?").all(row.id) as Array<{ project_id: string }>;
@@ -37,12 +38,12 @@ export class EvidenceStore {
   }
   private authorise(userId: number, row: EvidenceRow): string | undefined { return this.projectIds(row).find((projectId) => this.store.canRead(userId, projectId)); }
   private asEvidence(row: EvidenceRow): Evidence {
-    return { id: row.id, sha256: row.sha256, storagePath: row.storage_path, mimeType: row.mime_type, sizeBytes: Number(row.size_bytes), sourceKind: row.source_kind, projectId: row.project_id ?? undefined, locator: row.source_locator, retention: row.retention, createdAt: row.created_at, deletedAt: row.deleted_at ?? undefined };
+    return { id: row.id, sha256: row.sha256, storagePath: row.storage_path, mimeType: row.mime_type, sizeBytes: Number(row.size_bytes), sourceKind: row.source_kind, projectId: row.project_id ?? undefined, environment: row.environment ?? undefined, locator: row.source_locator, retention: row.retention, createdAt: row.created_at, deletedAt: row.deleted_at ?? undefined };
   }
 
   put(input: EvidenceInput): Evidence {
     const content = sanitise(input); const sha256 = createHash("sha256").update(content).digest("hex"); const now = new Date().toISOString(); const path = join(this.root, sha256);
-    const existing = this.store.db.prepare("SELECT id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,source_locator,retention,created_at,deleted_at FROM knowledge_evidence WHERE sha256 = ?").get(sha256) as EvidenceRow | undefined;
+    const existing = this.store.db.prepare("SELECT id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,environment,source_locator,retention,created_at,deleted_at FROM knowledge_evidence WHERE sha256 = ?").get(sha256) as EvidenceRow | undefined;
     if (existing) {
       if (!existsSync(path)) writeFileSync(path, content, { flag: "wx" });
       this.store.db.transaction(() => {
@@ -55,9 +56,9 @@ export class EvidenceStore {
       return this.asEvidence(current);
     }
     if (!existsSync(path)) writeFileSync(path, content, { flag: "wx" });
-    const record: EvidenceRow = { id: `evidence-${randomUUID()}`, sha256, storage_path: path, mime_type: input.mimeType, size_bytes: content.length, source_kind: input.sourceKind, project_id: input.projectId ?? null, source_locator: input.locator, retention: input.retention ?? "standard", created_at: now, deleted_at: null };
+    const record: EvidenceRow = { id: `evidence-${randomUUID()}`, sha256, storage_path: path, mime_type: input.mimeType, size_bytes: content.length, source_kind: input.sourceKind, project_id: input.projectId ?? null, environment: input.environment ?? null, source_locator: input.locator, retention: input.retention ?? "standard", created_at: now, deleted_at: null };
     this.store.db.transaction(() => {
-      this.store.db.prepare("INSERT INTO knowledge_evidence(id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,source_locator,retention,created_at) VALUES (@id,@sha256,@storage_path,@mime_type,@size_bytes,@source_kind,@project_id,@source_locator,@retention,@created_at)").run(record);
+      this.store.db.prepare("INSERT INTO knowledge_evidence(id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,environment,source_locator,retention,created_at) VALUES (@id,@sha256,@storage_path,@mime_type,@size_bytes,@source_kind,@project_id,@environment,@source_locator,@retention,@created_at)").run(record);
       if (record.project_id) this.store.db.prepare("INSERT OR IGNORE INTO knowledge_evidence_acl(evidence_id,project_id,created_at) VALUES (?,?,?)").run(record.id, record.project_id, now);
     })();
     this.store.audit({ projectId: input.projectId, action: "evidence.created", entityType: "evidence", entityId: record.id, details: { sha256, mimeType: input.mimeType, sizeBytes: content.length, retention: record.retention } });
@@ -113,7 +114,7 @@ export class EvidenceStore {
       return blocked;
     }
     const now = options.now ?? new Date(); const retentionMs = Math.max(0, options.retentionMs ?? 30 * 24 * 60 * 60 * 1000); const cutoff = new Date(now.getTime() - retentionMs).toISOString();
-    const rows = this.store.db.prepare("SELECT id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,source_locator,retention,created_at,deleted_at FROM knowledge_evidence WHERE deleted_at IS NULL AND created_at <= ?").all(cutoff) as EvidenceRow[];
+    const rows = this.store.db.prepare("SELECT id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,environment,source_locator,retention,created_at,deleted_at FROM knowledge_evidence WHERE deleted_at IS NULL AND created_at <= ?").all(cutoff) as EvidenceRow[];
     const result: EvidenceCleanupResult = { scanned: rows.length, deleted: 0, bytesFreed: 0, skippedHeld: 0, errors: [] };
     for (const row of rows) {
       if (row.retention !== "standard") {

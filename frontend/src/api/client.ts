@@ -67,8 +67,9 @@ export const api = {
     return request<{ retrievalRunId: string; query: string; degraded: boolean; results: any[] }>("GET", `/knowledge/search?${query.toString()}`);
   },
   knowledgeDocument: (id: string, projectId?: number) => request<{ document: any; evidenceRefs: string[]; reviews: any[] }>("GET", `/knowledge/documents/${encodeURIComponent(id)}${projectId ? `?projectId=${projectId}` : ""}`),
-  knowledgeDocuments: (projectId: number, kinds?: string) => request<{ documents: any[] }>("GET", `/knowledge/documents?projectId=${projectId}${kinds ? `&kinds=${encodeURIComponent(kinds)}` : ""}`),
+  knowledgeDocuments: (projectId: number, kinds?: string, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); if (kinds) query.set("kinds", kinds); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ documents: any[]; page?: any }>("GET", `/knowledge/documents?${query.toString()}`); },
   knowledgeEvidence: (id: string) => request<{ evidence: any }>("GET", `/knowledge/evidence/${encodeURIComponent(id)}`),
+  knowledgeDocumentEvidence: (id: string, body: { evidenceId: string; operation: "attach" | "detach"; reason: string }, idempotencyKey?: string) => request<any>("POST", `/knowledge/documents/${encodeURIComponent(id)}/evidence`, body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
   knowledgeEvidenceList: (projectId?: number, params: Record<string, string | number | undefined> = {}) => {
     const query = new URLSearchParams();
     if (projectId !== undefined) query.set("projectId", String(projectId));
@@ -93,7 +94,7 @@ export const api = {
     }
     return request<{ root: string; nodes: string[]; relations: any[] }>("GET", `/knowledge/relations/impact?${query.toString()}`);
   },
-  knowledgeCandidates: (projectId: number, status?: string) => request<{ candidates: any[]; page: any }>("GET", `/knowledge/candidates?projectId=${projectId}${status ? `&status=${encodeURIComponent(status)}` : ""}`),
+  knowledgeCandidates: (projectId: number, status?: string, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); if (status) query.set("status", status); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ candidates: any[]; page: any }>("GET", `/knowledge/candidates?${query.toString()}`); },
   knowledgeIndexStatus: (projectId: number) => request<{ projectId: string; stale: boolean; counts: any[]; lastIngest?: any }>("GET", `/knowledge/index-status?projectId=${projectId}`),
   knowledgeDashboard: (projectId: number) => request<{ projectId: string; totals: any[]; counts: any[]; recent: any; capture: any }>("GET", `/knowledge/dashboard?projectId=${projectId}`),
   knowledgeDiagnostics: (projectId: number) => request<any>("GET", `/knowledge/diagnostics?projectId=${projectId}`),
@@ -112,7 +113,7 @@ export const api = {
   productDocumentSearch: (params: Record<string, string | number | boolean | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ documents: any[]; page?: any }>("GET", `/knowledge/product-documents/search?${query.toString()}`); },
   productDocumentDiff: (id: string, against: string) => request<any>("GET", `/knowledge/product-docs/${encodeURIComponent(id)}/diff?against=${encodeURIComponent(against)}`),
   productDocumentDiffReview: (id: string, body: { against: string; status: "accepted" | "rejected" | "needs_review"; reason: string }, idempotencyKey?: string) => request<any>("POST", `/knowledge/product-docs/${encodeURIComponent(id)}/diff-review`, body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  productDocumentMetadataCorrection: (body: Record<string, unknown>) => request<any>("PATCH", "/knowledge/product-docs/metadata", body),
+  productDocumentMetadataCorrection: (body: Record<string, unknown>, idempotencyKey?: string) => request<any>("PATCH", "/knowledge/product-docs/metadata", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
   knowledgeIngest: (projectId: number, casebookRoot?: string, contextFiles?: string[]) => request<any>("POST", "/knowledge/ingest", { projectId, casebookRoot, contextFiles }),
   knowledgeReindex: (projectId: number) => request<any>("POST", "/knowledge/reindex", { projectId }),
   knowledgeReview: (body: Record<string, unknown>, idempotencyKey?: string) => request<any>("POST", "/knowledge/reviews", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
@@ -126,6 +127,7 @@ export const api = {
   knowledgeOperationsRetryIngest: (id: string, idempotencyKey?: string) => request<any>("POST", `/knowledge/operations/ingest-runs/${encodeURIComponent(id)}/retry`, {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
   knowledgeOperationsIndex: () => request<any>("GET", "/knowledge/operations/index"),
   knowledgeOperationsProviders: () => request<any>("GET", "/knowledge/operations/providers"),
+  knowledgeOperationsTestProvider: (provider?: string, idempotencyKey?: string) => request<any>("POST", "/knowledge/operations/providers/test", provider ? { provider } : {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
   knowledgeOperationsRebuildIndex: (projectId?: number, idempotencyKey?: string) => request<any>("POST", "/knowledge/operations/index/rebuild", projectId ? { projectId } : {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
   knowledgeOperationsInvalidateEmbeddings: (projectId?: number, idempotencyKey?: string) => request<any>("POST", "/knowledge/operations/index/invalidate-embeddings", projectId ? { projectId } : {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
 

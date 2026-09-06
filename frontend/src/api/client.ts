@@ -124,6 +124,7 @@ export const api = {
   knowledgeOperationsCaptureEvents: (limit = 50) => request<any>("GET", `/knowledge/operations/capture/events?limit=${limit}`),
   knowledgeOperationsDeadLetters: () => request<any>("GET", "/knowledge/operations/capture/dead-letter"),
   knowledgeOperationsSmokeTest: (body: Record<string, unknown> = {}, idempotencyKey?: string) => request<any>("POST", "/knowledge/operations/capture/smoke-test", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  knowledgeOperationsReplayCapture: (body: Record<string, unknown>, idempotencyKey?: string) => request<any>("POST", "/knowledge/operations/capture/replay", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
   knowledgeOperationsIngestRuns: (limit = 50) => request<any>("GET", `/knowledge/operations/ingest-runs?limit=${limit}`),
   knowledgeOperationsIngestRun: (id: string) => request<any>("GET", `/knowledge/operations/ingest-runs/${encodeURIComponent(id)}`),
   knowledgeOperationsRetryIngest: (id: string, idempotencyKey?: string) => request<any>("POST", `/knowledge/operations/ingest-runs/${encodeURIComponent(id)}/retry`, {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),

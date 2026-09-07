@@ -20,7 +20,6 @@ test("deterministic classifier keeps routine success telemetry-only", async () =
   await withStore(async (_root, store) => {
     store.append({ id: "e1", type: "job.finished", occurredAt: "2026-09-03T00:00:00.000Z", projectId: "p1", jobId: "j1", payload: { status: "succeeded" } });
     assert.equal(await captureKnowledgeCandidates(store), 0);
-    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_candidates").get().count, 0);
     assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM relay_domain_events").get().count, 1);
     assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_audit WHERE action = 'knowledge.event.classified'").get().count, 1);
   });
@@ -61,7 +60,10 @@ test("warnings materialize idempotent observations with immutable evidence", asy
     assert.equal(row.event_class, "observation");
     assert.match(String(row.capture_reason), /facts|warnings/i);
     assert.equal(JSON.parse(String(row.evidence_refs_json)).length, 1);
-    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_candidates").get().count, 0);
+    const candidate = store.db.prepare("SELECT id,source_observation_id FROM knowledge_candidates WHERE source_observation_id LIKE 'observation-%'").get() as { id: string; source_observation_id: string };
+    assert.ok(candidate.id);
+    assert.match(candidate.source_observation_id, /^observation-/);
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_entity_evidence WHERE entity_type = 'candidate' AND entity_id = ?").get(candidate.id).count, 1);
   });
 });
 

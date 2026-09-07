@@ -216,6 +216,26 @@ function meaningfulObservationValue(value: unknown): boolean {
   return value !== undefined && value !== null;
 }
 
+function observationNeedsCandidate(payload: Record<string, unknown>): boolean {
+  const signals = extractExecutionObservationSignals(payload);
+  const text = [signals.stderr, ...signals.logs, typeof signals.stdout === "string" ? signals.stdout : undefined, typeof signals.output === "string" ? signals.output : undefined, typeof payload.warning === "string" ? payload.warning : undefined].filter(Boolean).join(" ");
+  return Boolean(payload.warning || payload.warnings || payload.observedSymptoms || /\b(error|failed|failure|warning|warn|degraded|partial|empty|missing|not found|invalid|乱码|Ã.|Â.)\b/i.test(text));
+}
+
+async function materializeObservationCandidate(store: KnowledgeStore, event: KnowledgeOutboxEvent, projectId: string | number, observationId: string, evidenceRefs: string[], classification: ReturnType<typeof classifyRelayEvent>): Promise<string> {
+  const candidateId = `candidate-${createHash("sha256").update(`observation:${observationId}`, "utf8").digest("hex")}`;
+  const metadata = eventMetadata(event); const now = new Date().toISOString(); const body = candidateBody(event, projectId); const digest = createHash("sha256").update(body, "utf8").digest("hex");
+  const candidate: import("./domain.js").Candidate = { id: candidateId, kind: "candidate", title: `Observation candidate: ${event.type} ${event.jobId ?? event.deploymentId ?? event.id}`, body, lifecycle: "draft", projectId: String(projectId), projectNameSnapshot: event.projectNameSnapshot, environment: eventEnvironment(event), sampleManagerVersion: metadata.sampleManagerVersion, solution: metadata.solution, module: metadata.module, candidateType: "case", eventId: event.id, deploymentId: event.deploymentId, jobId: event.jobId, sourceObservationId: observationId, locator: `observation:${observationId}`, sha256: digest, evidenceRefs, createdAt: now, updatedAt: now };
+  const repository = new KnowledgeRepository(store); repository.saveCandidate(candidate);
+  for (const evidenceId of evidenceRefs) store.db.prepare("INSERT OR IGNORE INTO knowledge_entity_evidence(entity_type,entity_id,evidence_id,created_at) VALUES ('candidate',?,?,?)").run(candidateId, evidenceId, now);
+  // Observation rows have their own table and are not Knowledge Documents;
+  // source_observation_id is the canonical link without violating FK rules.
+  const generated = await generateCandidateCard({ event, projectId, candidateId, evidenceRefs, inference: undefined, eventClass: classification.eventClass, captureReason: "Automatically generated from an Observation with a concrete problem signal.", problemStatement: "This Candidate was derived from an observed runtime problem signal.", impact: "Requires reviewer verification before becoming a Case." });
+  store.saveCandidateCard(generated.card); store.upsertDocument({ ...candidate, title: candidateTitle(event, generated.card), updatedAt: generated.card.updatedAt });
+  store.audit({ projectId: String(projectId), action: "knowledge.observation.candidate_created", entityType: "candidate", entityId: candidateId, details: { observationId, eventId: event.id, evidenceCount: evidenceRefs.length } });
+  return candidateId;
+}
+
 function materializeEvidence(store: KnowledgeStore, event: KnowledgeOutboxEvent, projectId: string | number, candidateId: string): string[] {
   const values = collectEvidence(event.payload);
   if (values.length === 0) {
@@ -311,6 +331,7 @@ export async function captureKnowledgeCandidates(
         const observationId = `observation-${createHash("sha256").update(event.id, "utf8").digest("hex")}`;
         const observationEvidenceRefs = materializeObservationEvidence(store, event, projectId, observationId);
         store.saveObservation({ id: observationId, eventId: event.id, projectId: String(projectId), eventClass: classification.eventClass, captureReason: classification.captureReason, problemStatement: classification.problemStatement, facts: observationFacts(event.payload), evidenceRefs: observationEvidenceRefs, sourceLocator: `relay-event:${event.id}`, sourceSha256: digest, createdAt: now, updatedAt: now });
+        if (observationNeedsCandidate(event.payload)) await materializeObservationCandidate(store, event, projectId, observationId, observationEvidenceRefs, classification);
         store.audit({ projectId: String(projectId), action: "knowledge.observation.captured", entityType: "observation", entityId: observationId, details: { eventId: event.id, eventClass: classification.eventClass, evidenceCount: observationEvidenceRefs.length } });
         store.acknowledge(consumer, event.id, event.claimToken);
         count++;

@@ -23,6 +23,7 @@ import { PRODUCT_DOCUMENT_GOVERNANCE_MIGRATION } from "./migrations/016-product-
 import { PRODUCT_DOCUMENT_OPERATIONS_MIGRATION } from "./migrations/017-product-document-operations.js";
 import { EVIDENCE_METADATA_MIGRATION } from "./migrations/018-evidence-metadata.js";
 import { HUMAN_DISPLAY_PROJECTION_MIGRATION } from "./migrations/019-human-display-projection.js";
+import { OBSERVATION_CANDIDATE_MIGRATION } from "./migrations/020-observation-candidate.js";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
 import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type CandidateCard, type KnowledgeDocument, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeBinding, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
@@ -58,6 +59,7 @@ const KNOWLEDGE_MIGRATIONS = [
   PRODUCT_DOCUMENT_OPERATIONS_MIGRATION,
   EVIDENCE_METADATA_MIGRATION,
   HUMAN_DISPLAY_PROJECTION_MIGRATION,
+  OBSERVATION_CANDIDATE_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(
@@ -209,7 +211,7 @@ export class KnowledgeStore {
       knowledge_cases: [["status", "TEXT NOT NULL DEFAULT 'draft'"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"], ["source_candidate_id", "TEXT"], ["event_id", "TEXT"]],
       knowledge_patterns: [["status", "TEXT NOT NULL DEFAULT 'draft'"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"]],
       knowledge_playbooks: [["status", "TEXT NOT NULL DEFAULT 'draft'"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"]],
-      knowledge_candidates: [["status", "TEXT NOT NULL DEFAULT 'draft'"], ["reviewed_by", "INTEGER"], ["verified_at", "TEXT"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"]],
+      knowledge_candidates: [["status", "TEXT NOT NULL DEFAULT 'draft'"], ["reviewed_by", "INTEGER"], ["verified_at", "TEXT"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"], ["source_observation_id", "TEXT"]],
       knowledge_relations: [["project_id", "TEXT"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"], ["source_sha256", "TEXT"]],
       knowledge_candidate_cards: [["event_class", "TEXT"], ["capture_reason", "TEXT"], ["impact", "TEXT"], ["record_type", "TEXT NOT NULL DEFAULT 'candidate'"], ["display_title", "TEXT"], ["display_summary", "TEXT"], ["unknowns_json", "TEXT NOT NULL DEFAULT '[]'"], ["next_action", "TEXT"], ["capture_reason_text", "TEXT"], ["human_status", "TEXT"], ["provenance_json", "TEXT NOT NULL DEFAULT '{}'"]],
       knowledge_observations: [["record_type", "TEXT NOT NULL DEFAULT 'observation'"], ["display_title", "TEXT"], ["display_summary", "TEXT"], ["unknowns_json", "TEXT NOT NULL DEFAULT '[]'"], ["next_action", "TEXT"], ["human_status", "TEXT"], ["provenance_json", "TEXT NOT NULL DEFAULT '{}'"]],

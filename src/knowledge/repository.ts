@@ -59,10 +59,10 @@ export class KnowledgeRepository {
   saveCandidate(value: Candidate): Candidate {
     this.store.upsertDocument(value);
     this.store.db.prepare(`INSERT INTO knowledge_candidates
-      (id,status,candidate_type,samplemanager_version,solution,module,environment,event_id,deployment_id,job_id,evidence_refs_json,source_locator,source_sha256,created_at,updated_at)
-      VALUES (@id,@status,@candidateType,@sampleManagerVersion,@solution,@module,@environment,@eventId,@deploymentId,@jobId,@evidenceRefs,@sourceLocator,@sourceSha256,@createdAt,@updatedAt)
-      ON CONFLICT(id) DO UPDATE SET status=excluded.status,candidate_type=excluded.candidate_type,samplemanager_version=excluded.samplemanager_version,solution=excluded.solution,module=excluded.module,environment=excluded.environment,event_id=excluded.event_id,deployment_id=excluded.deployment_id,job_id=excluded.job_id,evidence_refs_json=excluded.evidence_refs_json,source_locator=excluded.source_locator,source_sha256=excluded.source_sha256,updated_at=excluded.updated_at`).run({
-      id: value.id, status: value.lifecycle, candidateType: value.candidateType ?? "case", sampleManagerVersion: value.sampleManagerVersion ?? null, solution: value.solution ?? null, module: value.module ?? null, environment: value.environment ?? null, eventId: value.eventId ?? null,
+      (id,status,candidate_type,samplemanager_version,solution,module,environment,event_id,deployment_id,job_id,evidence_refs_json,source_locator,source_sha256,source_observation_id,created_at,updated_at)
+      VALUES (@id,@status,@candidateType,@sampleManagerVersion,@solution,@module,@environment,@eventId,@deploymentId,@jobId,@evidenceRefs,@sourceLocator,@sourceSha256,@sourceObservationId,@createdAt,@updatedAt)
+      ON CONFLICT(id) DO UPDATE SET status=excluded.status,candidate_type=excluded.candidate_type,samplemanager_version=excluded.samplemanager_version,solution=excluded.solution,module=excluded.module,environment=excluded.environment,event_id=excluded.event_id,deployment_id=excluded.deployment_id,job_id=excluded.job_id,evidence_refs_json=excluded.evidence_refs_json,source_locator=excluded.source_locator,source_sha256=excluded.source_sha256,source_observation_id=excluded.source_observation_id,updated_at=excluded.updated_at`).run({
+      id: value.id, status: value.lifecycle, candidateType: value.candidateType ?? "case", sampleManagerVersion: value.sampleManagerVersion ?? null, solution: value.solution ?? null, module: value.module ?? null, environment: value.environment ?? null, eventId: value.eventId ?? null, sourceObservationId: value.sourceObservationId ?? null,
       deploymentId: value.deploymentId ?? null, jobId: value.jobId ?? null, evidenceRefs: JSON.stringify(value.evidenceRefs ?? []),
       sourceLocator: value.locator, sourceSha256: value.sha256 ?? null, createdAt: value.createdAt, updatedAt: value.updatedAt,
     });

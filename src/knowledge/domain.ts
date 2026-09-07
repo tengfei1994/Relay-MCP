@@ -107,6 +107,7 @@ export interface Candidate extends KnowledgeEntity {
   eventId?: string;
   deploymentId?: string;
   jobId?: string;
+  sourceObservationId?: string;
   card?: CandidateCard;
 }
 

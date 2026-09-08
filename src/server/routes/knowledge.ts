@@ -222,6 +222,11 @@ function sendError(reply: FastifyReply, error: unknown, status = 400) {
   return reply.status(status).send({ error: error instanceof Error ? error.message : String(error) });
 }
 
+const OBSERVATION_WITH_REVIEW = `SELECT o.*, r.outcome AS review_outcome, r.reason AS review_reason,
+  r.rule_version AS review_rule_version, r.reviewed_at, r.next_review_at, r.review_count,
+  r.candidate_id AS review_candidate_id FROM knowledge_observations o
+  LEFT JOIN knowledge_observation_reviews r ON r.observation_id=o.id`;
+
 function safeObservation(row: KnowledgeRow): Record<string, unknown> {
   const parse = (value: unknown): unknown[] => {
     try {
@@ -245,6 +250,12 @@ function safeObservation(row: KnowledgeRow): Record<string, unknown> {
     nextAction: row.next_action ? String(row.next_action) : undefined,
     captureReasonText: String(row.capture_reason),
     humanStatus: String(row.human_status ?? "captured"),
+    review: row.review_outcome ? {
+      outcome: String(row.review_outcome), reason: String(row.review_reason),
+      ruleVersion: String(row.review_rule_version), reviewedAt: String(row.reviewed_at),
+      nextReviewAt: row.next_review_at ? String(row.next_review_at) : undefined,
+      count: Number(row.review_count), candidateId: row.review_candidate_id ? String(row.review_candidate_id) : undefined,
+    } : undefined,
     evidenceRefs: parse(row.evidence_refs_json),
     sourceLocator: String(row.source_locator),
     sourceSha256: row.source_sha256 ? String(row.source_sha256) : undefined,
@@ -422,7 +433,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     const id = String((request.params as { id: string }).id);
     const store = getKnowledgeStore();
     try {
-      const row = store.db.prepare("SELECT * FROM knowledge_observations WHERE id = ?").get(id) as KnowledgeRow | undefined;
+      const row = store.db.prepare(`${OBSERVATION_WITH_REVIEW} WHERE o.id = ?`).get(id) as KnowledgeRow | undefined;
       if (!row || !row.project_id || !store.canRead(request.user.id, String(row.project_id))) throw new Error("Observation not found");
       return reply.send({ observation: safeObservation(row) });
     } catch (error) { return sendError(reply, error, 404); }
@@ -562,7 +573,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       const { store, projectId } = resolveProject(request.user.id, query.projectId);
       const limit = parseBoundedInt(query.limit, 50, 1, 200);
       const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
-      const rows = store.db.prepare("SELECT * FROM knowledge_observations WHERE project_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?").all(projectId, limit, offset) as KnowledgeRow[];
+      const rows = store.db.prepare(`${OBSERVATION_WITH_REVIEW} WHERE o.project_id = ? ORDER BY o.updated_at DESC LIMIT ? OFFSET ?`).all(projectId, limit, offset) as KnowledgeRow[];
       const total = store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_observations WHERE project_id = ?").get(projectId) as { count?: number };
       return reply.send({ observations: rows.map(safeObservation), page: { limit, offset, total: Number(total.count ?? 0) } });
     } catch (error) { return sendError(reply, error, 400); }

@@ -43,6 +43,21 @@ function textValue(value: unknown): string | undefined {
   return typeof value === "string" && meaningful(value) ? value.trim() : undefined;
 }
 
+/** Ignore routine status text when deciding whether a message is an error. */
+function problemText(value: unknown): string | undefined {
+  const valueText = text(value);
+  if (!valueText) return undefined;
+  if (/^(?:ok|success|succeeded|passed|completed|no\s+(?:errors?|warnings?|failures?))$/i.test(valueText)) return undefined;
+  if (/\b(?:build|execution|command)\s+succeeded\b/i.test(valueText) && /\b0\s+warnings?\b/i.test(valueText) && /\b0\s+errors?\b/i.test(valueText)) return undefined;
+  return valueText;
+}
+
+function problemSignal(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(problemSignal);
+  if (typeof value === "string") return Boolean(problemText(value));
+  return value === true || (typeof value === "number" && value > 0);
+}
+
 /**
  * Normalize execution output from both current structured events and legacy
  * events that embedded summarizeExec output inside payload.summary.
@@ -72,10 +87,10 @@ export function classifyRelayEvent(event: RelayDomainEvent): EventClassification
   const status = text(payload.status)?.toLowerCase();
   const parseStatus = text(payload.parseStatus ?? payload.parse_status)?.toLowerCase();
   const parseError = text(payload.parseError ?? payload.parse_error);
-  const error = text(payload.error) ?? text(payload.message);
+  const error = problemText(payload.error) ?? problemText(payload.message);
   const validation = text(payload.validationStatus ?? payload.validation_status)?.toLowerCase();
   const explicitlyMarked = truthy(payload.recordAsKnowledge) || truthy(payload.record_as_knowledge) || truthy(payload.knowledge);
-  const warning = Boolean(text(payload.warning) ?? text(payload.warnings));
+  const warning = problemSignal(payload.warning) || problemSignal(payload.warnings);
   const executionSignals = extractExecutionObservationSignals(payload);
   const success = ["succeeded", "success", "completed", "ok", "passed"].includes(status ?? "");
   const failed = ["failed", "failure", "error"].includes(status ?? "") || Boolean(error);

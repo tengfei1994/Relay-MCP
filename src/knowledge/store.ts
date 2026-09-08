@@ -24,6 +24,8 @@ import { PRODUCT_DOCUMENT_OPERATIONS_MIGRATION } from "./migrations/017-product-
 import { EVIDENCE_METADATA_MIGRATION } from "./migrations/018-evidence-metadata.js";
 import { HUMAN_DISPLAY_PROJECTION_MIGRATION } from "./migrations/019-human-display-projection.js";
 import { OBSERVATION_CANDIDATE_MIGRATION } from "./migrations/020-observation-candidate.js";
+import { OBSERVATION_REVIEW_MIGRATION } from "./migrations/021-observation-review.js";
+import { CHUNK_FTS_OWNERSHIP_MIGRATION } from "./migrations/022-chunk-fts-ownership.js";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
 import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type CandidateCard, type KnowledgeDocument, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeBinding, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
@@ -60,6 +62,8 @@ const KNOWLEDGE_MIGRATIONS = [
   EVIDENCE_METADATA_MIGRATION,
   HUMAN_DISPLAY_PROJECTION_MIGRATION,
   OBSERVATION_CANDIDATE_MIGRATION,
+  OBSERVATION_REVIEW_MIGRATION,
+  CHUNK_FTS_OWNERSHIP_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(
@@ -626,7 +630,7 @@ export class KnowledgeStore {
     this.db.prepare(`INSERT INTO knowledge_observations
       (id,event_id,project_id,event_class,capture_reason,problem_statement,facts_json,evidence_refs_json,source_locator,source_sha256,record_type,display_title,display_summary,unknowns_json,next_action,human_status,provenance_json,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(event_id) DO UPDATE SET project_id=excluded.project_id,event_class=excluded.event_class,capture_reason=excluded.capture_reason,problem_statement=excluded.problem_statement,facts_json=excluded.facts_json,evidence_refs_json=excluded.evidence_refs_json,source_locator=excluded.source_locator,source_sha256=excluded.source_sha256,display_title=excluded.display_title,display_summary=excluded.display_summary,unknowns_json=excluded.unknowns_json,next_action=excluded.next_action,human_status=excluded.human_status,provenance_json=excluded.provenance_json,updated_at=excluded.updated_at`).run(
+      ON CONFLICT(event_id) DO UPDATE SET project_id=excluded.project_id,event_class=excluded.event_class,capture_reason=excluded.capture_reason,problem_statement=excluded.problem_statement,facts_json=excluded.facts_json,evidence_refs_json=excluded.evidence_refs_json,source_locator=excluded.source_locator,source_sha256=excluded.source_sha256,display_title=excluded.display_title,display_summary=excluded.display_summary,unknowns_json=excluded.unknowns_json,provenance_json=excluded.provenance_json,updated_at=excluded.updated_at`).run(
       observation.id, observation.eventId, observation.projectId ?? null, observation.eventClass, observation.captureReason, observation.problemStatement ?? null, JSON.stringify(observation.facts ?? []), JSON.stringify(observation.evidenceRefs ?? []), observation.sourceLocator, observation.sourceSha256 ?? null, "observation", displayTitle, displaySummary, JSON.stringify(unknowns), nextAction, lifecycleHumanStatus("draft", "observation"), JSON.stringify({ eventId: observation.eventId, sourceLocator: observation.sourceLocator }), observation.createdAt, observation.updatedAt,
     );
   }

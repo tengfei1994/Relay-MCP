@@ -2,6 +2,7 @@ import type { InferenceProvider } from "./providers.js";
 import type { CandidateCard } from "./domain.js";
 import type { RelayDomainEvent } from "./store.js";
 import { eventClassLabel, lifecycleHumanStatus } from "./display-projection.js";
+import { extractExecutionObservationSignals } from "./event-classifier.js";
 
 const SECRET_KEY = /(password|passwd|pwd|token|secret|api[_-]?key|credential|authorization|connection|string)/i;
 
@@ -50,6 +51,79 @@ function strings(value: unknown): string[] {
   return single ? [single] : [];
 }
 
+function clipped(value: string, max = 360): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized;
+}
+
+/** Keep symptoms human-readable while preserving labels in the summary. */
+function symptomText(value: string): string {
+  return value.replace(/^[A-Za-z][A-Za-z ]*:\s*/, "").trim();
+}
+
+function isBenignDiagnosticText(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized) return true;
+  return /^(?:\(empty\)|none|n\/a|ok|success|succeeded|passed|no\s+(?:errors?|warnings?|failures?))$/i.test(normalized)
+    || (/\b(?:build|execution|command)\s+succeeded\b/i.test(normalized) && /\b0\s+warnings?\b/i.test(normalized) && /\b0\s+errors?\b/i.test(normalized))
+    || /^0\s+(?:warnings?|errors?|failures?)$/i.test(normalized);
+}
+
+function signalValues(event: RelayDomainEvent): { primary?: string; all: string[] } {
+  const payload = event.payload ?? {};
+  const all: string[] = [];
+  const isSuspicious = (value: string): boolean => /\b(?:error|failed|failure|warning|warn|degraded|partial|missing|not found|invalid|exception|timeout|denied|unavailable|refused)\b|乱码/i.test(value);
+  const add = (label: string, value: unknown) => {
+    const values = Array.isArray(value) ? value : [value];
+    for (const item of values) {
+      if (typeof item !== "string") continue;
+      const normalized = clipped(item);
+      if (!normalized || isBenignDiagnosticText(normalized)) continue;
+      all.push(`${label}: ${normalized}`);
+    }
+  };
+  // Prioritize fields that describe an actionable problem over routine output.
+  add("Error", payload.error);
+  if (typeof payload.message === "string" && isSuspicious(payload.message)) add("Error", payload.message);
+  add("Warning", payload.warning);
+  add("Warning", payload.warnings);
+  add("Observed symptom", payload.observedSymptoms);
+  add("Symptom", payload.symptoms);
+  add("stderr", payload.stderr);
+  if (Array.isArray(payload.logs)) {
+    for (const entry of payload.logs) {
+      const message = typeof entry === "string" ? entry : entry && typeof entry === "object" ? (entry as Record<string, unknown>).message : undefined;
+      if (typeof message === "string" && isSuspicious(message)) add("Log", message);
+    }
+  }
+  // stdout/output is useful context, but only retain lines that look anomalous;
+  // this keeps the review card readable instead of dumping command output.
+  for (const key of ["stdout", "output", "result", "observedOutput"]) {
+    const value = payload[key];
+    if (typeof value !== "string") continue;
+    const lines = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const suspiciousLines = lines.filter(isSuspicious);
+    (suspiciousLines.length ? suspiciousLines : []).slice(0, 4).forEach((line) => add(key, line));
+  }
+  // Legacy events often keep summarizeExec output in payload.summary. Reuse
+  // the same stream extractor so reviewers see the actual stderr/warning
+  // instead of a generic statement.
+  const execution = extractExecutionObservationSignals(payload);
+  if (execution.stderr && isSuspicious(execution.stderr)) add("stderr", execution.stderr);
+  if (execution.stdout) execution.stdout.split(/\r?\n/).filter(isSuspicious).slice(0, 4).forEach((line) => add("stdout", line));
+  execution.logs.filter(isSuspicious).slice(0, 4).forEach((line) => add("Log", line));
+  return { primary: all[0], all: [...new Set(all)].slice(0, 20) };
+}
+
+/** Build a reviewer-facing problem statement from concrete event signals. */
+export function candidateProblemStatement(event: RelayDomainEvent, fallback?: string): string | undefined {
+  const signal = signalValues(event).primary;
+  if (signal) return `${event.type} reported a concrete runtime signal — ${signal}`;
+  const normalizedFallback = text(fallback);
+  if (normalizedFallback && !/derived from an observed runtime problem signal|requires reviewer verification before becoming a case/i.test(normalizedFallback)) return normalizedFallback;
+  return undefined;
+}
+
 function safeFacts(event: RelayDomainEvent, projectId: string | number): Array<Record<string, unknown>> {
   const facts: Array<Record<string, unknown>> = [
     { field: "eventType", value: event.type, source: "relay-domain-event", confirmed: true },
@@ -69,9 +143,13 @@ function safeFacts(event: RelayDomainEvent, projectId: string | number): Array<R
 function deterministicCard(input: CandidateCardGenerationInput, inferenceStatus: CandidateCard["inferenceStatus"] = "deterministic"): CandidateCard {
   const { event, projectId, evidenceRefs } = input;
   const status = text(event.payload.status);
-  const error = text(event.payload.error) ?? text(event.payload.message);
+  const error = [text(event.payload.error), text(event.payload.message)]
+    .find((value): value is string => typeof value === "string" && !isBenignDiagnosticText(value));
+  const signals = signalValues(event);
   const subject = event.deploymentId ? `deployment ${event.deploymentId}` : event.jobId ? `job ${event.jobId}` : `event ${event.id}`;
-  const summary = error ? `${event.type} captured for ${subject}: ${error.slice(0, 240)}` : `${event.type} captured for ${subject}${status ? ` with status ${status}` : ""}.`;
+  const summary = signals.primary
+    ? `${event.type} captured for ${subject}: ${signals.primary.slice(0, 240)}`
+    : `${event.type} captured for ${subject}${status ? ` with status ${status}` : ""}.`;
   const rootCause = text(event.payload.rootCause) ?? text(event.payload.hypothesis);
   const hypothesis = rootCause ? `unconfirmed: ${rootCause}` : "unconfirmed: root cause is not established from the source event";
   const verificationPlan = strings(event.payload.verificationPlan ?? event.payload.verification_plan);
@@ -86,9 +164,9 @@ function deterministicCard(input: CandidateCardGenerationInput, inferenceStatus:
   const card: CandidateCard = {
     candidateId: input.candidateId ?? `candidate-${event.id}`,
     summary,
-    problemStatement: input.problemStatement ?? (error ? `${event.type} reported for ${subject}: ${error}` : `${event.type} was observed for ${subject}; the event payload is retained as Raw Event evidence.`),
+    problemStatement: candidateProblemStatement(event, input.problemStatement) ?? (error ? `${event.type} reported for ${subject}: ${error}` : `${event.type} was observed for ${subject}; the event payload is retained as Raw Event evidence.`),
     facts: safeFacts(event, projectId),
-    symptoms: [...new Set([...(error ? [error] : []), ...strings(event.payload.symptoms), ...strings(event.payload.observedSymptoms)])].slice(0, 20),
+    symptoms: [...new Set([...(signals.all.length ? signals.all.map(symptomText) : error ? [error] : []), ...strings(event.payload.symptoms), ...strings(event.payload.observedSymptoms)])].slice(0, 20),
     hypothesis,
     verificationPlan: verificationPlan.slice(0, 20),
     verifiedConclusion,
@@ -104,7 +182,7 @@ function deterministicCard(input: CandidateCardGenerationInput, inferenceStatus:
     impact: input.impact,
     recordType: "candidate",
     displayTitle: summary,
-    displaySummary: input.problemStatement ?? summary,
+    displaySummary: candidateProblemStatement(event, input.problemStatement) ?? summary,
     unknowns: ["Root cause has not been verified.", "Impact and reuse boundaries still need reviewer confirmation."],
     nextAction: actions[0] ?? verificationPlan[0],
     captureReasonText: input.captureReason ?? `Captured because the event was classified as ${eventClassLabel(input.eventClass)}.`,

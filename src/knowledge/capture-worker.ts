@@ -4,9 +4,10 @@ import { dirname, join } from "path";
 import type { KnowledgeOutboxEvent, KnowledgeStore } from "./store.js";
 import { EvidenceStore } from "./evidence-store.js";
 import { KnowledgeRepository } from "./repository.js";
-import { candidateTitle, generateCandidateCard } from "./candidate-card.js";
+import { candidateProblemStatement, candidateTitle, generateCandidateCard } from "./candidate-card.js";
 import type { InferenceProvider } from "./providers.js";
 import { classifyRelayEvent, extractExecutionObservationSignals } from "./event-classifier.js";
+import { OBSERVATION_REVIEW_RULE, recordObservationReview } from "./observation-review.js";
 
 const MAX_CAPTURE_ATTEMPTS = 5;
 const PROJECT_RESOLUTION_RETRY_BASE_MS = 5_000;
@@ -218,22 +219,50 @@ function meaningfulObservationValue(value: unknown): boolean {
 
 function observationNeedsCandidate(payload: Record<string, unknown>): boolean {
   const signals = extractExecutionObservationSignals(payload);
-  const text = [signals.stderr, ...signals.logs, typeof signals.stdout === "string" ? signals.stdout : undefined, typeof signals.output === "string" ? signals.output : undefined, typeof payload.warning === "string" ? payload.warning : undefined].filter(Boolean).join(" ");
-  return Boolean(payload.warning || payload.warnings || payload.observedSymptoms || /\b(error|failed|failure|warning|warn|degraded|partial|empty|missing|not found|invalid|乱码|Ã.|Â.)\b/i.test(text));
+  const benign = (value: string): boolean => {
+    const normalized = value.trim();
+    return !normalized
+      || /^(?:\(empty\)|none|n\/a|ok|success|succeeded|passed|no\s+(?:errors?|warnings?|failures?))$/i.test(normalized)
+      || (/\b(?:build|execution|command)\s+succeeded\b/i.test(normalized) && /\b0\s+warnings?\b/i.test(normalized) && /\b0\s+errors?\b/i.test(normalized))
+      || /^0\s+(?:warnings?|errors?|failures?)$/i.test(normalized);
+  };
+  const meaningful = (value: unknown): boolean => {
+    if (typeof value === "string") return !benign(value);
+    if (Array.isArray(value)) return value.some(meaningful);
+    return value === true || (typeof value === "number" && value > 0);
+  };
+  const text = [signals.stderr, ...signals.logs, typeof signals.stdout === "string" ? signals.stdout : undefined, typeof signals.output === "string" ? signals.output : undefined]
+    .filter((value): value is string => Boolean(value))
+    .join(" ")
+    .split(/\r?\n/)
+    .filter((line) => !benign(line))
+    .join(" ")
+    .replace(/\b(?:0|no)\s+(?:errors?|warnings?|failures?)\b(?:\(s\))?/gi, "")
+    .replace(/\b(?:errors?|warnings?|failures?)\s*[:=]\s*0\b/gi, "");
+  return meaningful(payload.warning) || meaningful(payload.warnings) || meaningful(payload.observedSymptoms) || /\b(error|failed|failure|warning|warn|degraded|partial|empty|missing|not found|invalid|exception|timeout|denied)\b|乱码/i.test(text);
 }
 
-async function materializeObservationCandidate(store: KnowledgeStore, event: KnowledgeOutboxEvent, projectId: string | number, observationId: string, evidenceRefs: string[], classification: ReturnType<typeof classifyRelayEvent>): Promise<string> {
+async function materializeObservationCandidate(store: KnowledgeStore, event: KnowledgeOutboxEvent, projectId: string | number, observationId: string, evidenceRefs: string[], classification: ReturnType<typeof classifyRelayEvent>, reviewNow: Date): Promise<string> {
   const candidateId = `candidate-${createHash("sha256").update(`observation:${observationId}`, "utf8").digest("hex")}`;
   const metadata = eventMetadata(event); const now = new Date().toISOString(); const body = candidateBody(event, projectId); const digest = createHash("sha256").update(body, "utf8").digest("hex");
   const candidate: import("./domain.js").Candidate = { id: candidateId, kind: "candidate", title: `Observation candidate: ${event.type} ${event.jobId ?? event.deploymentId ?? event.id}`, body, lifecycle: "draft", projectId: String(projectId), projectNameSnapshot: event.projectNameSnapshot, environment: eventEnvironment(event), sampleManagerVersion: metadata.sampleManagerVersion, solution: metadata.solution, module: metadata.module, candidateType: "case", eventId: event.id, deploymentId: event.deploymentId, jobId: event.jobId, sourceObservationId: observationId, locator: `observation:${observationId}`, sha256: digest, evidenceRefs, createdAt: now, updatedAt: now };
-  const repository = new KnowledgeRepository(store); repository.saveCandidate(candidate);
-  for (const evidenceId of evidenceRefs) store.db.prepare("INSERT OR IGNORE INTO knowledge_entity_evidence(entity_type,entity_id,evidence_id,created_at) VALUES ('candidate',?,?,?)").run(candidateId, evidenceId, now);
   // Observation rows have their own table and are not Knowledge Documents;
   // source_observation_id is the canonical link without violating FK rules.
-  const generated = await generateCandidateCard({ event, projectId, candidateId, evidenceRefs, inference: undefined, eventClass: classification.eventClass, captureReason: "Automatically generated from an Observation with a concrete problem signal.", problemStatement: "This Candidate was derived from an observed runtime problem signal.", impact: "Requires reviewer verification before becoming a Case." });
-  store.saveCandidateCard(generated.card); store.upsertDocument({ ...candidate, title: candidateTitle(event, generated.card), updatedAt: generated.card.updatedAt });
-  store.audit({ projectId: String(projectId), action: "knowledge.observation.candidate_created", entityType: "candidate", entityId: candidateId, details: { observationId, eventId: event.id, evidenceCount: evidenceRefs.length } });
-  return candidateId;
+  const generated = await generateCandidateCard({ event, projectId, candidateId, evidenceRefs, inference: undefined, eventClass: classification.eventClass, captureReason: "Automatically generated from an Observation with a concrete problem signal.", problemStatement: candidateProblemStatement(event, classification.problemStatement) ?? "A concrete runtime signal was captured and requires reviewer verification.", impact: "Requires reviewer verification before becoming a Case." });
+  // Generation is outside the transaction; the candidate, evidence links and
+  // review decision commit together. Re-check after await for another worker.
+  return store.db.transaction(() => {
+    const existing = store.db.prepare("SELECT id FROM knowledge_candidates WHERE source_observation_id=?").get(observationId) as { id: string } | undefined;
+    const targetId = existing?.id ?? candidateId;
+    if (!existing) {
+      new KnowledgeRepository(store).saveCandidate(candidate);
+      store.saveCandidateCard(generated.card);
+      store.upsertDocument({ ...candidate, title: candidateTitle(event, generated.card), updatedAt: generated.card.updatedAt });
+      store.audit({ projectId: String(projectId), action: "knowledge.observation.candidate_created", entityType: "candidate", entityId: candidateId, details: { observationId, eventId: event.id, evidenceCount: evidenceRefs.length } });
+    }
+    recordObservationReview(store, { observationId, projectId: String(projectId), outcome: "promoted", reason: "Concrete runtime problem signal detected; draft Candidate created for human verification.", candidateId: targetId, now: reviewNow });
+    return targetId;
+  }).immediate();
 }
 
 function parseStringList(value: unknown): string[] {
@@ -248,23 +277,32 @@ function parseStringList(value: unknown): string[] {
  * are intentionally not a terminal queue state: new rules and providers may
  * discover that an older observation is actionable after it was first stored.
  */
-export async function evaluateObservationPool(store: KnowledgeStore, limit = 20): Promise<number> {
+export async function evaluateObservationPool(store: KnowledgeStore, limit = 20, now = new Date()): Promise<number> {
   const rows = store.db.prepare(`
     SELECT o.id AS observation_id, o.project_id, o.evidence_refs_json,
            e.id, e.type, e.occurred_at, e.project_id AS event_project_id,
            e.project_name_snapshot, e.job_id, e.deployment_id, e.event_key,
            e.actor_id, e.payload_json
     FROM knowledge_observations o
-    JOIN relay_domain_events e ON e.id = o.event_id
-    LEFT JOIN knowledge_candidates c ON c.source_observation_id = o.id
-    WHERE c.id IS NULL
-    ORDER BY o.updated_at ASC
+    LEFT JOIN relay_domain_events e ON e.id = o.event_id
+    LEFT JOIN knowledge_observation_reviews r ON r.observation_id = o.id
+    WHERE r.observation_id IS NULL OR (r.outcome != 'promoted' AND
+      (r.next_review_at <= ? OR r.rule_version != ? OR r.source_sha256 IS NOT o.source_sha256))
+    ORDER BY r.reviewed_at ASC, o.created_at ASC, o.id ASC
     LIMIT ?
-  `).all(Math.max(1, Math.min(limit, 100))) as Array<Record<string, unknown>>;
+  `).all(now.toISOString(), OBSERVATION_REVIEW_RULE, Math.max(1, Math.min(limit, 100))) as Array<Record<string, unknown>>;
   let created = 0;
   for (const row of rows) {
     const projectId = row.project_id ?? row.event_project_id;
-    if (projectId === undefined || projectId === null || String(projectId).trim() === "") continue;
+    const observationId = String(row.observation_id);
+    try {
+    if (projectId === undefined || projectId === null || String(projectId).trim() === "") throw new Error("Observation project identity is unavailable.");
+    const existing = store.db.prepare("SELECT id FROM knowledge_candidates WHERE source_observation_id=?").get(observationId) as { id: string } | undefined;
+    if (existing) {
+      store.db.transaction(() => recordObservationReview(store, { observationId, projectId: String(projectId), outcome: "promoted", reason: "Existing linked Candidate reconciled; no duplicate created.", candidateId: existing.id, now })).immediate();
+      continue;
+    }
+    if (!row.id) throw new Error("Observation source event is unavailable.");
     const event = {
       id: String(row.id), type: String(row.type) as KnowledgeOutboxEvent["type"], occurredAt: String(row.occurred_at),
       projectId: String(projectId), projectNameSnapshot: row.project_name_snapshot ? String(row.project_name_snapshot) : undefined,
@@ -274,9 +312,17 @@ export async function evaluateObservationPool(store: KnowledgeStore, limit = 20)
     } as KnowledgeOutboxEvent;
     const evidenceRefs = parseStringList(row.evidence_refs_json);
     const classification = classifyRelayEvent(event);
-    if (!observationNeedsCandidate(event.payload)) continue;
-    await materializeObservationCandidate(store, event, String(projectId), String(row.observation_id), evidenceRefs, classification);
+    if (!classification.captureCandidate && !observationNeedsCandidate(event.payload)) {
+      store.db.transaction(() => recordObservationReview(store, { observationId, projectId: String(projectId), outcome: "deferred", reason: "No concrete runtime problem signal found by deterministic rules; retained for periodic re-evaluation.", now })).immediate();
+      continue;
+    }
+    await materializeObservationCandidate(store, event, String(projectId), observationId, evidenceRefs, classification, now);
     created++;
+    } catch (error) {
+      const code = (error as { code?: unknown })?.code;
+      const errorCode = typeof code === "string" && /^SQLITE_[A-Z_]+$/.test(code) ? code : "observation_review_failed";
+      store.db.transaction(() => recordObservationReview(store, { observationId, projectId: projectId == null ? undefined : String(projectId), outcome: "error", reason: `Source data or candidate materialization failed (${errorCode}); review will retry without blocking other observations.`, errorCode, now })).immediate();
+    }
   }
   return created;
 }
@@ -344,16 +390,6 @@ export async function captureKnowledgeCandidates(
     throw error;
   }
 
-  // The Observation pool is durable and independent from outbox delivery. It
-  // must be evaluated even when this cycle has no newly claimed events.
-  try {
-    count += await evaluateObservationPool(store, limit);
-  } catch (error) {
-    hooks?.onFailure?.(error);
-    cycleFailed = true;
-    firstFailure ??= error;
-  }
-
   for (const event of events) {
     try {
       // Non-terminal events are intentionally consumed without project
@@ -386,7 +422,6 @@ export async function captureKnowledgeCandidates(
         const observationId = `observation-${createHash("sha256").update(event.id, "utf8").digest("hex")}`;
         const observationEvidenceRefs = materializeObservationEvidence(store, event, projectId, observationId);
         store.saveObservation({ id: observationId, eventId: event.id, projectId: String(projectId), eventClass: classification.eventClass, captureReason: classification.captureReason, problemStatement: classification.problemStatement, facts: observationFacts(event.payload), evidenceRefs: observationEvidenceRefs, sourceLocator: `relay-event:${event.id}`, sourceSha256: digest, createdAt: now, updatedAt: now });
-        if (observationNeedsCandidate(event.payload)) await materializeObservationCandidate(store, event, projectId, observationId, observationEvidenceRefs, classification);
         store.audit({ projectId: String(projectId), action: "knowledge.observation.captured", entityType: "observation", entityId: observationId, details: { eventId: event.id, eventClass: classification.eventClass, evidenceCount: observationEvidenceRefs.length } });
         store.acknowledge(consumer, event.id, event.claimToken);
         count++;
@@ -460,6 +495,9 @@ export async function captureKnowledgeCandidates(
     }
   }
 
+  // Review new and historical observations even when the outbox is idle.
+  try { await evaluateObservationPool(store, limit); }
+  catch (error) { cycleFailed = true; firstFailure ??= error; }
   if (cycleFailed) hooks?.onFailure?.(firstFailure, firstFailureEvent);
   // Do not reset consecutive failure/readiness state merely because a failed
   // event is waiting for its backoff window and this cycle claims nothing.

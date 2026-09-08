@@ -236,6 +236,51 @@ async function materializeObservationCandidate(store: KnowledgeStore, event: Kno
   return candidateId;
 }
 
+function parseStringList(value: unknown): string[] {
+  try {
+    const parsed = JSON.parse(String(value ?? "[]"));
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch { return []; }
+}
+
+/**
+ * Re-evaluate the durable Observation pool on every worker cycle. Observations
+ * are intentionally not a terminal queue state: new rules and providers may
+ * discover that an older observation is actionable after it was first stored.
+ */
+export async function evaluateObservationPool(store: KnowledgeStore, limit = 20): Promise<number> {
+  const rows = store.db.prepare(`
+    SELECT o.id AS observation_id, o.project_id, o.evidence_refs_json,
+           e.id, e.type, e.occurred_at, e.project_id AS event_project_id,
+           e.project_name_snapshot, e.job_id, e.deployment_id, e.event_key,
+           e.actor_id, e.payload_json
+    FROM knowledge_observations o
+    JOIN relay_domain_events e ON e.id = o.event_id
+    LEFT JOIN knowledge_candidates c ON c.source_observation_id = o.id
+    WHERE c.id IS NULL
+    ORDER BY o.updated_at ASC
+    LIMIT ?
+  `).all(Math.max(1, Math.min(limit, 100))) as Array<Record<string, unknown>>;
+  let created = 0;
+  for (const row of rows) {
+    const projectId = row.project_id ?? row.event_project_id;
+    if (projectId === undefined || projectId === null || String(projectId).trim() === "") continue;
+    const event = {
+      id: String(row.id), type: String(row.type) as KnowledgeOutboxEvent["type"], occurredAt: String(row.occurred_at),
+      projectId: String(projectId), projectNameSnapshot: row.project_name_snapshot ? String(row.project_name_snapshot) : undefined,
+      jobId: row.job_id ? String(row.job_id) : undefined, deploymentId: row.deployment_id ? String(row.deployment_id) : undefined,
+      actorId: row.actor_id === undefined || row.actor_id === null ? undefined : Number(row.actor_id), eventKey: String(row.event_key),
+      payload: JSON.parse(String(row.payload_json ?? "{}")), attempts: 0, availableAt: String(row.occurred_at), claimToken: "pool-evaluation",
+    } as KnowledgeOutboxEvent;
+    const evidenceRefs = parseStringList(row.evidence_refs_json);
+    const classification = classifyRelayEvent(event);
+    if (!observationNeedsCandidate(event.payload)) continue;
+    await materializeObservationCandidate(store, event, String(projectId), String(row.observation_id), evidenceRefs, classification);
+    created++;
+  }
+  return created;
+}
+
 function materializeEvidence(store: KnowledgeStore, event: KnowledgeOutboxEvent, projectId: string | number, candidateId: string): string[] {
   const values = collectEvidence(event.payload);
   if (values.length === 0) {
@@ -297,6 +342,16 @@ export async function captureKnowledgeCandidates(
   } catch (error) {
     hooks?.onFailure?.(error);
     throw error;
+  }
+
+  // The Observation pool is durable and independent from outbox delivery. It
+  // must be evaluated even when this cycle has no newly claimed events.
+  try {
+    count += await evaluateObservationPool(store, limit);
+  } catch (error) {
+    hooks?.onFailure?.(error);
+    cycleFailed = true;
+    firstFailure ??= error;
   }
 
   for (const event of events) {

@@ -7,6 +7,7 @@ import { KnowledgeRepository } from "./repository.js";
 import { candidateProblemStatement, candidateTitle, generateCandidateCard } from "./candidate-card.js";
 import type { InferenceProvider } from "./providers.js";
 import { classifyRelayEvent, extractExecutionObservationSignals } from "./event-classifier.js";
+import { runtimeProblemSignals } from "./runtime-signals.js";
 import { OBSERVATION_REVIEW_RULE, recordObservationReview } from "./observation-review.js";
 
 const MAX_CAPTURE_ATTEMPTS = 5;
@@ -218,28 +219,7 @@ function meaningfulObservationValue(value: unknown): boolean {
 }
 
 function observationNeedsCandidate(payload: Record<string, unknown>): boolean {
-  const signals = extractExecutionObservationSignals(payload);
-  const benign = (value: string): boolean => {
-    const normalized = value.trim();
-    return !normalized
-      || /^(?:\(empty\)|none|n\/a|ok|success|succeeded|passed|no\s+(?:errors?|warnings?|failures?))$/i.test(normalized)
-      || (/\b(?:build|execution|command)\s+succeeded\b/i.test(normalized) && /\b0\s+warnings?\b/i.test(normalized) && /\b0\s+errors?\b/i.test(normalized))
-      || /^0\s+(?:warnings?|errors?|failures?)$/i.test(normalized);
-  };
-  const meaningful = (value: unknown): boolean => {
-    if (typeof value === "string") return !benign(value);
-    if (Array.isArray(value)) return value.some(meaningful);
-    return value === true || (typeof value === "number" && value > 0);
-  };
-  const text = [signals.stderr, ...signals.logs, typeof signals.stdout === "string" ? signals.stdout : undefined, typeof signals.output === "string" ? signals.output : undefined]
-    .filter((value): value is string => Boolean(value))
-    .join(" ")
-    .split(/\r?\n/)
-    .filter((line) => !benign(line))
-    .join(" ")
-    .replace(/\b(?:0|no)\s+(?:errors?|warnings?|failures?)\b(?:\(s\))?/gi, "")
-    .replace(/\b(?:errors?|warnings?|failures?)\s*[:=]\s*0\b/gi, "");
-  return meaningful(payload.warning) || meaningful(payload.warnings) || meaningful(payload.observedSymptoms) || /\b(error|failed|failure|warning|warn|degraded|partial|empty|missing|not found|invalid|exception|timeout|denied)\b|乱码/i.test(text);
+  return runtimeProblemSignals(payload).length > 0;
 }
 
 async function materializeObservationCandidate(store: KnowledgeStore, event: KnowledgeOutboxEvent, projectId: string | number, observationId: string, evidenceRefs: string[], classification: ReturnType<typeof classifyRelayEvent>, reviewNow: Date): Promise<string> {

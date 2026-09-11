@@ -7,6 +7,7 @@ import { classifyRelayEvent } from "../src/knowledge/event-classifier.ts";
 import { captureKnowledgeCandidates } from "../src/knowledge/capture-worker.ts";
 import { createKnowledgeStore } from "../src/knowledge/store.ts";
 import { acceptCandidate } from "../src/knowledge/review-service.ts";
+import { describeCandidate } from "../src/knowledge/candidate-narrative.ts";
 
 function withStore<T>(fn: (root: string, store: ReturnType<typeof createKnowledgeStore>) => Promise<T>): Promise<T> {
   const root = mkdtempSync(join(tmpdir(), "relay-knowledge-compiler-"));
@@ -23,6 +24,21 @@ test("deterministic classifier keeps routine success telemetry-only", async () =
     assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM relay_domain_events").get().count, 1);
     assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_audit WHERE action = 'knowledge.event.classified'").get().count, 1);
   });
+});
+
+test("routine zero-warning message is not treated as a failure signal", () => {
+  const result = classifyRelayEvent({
+    id: "e-benign-message",
+    type: "job.finished",
+    occurredAt: new Date().toISOString(),
+    projectId: "p1",
+    jobId: "j-benign-message",
+    payload: { status: "succeeded", message: "Build succeeded. 0 Warning(s) 0 Error(s)" },
+    eventKey: "job:j-benign-message:finished",
+  });
+  assert.equal(result.eventClass, "telemetry_only");
+  assert.equal(result.captureCandidate, false);
+  assert.equal(result.storeObservation, false);
 });
 
 test("legacy execution summaries become observations when they contain captured stdout", async () => {
@@ -48,6 +64,31 @@ test("legacy execution summaries become observations when they contain captured 
     assert.equal(facts.find((fact) => fact.field === "stdout")?.value, '[{"Name":"DAVLandingPage.xml"}]');
     assert.equal(facts.some((fact) => fact.field === "summary"), false, "parsed output should not be duplicated as one opaque summary fact");
   });
+});
+
+test("directory inventories do not promote a Candidate because a filename contains timeout", async () => {
+  const stdout = "DIR C:\\Thermo\\SampleManager\\Server\\VGSM\\Exe exists=True\n\nName Length LastWriteTime\n---- ------ -------------\ntimeout.dll 14736 9/14/2022 10:34:24 PM";
+  const event = { id: "e-directory", type: "job.finished" as const, occurredAt: "2026-09-08T00:18:38.916Z", projectId: "p1", jobId: "j-directory", payload: { status: "succeeded", exitCode: 0, stdout } };
+  assert.equal(classifyRelayEvent(event).storeObservation, true);
+  await withStore(async (_root, store) => {
+    store.append(event);
+    assert.equal(await captureKnowledgeCandidates(store), 1);
+    assert.equal(await captureKnowledgeCandidates(store), 0);
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_candidates").get().count, 0);
+  });
+});
+
+test("narrative explains successful directory checks and missing paths without claiming a failure", () => {
+  const body = JSON.stringify({ eventType: "job.finished", occurredAt: "2026-09-08T00:18:38.916Z", payload: {
+    status: "succeeded", environment: "Demo", exitCode: 0,
+    stdout: "DIR C:\\Thermo\\SampleManager\\Server\\VGSM\\Exe exists=True\nDIR C:\\Thermo\\SampleManager\\Server\\VGSM\\Forms exists=False\ntimeout.dll 14736 9/14/2022 10:34:24 PM",
+  } });
+  const narrative = describeCandidate(body);
+  assert.equal(narrative.assessment, "insufficient");
+  assert.match(narrative.title, /目录检查/);
+  assert.match(narrative.summary, /Demo/);
+  assert.ok(narrative.facts.some((fact) => /未找到/.test(fact)));
+  assert.doesNotMatch(narrative.summary, /超时/);
 });
 
 test("warnings materialize idempotent observations with immutable evidence", async () => {

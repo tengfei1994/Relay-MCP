@@ -1,6 +1,6 @@
 import type { KnowledgeStore } from "./store.js";
 
-export const OBSERVATION_REVIEW_RULE = "runtime-signals-v2";
+export const OBSERVATION_REVIEW_RULE = "runtime-signals-v3";
 export const OBSERVATION_REVIEW_INTERVAL_MS = 60_000;
 export type ObservationReviewOutcome = "deferred" | "promoted" | "error";
 

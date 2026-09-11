@@ -2,7 +2,8 @@ import type { InferenceProvider } from "./providers.js";
 import type { CandidateCard } from "./domain.js";
 import type { RelayDomainEvent } from "./store.js";
 import { eventClassLabel, lifecycleHumanStatus } from "./display-projection.js";
-import { extractExecutionObservationSignals } from "./event-classifier.js";
+import { runtimeProblemSignals } from "./runtime-signals.js";
+import { describeCandidate } from "./candidate-narrative.js";
 
 const SECRET_KEY = /(password|passwd|pwd|token|secret|api[_-]?key|credential|authorization|connection|string)/i;
 
@@ -51,11 +52,6 @@ function strings(value: unknown): string[] {
   return single ? [single] : [];
 }
 
-function clipped(value: string, max = 360): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized;
-}
-
 /** Keep symptoms human-readable while preserving labels in the summary. */
 function symptomText(value: string): string {
   return value.replace(/^[A-Za-z][A-Za-z ]*:\s*/, "").trim();
@@ -70,49 +66,8 @@ function isBenignDiagnosticText(value: string): boolean {
 }
 
 function signalValues(event: RelayDomainEvent): { primary?: string; all: string[] } {
-  const payload = event.payload ?? {};
-  const all: string[] = [];
-  const isSuspicious = (value: string): boolean => /\b(?:error|failed|failure|warning|warn|degraded|partial|missing|not found|invalid|exception|timeout|denied|unavailable|refused)\b|乱码/i.test(value);
-  const add = (label: string, value: unknown) => {
-    const values = Array.isArray(value) ? value : [value];
-    for (const item of values) {
-      if (typeof item !== "string") continue;
-      const normalized = clipped(item);
-      if (!normalized || isBenignDiagnosticText(normalized)) continue;
-      all.push(`${label}: ${normalized}`);
-    }
-  };
-  // Prioritize fields that describe an actionable problem over routine output.
-  add("Error", payload.error);
-  if (typeof payload.message === "string" && isSuspicious(payload.message)) add("Error", payload.message);
-  add("Warning", payload.warning);
-  add("Warning", payload.warnings);
-  add("Observed symptom", payload.observedSymptoms);
-  add("Symptom", payload.symptoms);
-  add("stderr", payload.stderr);
-  if (Array.isArray(payload.logs)) {
-    for (const entry of payload.logs) {
-      const message = typeof entry === "string" ? entry : entry && typeof entry === "object" ? (entry as Record<string, unknown>).message : undefined;
-      if (typeof message === "string" && isSuspicious(message)) add("Log", message);
-    }
-  }
-  // stdout/output is useful context, but only retain lines that look anomalous;
-  // this keeps the review card readable instead of dumping command output.
-  for (const key of ["stdout", "output", "result", "observedOutput"]) {
-    const value = payload[key];
-    if (typeof value !== "string") continue;
-    const lines = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    const suspiciousLines = lines.filter(isSuspicious);
-    (suspiciousLines.length ? suspiciousLines : []).slice(0, 4).forEach((line) => add(key, line));
-  }
-  // Legacy events often keep summarizeExec output in payload.summary. Reuse
-  // the same stream extractor so reviewers see the actual stderr/warning
-  // instead of a generic statement.
-  const execution = extractExecutionObservationSignals(payload);
-  if (execution.stderr && isSuspicious(execution.stderr)) add("stderr", execution.stderr);
-  if (execution.stdout) execution.stdout.split(/\r?\n/).filter(isSuspicious).slice(0, 4).forEach((line) => add("stdout", line));
-  execution.logs.filter(isSuspicious).slice(0, 4).forEach((line) => add("Log", line));
-  return { primary: all[0], all: [...new Set(all)].slice(0, 20) };
+  const all = runtimeProblemSignals(event.payload).map((signal) => signal.source + ": " + signal.text);
+  return { primary: all[0], all };
 }
 
 /** Build a reviewer-facing problem statement from concrete event signals. */
@@ -147,9 +102,8 @@ function deterministicCard(input: CandidateCardGenerationInput, inferenceStatus:
     .find((value): value is string => typeof value === "string" && !isBenignDiagnosticText(value));
   const signals = signalValues(event);
   const subject = event.deploymentId ? `deployment ${event.deploymentId}` : event.jobId ? `job ${event.jobId}` : `event ${event.id}`;
-  const summary = signals.primary
-    ? `${event.type} captured for ${subject}: ${signals.primary.slice(0, 240)}`
-    : `${event.type} captured for ${subject}${status ? ` with status ${status}` : ""}.`;
+  const summary = signals.primary ? `${event.type} captured for ${subject}: ${signals.primary.slice(0, 240)}` : `${event.type} captured for ${subject}${status ? ` with status ${status}` : ""}.`;
+  const narrative = describeCandidate(JSON.stringify({ eventType: event.type, occurredAt: event.occurredAt, payload: event.payload }));
   const rootCause = text(event.payload.rootCause) ?? text(event.payload.hypothesis);
   const hypothesis = rootCause ? `unconfirmed: ${rootCause}` : "unconfirmed: root cause is not established from the source event";
   const verificationPlan = strings(event.payload.verificationPlan ?? event.payload.verification_plan);
@@ -164,7 +118,9 @@ function deterministicCard(input: CandidateCardGenerationInput, inferenceStatus:
   const card: CandidateCard = {
     candidateId: input.candidateId ?? `candidate-${event.id}`,
     summary,
-    problemStatement: candidateProblemStatement(event, input.problemStatement) ?? (error ? `${event.type} reported for ${subject}: ${error}` : `${event.type} was observed for ${subject}; the event payload is retained as Raw Event evidence.`),
+    // Retain the exact source signal for audit, search, and downstream Case compilation.
+    // The reviewer-facing page renders the narrative projection instead.
+    problemStatement: candidateProblemStatement(event, input.problemStatement) ?? narrative.summary,
     facts: safeFacts(event, projectId),
     symptoms: [...new Set([...(signals.all.length ? signals.all.map(symptomText) : error ? [error] : []), ...strings(event.payload.symptoms), ...strings(event.payload.observedSymptoms)])].slice(0, 20),
     hypothesis,
@@ -181,10 +137,10 @@ function deterministicCard(input: CandidateCardGenerationInput, inferenceStatus:
     captureReason: input.captureReason,
     impact: input.impact,
     recordType: "candidate",
-    displayTitle: summary,
-    displaySummary: candidateProblemStatement(event, input.problemStatement) ?? summary,
-    unknowns: ["Root cause has not been verified.", "Impact and reuse boundaries still need reviewer confirmation."],
-    nextAction: actions[0] ?? verificationPlan[0],
+    displayTitle: narrative.title,
+    displaySummary: narrative.summary,
+    unknowns: narrative.unknowns,
+    nextAction: narrative.nextSteps[0] ?? actions[0] ?? verificationPlan[0],
     captureReasonText: input.captureReason ?? `Captured because the event was classified as ${eventClassLabel(input.eventClass)}.`,
     humanStatus: lifecycleHumanStatus("draft", "candidate"),
     provenance: { eventId: event.id, jobId: event.jobId, deploymentId: event.deploymentId, sourceLocator: `relay-event:${event.id}` },
@@ -287,7 +243,6 @@ export async function generateCandidateCard(input: CandidateCardGenerationInput)
   }
 }
 
-export function candidateTitle(event: RelayDomainEvent, card: CandidateCard): string {
-  const subject = event.deploymentId ? `Deployment ${event.deploymentId}` : event.jobId ? `Job ${event.jobId}` : `Event ${event.id}`;
-  return `${event.type.replaceAll(".", " ")} · ${subject}: ${card.summary.slice(0, 120)}`;
+export function candidateTitle(_event: RelayDomainEvent, card: CandidateCard): string {
+  return card.displayTitle ?? "Operational review";
 }

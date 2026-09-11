@@ -12,6 +12,7 @@ import { analyzeRelationImpact, queryRelations } from "../../knowledge/relations
 import { searchKnowledge } from "../../knowledge/retriever.js";
 import { importKnowledgeProducts, searchKnowledgeProducts, diffKnowledgeProducts, updateProductDocumentLifecycle } from "../../knowledge/knowledge-products.js";
 import { classifyRelayEvent } from "../../knowledge/event-classifier.js";
+import { describeCandidate } from "../../knowledge/candidate-narrative.js";
 import { readDeadLetterPage } from "../../knowledge/dead-letter-page.js";
 import { existsSync, readFileSync } from "node:fs";
 import { resolveWorkspacePath } from "../../shared/workspace-path.js";
@@ -53,6 +54,8 @@ function safeDocument(row: KnowledgeRow, includeBody = true, card?: ReturnType<R
     try { const parsed = JSON.parse(String(value ?? "[]")); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
   };
   const recordType = String(row.record_type ?? row.kind ?? "");
+  // Derive from the original source on every read, including historical cards.
+  const narrative = String(row.kind) === "candidate" ? describeCandidate(String(row.body ?? ""), { environment: row.environment, occurredAt: row.created_at }) : undefined;
   return {
     id: String(row.id),
     kind: String(row.kind),
@@ -87,8 +90,9 @@ function safeDocument(row: KnowledgeRow, includeBody = true, card?: ReturnType<R
     applicability: row.applicability ? String(row.applicability) : undefined,
     confidence: row.confidence === null || row.confidence === undefined ? undefined : Number(row.confidence),
     recordType: recordType || undefined,
-    displayTitle: row.display_title ? String(row.display_title) : card?.displayTitle ?? card?.summary,
-    displaySummary: row.display_summary ? String(row.display_summary) : card?.displaySummary ?? card?.problemStatement,
+    displayTitle: narrative?.title ?? (row.display_title ? String(row.display_title) : card?.displayTitle ?? card?.summary),
+    displaySummary: narrative?.summary ?? (row.display_summary ? String(row.display_summary) : card?.displaySummary ?? card?.problemStatement),
+    ...(narrative ? { narrative } : {}),
     unknowns: row.unknowns_json === undefined ? card?.unknowns : parseList(row.unknowns_json),
     nextAction: row.next_action ? String(row.next_action) : card?.nextAction,
     captureReasonText: row.capture_reason_text ? String(row.capture_reason_text) : card?.captureReasonText ?? card?.captureReason,

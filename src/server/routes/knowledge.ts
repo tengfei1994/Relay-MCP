@@ -54,6 +54,7 @@ function safeDocument(row: KnowledgeRow, includeBody = true, card?: ReturnType<R
     try { const parsed = JSON.parse(String(value ?? "[]")); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
   };
   const recordType = String(row.record_type ?? row.kind ?? "");
+  const businessContext = row.business_context_json ? safeRows(() => JSON.parse(String(row.business_context_json)), undefined) : card?.businessContext;
   // Derive from the original source on every read, including historical cards.
   const narrative = String(row.kind) === "candidate" ? describeCandidate(String(row.body ?? ""), { environment: row.environment, occurredAt: row.created_at }) : undefined;
   return {
@@ -93,6 +94,7 @@ function safeDocument(row: KnowledgeRow, includeBody = true, card?: ReturnType<R
     displayTitle: narrative?.title ?? (row.display_title ? String(row.display_title) : card?.displayTitle ?? card?.summary),
     displaySummary: narrative?.summary ?? (row.display_summary ? String(row.display_summary) : card?.displaySummary ?? card?.problemStatement),
     ...(narrative ? { narrative } : {}),
+    ...(businessContext ? { businessContext } : {}),
     unknowns: row.unknowns_json === undefined ? card?.unknowns : parseList(row.unknowns_json),
     nextAction: row.next_action ? String(row.next_action) : card?.nextAction,
     captureReasonText: row.capture_reason_text ? String(row.capture_reason_text) : card?.captureReasonText ?? card?.captureReason,
@@ -117,7 +119,7 @@ function enrichDocumentRow(store: ReturnType<typeof getKnowledgeStore>, row: Kno
     return { ...row, ...(candidate ?? {}) };
   }
   if (kind === "case") {
-    const source = store.db.prepare("SELECT event_id,job_id,deployment_id,source_candidate_id,evidence_refs_json FROM knowledge_cases WHERE id = ?").get(String(row.id)) as KnowledgeRow | undefined;
+    const source = store.db.prepare("SELECT event_id,job_id,deployment_id,source_candidate_id,evidence_refs_json,business_context_json FROM knowledge_cases WHERE id = ?").get(String(row.id)) as KnowledgeRow | undefined;
     if (!source) return row;
     let evidenceCount: number | undefined;
     try {
@@ -609,7 +611,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       sourceId: z.string().min(1).optional(), targetId: z.string().min(1).optional(), patternId: z.string().min(1).optional(), patternTitle: z.string().trim().min(1).max(500).optional(), patternBody: z.string().max(100_000).optional(),
       projectId: z.string().min(1).optional(), playbookId: z.string().min(1).optional(), skillDiff: z.string().max(100_000).optional(),
       scopeType: z.enum(["system", "version", "solution", "module", "organization", "project", "environment"]).optional(), scopeKey: z.string().max(500).optional(), visibility: z.enum(["private", "project", "organization", "global"]).optional(), redactionStatus: z.enum(["unknown", "unredacted", "redacted"]).optional(),
-      card: z.object({ summary: z.string().max(2_000).optional(), problemStatement: z.string().max(10_000).optional(), facts: z.array(z.record(z.unknown())).max(50).optional(), symptoms: z.array(z.string().max(2_000)).max(50).optional(), hypothesis: z.string().max(10_000).optional(), verificationPlan: z.array(z.string().max(2_000)).max(50).optional(), verifiedConclusion: z.string().max(10_000).nullable().optional(), actions: z.array(z.string().max(2_000)).max(50).optional(), verification: z.array(z.string().max(2_000)).max(50).optional(), applicability: z.string().max(2_000).nullable().optional(), tags: z.array(z.string().max(200)).max(50).optional(), confidence: z.number().min(0).max(1).optional() }).optional(),
+      card: z.object({ summary: z.string().max(2_000).optional(), problemStatement: z.string().max(10_000).optional(), facts: z.array(z.record(z.unknown())).max(50).optional(), symptoms: z.array(z.string().max(2_000)).max(50).optional(), hypothesis: z.string().max(10_000).optional(), verificationPlan: z.array(z.string().max(2_000)).max(50).optional(), verifiedConclusion: z.string().max(10_000).nullable().optional(), actions: z.array(z.string().max(2_000)).max(50).optional(), verification: z.array(z.string().max(2_000)).max(50).optional(), applicability: z.string().max(2_000).nullable().optional(), tags: z.array(z.string().max(200)).max(50).optional(), confidence: z.number().min(0).max(1).optional(), businessContext: z.object({ businessPurpose: z.string().max(4_000), affectedProcess: z.string().max(4_000), businessImpact: z.string().max(4_000), technicalComponentPurpose: z.string().max(4_000), confidence: z.enum(["provided", "inferred", "unknown"]) }).optional() }).optional(),
     }).safeParse(request.body);
     if (!body.success) return reply.status(400).send({ error: "Invalid review", details: body.error.issues });
     const store = getKnowledgeStore(); const data = body.data;

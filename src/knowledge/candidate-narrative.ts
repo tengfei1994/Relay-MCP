@@ -1,4 +1,5 @@
 import { runtimeProblemSignals, runtimeStreams } from "./runtime-signals.js";
+import type { BusinessContext } from "./domain.js";
 
 export interface CandidateNarrative {
   version: string;
@@ -12,12 +13,42 @@ export interface CandidateNarrative {
   recommendation: string;
   nextSteps: string[];
   sourceSignals: Array<{ source: string; text: string }>;
+  businessContext: BusinessContext;
 }
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 function short(value: unknown): string { return typeof value === "string" ? value.replace(/\s+/g, " ").slice(0, 100).trim() : ""; }
+
+function providedContext(payload: Record<string, unknown>): Partial<BusinessContext> {
+  const nested = record(payload.businessContext ?? payload.business_context);
+  const value = (keys: string[]) => keys.map((key) => short(nested[key] ?? payload[key])).find(Boolean);
+  return {
+    businessPurpose: value(["businessPurpose", "business_purpose", "purpose"]),
+    affectedProcess: value(["affectedProcess", "affected_process", "businessProcess", "business_process"]),
+    businessImpact: value(["businessImpact", "business_impact", "impact"]),
+    technicalComponentPurpose: value(["technicalComponentPurpose", "technical_component_purpose", "componentPurpose", "component_purpose"]),
+  };
+}
+
+function deriveBusinessContext(payload: Record<string, unknown>, eventType: string, firstSignal: string, missingPaths: number): BusinessContext {
+  const provided = providedContext(payload);
+  const cache = /cache|formsbin|binform/i.test([eventType, firstSignal, JSON.stringify(payload)].join(" "));
+  const directory = /dir\\s|directory|path|exists=/i.test([firstSignal, JSON.stringify(payload)].join(" "));
+  const defaults: BusinessContext = cache
+    ? { businessPurpose: "支持 SampleManager 表单快速加载，并让表单定义与运行文件保持一致。", affectedProcess: "使用相关表单进行数据录入、结果处理或审核的业务流程。", businessImpact: "缓存过期或损坏时，相关表单可能打不开、显示旧版本或缺少控件，导致用户无法继续该流程。", technicalComponentPurpose: "FormsBin / 表单运行缓存保存表单编译后的运行文件。", confidence: "inferred" }
+    : directory
+    ? { businessPurpose: "确认服务器配置和运行依赖是否齐全。", affectedProcess: "部署、升级或故障排查前的环境检查。", businessImpact: missingPaths ? "缺失路径可能阻止后续部署或运行，但当前记录未证明它一定是必需路径。" : "当前记录未显示对业务流程造成影响。", technicalComponentPurpose: "目录和文件清单用于定位运行时配置与依赖。", confidence: "inferred" }
+    : /build/i.test(eventType)
+    ? { businessPurpose: "生成可部署的软件或配置版本。", affectedProcess: "开发、发布和升级流程。", businessImpact: "构建失败会阻止新版本发布；构建成功也不代表业务功能已验证。", technicalComponentPurpose: "构建产物将源代码和配置转换为可运行版本。", confidence: "inferred" }
+    : { businessPurpose: "支持一次远程运维或诊断任务。", affectedProcess: "与本次任务目标相关的系统运维流程。", businessImpact: "当前记录未说明具体业务中断或影响范围。", technicalComponentPurpose: "技术组件用途尚未从源记录中明确识别。", confidence: "unknown" };
+  return {
+    ...defaults,
+    ...Object.fromEntries(Object.entries(provided).filter(([, value]) => Boolean(value))),
+    confidence: Object.values(provided).some(Boolean) ? "provided" : defaults.confidence,
+  } as BusinessContext;
+}
 
 /** Read-only projection over the original event; never overwrites a reviewer edit. */
 export function describeCandidate(body: string, fallback: { environment?: unknown; occurredAt?: unknown } = {}): CandidateNarrative {
@@ -59,6 +90,7 @@ export function describeCandidate(body: string, fallback: { environment?: unknow
   let finding = "";
   let nextSteps = ["确认这次任务原本要验证什么，以及实际结果是否满足要求。"];
   const first = signals[0]?.text ?? "";
+  const businessContext = deriveBusinessContext(payload, eventType, first, missing.length);
   if (contract) {
     title = "任务返回结果无法按约定格式读取";
     finding = "执行结果的格式检查没有通过，下游步骤可能无法直接使用这份结果。";
@@ -127,6 +159,6 @@ export function describeCandidate(body: string, fallback: { environment?: unknow
       : assessment === "signal"
       ? "先核对异常及复现情况；确认问题已复现后再建立案例。根因和修复效果可在后续验证。"
       : "建议暂缓审批，先补充预期结果及检查结论。如果只是普通检查记录，可拒绝此候选。",
-    sourceSignals: signals.slice(0, 4),
+    sourceSignals: signals.slice(0, 4), businessContext,
   };
 }

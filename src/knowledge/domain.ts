@@ -86,6 +86,7 @@ export interface Case extends KnowledgeEntity {
   customerCaseId?: string;
   deploymentId?: string;
   jobId?: string;
+  businessContext?: BusinessContext;
 }
 
 export interface Pattern extends KnowledgeEntity {
@@ -130,6 +131,7 @@ export interface CandidateCard {
   eventClass?: string;
   captureReason?: string;
   impact?: string;
+  businessContext?: BusinessContext;
   recordType?: "candidate";
   displayTitle?: string;
   displaySummary?: string;
@@ -139,6 +141,15 @@ export interface CandidateCard {
   humanStatus?: string;
   provenance?: Record<string, unknown>;
   updatedAt: string;
+}
+
+/** Human context that connects a technical signal to the work it supports. */
+export interface BusinessContext {
+  businessPurpose: string;
+  affectedProcess: string;
+  businessImpact: string;
+  technicalComponentPurpose: string;
+  confidence: "provided" | "inferred" | "unknown";
 }
 
 export interface Observation {

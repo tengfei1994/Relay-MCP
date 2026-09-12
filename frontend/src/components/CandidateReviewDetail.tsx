@@ -8,6 +8,7 @@ type Narrative = {
   facts: string[]; unknowns: string[]; nextSteps: string[];
   sourceSignals: Array<{ source: string; text: string }>;
   environment?: string; occurredAt?: string;
+  businessContext?: { businessPurpose: string; affectedProcess: string; businessImpact: string; technicalComponentPurpose: string; confidence: string };
 };
 const fallback: Narrative = {
   title: "这条候选缺少可读的执行说明", summary: "当前记录还不能清楚说明发生了什么，请先查看来源并补充说明。",
@@ -17,6 +18,11 @@ const fallback: Narrative = {
 const paragraph = "break-words text-sm leading-7 text-gray-300 [overflow-wrap:anywhere]";
 const field = "w-full rounded-lg border border-gray-700 bg-gray-950 p-3 text-sm text-gray-200 outline-none focus:border-indigo-500";
 const actionLabels: Record<string, string> = { reproduced: "确认复现", verified: "验证通过", approved: "批准", deprecated: "拒绝或停用", "edit.card": "编辑说明" };
+function BusinessContext({ context }: { context?: Narrative["businessContext"] }) {
+  if (!context) return <p className="text-sm text-gray-500">尚未记录业务场景。请在审阅时补充用途、受影响流程和业务影响。</p>;
+  const rows = [["业务用途", context.businessPurpose], ["受影响流程", context.affectedProcess], ["业务影响", context.businessImpact], ["技术组件用途", context.technicalComponentPurpose]];
+  return <div className="grid gap-3 sm:grid-cols-2">{rows.map(([label, value]) => <div key={label} className="min-w-0 rounded-lg border border-gray-800 bg-gray-950/40 p-3"><p className="text-xs font-medium text-gray-400">{label}</p><p className="mt-2 break-words text-sm leading-6 text-gray-200">{value}</p></div>)}<p className="text-xs text-gray-500 sm:col-span-2">以上说明为{context.confidence === "provided" ? "来源提供" : context.confidence === "inferred" ? "根据技术信号推断" : "暂缺"}，仍需结合证据确认。</p></div>;
+}
 function printable(value: unknown): string { return typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "未记录"; }
 
 function EvidenceItem({ id, index }: { id: string; index: number }) {
@@ -44,6 +50,10 @@ export function CandidateReviewDetail({ document, evidenceRefs, reviews, onBack,
   const [summary, setSummary] = useState(String(card.summary ?? ""));
   const [problem, setProblem] = useState(String(card.problemStatement ?? ""));
   const [actions, setActions] = useState((Array.isArray(card.actions) ? card.actions : []).join("\n"));
+  const [businessPurpose, setBusinessPurpose] = useState(String(card.businessContext?.businessPurpose ?? narrative.businessContext?.businessPurpose ?? ""));
+  const [affectedProcess, setAffectedProcess] = useState(String(card.businessContext?.affectedProcess ?? narrative.businessContext?.affectedProcess ?? ""));
+  const [businessImpact, setBusinessImpact] = useState(String(card.businessContext?.businessImpact ?? narrative.businessContext?.businessImpact ?? ""));
+  const [technicalPurpose, setTechnicalPurpose] = useState(String(card.businessContext?.technicalComponentPurpose ?? narrative.businessContext?.technicalComponentPurpose ?? ""));
   const [success, setSuccess] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const lifecycle: string = document.lifecycle ?? "draft";
@@ -52,7 +62,7 @@ export function CandidateReviewDetail({ document, evidenceRefs, reviews, onBack,
     if (!reason.trim()) { setError("请填写本次决定或修改的理由。"); return; }
     setBusy(action); setError(""); setSuccess("");
     try {
-      const patch = action === "edit_card" ? { card: { summary, problemStatement: problem, actions: actions.split(/\r?\n/).filter(Boolean) } } : undefined;
+      const patch = action === "edit_card" ? { card: { summary, problemStatement: problem, actions: actions.split(/\r?\n/).filter(Boolean), businessContext: { businessPurpose, affectedProcess, businessImpact, technicalComponentPurpose: technicalPurpose, confidence: "provided" } } } : undefined;
       await onReview(action, reason.trim(), patch);
       await refresh(); setReason(""); setEdit(false);
       setSuccess(action === "accept" ? "已确认复现并建立案例。" : action === "edit_card" ? "说明已保存，历史版本保留在审阅记录中。" : "已记录决定。");
@@ -73,6 +83,10 @@ export function CandidateReviewDetail({ document, evidenceRefs, reviews, onBack,
 
     <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
       <div className="min-w-0 space-y-5">
+        <section className={cardClass}>
+          <h3 className="font-medium text-gray-100">这条记录对应的业务场景</h3>
+          <div className="mt-3"><BusinessContext context={narrative.businessContext} /></div>
+        </section>
         <section className={cardClass}>
           <h3 className="font-medium text-gray-100">记录告诉了我们什么</h3>
           <ul className="mt-3 list-disc space-y-2 pl-5">{narrative.facts.map((item, i) => <li key={i} className={paragraph}>{item}</li>)}</ul>
@@ -108,7 +122,7 @@ export function CandidateReviewDetail({ document, evidenceRefs, reviews, onBack,
         </div>
       </section>
     </div>
-    {edit && <section className={cardClass}><h3 className="font-medium text-gray-100">补充经过与处理建议</h3><label className="mt-3 block text-sm text-gray-400">简要说明<textarea className={field + " mt-1 min-h-20"} value={summary} onChange={(e) => setSummary(e.target.value)} /></label><label className="mt-3 block text-sm text-gray-400">问题描述<textarea className={field + " mt-1 min-h-24"} value={problem} onChange={(e) => setProblem(e.target.value)} /></label><label className="mt-3 block text-sm text-gray-400">建议操作（每行一项）<textarea className={field + " mt-1 min-h-20"} value={actions} onChange={(e) => setActions(e.target.value)} /></label><button disabled={!!busy} className="mt-3 rounded-lg bg-indigo-600 px-3 py-2 text-sm text-white" onClick={() => perform("edit_card")}>保存说明</button></section>}
+    {edit && <section className={cardClass}><h3 className="font-medium text-gray-100">补充经过与处理建议</h3><label className="mt-3 block text-sm text-gray-400">简要说明<textarea className={field + " mt-1 min-h-20"} value={summary} onChange={(e) => setSummary(e.target.value)} /></label><label className="mt-3 block text-sm text-gray-400">问题描述<textarea className={field + " mt-1 min-h-24"} value={problem} onChange={(e) => setProblem(e.target.value)} /></label><div className="mt-4 border-t border-gray-800 pt-4"><p className="text-sm font-medium text-gray-300">业务场景（保存后会随 Case 保留）</p><label className="mt-3 block text-sm text-gray-400">业务用途<textarea className={field + " mt-1 min-h-20"} value={businessPurpose} onChange={(e) => setBusinessPurpose(e.target.value)} /></label><label className="mt-3 block text-sm text-gray-400">受影响流程<textarea className={field + " mt-1 min-h-20"} value={affectedProcess} onChange={(e) => setAffectedProcess(e.target.value)} /></label><label className="mt-3 block text-sm text-gray-400">业务影响<textarea className={field + " mt-1 min-h-20"} value={businessImpact} onChange={(e) => setBusinessImpact(e.target.value)} /></label><label className="mt-3 block text-sm text-gray-400">技术组件用途<textarea className={field + " mt-1 min-h-20"} value={technicalPurpose} onChange={(e) => setTechnicalPurpose(e.target.value)} /></label></div><label className="mt-3 block text-sm text-gray-400">建议操作（每行一项）<textarea className={field + " mt-1 min-h-20"} value={actions} onChange={(e) => setActions(e.target.value)} /></label><button disabled={!!busy} className="mt-3 rounded-lg bg-indigo-600 px-3 py-2 text-sm text-white" onClick={() => perform("edit_card")}>保存说明</button></section>}
 
     <details className={cardClass}><summary className="cursor-pointer text-sm font-medium text-gray-300">技术详情与原始字段</summary>
       <p className="mt-3 text-xs text-gray-500">上方中文说明依据原始事件生成；此处保留具体提示、原始卡片及来源，便于核对。</p>

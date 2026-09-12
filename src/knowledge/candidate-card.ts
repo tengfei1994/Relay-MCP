@@ -136,6 +136,7 @@ function deterministicCard(input: CandidateCardGenerationInput, inferenceStatus:
     eventClass: input.eventClass,
     captureReason: input.captureReason,
     impact: input.impact,
+    businessContext: narrative.businessContext,
     recordType: "candidate",
     displayTitle: narrative.title,
     displaySummary: narrative.summary,

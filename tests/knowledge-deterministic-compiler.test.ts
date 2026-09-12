@@ -135,6 +135,8 @@ test("accepting a candidate compiles one traceable Case and is idempotent", asyn
     assert.equal(result.job_id, "j-case");
     assert.equal(result.status, "reproduced");
     assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_cases").get().count, 1);
+    const context = store.db.prepare("SELECT business_context_json FROM knowledge_cases WHERE id = ?").get(`case-${candidate.id}`) as { business_context_json?: string };
+    assert.match(String(context.business_context_json), /businessPurpose/);
     assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_relations WHERE relation_type = 'produces_case'").get().count, 1);
   });
 });

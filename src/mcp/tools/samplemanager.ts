@@ -40,8 +40,9 @@ import {
   buildSettingsMetadata,
   validateBuildEnvironmentVariables,
   validateBuildMsbuildProperties,
+  type SampleManagerInstanceRef,
 } from "../../shared/samplemanager-tools.js";
-import { persistQueryArtifact } from "../../shared/query-artifact-store.js";
+import { persistQueryArtifact, readQueryArtifact } from "../../shared/query-artifact-store.js";
 import { compactText, compactTextWithMetadata, summarizeJson } from "../../shared/output.js";
 import { resolveWorkspacePath } from "../../shared/workspace-path.js";
 import { quotePosix, quotePowerShell } from "../../shared/shell-utils.js";
@@ -49,10 +50,62 @@ import {
   SampleManagerCapabilityRegistry,
   createSampleManagerInspectionEnvelope,
 } from "../../shared/samplemanager-capabilities.js";
+import {
+  analyzeSampleManagerSemanticInspection,
+  runSampleManagerSemanticInspection,
+  type SampleManagerInspectionEntryPoint,
+  type SampleManagerInspectionTarget,
+  type SampleManagerPlatePlan,
+} from "../../shared/samplemanager-semantic-inspection.js";
+import {
+  analyzeSampleManagerWorkflowSnapshot,
+  runSampleManagerWorkflowSnapshot,
+  type SampleManagerWorkflowBaseline,
+  type SampleManagerWorkflowTarget,
+} from "../../shared/samplemanager-workflow-inspection.js";
+import { inspectSampleManagerDeploymentRuntime, type SampleManagerRuntimeInspectionOptions } from "../../shared/samplemanager-runtime-inspection.js";
 import type { ProjectRegistry } from "../project-registry.js";
 import type { GetRunner, ProjectSelector, ResolveProjectName, RunnerConnection, SampleManagerDatabaseTarget } from "../tool-context.js";
 
 const sampleManagerCapabilityRegistry = new SampleManagerCapabilityRegistry();
+const sampleManagerInspectionTargetSchema = z.object({
+  executionId: z.string().optional(),
+  labMethodId: z.string().optional(),
+  labMethodVersion: z.string().optional(),
+  plateId: z.string().optional(),
+  batchId: z.string().optional(),
+  batchTemplateId: z.string().optional(),
+  testNumber: z.string().optional(),
+  sampleNumber: z.string().optional(),
+}).strict().refine((target) => Object.values(target).some((value) => Boolean(value?.trim())), "At least one target identity is required");
+const sampleManagerEntryPointSchema = z.enum([
+  "execution_readiness",
+  "plate_batch_integrity",
+  "test_result_lineage",
+  "lab_method_definition",
+]);
+const sampleManagerPlatePlanSchema = z.object({
+  rows: z.number().int().min(1).max(64),
+  columns: z.number().int().min(1).max(384),
+  startPosition: z.string().max(32).optional(),
+  fillDirection: z.enum(["row-major", "column-major"]).optional(),
+  expectedEmptyPositions: z.array(z.string().max(32)).max(500).optional(),
+  expectedEntries: z.array(z.object({
+    name: z.string().max(128).optional(),
+    entryType: z.string().max(128).optional(),
+    count: z.number().int().nonnegative().max(100000).optional(),
+    positions: z.array(z.string().max(32)).max(500).optional(),
+  }).strict()).max(100).optional(),
+}).strict();
+const sampleManagerWorkflowTargetSchema = z.object({
+  workflowId: z.string().max(256).optional(),
+  workflowName: z.string().max(256).optional(),
+  workflowVersion: z.string().max(256).optional(),
+  nodeType: z.string().max(256).optional(),
+}).strict().refine((target) => Object.values(target).some((value) => Boolean(value?.trim())), "At least one workflow target identity is required");
+const sampleManagerWorkflowBaselineSchema = z.record(z.unknown()).superRefine((baseline, ctx) => {
+  if (JSON.stringify(baseline).length > 200_000) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Workflow baseline must be at most 200000 JSON characters" });
+});
 
 export interface SampleManagerToolsContext {
   server: McpServer;
@@ -175,6 +228,296 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
           : undefined,
       });
       throw error;
+    }
+  }
+
+  async function runSemanticCheck(
+    toolName: string,
+    entryPoint: SampleManagerInspectionEntryPoint,
+    target: SampleManagerInspectionTarget,
+    databaseTarget: SampleManagerDatabaseTarget,
+    plan?: SampleManagerPlatePlan,
+    maxRows = 200,
+    context?: JobContext,
+  ): Promise<string> {
+    const queryId = `inspect-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const startedAt = new Date().toISOString();
+    const provenance = {
+      queryId,
+      project: databaseTarget.project.name,
+      environment: databaseTarget.ps.environment,
+      projectServerId: databaseTarget.ps.id,
+      serverId: databaseTarget.ps.server.id,
+      serverName: databaseTarget.ps.server.name,
+      connectionMode: databaseTarget.ps.connectionMode,
+      instance: databaseTarget.configuredInstance?.name,
+      instanceVersion: databaseTarget.configuredInstance?.version,
+      databaseHost: databaseTarget.databaseHost,
+      databaseName: databaseTarget.database,
+      entryPoint,
+      readOnly: true,
+      mutationAttempted: false,
+    };
+    try {
+      context?.phase("inspecting");
+      const raw = JSON.parse(await runSampleManagerSemanticInspection(databaseTarget.runner, {
+        database: databaseTarget.database,
+        databaseHost: databaseTarget.databaseHost,
+        entryPoint,
+        target,
+        maxRows,
+        execution: executionForJob(context),
+      }));
+      const finishedAt = new Date().toISOString();
+      const envelope = analyzeSampleManagerSemanticInspection(raw, { entryPoint, queryId, startedAt, finishedAt, plan });
+      envelope.target = { ...envelope.target, ...provenance };
+      envelope.queryMetadata = { ...envelope.queryMetadata, ...provenance, finishedAt };
+      writeAudit({ userId: user.id, username: user.username, tool: toolName, ...provenance, finishedAt, violationCount: envelope.violations.length, unknownCount: envelope.unknowns.length, partial: envelope.partial });
+      context?.phase("completed");
+      return JSON.stringify({ capability: toolName, ...envelope });
+    } catch (error) {
+      const finishedAt = new Date().toISOString();
+      const message = error instanceof Error ? error.message : String(error);
+      const category = error && typeof error === "object" && "category" in error
+        ? String((error as { category?: unknown }).category ?? "unknown")
+        : "unknown";
+      const errorKind = category === "timeout"
+        ? "timeout"
+        : /approval|bad gateway|passthrough/i.test(message)
+          ? "approval"
+          : "transport";
+      const response = {
+        capability: toolName,
+        target: { ...provenance },
+        facts: [],
+        inferences: [],
+        unknowns: ["No semantic inspection result was received."],
+        violations: [],
+        evidence: [],
+        recommendedNextChecks: [],
+        errors: [{ kind: errorKind, category, message }],
+        queryMetadata: { ...provenance, startedAt, finishedAt },
+        partial: true,
+      };
+      writeAudit({ userId: user.id, username: user.username, tool: toolName, ...provenance, startedAt, finishedAt, errorKind, error: message });
+      if (context) {
+        const jobError = new Error(`Semantic inspection '${queryId}' failed (${errorKind}): ${message}`) as Error & { category?: string };
+        jobError.category = errorKind === "timeout" ? "timeout" : "connection";
+        throw jobError;
+      }
+      return JSON.stringify(response);
+    }
+  }
+
+  async function runWorkflowCheck(
+    toolName: string,
+    action: "export" | "validate" | "compare",
+    target: SampleManagerWorkflowTarget,
+    databaseTarget: SampleManagerDatabaseTarget,
+    maxRows: number,
+    baseline?: SampleManagerWorkflowBaseline,
+    context?: JobContext,
+  ): Promise<string> {
+    const queryId = `workflow-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const startedAt = new Date().toISOString();
+    const provenance = {
+      queryId,
+      project: databaseTarget.project.name,
+      environment: databaseTarget.ps.environment,
+      projectServerId: databaseTarget.ps.id,
+      serverId: databaseTarget.ps.server.id,
+      serverName: databaseTarget.ps.server.name,
+      connectionMode: databaseTarget.ps.connectionMode,
+      agentId: databaseTarget.ps.server.agentId,
+      instance: databaseTarget.configuredInstance?.name,
+      instanceVersion: databaseTarget.configuredInstance?.version,
+      databaseHost: databaseTarget.databaseHost,
+      databaseName: databaseTarget.database,
+      workflowTarget: target,
+      action,
+      readOnly: true,
+      mutationAttempted: false,
+      startedAt,
+    };
+    try {
+      context?.phase("exporting_workflow");
+      const rawText = await runSampleManagerWorkflowSnapshot(databaseTarget.runner, {
+        database: databaseTarget.database,
+        databaseHost: databaseTarget.databaseHost,
+        target,
+        maxRows,
+        execution: executionForJob(context),
+      });
+      const raw = JSON.parse(rawText) as Record<string, unknown>;
+      const finishedAt = new Date().toISOString();
+      const artifact = persistQueryArtifact({
+        queryId,
+        rawResponse: rawText,
+        provenance: { ...provenance, finishedAt, ownerUserId: user.id },
+      });
+      const response = analyzeSampleManagerWorkflowSnapshot(raw, {
+        action,
+        target,
+        baseline,
+        queryId,
+        startedAt,
+        finishedAt,
+      });
+      response.target = { ...response.target, ...provenance };
+      response.queryMetadata = { ...response.queryMetadata, ...provenance, finishedAt, artifact };
+      writeAudit({
+        userId: user.id,
+        username: user.username,
+        tool: toolName,
+        ...provenance,
+        finishedAt,
+        artifactPath: artifact.path,
+        artifactBytes: artifact.bytes,
+        artifactSha256: artifact.sha256,
+        violationCount: response.violations.length,
+        unknownCount: response.unknowns.length,
+        partial: response.partial,
+      });
+      context?.phase("completed");
+      return JSON.stringify({ capability: toolName, artifact, ...response });
+    } catch (error) {
+      const finishedAt = new Date().toISOString();
+      const message = error instanceof Error ? error.message : String(error);
+      const category = error && typeof error === "object" && "category" in error
+        ? String((error as { category?: unknown }).category ?? "unknown")
+        : "unknown";
+      const errorKind = category === "timeout"
+        ? "timeout"
+        : /approval|bad gateway|passthrough/i.test(message)
+          ? "approval"
+          : /Remote command exited/i.test(message)
+            ? "remote_exit"
+            : "transport";
+      const artifact = persistQueryArtifact({
+        queryId,
+        rawResponse: JSON.stringify({ ok: false, errorKind, error: message }),
+        provenance: { ...provenance, finishedAt, ownerUserId: user.id },
+      });
+      writeAudit({ userId: user.id, username: user.username, tool: toolName, ...provenance, finishedAt, errorKind, error: message, artifactPath: artifact.path, artifactBytes: artifact.bytes, artifactSha256: artifact.sha256 });
+      if (context) {
+        const jobError = new Error(`Workflow ${action} '${queryId}' failed (${errorKind}); artifact=${artifact.path}; ${message}`) as Error & { category?: string };
+        jobError.category = errorKind === "timeout" ? "timeout" : "connection";
+        throw jobError;
+      }
+      return JSON.stringify({
+        capability: toolName,
+        artifact,
+        target: { ...provenance, finishedAt },
+        snapshot: { workflow: null, nodes: [], links: [], parameters: [] },
+        topology: { nodeCount: 0, linkCount: 0, graphComplete: false },
+        facts: [],
+        inferences: [],
+        unknowns: ["No Workflow snapshot was received."],
+        violations: [],
+        evidence: [],
+        errors: [{ kind: errorKind, category, message }],
+        queryMetadata: { ...provenance, finishedAt, artifact },
+        partial: true,
+      });
+    }
+  }
+
+  async function runRuntimeCheck(
+    toolName: string,
+    connection: RunnerConnection,
+    instance: SampleManagerInstanceRef,
+    options: Omit<SampleManagerRuntimeInspectionOptions, "instance" | "execution">,
+    deploymentId?: string,
+    context?: JobContext,
+  ): Promise<string> {
+    const queryId = `runtime-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const startedAt = new Date().toISOString();
+    const provenance = {
+      queryId,
+      project: connection.project.name,
+      environment: connection.ps.environment,
+      projectServerId: connection.ps.id,
+      serverId: connection.ps.server.id,
+      serverName: connection.ps.server.name,
+      connectionMode: connection.ps.connectionMode,
+      agentId: connection.ps.server.agentId,
+      instance: typeof instance === "string" ? instance : instance.name,
+      instanceVersion: connection.ps.limsInstance?.version,
+      instanceRoot: typeof instance === "string" ? undefined : instance.rootPath,
+      deploymentId,
+      readOnly: true,
+      mutationAttempted: false,
+      startedAt,
+    };
+    try {
+      context?.phase("inspecting_runtime");
+      const rawText = await inspectSampleManagerDeploymentRuntime(connection.runner, { ...options, instance, execution: executionForJob(context) });
+      const raw = JSON.parse(rawText) as Record<string, unknown>;
+      const finishedAt = new Date().toISOString();
+      const artifact = persistQueryArtifact({ queryId, rawResponse: rawText, provenance: { ...provenance, finishedAt, ownerUserId: user.id } });
+      const rawSummary = raw.summary && typeof raw.summary === "object" ? raw.summary : {};
+      const runtime = {
+        ...raw,
+        summary: rawSummary,
+        artifact,
+      };
+      const response = {
+        capability: toolName,
+        deploymentId: deploymentId ?? null,
+        provenance: { ...provenance, finishedAt },
+        facts: [
+          { type: "file_state", files: raw.files ?? [], assemblies: raw.assemblies ?? [] },
+          { type: "service_state", services: raw.services ?? [] },
+          { type: "process_state", processes: raw.processes ?? [] },
+          { type: "loaded_modules", loadedModules: raw.loadedModules ?? [] },
+          { type: "log_summary", logs: raw.logs ?? {} },
+        ],
+        inferences: [],
+        unknowns: Array.isArray(raw.moduleErrors) && raw.moduleErrors.length > 0
+          ? ["One or more process module lists could not be inspected; loaded-assembly evidence is incomplete."]
+          : [],
+        evidence: [{ artifact, summary: rawSummary }],
+        errors: [],
+        runtime,
+        queryMetadata: { ...provenance, finishedAt, artifact },
+        partial: Array.isArray(raw.moduleErrors) && raw.moduleErrors.length > 0,
+      };
+      writeAudit({ userId: user.id, username: user.username, tool: toolName, ...provenance, finishedAt, artifactPath: artifact.path, artifactBytes: artifact.bytes, artifactSha256: artifact.sha256, summary: rawSummary, partial: response.partial });
+      context?.phase("completed");
+      return JSON.stringify(response);
+    } catch (error) {
+      const finishedAt = new Date().toISOString();
+      const message = error instanceof Error ? error.message : String(error);
+      const category = error && typeof error === "object" && "category" in error
+        ? String((error as { category?: unknown }).category ?? "unknown")
+        : "unknown";
+      const errorKind = category === "timeout"
+        ? "timeout"
+        : /approval|bad gateway|passthrough/i.test(message)
+          ? "approval"
+          : /Remote command exited/i.test(message)
+            ? "remote_exit"
+            : "transport";
+      const artifact = persistQueryArtifact({ queryId, rawResponse: JSON.stringify({ ok: false, errorKind, error: message }), provenance: { ...provenance, finishedAt, ownerUserId: user.id } });
+      writeAudit({ userId: user.id, username: user.username, tool: toolName, ...provenance, finishedAt, errorKind, error: message, artifactPath: artifact.path, artifactBytes: artifact.bytes, artifactSha256: artifact.sha256 });
+      if (context) {
+        const jobError = new Error(`SampleManager runtime inspection '${queryId}' failed (${errorKind}); artifact=${artifact.path}; ${message}`) as Error & { category?: string };
+        jobError.category = errorKind === "timeout" ? "timeout" : "connection";
+        throw jobError;
+      }
+      return JSON.stringify({
+        capability: toolName,
+        deploymentId: deploymentId ?? null,
+        provenance: { ...provenance, finishedAt },
+        facts: [],
+        inferences: [],
+        unknowns: ["No runtime inspection result was received."],
+        evidence: [{ artifact }],
+        errors: [{ kind: errorKind, category, message }],
+        runtime: null,
+        queryMetadata: { ...provenance, finishedAt, artifact },
+        partial: true,
+      });
     }
   }
 
@@ -430,6 +773,213 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
   );
 
   server.tool(
+    "samplemanager_inspect_deployment_runtime",
+    "Run a bounded, read-only post-deployment runtime inspection for exact files, assembly versions, loaded modules, instance services, processes, and recent errors.",
+    {
+      project: z.string().optional(),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
+      instance: z.string().optional().describe("Optional when the selected project environment is bound to a LIMS instance."),
+      filePaths: z.array(z.string().max(4096)).max(100).optional().describe("Exact remote files to hash and inspect."),
+      assemblyPaths: z.array(z.string().max(4096)).max(50).optional().describe("Exact DLL/EXE paths whose disk and loaded-module state should be checked."),
+      logMinutes: z.number().int().min(1).max(1440).optional().describe("Log timestamp window in minutes; default 30."),
+      maxErrors: z.number().int().min(1).max(200).optional().describe("Maximum compact error entries; default 20."),
+      deploymentId: z.string().optional().describe("Optional deployment ID used to correlate the runtime evidence."),
+      async: z.boolean().optional().describe("Run as a tracked job; default true."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async ({ project: projectName, environment, serverId, serverName, instance, filePaths, assemblyPaths, logMinutes, maxErrors, deploymentId, async: runAsync = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const target = getSampleManagerTarget(projectName, environment, instance, undefined, { serverId, serverName });
+      if (deploymentId) {
+        const deployment = getDeployment(deploymentId);
+        if (!deployment || deployment.userId !== user.id || deployment.project !== resolvedProjectName) throw new Error(`Deployment '${deploymentId}' not found for project '${resolvedProjectName}'`);
+      }
+      const runtimeOptions = { filePaths, assemblyPaths, logMinutes, maxErrors };
+      const work = (context?: JobContext) => runRuntimeCheck("samplemanager_inspect_deployment_runtime", target, target.instance, runtimeOptions, deploymentId, context);
+      const targetSummary = { project: resolvedProjectName, environment: target.ps.environment, projectServerId: target.ps.id, serverId: target.ps.server.id, serverName: target.ps.server.name, instance: target.instanceName, deploymentId: deploymentId ?? null };
+      if (runAsync) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_inspect_deployment_runtime", { ...targetSummary, filePaths, assemblyPaths, logMinutes, maxErrors }, work);
+        return { structuredContent: { jobId: job.id, status: job.status, target: targetSummary }, content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status, target: targetSummary }) }] };
+      }
+      const response = JSON.parse(await work()) as Record<string, unknown>;
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ capability: response.capability, provenance: response.provenance, runtime: response.runtime && typeof response.runtime === "object" ? { summary: (response.runtime as Record<string, unknown>).summary } : null, unknowns: response.unknowns, errors: response.errors }) }] };
+    },
+  );
+
+  server.tool(
+    "samplemanager_entity_inspect",
+    "Run one bounded, read-only SampleManager semantic inspection for Execution readiness, Plate/Batch integrity, Test/Result lineage, or Lab Method definition.",
+    {
+      project: z.string().optional(),
+      database: z.string().optional().describe("Optional when the selected LIMS instance has a configured database."),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
+      entryPoint: sampleManagerEntryPointSchema,
+      target: sampleManagerInspectionTargetSchema,
+      maxRows: z.number().int().min(1).max(500).optional().describe("Maximum rows per discovered table; default 200."),
+      async: z.boolean().optional().describe("Run as a tracked job; default true."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async ({ project: projectName, database, environment, serverId, serverName, entryPoint, target, maxRows = 200, async: runAsync = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const databaseTarget = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
+      const work = (context?: JobContext) => runSemanticCheck("samplemanager_entity_inspect", entryPoint, target, databaseTarget, undefined, maxRows, context);
+      if (runAsync) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_entity_inspect", { entryPoint, target, environment: databaseTarget.ps.environment, serverId: databaseTarget.ps.server.id, projectServerId: databaseTarget.ps.id, database: databaseTarget.database, maxRows }, work);
+        return { structuredContent: { jobId: job.id, status: job.status, entryPoint, target: { project: resolvedProjectName, environment: databaseTarget.ps.environment, serverId: databaseTarget.ps.server.id, serverName: databaseTarget.ps.server.name, database: databaseTarget.database } }, content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status, entryPoint }) }] };
+      }
+      const response = JSON.parse(await work()) as Record<string, unknown>;
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ capability: response.capability, target: response.target, violations: response.violations, unknowns: response.unknowns, errors: response.errors, queryMetadata: response.queryMetadata }) }] };
+    },
+  );
+
+  server.tool(
+    "samplemanager_lab_method_lint",
+    "Lint one SampleManager Lab Method version for identity, reference, formula, type, default, placeholder, and Instruction Blob risks without changing the database.",
+    {
+      project: z.string().optional(),
+      database: z.string().optional().describe("Optional when the selected LIMS instance has a configured database."),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
+      labMethodId: z.string(),
+      labMethodVersion: z.string().optional(),
+      maxRows: z.number().int().min(1).max(500).optional(),
+      async: z.boolean().optional().describe("Run as a tracked job; default true."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async ({ project: projectName, database, environment, serverId, serverName, labMethodId, labMethodVersion, maxRows = 200, async: runAsync = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const databaseTarget = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
+      const target = { labMethodId, labMethodVersion };
+      const work = async (context?: JobContext) => {
+        const response = JSON.parse(await runSemanticCheck("samplemanager_lab_method_lint", "lab_method_definition", target, databaseTarget, undefined, maxRows, context)) as Record<string, unknown>;
+        return JSON.stringify({ ...response, lint: { ruleCount: Array.isArray(response.violations) ? response.violations.length : 0, violations: response.violations ?? [] } });
+      };
+      if (runAsync) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_lab_method_lint", { labMethodId, labMethodVersion, environment: databaseTarget.ps.environment, serverId: databaseTarget.ps.server.id, projectServerId: databaseTarget.ps.id, database: databaseTarget.database, maxRows }, work);
+        return { structuredContent: { jobId: job.id, status: job.status, target }, content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status, target }) }] };
+      }
+      const response = JSON.parse(await work()) as Record<string, unknown>;
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ target: response.target, lint: response.lint, unknowns: response.unknowns, errors: response.errors }) }] };
+    },
+  );
+
+  server.tool(
+    "samplemanager_plate_plan_validate",
+    "Compare a Plate or Batch state with a bounded declarative layout plan and report wells, counts, Test links, and integrity differences without mutation.",
+    {
+      project: z.string().optional(),
+      database: z.string().optional().describe("Optional when the selected LIMS instance has a configured database."),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
+      target: sampleManagerInspectionTargetSchema,
+      plan: sampleManagerPlatePlanSchema.optional().describe("Expected rows, columns, empty positions, and entry counts."),
+      maxRows: z.number().int().min(1).max(500).optional(),
+      async: z.boolean().optional().describe("Run as a tracked job; default true."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async ({ project: projectName, database, environment, serverId, serverName, target, plan, maxRows = 200, async: runAsync = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const databaseTarget = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
+      const work = (context?: JobContext) => runSemanticCheck("samplemanager_plate_plan_validate", "plate_batch_integrity", target, databaseTarget, plan, maxRows, context);
+      if (runAsync) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_plate_plan_validate", { target, plan, environment: databaseTarget.ps.environment, serverId: databaseTarget.ps.server.id, projectServerId: databaseTarget.ps.id, database: databaseTarget.database, maxRows }, work);
+        return { structuredContent: { jobId: job.id, status: job.status, target }, content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status, target }) }] };
+      }
+      const response = JSON.parse(await work()) as Record<string, unknown>;
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ target: response.target, violations: response.violations, unknowns: response.unknowns, errors: response.errors }) }] };
+    },
+  );
+
+  server.tool(
+    "samplemanager_workflow_export",
+    "Export one bounded, version-aware SampleManager Workflow snapshot with normalized nodes, links, parameters, topology, provenance, and a complete query artifact.",
+    {
+      project: z.string().optional(),
+      database: z.string().optional().describe("Optional when the bound LIMS instance has a configured database."),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
+      target: sampleManagerWorkflowTargetSchema,
+      maxRows: z.number().int().min(1).max(500).optional().describe("Maximum rows per discovered Workflow table; default 200."),
+      async: z.boolean().optional().describe("Run as a tracked job; default true."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async ({ project: projectName, database, environment, serverId, serverName, target, maxRows = 200, async: runAsync = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const databaseTarget = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
+      const work = (context?: JobContext) => runWorkflowCheck("samplemanager_workflow_export", "export", target, databaseTarget, maxRows, undefined, context);
+      if (runAsync) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_workflow_export", { target, environment: databaseTarget.ps.environment, serverId: databaseTarget.ps.server.id, projectServerId: databaseTarget.ps.id, database: databaseTarget.database, maxRows }, work);
+        return { structuredContent: { jobId: job.id, status: job.status, target: { ...target, project: resolvedProjectName, environment: databaseTarget.ps.environment, serverId: databaseTarget.ps.server.id, database: databaseTarget.database } }, content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status, target }) }] };
+      }
+      const response = JSON.parse(await work()) as Record<string, unknown>;
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ capability: response.capability, queryMetadata: response.queryMetadata, topology: response.topology, unknowns: response.unknowns, errors: response.errors }) }] };
+    },
+  );
+
+  server.tool(
+    "samplemanager_workflow_validate",
+    "Validate one SampleManager Workflow snapshot for node contracts, unresolved links, unreachable nodes, cycles, callbacks, return properties, and evidence gaps.",
+    {
+      project: z.string().optional(),
+      database: z.string().optional().describe("Optional when the bound LIMS instance has a configured database."),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
+      target: sampleManagerWorkflowTargetSchema,
+      maxRows: z.number().int().min(1).max(500).optional().describe("Maximum rows per discovered Workflow table; default 200."),
+      async: z.boolean().optional().describe("Run as a tracked job; default true."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async ({ project: projectName, database, environment, serverId, serverName, target, maxRows = 200, async: runAsync = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const databaseTarget = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
+      const work = (context?: JobContext) => runWorkflowCheck("samplemanager_workflow_validate", "validate", target, databaseTarget, maxRows, undefined, context);
+      if (runAsync) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_workflow_validate", { target, environment: databaseTarget.ps.environment, serverId: databaseTarget.ps.server.id, projectServerId: databaseTarget.ps.id, database: databaseTarget.database, maxRows }, work);
+        return { structuredContent: { jobId: job.id, status: job.status, target: { ...target, project: resolvedProjectName, environment: databaseTarget.ps.environment, serverId: databaseTarget.ps.server.id, database: databaseTarget.database } }, content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status, target }) }] };
+      }
+      const response = JSON.parse(await work()) as Record<string, unknown>;
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ capability: response.capability, topology: response.topology, violations: response.violations, unknowns: response.unknowns, errors: response.errors }) }] };
+    },
+  );
+
+  server.tool(
+    "samplemanager_workflow_compare",
+    "Compare the current bounded SampleManager Workflow snapshot with a caller-provided export baseline and return normalized node, link, contract, and metadata differences.",
+    {
+      project: z.string().optional(),
+      database: z.string().optional().describe("Optional when the bound LIMS instance has a configured database."),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
+      target: sampleManagerWorkflowTargetSchema,
+      baseline: sampleManagerWorkflowBaselineSchema.describe("Snapshot object returned by samplemanager_workflow_export, or its workflow/nodes/links/parameters subset."),
+      maxRows: z.number().int().min(1).max(500).optional().describe("Maximum rows per discovered Workflow table; default 200."),
+      async: z.boolean().optional().describe("Run as a tracked job; default true."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async ({ project: projectName, database, environment, serverId, serverName, target, baseline, maxRows = 200, async: runAsync = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const databaseTarget = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
+      const workflowBaseline = baseline as SampleManagerWorkflowBaseline;
+      const work = (context?: JobContext) => runWorkflowCheck("samplemanager_workflow_compare", "compare", target, databaseTarget, maxRows, workflowBaseline, context);
+      if (runAsync) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_workflow_compare", { target, baseline, environment: databaseTarget.ps.environment, serverId: databaseTarget.ps.server.id, projectServerId: databaseTarget.ps.id, database: databaseTarget.database, maxRows }, work);
+        return { structuredContent: { jobId: job.id, status: job.status, target: { ...target, project: resolvedProjectName, environment: databaseTarget.ps.environment, serverId: databaseTarget.ps.server.id, database: databaseTarget.database } }, content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status, target }) }] };
+      }
+      const response = JSON.parse(await work()) as Record<string, unknown>;
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ capability: response.capability, diff: response.diff, violations: response.violations, unknowns: response.unknowns, errors: response.errors }) }] };
+    },
+  );
+
+  server.tool(
     "samplemanager_deployment_start",
     "Create a SampleManager deploymentId that correlates SQL, build, deploy, restart, hashes, backups, logs, and rollback evidence.",
     {
@@ -581,21 +1131,119 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
     },
     async ({ project: projectName, database, table, environment, serverId, serverName }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { runner, database: targetDatabase, databaseHost, ps } = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
-      const text = await sampleManagerTableSchema(runner, targetDatabase, table, databaseHost);
-      writeAudit({
-        userId: user.id,
-        username: user.username,
+      const target = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
+      const { runner, database: targetDatabase, databaseHost, ps } = target;
+      const queryId = `schema-${Date.now()}-${randomUUID().slice(0, 8)}`;
+      const startedAt = new Date().toISOString();
+      const baseProvenance = {
+        queryId,
         project: resolvedProjectName,
-        tool: "samplemanager_table_schema",
-        database: targetDatabase,
-        databaseHost,
-        serverId: ps.server.id,
+        environment: ps.environment,
         projectServerId: ps.id,
+        serverId: ps.server.id,
+        serverName: ps.server.name,
+        connectionMode: ps.connectionMode,
+        agentId: ps.server.agentId,
+        instance: target.configuredInstance?.name,
+        instanceVersion: target.configuredInstance?.version,
+        databaseHost,
+        databaseName: targetDatabase,
         table,
-      });
-      return { content: [{ type: "text", text }] };
+        readOnly: true,
+        mutationAttempted: false,
+        startedAt,
+      };
+      try {
+        const text = await sampleManagerTableSchema(runner, targetDatabase, table, databaseHost);
+        const finishedAt = new Date().toISOString();
+        const artifact = persistQueryArtifact({ queryId, rawResponse: text, provenance: { ...baseProvenance, finishedAt, ownerUserId: user.id } });
+        let raw: Record<string, unknown>;
+        try {
+          const parsed = JSON.parse(text) as unknown;
+          raw = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+        } catch {
+          raw = {};
+        }
+        const schemaRows = Array.isArray(raw.columns) ? raw.columns : [];
+        const schemaColumns = schemaRows.length && typeof schemaRows[0] === "object" && schemaRows[0] !== null
+          ? Object.keys(schemaRows[0] as Record<string, unknown>)
+          : [];
+        const response = {
+          queryId,
+          provenance: { ...baseProvenance, finishedAt, connection: raw.connection ?? null },
+          queryMetadata: { ...baseProvenance, finishedAt, connection: raw.connection ?? null },
+          page: { offset: 0, maxRows: schemaRows.length, rowCount: schemaRows.length, rowsReturned: schemaRows.length, nextOffset: null, hasMore: false, truncated: false, resultSetCount: 1 },
+          artifact,
+          result: {
+            ok: Boolean(raw.qualifiedTable),
+            errorKind: raw.qualifiedTable ? null : "result_parse",
+            connection: raw.connection ?? null,
+            columns: schemaColumns,
+            rows: schemaRows,
+            rowCount: schemaRows.length,
+            rowsReturned: schemaRows.length,
+            hasMore: false,
+            continuationToken: undefined,
+            resultSetCount: 1,
+            resultSets: [{ name: "schema", columns: schemaColumns, rows: schemaRows, rowCount: schemaRows.length, rowsReturned: schemaRows.length, hasMore: false, nextOffset: null }],
+            schema: { requestedTable: raw.requestedTable ?? table, qualifiedTable: raw.qualifiedTable ?? null, objectId: raw.objectId ?? null, mapping: raw.mapping ?? null },
+            error: raw.qualifiedTable ? null : "Schema response did not contain a qualifiedTable",
+            sqlErrors: [],
+            transportError: null,
+          },
+        };
+        writeAudit({ userId: user.id, username: user.username, tool: "samplemanager_table_schema", ...baseProvenance, finishedAt, artifactPath: artifact.path, artifactBytes: artifact.bytes, artifactSha256: artifact.sha256, connection: raw.connection ?? null, rowCount: schemaRows.length });
+        return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ queryId, provenance: response.provenance, page: response.page, result: { ...response.result, rows: undefined }, artifact }) }] };
+      } catch (error) {
+        const finishedAt = new Date().toISOString();
+        const message = error instanceof Error ? error.message : String(error);
+        const errorKind = /timeout/i.test(message) ? "timeout" : /approval|bad gateway|passthrough/i.test(message) ? "approval" : /Remote command exited/i.test(message) ? "remote_exit" : "transport";
+        const rawResponse = JSON.stringify({ ok: false, errorKind, error: message });
+        const artifact = persistQueryArtifact({ queryId, rawResponse, provenance: { ...baseProvenance, finishedAt, ownerUserId: user.id } });
+        const response = {
+          queryId,
+          provenance: { ...baseProvenance, finishedAt },
+          queryMetadata: { ...baseProvenance, finishedAt },
+          page: { offset: 0, maxRows: 0, rowCount: 0, rowsReturned: 0, nextOffset: null, hasMore: false, truncated: false, resultSetCount: 0 },
+          artifact,
+          result: { ok: false, errorKind, columns: [], rows: [], rowCount: 0, rowsReturned: 0, hasMore: false, continuationToken: undefined, resultSetCount: 0, resultSets: [], schema: null, error: message, sqlErrors: [], transportError: { message } },
+        };
+        writeAudit({ userId: user.id, username: user.username, tool: "samplemanager_table_schema", ...baseProvenance, finishedAt, errorKind, error: message, artifactPath: artifact.path, artifactBytes: artifact.bytes, artifactSha256: artifact.sha256 });
+        return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ queryId, provenance: response.provenance, result: response.result, artifact }) }] };
+      }
     }
+  );
+
+  server.tool(
+    "samplemanager_read_query_artifact",
+    "Read a bounded page of a persisted SampleManager SQL response without re-running the query.",
+    {
+      queryId: z.string().describe("queryId returned by samplemanager_sql_query"),
+      offset: z.number().int().nonnegative().optional().describe("Character offset; use page.nextOffset for the next page."),
+      maxCharacters: z.number().int().min(1000).max(1000000).optional().describe("Maximum response characters; default 100000."),
+    },
+    async ({ queryId, offset, maxCharacters }) => {
+      const artifact = readQueryArtifact(queryId, { offset, maxCharacters });
+      if (Number(artifact.provenance.ownerUserId) !== user.id) {
+        throw new Error(`Query artifact '${queryId}' not found`);
+      }
+      const response = {
+        queryId: artifact.queryId,
+        artifact: {
+          path: artifact.path,
+          bytes: artifact.bytes,
+          sha256: artifact.sha256,
+          createdAt: artifact.createdAt,
+          rawResponseSha256: artifact.rawResponseSha256,
+        },
+        provenance: Object.fromEntries(Object.entries(artifact.provenance).filter(([key]) => key !== "ownerUserId")),
+        rawResponse: artifact.rawResponse,
+        rawResponseLength: artifact.rawResponseLength,
+        page: artifact.page,
+      };
+      writeAudit({ userId: user.id, username: user.username, tool: "samplemanager_read_query_artifact", queryId, offset: artifact.page.offset, maxCharacters: artifact.page.maxCharacters, artifactPath: artifact.path, artifactSha256: artifact.sha256, readOnly: true, mutationAttempted: false });
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ ...response, rawResponse: undefined }) }] };
+    },
   );
 
   server.tool(
@@ -615,15 +1263,15 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       resultSet: z.union([z.string(), z.number().int().nonnegative()]).optional().describe("Return only one named result set or zero-based result-set index."),
       parameters: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional().describe("Named SQL parameters without '@', referenced as @name in SQL."),
       identifiers: z.record(z.string()).optional().describe("Identifiers substituted into {{name}} placeholders and escaped with SQL Server brackets."),
+      async: z.boolean().optional().describe("Run as a tracked job; recommended for long-running queries. Default false."),
     },
-    async ({ project: projectName, database, sql, environment, serverId, serverName, allowMutation = false, maxRows, offset, includeResultSets, resultSet, parameters, identifiers }) => {
+    async ({ project: projectName, database, sql, environment, serverId, serverName, allowMutation = false, maxRows, offset, includeResultSets, resultSet, parameters, identifiers, async: runAsync = false }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const target = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
       const { runner, database: targetDatabase, databaseHost, configuredInstance, ps } = target;
       const queryId = `query-${Date.now()}-${randomUUID().slice(0, 8)}`;
-      const startedAt = new Date().toISOString();
       const mutationAttempted = allowMutation && sqlContainsMutation(sql);
-      const provenance = {
+      const baseProvenance = {
         queryId,
         project: resolvedProjectName,
         environment: ps.environment,
@@ -635,95 +1283,175 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         instanceVersion: configuredInstance?.version,
         databaseHost,
         databaseName: targetDatabase,
-        startedAt,
         readOnly: !allowMutation,
         mutationAttempted,
       };
-      const text = await runSql(runner, targetDatabase, sql, { allowMutation, maxRows, offset, includeResultSets: true, parameters, identifiers, databaseHost });
-      const finishedAt = new Date().toISOString();
-      const artifact = persistQueryArtifact({
-        queryId,
-        rawResponse: text,
-        provenance: { ...provenance, finishedAt },
-      });
-      let raw: Record<string, unknown>;
-      try {
-        raw = JSON.parse(text) as Record<string, unknown>;
-      } catch {
-        raw = { ok: false, rawResponse: text };
+      const execute = async (context?: JobContext): Promise<string> => {
+        const startedAt = new Date().toISOString();
+        const provenance = { ...baseProvenance, startedAt };
+        try {
+          context?.phase("querying");
+          // Full result sets are collected only when the caller requests them or
+          // needs a named result set. The default path keeps the remote payload small.
+          const text = await runSql(runner, targetDatabase, sql, {
+            allowMutation,
+            maxRows,
+            offset,
+            includeResultSets: Boolean(includeResultSets || resultSet !== undefined),
+            preserveFullResponse: true,
+            parameters,
+            identifiers,
+            databaseHost,
+          });
+          const finishedAt = new Date().toISOString();
+          const artifact = persistQueryArtifact({
+            queryId,
+            rawResponse: text,
+            provenance: { ...provenance, finishedAt, ownerUserId: user.id },
+          });
+          let raw: Record<string, unknown>;
+          let parseError: string | undefined;
+          try {
+            const parsed = JSON.parse(text) as unknown;
+            raw = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+              ? parsed as Record<string, unknown>
+              : { rawResponse: text };
+            if (raw.ok === undefined) parseError = "SQL response JSON did not contain an ok field";
+          } catch {
+            raw = { rawResponse: text };
+            parseError = "SQL response was not valid JSON";
+          }
+          const page = {
+            offset: Number(offset ?? 0),
+            maxRows: Number(maxRows ?? 100),
+            rowCount: raw.rowCount ?? 0,
+            rowsReturned: raw.rowsReturned ?? 0,
+            nextOffset: raw.nextOffset ?? null,
+            hasMore: Boolean(raw.hasMore),
+            truncated: Boolean(raw.truncated),
+            resultSetCount: Number(raw.resultSetCount ?? 0),
+          };
+          const allResultSets = Array.isArray(raw.resultSets) ? raw.resultSets : [];
+          let selectedResultSets = includeResultSets ? allResultSets : allResultSets.slice(0, 1);
+          if (resultSet !== undefined) {
+            const labelOf = (item: any) => String(item?.name ?? item?.label ?? item?.rows?.[0]?.__relay_phase ?? "");
+            const selected = typeof resultSet === "number"
+              ? allResultSets[resultSet]
+              : allResultSets.find((item: any) => labelOf(item).toLowerCase() === String(resultSet).toLowerCase());
+            if (!selected) {
+              throw new Error(`Result set '${String(resultSet)}' was not found; available indexes: ${allResultSets.map((_item: unknown, index: number) => index).join(", ")}; available labels: ${allResultSets.map((item: any, index: number) => `${index}:${labelOf(item) || "unnamed"}`).join(", ")}`);
+            }
+            selectedResultSets = [selected];
+          }
+          const selectedResult = selectedResultSets.length > 0
+            ? selectedResultSets
+            : (Array.isArray(raw.rows) ? [{ columns: raw.rows[0] && typeof raw.rows[0] === "object" ? Object.keys(raw.rows[0] as Record<string, unknown>) : [], rows: raw.rows, rowCount: raw.rowCount, rowsReturned: raw.rowsReturned, offset: raw.offset, hasMore: raw.hasMore, nextOffset: raw.nextOffset, truncated: raw.truncated }] : []);
+          const continuationToken = selectedResult.some((item: any) => item?.hasMore)
+            ? Buffer.from(JSON.stringify({ queryId, resultSet: resultSet ?? null, offset: selectedResult[0]?.nextOffset ?? null }), "utf8").toString("base64url")
+            : undefined;
+          const response = {
+            queryId,
+            provenance: { ...provenance, finishedAt },
+            queryMetadata: { ...provenance, finishedAt, connection: raw.connection ?? null },
+            page,
+            artifact,
+            result: {
+              ok: raw.ok === true,
+              errorKind: parseError ? "result_parse" : raw.ok === false ? "sql" : null,
+              connection: raw.connection ?? null,
+              columns: selectedResult[0]?.columns ?? [],
+              rows: selectedResult[0]?.rows ?? [],
+              rowCount: selectedResult[0]?.rowCount ?? 0,
+              rowsReturned: selectedResult[0]?.rowsReturned ?? 0,
+              hasMore: Boolean(selectedResult.some((item: any) => item?.hasMore)),
+              continuationToken,
+              resultSetCount: page.resultSetCount || allResultSets.length,
+              resultSets: (includeResultSets || resultSet !== undefined) ? selectedResult : undefined,
+              recordsAffected: raw.recordsAffected,
+              error: raw.error ?? parseError ?? null,
+              sqlErrors: Array.isArray(raw.sqlErrors) ? raw.sqlErrors : [],
+              transportError: null,
+            },
+          };
+          writeAudit({
+            userId: user.id,
+            username: user.username,
+            project: resolvedProjectName,
+            tool: "samplemanager_sql_query",
+            database: targetDatabase,
+            databaseHost,
+            allowMutation,
+            maxRows,
+            offset,
+            includeResultSets: Boolean(includeResultSets),
+            resultSet,
+            parameterNames: Object.keys(parameters ?? {}),
+            identifiers,
+            queryId,
+            startedAt,
+            finishedAt,
+            artifactPath: artifact.path,
+            artifactBytes: artifact.bytes,
+            artifactSha256: artifact.sha256,
+            mutationAttempted,
+            errorKind: response.result.errorKind,
+          });
+          context?.phase("completed");
+          return JSON.stringify(response);
+        } catch (error) {
+          const finishedAt = new Date().toISOString();
+          const message = error instanceof Error ? error.message : String(error);
+          const category = error && typeof error === "object" && "category" in error
+            ? String((error as { category?: unknown }).category ?? "unknown")
+            : "unknown";
+          const errorKind = category === "timeout"
+            ? "timeout"
+            : category === "remote_exit"
+              ? "remote_exit"
+            : /approval|bad gateway|passthrough/i.test(message)
+              ? "approval"
+              : "transport";
+          const artifact = persistQueryArtifact({
+            queryId,
+            rawResponse: JSON.stringify({ ok: false, errorKind, transportError: { category, message } }),
+            provenance: { ...provenance, finishedAt, ownerUserId: user.id },
+          });
+          const response = {
+            queryId,
+            provenance: { ...provenance, finishedAt },
+            queryMetadata: { ...provenance, finishedAt },
+            page: { offset: Number(offset ?? 0), maxRows: Number(maxRows ?? 100), rowCount: 0, rowsReturned: 0, nextOffset: null, hasMore: false, truncated: false, resultSetCount: 0 },
+            artifact,
+            result: {
+              ok: false,
+              errorKind,
+              columns: [],
+              rows: [],
+              rowCount: 0,
+              rowsReturned: 0,
+              hasMore: false,
+              continuationToken: undefined,
+              resultSetCount: 0,
+              sqlErrors: [],
+              transportError: { category, message },
+              error: message,
+            },
+          };
+          writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_sql_query", database: targetDatabase, databaseHost, queryId, startedAt, finishedAt, errorKind, error: message, artifactPath: artifact.path, artifactBytes: artifact.bytes, artifactSha256: artifact.sha256, mutationAttempted });
+          if (context) {
+            const jobError = new Error(`SQL query '${queryId}' failed (${errorKind}); artifact=${artifact.path}; ${message}`) as Error & { category?: string };
+            jobError.category = errorKind === "timeout" ? "timeout" : "connection";
+            throw jobError;
+          }
+          return JSON.stringify(response);
+        }
+      };
+      if (runAsync) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_sql_query", { ...baseProvenance, sqlLength: sql.length, maxRows, offset, includeResultSets, resultSet }, execute);
+        return { structuredContent: { jobId: job.id, queryId, status: job.status, target: baseProvenance }, content: [{ type: "text", text: summarizeJson({ jobId: job.id, queryId, status: job.status, target: baseProvenance }) }] };
       }
-      const page = {
-        offset: Number(offset ?? 0),
-        maxRows: Number(maxRows ?? 100),
-        rowCount: raw.rowCount,
-        rowsReturned: raw.rowsReturned,
-        nextOffset: raw.nextOffset,
-        hasMore: raw.hasMore,
-        truncated: raw.truncated,
-        resultSetCount: raw.resultSetCount,
-      };
-      const allResultSets = Array.isArray(raw.resultSets) ? raw.resultSets : [];
-      let selectedResultSets = allResultSets.slice(0, 1);
-      if (resultSet !== undefined) {
-        const selected = typeof resultSet === "number"
-          ? allResultSets[resultSet]
-          : allResultSets.find((item: any) => String(item?.name ?? item?.label ?? item?.__relay_phase ?? "").toLowerCase() === String(resultSet).toLowerCase());
-        if (!selected) throw new Error(`Result set '${String(resultSet)}' was not found; available indexes: ${allResultSets.map((_item: unknown, index: number) => index).join(", ")}; available labels: ${allResultSets.map((item: any, index: number) => `${index}:${item?.rows?.[0]?.__relay_phase ?? "unnamed"}`).join(", ")}`);
-        selectedResultSets = [selected];
-      }
-      const selectedResult = selectedResultSets.length > 0
-        ? selectedResultSets
-        : (Array.isArray(raw.rows) ? [{ columns: raw.rows[0] && typeof raw.rows[0] === "object" ? Object.keys(raw.rows[0] as Record<string, unknown>) : [], rows: raw.rows, rowCount: raw.rowCount, rowsReturned: raw.rowsReturned, offset: raw.offset, hasMore: raw.hasMore, nextOffset: raw.nextOffset, truncated: raw.truncated }] : []);
-      const continuationToken = selectedResult.some((item: any) => item?.hasMore)
-        ? Buffer.from(JSON.stringify({ queryId, resultSet: resultSet ?? null, offset: selectedResult[0]?.nextOffset ?? null }), "utf8").toString("base64url")
-        : undefined;
-      const response = {
-        queryId,
-        provenance: { ...provenance, finishedAt },
-        page,
-        artifact,
-        result: {
-          ok: raw.ok,
-          connection: raw.connection,
-          columns: selectedResult[0]?.columns ?? [],
-          rows: selectedResult[0]?.rows ?? [],
-          rowCount: selectedResult[0]?.rowCount ?? 0,
-          rowsReturned: selectedResult[0]?.rowsReturned ?? 0,
-          hasMore: Boolean(selectedResult.some((item: any) => item?.hasMore)),
-          continuationToken,
-          resultSetCount: allResultSets.length,
-          resultSets: includeResultSets ? selectedResult : undefined,
-          recordsAffected: raw.recordsAffected,
-          error: raw.error,
-          sqlErrors: raw.sqlErrors,
-        },
-      };
-      writeAudit({
-        userId: user.id,
-        username: user.username,
-        project: resolvedProjectName,
-        tool: "samplemanager_sql_query",
-        database: targetDatabase,
-        databaseHost,
-        allowMutation,
-        maxRows,
-        offset,
-         includeResultSets: Boolean(includeResultSets),
-        resultSet,
-        parameterNames: Object.keys(parameters ?? {}),
-        identifiers,
-        queryId,
-        startedAt,
-        finishedAt,
-        artifactPath: artifact.path,
-        artifactBytes: artifact.bytes,
-        artifactSha256: artifact.sha256,
-        mutationAttempted,
-      });
-      return {
-        structuredContent: response,
-        content: [{ type: "text", text: summarizeJson({ queryId, provenance: response.provenance, page: response.page, result: { rowCount: response.result.rowCount, rowsReturned: response.result.rowsReturned, resultSetCount: response.result.resultSetCount, hasMore: response.result.hasMore, continuationToken: response.result.continuationToken }, artifact }) }],
-      };
+      const response = JSON.parse(await execute()) as Record<string, unknown>;
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ queryId, provenance: response.provenance, page: response.page, result: response.result, artifact: response.artifact }) }] };
     }
   );
 
@@ -1218,6 +1946,11 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       serverId: z.number().int().optional().describe("Exact linked server ID."),
       serverName: z.string().optional().describe("Exact linked server display name."),
       deploymentId: z.string().optional(),
+      expectedInstance: z.string().min(1).max(256).optional().describe("Abort unless the selected LIMS instance has this exact name."),
+      expectedDatabaseHost: z.string().min(1).max(512).optional().describe("Abort unless the resolved database host matches exactly."),
+      expectedDatabase: z.string().min(1).max(256).optional().describe("Abort unless the resolved database name matches exactly."),
+      expectedLabMethodId: z.string().min(1).max(512).optional().describe("Assert that dbo.LAB_METHOD contains this identity before changes."),
+      expectedLabMethodVersion: z.string().min(1).max(512).optional().describe("Optional Lab Method version paired with expectedLabMethodId."),
       dryRun: z.boolean().optional().describe("Execute and roll back by default. Set false to commit."),
       createBackup: z.boolean().optional(),
       maxRows: z.number().int().positive().max(1000).optional(),
@@ -1229,11 +1962,26 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         values: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
         where: z.string().optional(),
         parameters: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+        expectedAffectedRows: z.number().int().nonnegative().max(1_000_000).optional().describe("Abort the transaction unless this mutation changes exactly this many rows."),
       })).min(1).max(50),
     },
-    async ({ project: projectName, database, environment, serverId, serverName, deploymentId: requestedDeploymentId, dryRun = true, createBackup = true, maxRows, verifySql, changes }) => {
+    async ({ project: projectName, database, environment, serverId, serverName, deploymentId: requestedDeploymentId, expectedInstance, expectedDatabaseHost, expectedDatabase, expectedLabMethodId, expectedLabMethodVersion, dryRun = true, createBackup = true, maxRows, verifySql, changes }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const target = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
+      const actualInstance = target.configuredInstance?.name;
+      const assertTarget = (label: string, expected: string | undefined, actual: string | undefined) => {
+        if (expected !== undefined && (!actual || actual.localeCompare(expected, undefined, { sensitivity: "accent" }) !== 0)) {
+          throw new Error(`Change-set target assertion failed for ${label}: expected '${expected}', resolved '${actual ?? "unspecified"}'`);
+        }
+      };
+      assertTarget("instance", expectedInstance, actualInstance);
+      assertTarget("database host", expectedDatabaseHost, target.databaseHost);
+      assertTarget("database", expectedDatabase, target.database);
+      if (expectedLabMethodVersion !== undefined && expectedLabMethodId === undefined) {
+        throw new Error("expectedLabMethodVersion requires expectedLabMethodId");
+      }
+      const duplicateKeys = changes.map((change) => change.idempotencyKey).filter((key, index, all) => all.indexOf(key) !== index);
+      if (duplicateKeys.length) throw new Error(`Duplicate idempotency key(s): ${[...new Set(duplicateKeys)].join(", ")}`);
       let deploymentId = requestedDeploymentId;
       let run = deploymentId ? getDeployment(deploymentId) : undefined;
       if (deploymentId && (!run || run.userId !== user.id || run.project !== resolvedProjectName)) {
@@ -1293,11 +2041,37 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       try {
         const resultText = runnable.length === 0
           ? JSON.stringify({ ok: true, skipped: changes.map((change) => change.idempotencyKey), reason: "already_succeeded" })
-          : await runSqlChangeSet(target.runner, target.database, runnable, { dryRun, createBackup, maxRows, databaseHost: target.databaseHost, verifySql });
+          : await runSqlChangeSet(target.runner, target.database, runnable, {
+            dryRun,
+            createBackup,
+            maxRows,
+            databaseHost: target.databaseHost,
+            verifySql,
+            assertions: {
+              instance: expectedInstance,
+              databaseHost: expectedDatabaseHost,
+              database: expectedDatabase,
+              labMethodId: expectedLabMethodId,
+              labMethodVersion: expectedLabMethodVersion,
+            },
+          });
         const completedAt = new Date().toISOString();
         for (const change of runnable) nextKeys[change.idempotencyKey] = { status: dryRun ? "dry_run" : "succeeded", at: completedAt, result: { dryRun } };
         const committed = dryRun ? (run.committedMutations ?? []) : [...(run.committedMutations ?? []), ...runnable.map((change) => change.idempotencyKey)];
         const dryOnly = dryRun ? [...new Set([...(run.dryRunOnlyMutations ?? []), ...runnable.map((change) => change.idempotencyKey)])] : (run.dryRunOnlyMutations ?? []);
+        let changeSetSummary: Record<string, unknown> = { changeCount: runnable.length };
+        try {
+          const parsed = JSON.parse(resultText) as Record<string, unknown>;
+          changeSetSummary = {
+            changeCount: parsed.changeCount ?? runnable.length,
+            changes: parsed.changes ?? [],
+            backupTables: parsed.backupTables ?? [],
+            rollback: parsed.rollback ?? null,
+            transaction: parsed.transaction ?? (dryRun ? "rolled_back" : "committed"),
+          };
+        } catch {
+          // Keep the deployment record usable even if a legacy runner returned plain text.
+        }
         const updated = finishDeployment(run.id, {
           status: "succeeded",
           rollback: { ...run.rollback, status: dryRun ? "not-needed" : "not-needed" },
@@ -1309,9 +2083,9 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
           failedMutation: undefined,
           recommendedResumeAction: dryRun ? "Review dry-run evidence; rerun with the same idempotency keys and dryRun=false to commit." : "No resume required.",
           output: resultText,
-          artifacts: { ...(run.artifacts ?? {}), changeCount: changes.length, skipped: changes.length - runnable.length },
+          artifacts: { ...(run.artifacts ?? {}), changeCount: changes.length, skipped: changes.length - runnable.length, changeSet: changeSetSummary },
         });
-        writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_apply_change_set", deploymentId: run.id, database: target.database, databaseHost: target.databaseHost, dryRun, changeCount: changes.length, skipped: changes.length - runnable.length, mutationAttempted: true });
+        writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_apply_change_set", deploymentId: run.id, database: target.database, databaseHost: target.databaseHost, dryRun, createBackup, expectedInstance, expectedDatabaseHost, expectedDatabase, expectedLabMethodId, expectedLabMethodVersion, changeCount: changes.length, skipped: changes.length - runnable.length, expectedAffectedRows: runnable.map((change) => ({ idempotencyKey: change.idempotencyKey, expected: change.expectedAffectedRows })), changeSetSummary, mutationAttempted: true });
         return { structuredContent: { ...updated }, content: [{ type: "text", text: summarizeJson({ deploymentId: updated.id, status: updated.status, dryRun, skipped: changes.length - runnable.length, idempotencyKeys: Object.keys(nextKeys) }) }] };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

@@ -13,6 +13,7 @@ import {
   redactSensitiveBuildOutput,
   runSqlMutation,
   runSql,
+  sampleManagerTableSchema,
   sqlContainsMutation,
   validateBuildEnvironmentVariables,
   validateBuildMsbuildProperties,
@@ -255,6 +256,33 @@ test("SQL query script captures connection identity metadata", async () => {
     maxRows: 10,
   }));
   assert.equal(result.connection.loginName, "NT AUTHORITY\\SYSTEM");
+  assert.match(executedScript, /SUSER_SNAME\(\)/);
+  assert.match(executedScript, /ORIGINAL_LOGIN\(\)/);
+  assert.match(executedScript, /@@SERVERNAME/);
+});
+
+test("table schema script captures SQL connection identity and returns the complete schema response", async () => {
+  let executedScript = "";
+  const runner = {
+    execPowerShell: async (script: string) => {
+      executedScript = script;
+      return {
+        stdout: JSON.stringify({
+          connection: { loginName: "NT AUTHORITY\\SYSTEM", databaseName: "VGSM", serverName: "HOST\\SQLEXPRESS" },
+          requestedTable: "dbo.TEST",
+          qualifiedTable: "dbo.TEST",
+          objectId: 10,
+          columns: [{ column: "ID", type: "int", identity: true }],
+          mapping: { physicalSchema: "dbo", physicalTable: "TEST" },
+        }),
+        stderr: "",
+        code: 0,
+      };
+    },
+  } as any;
+  const result = JSON.parse(await sampleManagerTableSchema(runner, "VGSM", "dbo.TEST", "localhost\\SQLEXPRESS"));
+  assert.equal(result.connection.loginName, "NT AUTHORITY\\SYSTEM");
+  assert.equal(result.qualifiedTable, "dbo.TEST");
   assert.match(executedScript, /SUSER_SNAME\(\)/);
   assert.match(executedScript, /ORIGINAL_LOGIN\(\)/);
   assert.match(executedScript, /@@SERVERNAME/);

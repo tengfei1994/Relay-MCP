@@ -688,6 +688,18 @@ $ErrorActionPreference = "Stop"
 $cn = New-Object System.Data.SqlClient.SqlConnection "Server=${databaseHost};Database=${database};Integrated Security=True;TrustServerCertificate=True"
 try {
   $cn.Open()
+  $identityCommand = $cn.CreateCommand()
+  $identityCommand.CommandText = "SELECT SUSER_SNAME(), ORIGINAL_LOGIN(), DB_NAME(), @@SERVERNAME"
+  $identityReader = $identityCommand.ExecuteReader()
+  $connection = [ordered]@{ loginName = $null; originalLogin = $null; databaseName = $null; serverName = $null }
+  if ($identityReader.Read()) {
+    $connection.loginName = [string]$identityReader.GetValue(0)
+    $connection.originalLogin = [string]$identityReader.GetValue(1)
+    $connection.databaseName = [string]$identityReader.GetValue(2)
+    $connection.serverName = [string]$identityReader.GetValue(3)
+  }
+  $identityReader.Close()
+  $identityCommand.Dispose()
   $cmd = $cn.CreateCommand()
   $cmd.CommandText = @'
 SELECT
@@ -747,6 +759,7 @@ ORDER BY s.name, t.name, c.column_id
   $reader.Close()
   if ($rows.Count -eq 0) { throw "Table not found: ${table}" }
   [pscustomobject]@{
+    connection = [pscustomobject]$connection
     database = ${psQuote(database)}
     requestedTable = ${psQuote(table)}
     qualifiedTable = "$($rows[0].schema).$($rows[0].table)"
@@ -774,6 +787,8 @@ export interface SqlOptions {
   maxRows?: number;
   offset?: number;
   includeResultSets?: boolean;
+  /** Keep the complete remote JSON for an artifact; callers still bound their MCP preview. */
+  preserveFullResponse?: boolean;
   parameters?: Record<string, SqlParameterValue>;
   identifiers?: Record<string, string>;
   databaseHost?: string;
@@ -1075,7 +1090,8 @@ finally {
 `;
   const result = await runner.execPowerShell(script, 120000);
   ensureRemoteSuccess(result);
-  return compactText(result.stdout || result.stderr);
+  const response = (result.stdout || result.stderr).trim();
+  return sqlOptions.preserveFullResponse ? response : compactText(response);
 }
 
 export interface SqlChangeSetItem {
@@ -1085,6 +1101,15 @@ export interface SqlChangeSetItem {
   values?: Record<string, SqlParameterValue>;
   where?: string;
   parameters?: Record<string, SqlParameterValue>;
+  expectedAffectedRows?: number;
+}
+
+export interface SqlChangeSetAssertions {
+  instance?: string;
+  databaseHost?: string;
+  database?: string;
+  labMethodId?: string;
+  labMethodVersion?: string;
 }
 
 /** Execute multiple SQL mutations in one transaction. The caller owns deployment/idempotency state. */
@@ -1092,23 +1117,75 @@ export async function runSqlChangeSet(
   runner: RemoteRunner,
   database: string,
   changes: SqlChangeSetItem[],
-  options: { dryRun?: boolean; createBackup?: boolean; maxRows?: number; databaseHost?: string; verifySql?: string } = {}
+  options: {
+    dryRun?: boolean;
+    createBackup?: boolean;
+    maxRows?: number;
+    databaseHost?: string;
+    verifySql?: string;
+    assertions?: SqlChangeSetAssertions;
+  } = {}
 ): Promise<string> {
   if (changes.length === 0 || changes.length > 50) throw new Error("changes must contain between 1 and 50 items");
   if (!/^[A-Za-z0-9_.-]+$/.test(database)) throw new Error(`Invalid database name: ${database}`);
+  const databaseHost = (options.databaseHost ?? "localhost").trim();
+  if (!databaseHost || /[\r\n";]/.test(databaseHost)) throw new Error(`Invalid database host: ${databaseHost}`);
   const createBackup = options.createBackup ?? true;
   const dryRun = options.dryRun ?? true;
   const maxRows = Math.max(1, Math.min(options.maxRows ?? 100, 1000));
+  const assertions = options.assertions ?? {};
+  for (const [label, value] of Object.entries(assertions)) {
+    if (value !== undefined && (!value.trim() || value.length > 512 || /[\r\n\0]/.test(value))) {
+      throw new Error(`Invalid change-set assertion: ${label}`);
+    }
+  }
+  if (options.verifySql?.trim() && sqlContainsMutation(options.verifySql)) {
+    throw new Error("verifySql must be read-only and cannot contain mutation statements");
+  }
   const statements: string[] = ["SET NOCOUNT ON;", "SET XACT_ABORT ON;", "BEGIN TRY", "BEGIN TRANSACTION;"];
   const stamp = new Date().toISOString().replace(/\D/g, "").slice(0, 17);
   const allParameters: Record<string, SqlParameterValue> = {};
-  const evidence: string[] = [];
+  const changeEvidence: Array<Record<string, unknown>> = [];
+  const backupTables: string[] = [];
+
+  if (assertions.labMethodId !== undefined) {
+    allParameters.relay_lab_method_id = assertions.labMethodId;
+    allParameters.relay_lab_method_version = assertions.labMethodVersion ?? null;
+    statements.push(`
+DECLARE @relay_lab_method_count bigint = 0;
+DECLARE @relay_lab_id_column sysname = CASE
+  WHEN COL_LENGTH(N'dbo.LAB_METHOD', N'LAB_METHOD_ID') IS NOT NULL THEN N'LAB_METHOD_ID'
+  WHEN COL_LENGTH(N'dbo.LAB_METHOD', N'IDENTITY') IS NOT NULL THEN N'IDENTITY'
+  WHEN COL_LENGTH(N'dbo.LAB_METHOD', N'ID') IS NOT NULL THEN N'ID'
+  WHEN COL_LENGTH(N'dbo.LAB_METHOD', N'METHOD_ID') IS NOT NULL THEN N'METHOD_ID'
+  ELSE NULL
+END;
+DECLARE @relay_lab_version_column sysname = CASE
+  WHEN COL_LENGTH(N'dbo.LAB_METHOD', N'LAB_METHOD_VERSION') IS NOT NULL THEN N'LAB_METHOD_VERSION'
+  WHEN COL_LENGTH(N'dbo.LAB_METHOD', N'PRODUCT_VERSION') IS NOT NULL THEN N'PRODUCT_VERSION'
+  WHEN COL_LENGTH(N'dbo.LAB_METHOD', N'VERSION') IS NOT NULL THEN N'VERSION'
+  ELSE NULL
+END;
+IF @relay_lab_id_column IS NULL THROW 51000, 'Lab Method assertion could not find a supported identity column in dbo.LAB_METHOD', 1;
+IF @relay_lab_method_version IS NOT NULL AND @relay_lab_version_column IS NULL THROW 51001, 'Lab Method version assertion could not find a supported version column in dbo.LAB_METHOD', 1;
+DECLARE @relay_lab_sql nvarchar(max) = N'SELECT @relay_count = COUNT_BIG(1) FROM [dbo].[LAB_METHOD] WHERE CONVERT(nvarchar(512),' + QUOTENAME(@relay_lab_id_column) + N') = @relay_id';
+IF @relay_lab_method_version IS NOT NULL SET @relay_lab_sql += N' AND CONVERT(nvarchar(512),' + QUOTENAME(@relay_lab_version_column) + N') = @relay_version';
+EXEC sys.sp_executesql @relay_lab_sql,
+  N'@relay_id nvarchar(512), @relay_version nvarchar(512), @relay_count bigint OUTPUT',
+  @relay_id=@relay_lab_method_id, @relay_version=@relay_lab_method_version, @relay_count=@relay_lab_method_count OUTPUT;
+IF @relay_lab_method_count = 0 THROW 51002, 'Lab Method assertion did not match the selected ID/version', 1;
+SELECT 'change-set' AS __relay_change, 'assertion' AS __relay_phase, 'lab_method' AS assertion, @relay_lab_method_count AS matchedRows;
+`);
+  }
 
   changes.forEach((change, index) => {
     const table = quoteSqlIdentifier(change.table);
     const where = (change.where ?? "").trim();
     if (change.operation !== "insert" && !where) throw new Error(`where is required for change '${change.idempotencyKey}'`);
     if (/[;]|\b(insert|update|delete|merge|drop|alter|truncate|create|exec|execute)\b/i.test(where)) throw new Error(`Invalid where for change '${change.idempotencyKey}'`);
+    if (change.expectedAffectedRows !== undefined && (!Number.isInteger(change.expectedAffectedRows) || change.expectedAffectedRows < 0 || change.expectedAffectedRows > 1_000_000)) {
+      throw new Error(`Invalid expectedAffectedRows for change '${change.idempotencyKey}'`);
+    }
     const values = validateSqlParameters(change.values ?? {});
     if (change.operation !== "delete" && Object.keys(values).length === 0) throw new Error(`values are required for change '${change.idempotencyKey}'`);
     const bindings = Object.entries(values).map(([column, value], valueIndex) => {
@@ -1117,13 +1194,18 @@ export async function runSqlChangeSet(
       return { column: quoteSqlIdentifier(column), parameter: `@${name}` };
     });
     for (const [name, value] of Object.entries(validateSqlParameters(change.parameters ?? {}))) allParameters[`relay_change_${index}_${name}`] = value;
+    allParameters[`relay_change_${index}_expected`] = change.expectedAffectedRows ?? null;
     const renderedWhere = where.replace(/@([A-Za-z_][A-Za-z0-9_]*)/g, (_match, name: string) => `@relay_change_${index}_${name}`);
     const key = change.idempotencyKey.replace(/'/g, "''");
+    const rollbackTable = createBackup && change.operation !== "insert"
+      ? `dbo.RELAY_BACKUP_${change.table.split(".").pop()!.replace(/[^A-Za-z0-9_]/g, "_")}_${stamp}_${index}`
+      : undefined;
     if (createBackup && change.operation !== "insert") {
-      const backupName = `RELAY_BACKUP_${change.table.split(".").pop()!.replace(/[^A-Za-z0-9_]/g, "_")}_${stamp}_${index}`;
-      statements.push(`SELECT * INTO ${quoteSqlIdentifier(`dbo.${backupName}`)} FROM ${table} WHERE ${renderedWhere};`);
+      backupTables.push(rollbackTable!);
+      statements.push(`SELECT * INTO ${quoteSqlIdentifier(rollbackTable!)} FROM ${table} WHERE ${renderedWhere};`);
     }
-    if (change.operation !== "insert") statements.push(`SELECT '${key}' AS __relay_change, 'before' AS __relay_phase, * FROM ${table} WHERE ${renderedWhere};`);
+    if (change.operation !== "insert") statements.push(`SELECT '${key}' AS __relay_change, ${index} AS statementIndex, 'before' AS __relay_phase, * FROM ${table} WHERE ${renderedWhere};`);
+    else statements.push(`SELECT '${key}' AS __relay_change, ${index} AS statementIndex, 'before' AS __relay_phase WHERE 1 = 0;`);
     if (change.operation === "insert") {
       statements.push(`INSERT INTO ${table} (${bindings.map((item) => item.column).join(", ")}) VALUES (${bindings.map((item) => item.parameter).join(", ")});`);
     } else if (change.operation === "update") {
@@ -1131,16 +1213,28 @@ export async function runSqlChangeSet(
     } else {
       statements.push(`DELETE FROM ${table} WHERE ${renderedWhere};`);
     }
-    statements.push(`SELECT '${key}' AS __relay_change, 'after' AS __relay_phase, @@ROWCOUNT AS affectedRows;`);
-    evidence.push(`${change.idempotencyKey}:${change.operation}:${change.table}`);
+    statements.push(`
+DECLARE @relay_affected_${index} int = @@ROWCOUNT;
+IF @relay_change_${index}_expected IS NOT NULL AND @relay_affected_${index} <> @relay_change_${index}_expected THROW 51010, 'Expected affected-row count did not match', 1;
+SELECT '${key}' AS __relay_change, ${index} AS statementIndex, 'after' AS __relay_phase, @relay_affected_${index} AS affectedRows;
+`);
+    if (change.operation !== "insert") statements.push(`SELECT '${key}' AS __relay_change, ${index} AS statementIndex, 'after_state' AS __relay_phase, * FROM ${table} WHERE ${renderedWhere};`);
+    changeEvidence.push({ statementIndex: index, idempotencyKey: change.idempotencyKey, operation: change.operation, table: change.table, expectedAffectedRows: change.expectedAffectedRows ?? null, backupTable: rollbackTable ?? null });
   });
   if (options.verifySql?.trim()) statements.push(options.verifySql.trim());
   statements.push(dryRun ? "ROLLBACK TRANSACTION;" : "COMMIT TRANSACTION;", "END TRY", "BEGIN CATCH", "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;", "THROW;", "END CATCH");
-  const raw = await runSql(runner, database, statements.join("\n"), { allowMutation: true, maxRows, includeResultSets: true, parameters: allParameters, databaseHost: options.databaseHost });
+  const raw = await runSql(runner, database, statements.join("\n"), { allowMutation: true, maxRows, includeResultSets: true, preserveFullResponse: true, parameters: allParameters, databaseHost });
   let result: unknown = raw;
   try { result = JSON.parse(raw); } catch {}
   if (!result || typeof result !== "object" || (result as Record<string, unknown>).ok === false) throw new Error(`Change Set SQL failed: ${compactText(raw, 4000)}`);
-  return JSON.stringify({ ok: true, dryRun, transaction: dryRun ? "rolled_back" : "committed", changeCount: changes.length, changes: evidence, backupRequested: createBackup, verificationSqlProvided: Boolean(options.verifySql?.trim()), result });
+  const rollbackSql = changeEvidence.map((change) => {
+    if (change.operation === "insert") return `-- Review before execution: identify the inserted row for '${String(change.idempotencyKey)}' and delete it from ${quoteSqlIdentifier(String(change.table))}.`;
+    if (!change.backupTable) return `-- No backup was requested for '${String(change.idempotencyKey)}'; manual rollback is required.`;
+    return change.operation === "delete"
+      ? `-- Review before execution; restore the original rows from ${quoteSqlIdentifier(String(change.backupTable))}.\nINSERT INTO ${quoteSqlIdentifier(String(change.table))} SELECT * FROM ${quoteSqlIdentifier(String(change.backupTable))};`
+      : `-- Review before execution; use the before-image in ${quoteSqlIdentifier(String(change.backupTable))} to restore ${quoteSqlIdentifier(String(change.table))}.`;
+  }).join("\n");
+  return JSON.stringify({ ok: true, dryRun, transaction: dryRun ? "rolled_back" : "committed", changeCount: changes.length, changes: changeEvidence, backupRequested: createBackup, backupTables, verificationSqlProvided: Boolean(options.verifySql?.trim()), rollback: { available: backupTables.length > 0 || changes.some((change) => change.operation === "insert"), requiresReview: true, sql: rollbackSql }, result });
 }
 
 export interface SqlMutationOptions {

@@ -374,7 +374,15 @@ Knowledge 审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [`d
 | SampleManager | `samplemanager_clear_form_cache` | 清理一个 form 的 FormsBin cache。 |
 | SampleManager | `samplemanager_recent_errors` | 按时间范围检索紧凑错误证据。 |
 | SampleManager | `samplemanager_table_schema` | 查询列、键、identity、默认值和物理映射。 |
+| SampleManager | `samplemanager_read_query_artifact` | 分页读取已保存的 SQL 响应，不重新执行远程查询。 |
 | SampleManager | `samplemanager_sql_query` | 执行参数化只读 SQL，并返回详细 SQL Server 错误。 |
+| SampleManager | `samplemanager_entity_inspect` | 统一检查 Execution readiness、Plate/Batch integrity、Test/Result lineage 或 Lab Method definition。 |
+| SampleManager | `samplemanager_lab_method_lint` | 检查 Lab Method 的重复标识、断裂引用、类型风险、placeholder 和 Instruction evidence。 |
+| SampleManager | `samplemanager_plate_plan_validate` | 将 Plate/Batch 孔位、数量和 Test 链接与声明式 layout plan 对比。 |
+| SampleManager | `samplemanager_workflow_export` | 按目标实例实际表结构导出有界 Workflow 快照、节点、连线、参数和拓扑。 |
+| SampleManager | `samplemanager_workflow_validate` | 校验 Workflow 的断链、孤立节点、环、静态节点契约和证据缺口。 |
+| SampleManager | `samplemanager_workflow_compare` | 将当前 Workflow 快照与导出基线比较，返回节点、连线和元数据差异。 |
+| SampleManager | `samplemanager_inspect_deployment_runtime` | 只读检查部署文件哈希、程序集加载、服务、进程和限定窗口内的运行时错误。 |
 | SampleManager | `samplemanager_sql_execute_file` | 执行 workspace 中的参数化 SQL 文件。 |
 | SampleManager | `samplemanager_sql_mutation` | 执行支持 dry run、备份和 before/after 的 mutation。 |
 | SampleManager | `samplemanager_apply_change_set` | 在一个事务中执行多项 SQL 变更，支持幂等键、失败回滚、验证和 Deployment 恢复状态。 |

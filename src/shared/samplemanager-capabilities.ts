@@ -95,26 +95,26 @@ const COMMON_CAPABILITIES: SampleManagerCapabilityDescriptor[] = [
   {
     id: "plate.diagnose",
     objectType: "plate",
-    status: "planned",
+    status: "ready",
     readOnly: true,
-    description: "Inspect Plate, Batch, Execution, well, Sample, Test, and Result relationships.",
-    plannedTool: "samplemanager_plate_diagnose",
+    description: "Run a bounded semantic inspection of Plate, Batch, Execution, well, Sample, Test, and Result relationships.",
+    plannedTool: "samplemanager_entity_inspect",
   },
   {
     id: "workflow.validate",
     objectType: "workflow",
-    status: "planned",
+    status: "ready",
     readOnly: true,
-    description: "Export and validate Workflow topology, parameters, registration, and broken relationships.",
+    description: "Export, validate, and compare Workflow topology, parameters, static node contracts, and broken relationships. Runtime registration still requires assembly or execution evidence.",
     plannedTool: "samplemanager_workflow_validate",
   },
   {
     id: "lab_method.validate",
     objectType: "lab_method",
-    status: "planned",
+    status: "ready",
     readOnly: true,
-    description: "Validate Lab Method versions, Steps, Parameters, workflow buttons, and execution compatibility.",
-    plannedTool: "samplemanager_lab_method_validate",
+    description: "Lint Lab Method versions, Steps, Parameters, Variables, formulas, placeholders, and instruction evidence.",
+    plannedTool: "samplemanager_lab_method_lint",
   },
 ];
 
@@ -133,10 +133,10 @@ export const SAMPLEMANAGER_ENTITY_CATALOG: SampleManagerEntityCatalogEntry[] = [
     label: "Plate",
     description: "Plate creation, layout, Batch linkage, well assignment, and Result coverage.",
     inspectors: [
-      { id: "readiness", label: "Readiness", status: "planned", readOnly: true, description: "Determine whether Plate Type, Fill Order, Appearance, source entities, and creation workflow are ready.", plannedTool: "samplemanager_inspect_plate_batch", relatedEntities: ["batch", "workflow", "execution"], evidenceKinds: ["sql", "schema", "logs"] },
-      { id: "batch_integrity", label: "Batch Integrity", status: "planned", readOnly: true, description: "Compare Plate wells with Batch Template and Batch Entry counts, types, and Test assignments.", plannedTool: "samplemanager_inspect_plate_batch", relatedEntities: ["batch", "test", "sample"], evidenceKinds: ["sql", "artifact"] },
-      { id: "layout_integrity", label: "Layout Integrity", status: "planned", readOnly: true, description: "Detect missing, duplicate, extra, and out-of-range wells against an expected layout profile.", plannedTool: "samplemanager_inspect_plate_batch", relatedEntities: ["batch"], evidenceKinds: ["sql", "artifact", "playwright"] },
-      { id: "result_coverage", label: "Result Coverage", status: "planned", readOnly: true, description: "Trace occupied wells to Test and Result records and identify incomplete Result generation.", plannedTool: "samplemanager_inspect_test_lineage", relatedEntities: ["test", "analysis"], evidenceKinds: ["sql"] },
+      { id: "readiness", label: "Readiness", status: "planned", readOnly: true, description: "Determine whether Plate Type, Fill Order, Appearance, source entities, and creation workflow are ready.", plannedTool: "samplemanager_entity_inspect", relatedEntities: ["batch", "workflow", "execution"], evidenceKinds: ["sql", "schema", "logs"] },
+      { id: "batch_integrity", label: "Batch Integrity", status: "ready", readOnly: true, description: "Compare Plate wells with Batch Template and Batch Entry counts, types, and Test assignments.", plannedTool: "samplemanager_entity_inspect", relatedEntities: ["batch", "test", "sample"], evidenceKinds: ["sql", "artifact"] },
+      { id: "layout_integrity", label: "Layout Integrity", status: "ready", readOnly: true, description: "Detect missing, duplicate, extra, and out-of-range wells against an expected layout profile.", plannedTool: "samplemanager_plate_plan_validate", relatedEntities: ["batch"], evidenceKinds: ["sql", "artifact", "playwright"] },
+      { id: "result_coverage", label: "Result Coverage", status: "planned", readOnly: true, description: "Trace occupied wells to Test and Result records and identify incomplete Result generation.", plannedTool: "samplemanager_entity_inspect", relatedEntities: ["test", "analysis"], evidenceKinds: ["sql"] },
     ],
   },
   {
@@ -144,9 +144,9 @@ export const SAMPLEMANAGER_ENTITY_CATALOG: SampleManagerEntityCatalogEntry[] = [
     label: "Batch",
     description: "Batch Template expectations, Apply behavior, entries, and Plate assignment.",
     inspectors: [
-      { id: "readiness", label: "Readiness", status: "planned", readOnly: true, description: "Check Template, Analysis, entry types, source entities, and Apply prerequisites.", plannedTool: "samplemanager_inspect_plate_batch", relatedEntities: ["plate", "analysis"], evidenceKinds: ["sql", "schema"] },
-      { id: "template_integrity", label: "Template Integrity", status: "planned", readOnly: true, description: "Compare Batch Template definitions with actual Batch Entries and expected counts.", plannedTool: "samplemanager_inspect_plate_batch", relatedEntities: ["plate"], evidenceKinds: ["sql", "artifact"] },
-      { id: "apply_integrity", label: "Apply Integrity", status: "planned", readOnly: true, description: "Compare pre/post Apply state and detect missing or duplicate Sample and Test creation.", plannedTool: "samplemanager_inspect_plate_batch", relatedEntities: ["sample", "test", "plate"], evidenceKinds: ["sql", "logs", "playwright"] },
+      { id: "readiness", label: "Readiness", status: "planned", readOnly: true, description: "Check Template, Analysis, entry types, source entities, and Apply prerequisites.", plannedTool: "samplemanager_entity_inspect", relatedEntities: ["plate", "analysis"], evidenceKinds: ["sql", "schema"] },
+      { id: "template_integrity", label: "Template Integrity", status: "planned", readOnly: true, description: "Compare Batch Template definitions with actual Batch Entries and expected counts.", plannedTool: "samplemanager_entity_inspect", relatedEntities: ["plate"], evidenceKinds: ["sql", "artifact"] },
+      { id: "apply_integrity", label: "Apply Integrity", status: "planned", readOnly: true, description: "Compare pre/post Apply state and detect missing or duplicate Sample and Test creation.", plannedTool: "samplemanager_entity_inspect", relatedEntities: ["sample", "test", "plate"], evidenceKinds: ["sql", "logs", "playwright"] },
     ],
   },
   {
@@ -154,9 +154,9 @@ export const SAMPLEMANAGER_ENTITY_CATALOG: SampleManagerEntityCatalogEntry[] = [
     label: "Lab Execution",
     description: "Execution readiness, template alignment, Step state, and runtime entity links.",
     inspectors: [
-      { id: "readiness", label: "Readiness", status: "planned", readOnly: true, description: "Validate source object, Method version, Steps, Parameters, Workflow buttons, and start conditions.", plannedTool: "samplemanager_inspect_execution", relatedEntities: ["lab_method", "workflow", "test"], evidenceKinds: ["sql", "schema", "logs"] },
-      { id: "template_alignment", label: "Template Alignment", status: "planned", readOnly: true, description: "Compare Execution Steps and Parameters with the selected Lab Method version.", plannedTool: "samplemanager_inspect_execution", relatedEntities: ["lab_method"], evidenceKinds: ["sql", "artifact"] },
-      { id: "entity_links", label: "Entity Links", status: "planned", readOnly: true, description: "Check Test, Sample, Plate, Batch, Callback, and return-property linkage.", plannedTool: "samplemanager_inspect_execution", relatedEntities: ["plate", "batch", "test", "workflow"], evidenceKinds: ["sql", "runtime", "logs"] },
+      { id: "readiness", label: "Readiness", status: "ready", readOnly: true, description: "Validate source object, Method version, Steps, Parameters, Workflow buttons, and start conditions.", plannedTool: "samplemanager_entity_inspect", relatedEntities: ["lab_method", "workflow", "test"], evidenceKinds: ["sql", "schema", "logs"] },
+      { id: "template_alignment", label: "Template Alignment", status: "planned", readOnly: true, description: "Compare Execution Steps and Parameters with the selected Lab Method version.", plannedTool: "samplemanager_entity_inspect", relatedEntities: ["lab_method"], evidenceKinds: ["sql", "artifact"] },
+      { id: "entity_links", label: "Entity Links", status: "planned", readOnly: true, description: "Check Test, Sample, Plate, Batch, Callback, and return-property linkage.", plannedTool: "samplemanager_entity_inspect", relatedEntities: ["plate", "batch", "test", "workflow"], evidenceKinds: ["sql", "runtime", "logs"] },
     ],
   },
   {
@@ -164,9 +164,9 @@ export const SAMPLEMANAGER_ENTITY_CATALOG: SampleManagerEntityCatalogEntry[] = [
     label: "Test & Result",
     description: "Sample/Test lineage, Analysis version, Components, Results, and Plate assignment.",
     inspectors: [
-      { id: "lineage", label: "Lineage", status: "planned", readOnly: true, description: "Trace source Test and Sample through child Well Tests, Batch Entries, Plate wells, and Results.", plannedTool: "samplemanager_inspect_test_lineage", relatedEntities: ["sample", "plate", "analysis"], evidenceKinds: ["sql", "artifact"] },
-      { id: "result_completeness", label: "Result Completeness", status: "planned", readOnly: true, description: "Compare required Analysis Components with generated Result records and values.", plannedTool: "samplemanager_inspect_test_lineage", relatedEntities: ["analysis"], evidenceKinds: ["sql", "schema"] },
-      { id: "assignment_integrity", label: "Assignment Integrity", status: "planned", readOnly: true, description: "Detect orphan Tests, duplicate well assignment, incorrect Parent Test, or wrong Sample linkage.", plannedTool: "samplemanager_inspect_test_lineage", relatedEntities: ["sample", "plate", "batch"], evidenceKinds: ["sql"] },
+      { id: "lineage", label: "Lineage", status: "ready", readOnly: true, description: "Trace source Test and Sample through child Well Tests, Batch Entries, Plate wells, and Results.", plannedTool: "samplemanager_entity_inspect", relatedEntities: ["sample", "plate", "analysis"], evidenceKinds: ["sql", "artifact"] },
+      { id: "result_completeness", label: "Result Completeness", status: "planned", readOnly: true, description: "Compare required Analysis Components with generated Result records and values.", plannedTool: "samplemanager_entity_inspect", relatedEntities: ["analysis"], evidenceKinds: ["sql", "schema"] },
+      { id: "assignment_integrity", label: "Assignment Integrity", status: "planned", readOnly: true, description: "Detect orphan Tests, duplicate well assignment, incorrect Parent Test, or wrong Sample linkage.", plannedTool: "samplemanager_entity_inspect", relatedEntities: ["sample", "plate", "batch"], evidenceKinds: ["sql"] },
     ],
   },
   {
@@ -174,8 +174,8 @@ export const SAMPLEMANAGER_ENTITY_CATALOG: SampleManagerEntityCatalogEntry[] = [
     label: "Lab Method",
     description: "Method versions, Steps, Parameters, Variables, Instructions, formulas, and workflow buttons.",
     inspectors: [
-      { id: "definition", label: "Definition Integrity", status: "planned", readOnly: true, description: "Validate Step, Parameter, Variable, Instruction, type, formula, and criteria definitions.", plannedTool: "samplemanager_inspect_execution", relatedEntities: ["execution", "workflow"], evidenceKinds: ["sql", "schema", "artifact"] },
-      { id: "version_integrity", label: "Version Integrity", status: "planned", readOnly: true, description: "Compare versions and detect missing fields, broken references, and stale Execution definitions.", plannedTool: "samplemanager_inspect_execution", relatedEntities: ["execution"], evidenceKinds: ["sql", "artifact"] },
+      { id: "definition", label: "Definition Integrity", status: "ready", readOnly: true, description: "Validate Step, Parameter, Variable, Instruction, type, formula, and criteria definitions.", plannedTool: "samplemanager_lab_method_lint", relatedEntities: ["execution", "workflow"], evidenceKinds: ["sql", "schema", "artifact"] },
+      { id: "version_integrity", label: "Version Integrity", status: "planned", readOnly: true, description: "Compare versions and detect missing fields, broken references, and stale Execution definitions.", plannedTool: "samplemanager_lab_method_lint", relatedEntities: ["execution"], evidenceKinds: ["sql", "artifact"] },
     ],
   },
   {
@@ -183,8 +183,10 @@ export const SAMPLEMANAGER_ENTITY_CATALOG: SampleManagerEntityCatalogEntry[] = [
     label: "Workflow",
     description: "Workflow topology, Node contracts, entity context, callbacks, and runtime behavior.",
     inspectors: [
-      { id: "topology", label: "Topology", status: "planned", readOnly: true, description: "Find unreachable, orphaned, cyclic, and disconnected Workflow nodes.", plannedTool: "samplemanager_inspect_execution", relatedEntities: ["execution", "lab_method"], evidenceKinds: ["sql", "artifact"] },
-      { id: "node_contract", label: "Node Contract", status: "planned", readOnly: true, description: "Validate Node Type registration, parameters, entity inputs, outputs, callback, and return properties.", plannedTool: "samplemanager_inspect_execution", relatedEntities: ["execution"], evidenceKinds: ["sql", "runtime", "logs"] },
+      { id: "topology", label: "Topology", status: "ready", readOnly: true, description: "Find unreachable, orphaned, cyclic, and disconnected Workflow nodes from a bounded version-aware snapshot.", plannedTool: "samplemanager_workflow_validate", relatedEntities: ["execution", "lab_method"], evidenceKinds: ["sql", "artifact"] },
+      { id: "node_contract", label: "Node Contract", status: "ready", readOnly: true, description: "Validate static Node Type, parameters, entity context, callback, and return-property fields; assembly registration remains an evidence gap until separately inspected.", plannedTool: "samplemanager_workflow_validate", relatedEntities: ["execution"], evidenceKinds: ["sql", "runtime", "logs"] },
+      { id: "validation", label: "Validation", status: "ready", readOnly: true, description: "Run the bounded Workflow validator and return structured violations, unknowns, and query evidence.", plannedTool: "samplemanager_workflow_validate", relatedEntities: ["execution", "lab_method"], evidenceKinds: ["sql", "artifact"] },
+      { id: "diff", label: "Baseline Diff", status: "ready", readOnly: true, description: "Compare normalized Workflow nodes, links, parameters, and metadata with a caller-provided baseline.", plannedTool: "samplemanager_workflow_compare", relatedEntities: ["deployment", "execution"], evidenceKinds: ["sql", "artifact"] },
       { id: "runtime_readiness", label: "Runtime Readiness", status: "planned", readOnly: true, description: "Identify checks that require runtime logs or UI smoke tests beyond static SQL evidence.", plannedTool: "samplemanager_inspect_deployment_runtime", relatedEntities: ["deployment", "instance"], evidenceKinds: ["runtime", "logs", "playwright"] },
     ],
   },
@@ -202,7 +204,7 @@ export const SAMPLEMANAGER_ENTITY_CATALOG: SampleManagerEntityCatalogEntry[] = [
     label: "Deployment",
     description: "Package state, database changes, files, assemblies, services, runtime loading, and rollback.",
     inspectors: [
-      { id: "runtime_drift", label: "Runtime Drift", status: "planned", readOnly: true, description: "Compare package, database, disk files, loaded modules, service state, and logs.", plannedTool: "samplemanager_inspect_deployment_runtime", relatedEntities: ["instance", "workflow"], evidenceKinds: ["artifact", "runtime", "logs", "sql"] },
+      { id: "runtime_drift", label: "Runtime Drift", status: "ready", readOnly: true, description: "Compare exact deployment files, disk hashes, loaded modules, service state, processes, and bounded logs without mutation.", plannedTool: "samplemanager_inspect_deployment_runtime", relatedEntities: ["instance", "workflow"], evidenceKinds: ["artifact", "runtime", "logs", "sql"] },
       { id: "rollback_readiness", label: "Rollback Readiness", status: "planned", readOnly: true, description: "Validate SQL rollback, file backups, hashes, and configuration snapshots.", plannedTool: "samplemanager_inspect_deployment_runtime", relatedEntities: ["instance"], evidenceKinds: ["artifact", "sql"] },
     ],
   },

@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "generatedFrom": "McpServer tools/list",
   "sourceVersion": {
-    "gitCommit": "93eab33e22c3ea719b92c5f7d500a6e4380d4ed9",
+    "gitCommit": "06a05bd013592db34bf4f52e184790c97046e1ae",
     "mcpSdkVersion": "1.29.0",
     "generationCommand": "npm run generate:mcp-baseline",
-    "generatedAt": "2026-09-06T13:57:11.895Z",
+    "generatedAt": "2026-09-13T14:58:09.668Z",
     "worktreeDirty": true
   },
   "tools": [
@@ -1745,6 +1745,36 @@
           "deploymentId": {
             "type": "string"
           },
+          "expectedInstance": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "Abort unless the selected LIMS instance has this exact name."
+          },
+          "expectedDatabaseHost": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Abort unless the resolved database host matches exactly."
+          },
+          "expectedDatabase": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "Abort unless the resolved database name matches exactly."
+          },
+          "expectedLabMethodId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Assert that dbo.LAB_METHOD contains this identity before changes."
+          },
+          "expectedLabMethodVersion": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Optional Lab Method version paired with expectedLabMethodId."
+          },
           "dryRun": {
             "type": "boolean",
             "description": "Execute and roll back by default. Set false to commit."
@@ -1807,6 +1837,12 @@
                       "null"
                     ]
                   }
+                },
+                "expectedAffectedRows": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000,
+                  "description": "Abort the transaction unless this mutation changes exactly this many rows."
                 }
               },
               "required": [
@@ -2545,6 +2581,97 @@
       }
     },
     {
+      "name": "samplemanager_entity_inspect",
+      "description": "Run one bounded, read-only SampleManager semantic inspection for Execution readiness, Plate/Batch integrity, Test/Result lineage, or Lab Method definition.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string",
+            "description": "Optional when the selected LIMS instance has a configured database."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
+          "entryPoint": {
+            "type": "string",
+            "enum": [
+              "execution_readiness",
+              "plate_batch_integrity",
+              "test_result_lineage",
+              "lab_method_definition"
+            ]
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "executionId": {
+                "type": "string"
+              },
+              "labMethodId": {
+                "type": "string"
+              },
+              "labMethodVersion": {
+                "type": "string"
+              },
+              "plateId": {
+                "type": "string"
+              },
+              "batchId": {
+                "type": "string"
+              },
+              "batchTemplateId": {
+                "type": "string"
+              },
+              "testNumber": {
+                "type": "string"
+              },
+              "sampleNumber": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxRows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "description": "Maximum rows per discovered table; default 200."
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job; default true."
+          }
+        },
+        "required": [
+          "entryPoint",
+          "target"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
       "name": "samplemanager_impact_analysis",
       "description": "Compute a read-only, source-backed impact graph for a SampleManager Form/Task/Assembly/Menu object.",
       "inputSchema": {
@@ -2656,6 +2783,82 @@
       }
     },
     {
+      "name": "samplemanager_inspect_deployment_runtime",
+      "description": "Run a bounded, read-only post-deployment runtime inspection for exact files, assembly versions, loaded modules, instance services, processes, and recent errors.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
+          "instance": {
+            "type": "string",
+            "description": "Optional when the selected project environment is bound to a LIMS instance."
+          },
+          "filePaths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "maxItems": 100,
+            "description": "Exact remote files to hash and inspect."
+          },
+          "assemblyPaths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "maxItems": 50,
+            "description": "Exact DLL/EXE paths whose disk and loaded-module state should be checked."
+          },
+          "logMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1440,
+            "description": "Log timestamp window in minutes; default 30."
+          },
+          "maxErrors": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "description": "Maximum compact error entries; default 20."
+          },
+          "deploymentId": {
+            "type": "string",
+            "description": "Optional deployment ID used to correlate the runtime evidence."
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job; default true."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
       "name": "samplemanager_instance_preflight",
       "description": "Run one bounded, read-only instance preflight for paths, selected files, XML validity, FormsBin entries, services, processes, and recent error summaries.",
       "inputSchema": {
@@ -2721,6 +2924,246 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_lab_method_lint",
+      "description": "Lint one SampleManager Lab Method version for identity, reference, formula, type, default, placeholder, and Instruction Blob risks without changing the database.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string",
+            "description": "Optional when the selected LIMS instance has a configured database."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
+          "labMethodId": {
+            "type": "string"
+          },
+          "labMethodVersion": {
+            "type": "string"
+          },
+          "maxRows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job; default true."
+          }
+        },
+        "required": [
+          "labMethodId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_plate_plan_validate",
+      "description": "Compare a Plate or Batch state with a bounded declarative layout plan and report wells, counts, Test links, and integrity differences without mutation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string",
+            "description": "Optional when the selected LIMS instance has a configured database."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "executionId": {
+                "type": "string"
+              },
+              "labMethodId": {
+                "type": "string"
+              },
+              "labMethodVersion": {
+                "type": "string"
+              },
+              "plateId": {
+                "type": "string"
+              },
+              "batchId": {
+                "type": "string"
+              },
+              "batchTemplateId": {
+                "type": "string"
+              },
+              "testNumber": {
+                "type": "string"
+              },
+              "sampleNumber": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "plan": {
+            "type": "object",
+            "properties": {
+              "rows": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 64
+              },
+              "columns": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 384
+              },
+              "startPosition": {
+                "type": "string",
+                "maxLength": 32
+              },
+              "fillDirection": {
+                "type": "string",
+                "enum": [
+                  "row-major",
+                  "column-major"
+                ]
+              },
+              "expectedEmptyPositions": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 32
+                },
+                "maxItems": 500
+              },
+              "expectedEntries": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "maxLength": 128
+                    },
+                    "entryType": {
+                      "type": "string",
+                      "maxLength": 128
+                    },
+                    "count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 100000
+                    },
+                    "positions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 32
+                      },
+                      "maxItems": 500
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "maxItems": 100
+              }
+            },
+            "required": [
+              "rows",
+              "columns"
+            ],
+            "additionalProperties": false,
+            "description": "Expected rows, columns, empty positions, and entry counts."
+          },
+          "maxRows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job; default true."
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_read_query_artifact",
+      "description": "Read a bounded page of a persisted SampleManager SQL response without re-running the query.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "queryId": {
+            "type": "string",
+            "description": "queryId returned by samplemanager_sql_query"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Character offset; use page.nextOffset for the next page."
+          },
+          "maxCharacters": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 1000000,
+            "description": "Maximum response characters; default 100000."
+          }
+        },
+        "required": [
+          "queryId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -3183,6 +3626,10 @@
               "type": "string"
             },
             "description": "Identifiers substituted into {{name}} placeholders and escaped with SQL Server brackets."
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job; recommended for long-running queries. Default false."
           }
         },
         "required": [
@@ -3352,6 +3799,231 @@
         "required": [
           "formName",
           "taskName"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_workflow_compare",
+      "description": "Compare the current bounded SampleManager Workflow snapshot with a caller-provided export baseline and return normalized node, link, contract, and metadata differences.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string",
+            "description": "Optional when the bound LIMS instance has a configured database."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "workflowId": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "workflowName": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "workflowVersion": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "nodeType": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "additionalProperties": false
+          },
+          "baseline": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Snapshot object returned by samplemanager_workflow_export, or its workflow/nodes/links/parameters subset."
+          },
+          "maxRows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "description": "Maximum rows per discovered Workflow table; default 200."
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job; default true."
+          }
+        },
+        "required": [
+          "target",
+          "baseline"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_workflow_export",
+      "description": "Export one bounded, version-aware SampleManager Workflow snapshot with normalized nodes, links, parameters, topology, provenance, and a complete query artifact.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string",
+            "description": "Optional when the bound LIMS instance has a configured database."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "workflowId": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "workflowName": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "workflowVersion": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "nodeType": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxRows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "description": "Maximum rows per discovered Workflow table; default 200."
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job; default true."
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_workflow_validate",
+      "description": "Validate one SampleManager Workflow snapshot for node contracts, unresolved links, unreachable nodes, cycles, callbacks, return properties, and evidence gaps.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string",
+            "description": "Optional when the bound LIMS instance has a configured database."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "workflowId": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "workflowName": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "workflowVersion": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "nodeType": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxRows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "description": "Maximum rows per discovered Workflow table; default 200."
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job; default true."
+          }
+        },
+        "required": [
+          "target"
         ],
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
@@ -3905,10 +4577,56 @@
       "capability": "schema"
     },
     {
+      "name": "samplemanager_read_query_artifact",
+      "category": "samplemanager"
+    },
+    {
       "name": "samplemanager_sql_query",
       "category": "samplemanager",
       "entity": "data_model",
       "capability": "schema"
+    },
+    {
+      "name": "samplemanager_entity_inspect",
+      "category": "samplemanager",
+      "entity": "diagnostic",
+      "capability": "read_only_diagnosis"
+    },
+    {
+      "name": "samplemanager_lab_method_lint",
+      "category": "samplemanager",
+      "entity": "lab_method",
+      "capability": "definition"
+    },
+    {
+      "name": "samplemanager_plate_plan_validate",
+      "category": "samplemanager",
+      "entity": "plate",
+      "capability": "layout_integrity"
+    },
+    {
+      "name": "samplemanager_workflow_export",
+      "category": "samplemanager",
+      "entity": "workflow",
+      "capability": "topology"
+    },
+    {
+      "name": "samplemanager_workflow_validate",
+      "category": "samplemanager",
+      "entity": "workflow",
+      "capability": "validation"
+    },
+    {
+      "name": "samplemanager_workflow_compare",
+      "category": "samplemanager",
+      "entity": "workflow",
+      "capability": "diff"
+    },
+    {
+      "name": "samplemanager_inspect_deployment_runtime",
+      "category": "samplemanager",
+      "entity": "deployment",
+      "capability": "runtime_drift"
     },
     {
       "name": "samplemanager_sql_execute_file",

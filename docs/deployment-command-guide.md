@@ -16,6 +16,18 @@ Use `samplemanager_instance_preflight` to combine exact path, file, XML, FormsBi
 
 Pass only exact file paths and form identities. The result is bounded JSON and does not return full XML, assembly metadata, or complete logs. Use `read_remote_file`, `samplemanager_inspect_assembly_type`, or `fetch_logs` for a focused follow-up.
 
+For Workflow work, use the same read-only phase with a bounded target:
+
+```text
+samplemanager_workflow_export
+-> samplemanager_workflow_validate
+-> samplemanager_workflow_compare (when a baseline is available)
+```
+
+`samplemanager_workflow_export` discovers the target instance's actual Workflow table columns, resolves a Workflow name to its ID when possible, and stores the complete bounded response as a query artifact. The validator reports topology, unresolved links, cycles, unreachable nodes, and static node-contract gaps. SQL cannot prove assembly registration or a successful runtime callback; use `samplemanager_inspect_assembly_type`, `samplemanager_inspect_deployment_runtime`, logs, or the dedicated Playwright tools for those claims.
+
+After a file or assembly change, use `samplemanager_inspect_deployment_runtime` with exact `filePaths` and `assemblyPaths` plus the same `deploymentId`. It returns disk SHA-256/version, service and process state, loaded-module evidence where Windows permits module inspection, and error lines filtered by their log timestamps. It is read-only and does not restart the instance.
+
 ## 3. Separate read and write phases
 
 Use this order:

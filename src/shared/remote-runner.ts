@@ -22,10 +22,56 @@ export type RemoteErrorCategory =
   | "timeout"
   | "cancelled"
   | "connection"
+  | "agent_offline"
+  | "transport"
+  | "approval_unavailable"
+  | "policy_denied"
   | "remote_exit"
   | "output"
   | "parameter"
+  | "committed_verification_failed"
   | "unknown";
+
+export interface ClassifiedRemoteError {
+  category: RemoteErrorCategory;
+  message: string;
+  executionState: "not_started" | "unknown" | "failed";
+  retrySafe: boolean;
+}
+
+export function classifyRemoteError(error: unknown): ClassifiedRemoteError {
+  const message = error instanceof Error ? error.message : String(error);
+  const declared = error && typeof error === "object" && "category" in error
+    ? String((error as { category?: unknown }).category ?? "")
+    : "";
+  // A typed remote result takes precedence over keywords in captured stderr.
+  switch (declared) {
+    case "cancelled":
+    case "timeout":
+    case "transport":
+      return { category: declared, message, executionState: "unknown", retrySafe: false };
+    case "approval_unavailable":
+    case "agent_offline":
+    case "connection":
+      return { category: declared, message, executionState: "not_started", retrySafe: true };
+    case "policy_denied":
+    case "parameter":
+      return { category: declared, message, executionState: "not_started", retrySafe: false };
+    case "remote_exit":
+    case "committed_verification_failed":
+    case "output":
+      return { category: declared, message, executionState: "failed", retrySafe: false };
+  }
+  if (/remote command exited|exit(?:ed)? (?:code|with)/i.test(message)) return { category: "remote_exit", message, executionState: "failed", retrySafe: false };
+  if (/automatic approval review failed|approval.*(?:502|bad gateway)|passthrough network error/i.test(message)) return { category: "approval_unavailable", message, executionState: "not_started", retrySafe: true };
+  if (/policy (?:denied|rejected)|approval (?:denied|rejected)|not approved|explicit authorization required/i.test(message)) return { category: "policy_denied", message, executionState: "not_started", retrySafe: false };
+  if (/agent.*(?:offline|not connected|no connected)|no connected server|last seen/i.test(message)) return { category: "agent_offline", message, executionState: "not_started", retrySafe: true };
+  if (/\bcancel(?:led|ed)?\b/i.test(message)) return { category: "cancelled", message, executionState: "unknown", retrySafe: false };
+  if (/timed?\s*out|timeout/i.test(message)) return { category: "timeout", message, executionState: "unknown", retrySafe: false };
+  if (/transport send error|http request failed|socket|econnreset|network error|connection closed/i.test(message)) return { category: "transport", message, executionState: "unknown", retrySafe: false };
+  if (/connection (?:failed|refused)|unable to connect/i.test(message)) return { category: "connection", message, executionState: "not_started", retrySafe: true };
+  return { category: "unknown", message, executionState: "failed", retrySafe: false };
+}
 
 export interface RemoteExecutionOptions {
   signal?: AbortSignal;

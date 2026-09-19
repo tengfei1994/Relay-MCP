@@ -1101,6 +1101,8 @@ export interface SqlChangeSetItem {
   values?: Record<string, SqlParameterValue>;
   where?: string;
   parameters?: Record<string, SqlParameterValue>;
+  /** Stable post-mutation identity, independent from predicates containing old values. */
+  readbackKey?: Record<string, SqlParameterValue>;
   expectedAffectedRows?: number;
 }
 
@@ -1147,6 +1149,13 @@ export async function runSqlChangeSet(
   const allParameters: Record<string, SqlParameterValue> = {};
   const changeEvidence: Array<Record<string, unknown>> = [];
   const backupTables: string[] = [];
+  const committedReadbacks: Array<{
+    statementIndex: number;
+    idempotencyKey: string;
+    operation: SqlChangeSetItem["operation"];
+    table: string;
+    key: Record<string, SqlParameterValue>;
+  }> = [];
 
   if (assertions.labMethodId !== undefined) {
     allParameters.relay_lab_method_id = assertions.labMethodId;
@@ -1193,6 +1202,21 @@ SELECT 'change-set' AS __relay_change, 'assertion' AS __relay_phase, 'lab_method
       allParameters[name] = value;
       return { column: quoteSqlIdentifier(column), parameter: `@${name}` };
     });
+    const readbackKey = validateSqlParameters(change.readbackKey ?? {});
+    if (Object.values(readbackKey).some((value) => value === null)) {
+      throw new Error(`readbackKey cannot contain null values for change '${change.idempotencyKey}'`);
+    }
+    if (change.readbackKey && change.expectedAffectedRows !== undefined && change.expectedAffectedRows > 1) {
+      throw new Error(`readbackKey describes one stable row, but expectedAffectedRows is greater than one for change '${change.idempotencyKey}'`);
+    }
+    const readbackBindings = Object.entries(readbackKey).map(([column, value], keyIndex) => {
+      const name = `relay_change_${index}_readback_${keyIndex}`;
+      allParameters[name] = value;
+      return { column: quoteSqlIdentifier(column), parameter: `@${name}` };
+    });
+    if (change.readbackKey && readbackBindings.length === 0) {
+      throw new Error(`readbackKey must contain at least one stable key for change '${change.idempotencyKey}'`);
+    }
     for (const [name, value] of Object.entries(validateSqlParameters(change.parameters ?? {}))) allParameters[`relay_change_${index}_${name}`] = value;
     allParameters[`relay_change_${index}_expected`] = change.expectedAffectedRows ?? null;
     const renderedWhere = where.replace(/@([A-Za-z_][A-Za-z0-9_]*)/g, (_match, name: string) => `@relay_change_${index}_${name}`);
@@ -1207,19 +1231,23 @@ SELECT 'change-set' AS __relay_change, 'assertion' AS __relay_phase, 'lab_method
     if (change.operation !== "insert") statements.push(`SELECT '${key}' AS __relay_change, ${index} AS statementIndex, 'before' AS __relay_phase, * FROM ${table} WHERE ${renderedWhere};`);
     else statements.push(`SELECT '${key}' AS __relay_change, ${index} AS statementIndex, 'before' AS __relay_phase WHERE 1 = 0;`);
     if (change.operation === "insert") {
-      statements.push(`INSERT INTO ${table} (${bindings.map((item) => item.column).join(", ")}) VALUES (${bindings.map((item) => item.parameter).join(", ")});`);
+      statements.push(`INSERT INTO ${table} (${bindings.map((item) => item.column).join(", ")}) OUTPUT '${key}' AS __relay_change, ${index} AS statementIndex, 'mutation_output' AS __relay_phase, inserted.* VALUES (${bindings.map((item) => item.parameter).join(", ")});`);
     } else if (change.operation === "update") {
-      statements.push(`UPDATE ${table} SET ${bindings.map((item) => `${item.column} = ${item.parameter}`).join(", ")} WHERE ${renderedWhere};`);
+      statements.push(`UPDATE ${table} SET ${bindings.map((item) => `${item.column} = ${item.parameter}`).join(", ")} OUTPUT '${key}' AS __relay_change, ${index} AS statementIndex, 'mutation_output' AS __relay_phase, inserted.* WHERE ${renderedWhere};`);
     } else {
-      statements.push(`DELETE FROM ${table} WHERE ${renderedWhere};`);
+      statements.push(`DELETE FROM ${table} OUTPUT '${key}' AS __relay_change, ${index} AS statementIndex, 'mutation_output' AS __relay_phase, deleted.* WHERE ${renderedWhere};`);
     }
     statements.push(`
 DECLARE @relay_affected_${index} int = @@ROWCOUNT;
 IF @relay_change_${index}_expected IS NOT NULL AND @relay_affected_${index} <> @relay_change_${index}_expected THROW 51010, 'Expected affected-row count did not match', 1;
 SELECT '${key}' AS __relay_change, ${index} AS statementIndex, 'after' AS __relay_phase, @relay_affected_${index} AS affectedRows;
 `);
-    if (change.operation !== "insert") statements.push(`SELECT '${key}' AS __relay_change, ${index} AS statementIndex, 'after_state' AS __relay_phase, * FROM ${table} WHERE ${renderedWhere};`);
-    changeEvidence.push({ statementIndex: index, idempotencyKey: change.idempotencyKey, operation: change.operation, table: change.table, expectedAffectedRows: change.expectedAffectedRows ?? null, backupTable: rollbackTable ?? null });
+    if (readbackBindings.length > 0) {
+      const readbackWhere = readbackBindings.map((item) => `${item.column} = ${item.parameter}`).join(" AND ");
+      statements.push(`SELECT '${key}' AS __relay_change, ${index} AS statementIndex, 'transaction_readback' AS __relay_phase, * FROM ${table} WHERE ${readbackWhere};`);
+      committedReadbacks.push({ statementIndex: index, idempotencyKey: change.idempotencyKey, operation: change.operation, table: change.table, key: readbackKey });
+    }
+    changeEvidence.push({ statementIndex: index, idempotencyKey: change.idempotencyKey, operation: change.operation, table: change.table, expectedAffectedRows: change.expectedAffectedRows ?? null, backupTable: rollbackTable ?? null, readbackKey: change.readbackKey ? Object.keys(readbackKey) : [] });
   });
   if (options.verifySql?.trim()) statements.push(options.verifySql.trim());
   statements.push(dryRun ? "ROLLBACK TRANSACTION;" : "COMMIT TRANSACTION;", "END TRY", "BEGIN CATCH", "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;", "THROW;", "END CATCH");
@@ -1227,6 +1255,54 @@ SELECT '${key}' AS __relay_change, ${index} AS statementIndex, 'after' AS __rela
   let result: unknown = raw;
   try { result = JSON.parse(raw); } catch {}
   if (!result || typeof result !== "object" || (result as Record<string, unknown>).ok === false) throw new Error(`Change Set SQL failed: ${compactText(raw, 4000)}`);
+  let postCommitReadback: unknown = null;
+  let verificationStatus: "not_requested" | "transaction_only" | "succeeded" | "failed" = committedReadbacks.length === 0
+    ? "not_requested"
+    : dryRun ? "transaction_only" : "succeeded";
+  let verificationError: string | null = null;
+  if (!dryRun && committedReadbacks.length > 0) {
+    const readbackParameters: Record<string, SqlParameterValue> = {};
+    const readbackSql: string[] = ["SET NOCOUNT ON;"];
+    committedReadbacks.forEach((readback, index) => {
+      const predicate = Object.entries(readback.key).map(([column, value], keyIndex) => {
+        const parameter = `relay_post_${index}_${keyIndex}`;
+        readbackParameters[parameter] = value;
+        return `${quoteSqlIdentifier(column)} = @${parameter}`;
+      }).join(" AND ");
+      const expectedRows = readback.operation === "delete" ? 0 : 1;
+      readbackSql.push(`SELECT '${readback.idempotencyKey.replace(/'/g, "''")}' AS __relay_change, ${readback.statementIndex} AS statementIndex, 'post_commit_readback' AS __relay_phase, * FROM ${quoteSqlIdentifier(readback.table)} WHERE ${predicate};`);
+      readbackSql.push(`SELECT '${readback.idempotencyKey.replace(/'/g, "''")}' AS __relay_change, ${readback.statementIndex} AS statementIndex, 'post_commit_count' AS __relay_phase, COUNT_BIG(1) AS matchedRows, ${expectedRows} AS expectedRows FROM ${quoteSqlIdentifier(readback.table)} WHERE ${predicate};`);
+    });
+    try {
+      const readbackRaw = await runSql(runner, database, readbackSql.join("\n"), {
+        allowMutation: false,
+        maxRows,
+        includeResultSets: true,
+        preserveFullResponse: true,
+        parameters: readbackParameters,
+        databaseHost,
+      });
+      postCommitReadback = JSON.parse(readbackRaw);
+      if (!postCommitReadback || typeof postCommitReadback !== "object" || (postCommitReadback as Record<string, unknown>).ok === false) {
+        verificationStatus = "failed";
+        verificationError = `Post-commit readback returned an invalid result: ${compactText(readbackRaw, 2000)}`;
+      } else {
+        const resultSets = Array.isArray((postCommitReadback as Record<string, unknown>).resultSets)
+          ? (postCommitReadback as { resultSets: Array<Record<string, unknown>> }).resultSets
+          : [];
+        const countRows = resultSets.flatMap((set) => Array.isArray(set.rows) ? set.rows as Array<Record<string, unknown>> : [])
+          .filter((row) => row.__relay_phase === "post_commit_count");
+        const mismatches = countRows.filter((row) => Number(row.matchedRows) !== Number(row.expectedRows));
+        if (countRows.length !== committedReadbacks.length || mismatches.length > 0) {
+          verificationStatus = "failed";
+          verificationError = `Post-commit readback count mismatch for ${mismatches.length || committedReadbacks.length - countRows.length} change(s)`;
+        }
+      }
+    } catch (error) {
+      verificationStatus = "failed";
+      verificationError = error instanceof Error ? error.message : String(error);
+    }
+  }
   const rollbackSql = changeEvidence.map((change) => {
     if (change.operation === "insert") return `-- Review before execution: identify the inserted row for '${String(change.idempotencyKey)}' and delete it from ${quoteSqlIdentifier(String(change.table))}.`;
     if (!change.backupTable) return `-- No backup was requested for '${String(change.idempotencyKey)}'; manual rollback is required.`;
@@ -1234,7 +1310,7 @@ SELECT '${key}' AS __relay_change, ${index} AS statementIndex, 'after' AS __rela
       ? `-- Review before execution; restore the original rows from ${quoteSqlIdentifier(String(change.backupTable))}.\nINSERT INTO ${quoteSqlIdentifier(String(change.table))} SELECT * FROM ${quoteSqlIdentifier(String(change.backupTable))};`
       : `-- Review before execution; use the before-image in ${quoteSqlIdentifier(String(change.backupTable))} to restore ${quoteSqlIdentifier(String(change.table))}.`;
   }).join("\n");
-  return JSON.stringify({ ok: true, dryRun, transaction: dryRun ? "rolled_back" : "committed", changeCount: changes.length, changes: changeEvidence, backupRequested: createBackup, backupTables, verificationSqlProvided: Boolean(options.verifySql?.trim()), rollback: { available: backupTables.length > 0 || changes.some((change) => change.operation === "insert"), requiresReview: true, sql: rollbackSql }, result });
+  return JSON.stringify({ ok: true, dryRun, transaction: dryRun ? "rolled_back" : "committed", changeCount: changes.length, changes: changeEvidence, backupRequested: createBackup, backupTables, verificationSqlProvided: Boolean(options.verifySql?.trim()), verification: { status: verificationStatus, error: verificationError, postCommitReadback }, rollback: { available: backupTables.length > 0 || changes.some((change) => change.operation === "insert"), requiresReview: true, sql: rollbackSql }, result });
 }
 
 export interface SqlMutationOptions {
@@ -1864,6 +1940,94 @@ export async function buildSampleManagerProject(
 
 export type SampleManagerDeployArea = "exe" | "solutionAssemblies" | "forms" | "resourceIcon" | "data";
 
+export interface SampleManagerDeploymentGuard {
+  expectedCurrentTargetSha256?: string;
+  expectedSourceSha256?: string;
+  expectedTargetAbsent?: boolean;
+}
+
+function validateSha256(value: string | undefined, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(normalized)) throw new Error(`${label} must be a 64-character SHA-256 value`);
+  return normalized;
+}
+
+export interface SampleManagerDeploymentBaselineOptions extends SampleManagerDeploymentGuard {
+  projectOrSolutionPath: string;
+  assemblyPath: string;
+  area?: SampleManagerDeployArea;
+  targetRelativePath: string;
+  expectedProjectSha256?: string;
+  expectedSourceCommit?: string;
+  requireAssembly?: boolean;
+  execution?: RemoteExecutionOptions;
+}
+
+/** Capture and optionally enforce the source/artifact/target baseline before deployment. */
+export async function inspectSampleManagerDeploymentBaseline(
+  runner: RemoteRunner,
+  instance: SampleManagerInstanceRef,
+  options: SampleManagerDeploymentBaselineOptions
+): Promise<string> {
+  validateRelativeRemotePath(options.targetRelativePath, "targetRelativePath");
+  const paths = instancePaths(instance);
+  const targetRoot = paths[options.area ?? "solutionAssemblies"];
+  const expectedTarget = validateSha256(options.expectedCurrentTargetSha256, "expectedCurrentTargetSha256");
+  if (options.expectedTargetAbsent && expectedTarget) throw new Error("An absent target baseline cannot also specify a target SHA-256");
+  const expectedAssembly = validateSha256(options.expectedSourceSha256, "expectedSourceSha256");
+  const expectedProject = validateSha256(options.expectedProjectSha256, "expectedProjectSha256");
+  const expectedCommit = options.expectedSourceCommit?.trim();
+  if (expectedCommit && !/^[A-Fa-f0-9]{7,64}$/.test(expectedCommit)) throw new Error("expectedSourceCommit must be a 7-64 character hexadecimal Git commit");
+  const script = `
+$ErrorActionPreference = "Stop"
+$projectPath = ${psQuote(options.projectOrSolutionPath)}
+$assemblyPath = ${psQuote(options.assemblyPath)}
+$targetPath = Join-Path ${psQuote(targetRoot)} ${psQuote(options.targetRelativePath)}
+$expectedTarget = ${psQuote(expectedTarget ?? "")}
+$expectedTargetAbsent = ${options.expectedTargetAbsent ? "$true" : "$false"}
+$expectedAssembly = ${psQuote(expectedAssembly ?? "")}
+$expectedProject = ${psQuote(expectedProject ?? "")}
+$expectedCommit = ${psQuote(expectedCommit?.toLowerCase() ?? "")}
+$requireAssembly = ${options.requireAssembly ? "$true" : "$false"}
+
+if (-not (Test-Path -LiteralPath $projectPath -PathType Leaf)) { throw "Project or solution file not found: $projectPath" }
+$projectHash = (Get-FileHash -LiteralPath $projectPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$assemblyExists = Test-Path -LiteralPath $assemblyPath -PathType Leaf
+$assemblyHash = if ($assemblyExists) { (Get-FileHash -LiteralPath $assemblyPath -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
+$targetExists = Test-Path -LiteralPath $targetPath -PathType Leaf
+$targetHash = if ($targetExists) { (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
+$sourceRoot = $null
+$sourceCommit = $null
+$git = Get-Command git.exe -ErrorAction SilentlyContinue
+if (-not $git) { $git = Get-Command git -ErrorAction SilentlyContinue }
+if ($git) {
+  $projectDir = Split-Path -Parent $projectPath
+  $sourceRoot = (& $git.Source -C $projectDir rev-parse --show-toplevel 2>$null | Select-Object -First 1)
+  if ($LASTEXITCODE -eq 0 -and $sourceRoot) {
+    $sourceCommit = (& $git.Source -C $sourceRoot rev-parse HEAD 2>$null | Select-Object -First 1)
+  }
+}
+if ($expectedProject -and $projectHash -ne $expectedProject) { throw "Deployment baseline mismatch: project SHA-256 expected $expectedProject, actual $projectHash" }
+if ($expectedCommit -and (-not $sourceCommit -or -not $sourceCommit.ToLowerInvariant().StartsWith($expectedCommit))) { throw "Deployment baseline mismatch: source commit expected $expectedCommit, actual $sourceCommit" }
+if ($expectedTarget -and (-not $targetExists -or $targetHash -ne $expectedTarget)) { throw "Deployment baseline mismatch: current target SHA-256 expected $expectedTarget, actual $targetHash" }
+if ($expectedTargetAbsent -and (Test-Path -LiteralPath $targetPath)) { throw "Deployment baseline mismatch: target appeared since preflight: $targetPath" }
+if ($requireAssembly -and -not $assemblyExists) { throw "Built assembly not found: $assemblyPath" }
+if ($expectedAssembly -and (-not $assemblyExists -or $assemblyHash -ne $expectedAssembly)) { throw "Deployment baseline mismatch: source assembly SHA-256 expected $expectedAssembly, actual $assemblyHash" }
+[pscustomobject]@{
+  checkedAt = (Get-Date).ToString('o')
+  project = [pscustomobject]@{ path=$projectPath; sha256=$projectHash; sourceRoot=$sourceRoot; sourceCommit=$sourceCommit }
+  assembly = [pscustomobject]@{ path=$assemblyPath; exists=$assemblyExists; sha256=$assemblyHash }
+  target = [pscustomobject]@{ path=$targetPath; exists=$targetExists; sha256=$targetHash }
+  expectations = [pscustomobject]@{ currentTargetSha256=$expectedTarget; targetAbsent=$expectedTargetAbsent; sourceSha256=$expectedAssembly; projectSha256=$expectedProject; sourceCommit=$expectedCommit }
+  enforced = [bool]($expectedTarget -or $expectedTargetAbsent -or $expectedAssembly -or $expectedProject -or $expectedCommit)
+} | ConvertTo-Json -Depth 6 -Compress
+`;
+  const result = await runner.execPowerShell(script, 120000, options.execution);
+  ensureRemoteSuccess(result);
+  return compactText(result.stdout || result.stderr);
+}
+
 export async function deploySampleManagerFile(
   runner: RemoteRunner,
   instance: SampleManagerInstanceRef,
@@ -1872,11 +2036,15 @@ export async function deploySampleManagerFile(
   targetRelativePath: string,
   backup = true,
   skipIfUnchanged = true,
-  execution: RemoteExecutionOptions = {}
+  execution: RemoteExecutionOptions = {},
+  guard: SampleManagerDeploymentGuard = {}
 ): Promise<string> {
   validateRelativeRemotePath(targetRelativePath, "targetRelativePath");
   const paths = instancePaths(instance);
   const targetRoot = paths[area];
+  const expectedTarget = validateSha256(guard.expectedCurrentTargetSha256, "expectedCurrentTargetSha256");
+  const expectedSource = validateSha256(guard.expectedSourceSha256, "expectedSourceSha256");
+  if (guard.expectedTargetAbsent && expectedTarget) throw new Error("An absent target baseline cannot also specify a target SHA-256");
   const script = `
 $ErrorActionPreference = "Stop"
 $source = ${psQuote(sourcePath)}
@@ -1886,11 +2054,22 @@ $target = Join-Path $targetRoot $relative
 if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
   throw "Deployment source file not found: $source"
 }
-New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
 $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
 $targetHash = if (Test-Path -LiteralPath $target -PathType Leaf) {
   (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
 } else { $null }
+$expectedTargetHash = ${psQuote(expectedTarget ?? "")}
+$expectedSourceHash = ${psQuote(expectedSource ?? "")}
+$expectedTargetAbsent = ${guard.expectedTargetAbsent ? "$true" : "$false"}
+if ($expectedSourceHash -and $sourceHash.ToLowerInvariant() -ne $expectedSourceHash) {
+  throw "Deployment guard failed: source SHA-256 expected $expectedSourceHash, actual $sourceHash"
+}
+if ($expectedTargetHash -and (-not $targetHash -or $targetHash.ToLowerInvariant() -ne $expectedTargetHash)) {
+  throw "Deployment guard failed: current target SHA-256 expected $expectedTargetHash, actual $targetHash"
+}
+if ($expectedTargetAbsent -and (Test-Path -LiteralPath $target)) {
+  throw "Deployment guard failed: target appeared since preflight: $target"
+}
 if (${skipIfUnchanged ? "$true" : "$false"} -and $targetHash -and $sourceHash -eq $targetHash) {
   [pscustomobject]@{
     source = $source
@@ -1898,11 +2077,14 @@ if (${skipIfUnchanged ? "$true" : "$false"} -and $targetHash -and $sourceHash -e
     skipped = $true
     reason = "target_already_matches_source"
     sha256 = $sourceHash
+    sourceSha256 = $sourceHash
+    previousTargetSha256 = $targetHash
     bytes = (Get-Item -LiteralPath $target).Length
   } | ConvertTo-Json -Compress
   exit 0
 }
 $backupPath = $null
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
 if (${backup ? "$true" : "$false"} -and (Test-Path -LiteralPath $target -PathType Leaf)) {
   $stamp = Get-Date -Format "yyyyMMdd-HHmmssfff"
   $backupRoot = Join-Path ${psQuote(paths.relayBackups)} $stamp
@@ -1910,7 +2092,11 @@ if (${backup ? "$true" : "$false"} -and (Test-Path -LiteralPath $target -PathTyp
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $backupPath) | Out-Null
   Copy-Item -LiteralPath $target -Destination $backupPath -Force
 }
-Copy-Item -LiteralPath $source -Destination $target -Force
+if ($expectedTargetAbsent) {
+  [System.IO.File]::Copy($source, $target, $false)
+} else {
+  Copy-Item -LiteralPath $source -Destination $target -Force
+}
 $finalHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
 if ($finalHash -ne $sourceHash) {
   throw "Deployment verification failed: source SHA-256 $sourceHash, target SHA-256 $finalHash"
@@ -1922,6 +2108,8 @@ if ($finalHash -ne $sourceHash) {
   bytes = (Get-Item -LiteralPath $target).Length
   skipped = $false
   sha256 = $finalHash
+  sourceSha256 = $sourceHash
+  previousTargetSha256 = $targetHash
 } | ConvertTo-Json -Compress
 `;
   const result = await runner.execPowerShell(script, 120000, execution);

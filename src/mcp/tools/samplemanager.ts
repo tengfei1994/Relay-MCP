@@ -4,7 +4,7 @@ import { z } from "zod";
 import { createHash, randomUUID } from "crypto";
 import { createReadStream, existsSync, readFileSync, statSync } from "fs";
 import { basename } from "path";
-import { ensureRemoteSuccess } from "../../shared/remote-runner.js";
+import { classifyRemoteError, ensureRemoteSuccess } from "../../shared/remote-runner.js";
 import { startJob, writeAudit, type JobContext } from "../../shared/job-store.js";
 import {
   appendDeploymentOperationArtifact,
@@ -24,6 +24,7 @@ import {
   createEntityDefinition,
   deploySampleManagerFile,
   discoverBuildTools,
+  inspectSampleManagerDeploymentBaseline,
   inspectSampleManagerInstance,
   instancePaths,
   loadTableLoaderFile,
@@ -64,10 +65,25 @@ import {
   type SampleManagerWorkflowTarget,
 } from "../../shared/samplemanager-workflow-inspection.js";
 import { inspectSampleManagerDeploymentRuntime, type SampleManagerRuntimeInspectionOptions } from "../../shared/samplemanager-runtime-inspection.js";
+import { analyzeSampleManagerEntitySchema, runSampleManagerEntitySchema } from "../../shared/samplemanager-entity-schema.js";
+import {
+  analyzeSampleManagerEnhInspection,
+  runSampleManagerEnhInspection,
+  type SampleManagerEnhTarget,
+} from "../../shared/samplemanager-enh-inspection.js";
+import { analyzeSampleManagerVglSource, readSampleManagerVglSource } from "../../shared/samplemanager-vgl-inspection.js";
 import type { ProjectRegistry } from "../project-registry.js";
 import type { GetRunner, ProjectSelector, ResolveProjectName, RunnerConnection, SampleManagerDatabaseTarget } from "../tool-context.js";
 
 const sampleManagerCapabilityRegistry = new SampleManagerCapabilityRegistry();
+const deploymentFileBaselineSchema = z.object({
+  exists: z.boolean(),
+  sha256: z.string().regex(/^[A-Fa-f0-9]{64}$/).nullable(),
+}).refine((file) => file.exists === (file.sha256 !== null), "File baseline must include a SHA-256 exactly when the file exists");
+const deploymentBaselineSchema = z.object({
+  target: deploymentFileBaselineSchema,
+  assembly: deploymentFileBaselineSchema,
+}).passthrough();
 const sampleManagerInspectionTargetSchema = z.object({
   executionId: z.string().optional(),
   labMethodId: z.string().optional(),
@@ -106,6 +122,14 @@ const sampleManagerWorkflowTargetSchema = z.object({
 const sampleManagerWorkflowBaselineSchema = z.record(z.unknown()).superRefine((baseline, ctx) => {
   if (JSON.stringify(baseline).length > 200_000) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Workflow baseline must be at most 200000 JSON characters" });
 });
+const sampleManagerEnhTargetSchema = z.object({
+  dashboardId: z.string().max(256).optional(),
+  folderId: z.string().max(256).optional(),
+  criteriaId: z.string().max(256).optional(),
+  formConfigId: z.string().max(256).optional(),
+  entity: z.string().max(256).optional(),
+  name: z.string().max(256).optional(),
+}).strict().refine((target) => Object.values(target).some((value) => Boolean(value?.trim())), "At least one ENH target identity is required");
 
 export interface SampleManagerToolsContext {
   server: McpServer;
@@ -277,15 +301,10 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       return JSON.stringify({ capability: toolName, ...envelope });
     } catch (error) {
       const finishedAt = new Date().toISOString();
-      const message = error instanceof Error ? error.message : String(error);
-      const category = error && typeof error === "object" && "category" in error
-        ? String((error as { category?: unknown }).category ?? "unknown")
-        : "unknown";
-      const errorKind = category === "timeout"
-        ? "timeout"
-        : /approval|bad gateway|passthrough/i.test(message)
-          ? "approval"
-          : "transport";
+      const classified = classifyRemoteError(error);
+      const message = classified.message;
+      const category = classified.category;
+      const errorKind = classified.category;
       const response = {
         capability: toolName,
         target: { ...provenance },
@@ -302,7 +321,7 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       writeAudit({ userId: user.id, username: user.username, tool: toolName, ...provenance, startedAt, finishedAt, errorKind, error: message });
       if (context) {
         const jobError = new Error(`Semantic inspection '${queryId}' failed (${errorKind}): ${message}`) as Error & { category?: string };
-        jobError.category = errorKind === "timeout" ? "timeout" : "connection";
+        jobError.category = category;
         throw jobError;
       }
       return JSON.stringify(response);
@@ -382,17 +401,10 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       return JSON.stringify({ capability: toolName, artifact, ...response });
     } catch (error) {
       const finishedAt = new Date().toISOString();
-      const message = error instanceof Error ? error.message : String(error);
-      const category = error && typeof error === "object" && "category" in error
-        ? String((error as { category?: unknown }).category ?? "unknown")
-        : "unknown";
-      const errorKind = category === "timeout"
-        ? "timeout"
-        : /approval|bad gateway|passthrough/i.test(message)
-          ? "approval"
-          : /Remote command exited/i.test(message)
-            ? "remote_exit"
-            : "transport";
+      const classified = classifyRemoteError(error);
+      const message = classified.message;
+      const category = classified.category;
+      const errorKind = classified.category;
       const artifact = persistQueryArtifact({
         queryId,
         rawResponse: JSON.stringify({ ok: false, errorKind, error: message }),
@@ -401,7 +413,7 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       writeAudit({ userId: user.id, username: user.username, tool: toolName, ...provenance, finishedAt, errorKind, error: message, artifactPath: artifact.path, artifactBytes: artifact.bytes, artifactSha256: artifact.sha256 });
       if (context) {
         const jobError = new Error(`Workflow ${action} '${queryId}' failed (${errorKind}); artifact=${artifact.path}; ${message}`) as Error & { category?: string };
-        jobError.category = errorKind === "timeout" ? "timeout" : "connection";
+        jobError.category = category;
         throw jobError;
       }
       return JSON.stringify({
@@ -487,22 +499,15 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       return JSON.stringify(response);
     } catch (error) {
       const finishedAt = new Date().toISOString();
-      const message = error instanceof Error ? error.message : String(error);
-      const category = error && typeof error === "object" && "category" in error
-        ? String((error as { category?: unknown }).category ?? "unknown")
-        : "unknown";
-      const errorKind = category === "timeout"
-        ? "timeout"
-        : /approval|bad gateway|passthrough/i.test(message)
-          ? "approval"
-          : /Remote command exited/i.test(message)
-            ? "remote_exit"
-            : "transport";
+      const classified = classifyRemoteError(error);
+      const message = classified.message;
+      const category = classified.category;
+      const errorKind = classified.category;
       const artifact = persistQueryArtifact({ queryId, rawResponse: JSON.stringify({ ok: false, errorKind, error: message }), provenance: { ...provenance, finishedAt, ownerUserId: user.id } });
       writeAudit({ userId: user.id, username: user.username, tool: toolName, ...provenance, finishedAt, errorKind, error: message, artifactPath: artifact.path, artifactBytes: artifact.bytes, artifactSha256: artifact.sha256 });
       if (context) {
         const jobError = new Error(`SampleManager runtime inspection '${queryId}' failed (${errorKind}); artifact=${artifact.path}; ${message}`) as Error & { category?: string };
-        jobError.category = errorKind === "timeout" ? "timeout" : "connection";
+        jobError.category = category;
         throw jobError;
       }
       return JSON.stringify({
@@ -521,7 +526,205 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
     }
   }
 
+  async function runEntitySchemaCheck(
+    table: string,
+    entity: string | undefined,
+    databaseTarget: SampleManagerDatabaseTarget,
+    context?: JobContext,
+  ): Promise<string> {
+    const queryId = `entity-schema-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const startedAt = new Date().toISOString();
+    const provenance = {
+      queryId,
+      project: databaseTarget.project.name,
+      environment: databaseTarget.ps.environment,
+      projectServerId: databaseTarget.ps.id,
+      serverId: databaseTarget.ps.server.id,
+      serverName: databaseTarget.ps.server.name,
+      connectionMode: databaseTarget.ps.connectionMode,
+      instance: databaseTarget.configuredInstance?.name,
+      instanceVersion: databaseTarget.configuredInstance?.version,
+      databaseHost: databaseTarget.databaseHost,
+      databaseName: databaseTarget.database,
+      table,
+      entity,
+      readOnly: true,
+      mutationAttempted: false,
+      startedAt,
+    };
+    try {
+      context?.phase("inspecting_entity_schema");
+      const rawText = await runSampleManagerEntitySchema(databaseTarget.runner, {
+        database: databaseTarget.database,
+        databaseHost: databaseTarget.databaseHost,
+        table,
+        entity,
+        execution: executionForJob(context),
+      });
+      const finishedAt = new Date().toISOString();
+      const artifact = persistQueryArtifact({ queryId, rawResponse: rawText, provenance: { ...provenance, finishedAt, ownerUserId: user.id } });
+      const analyzed = analyzeSampleManagerEntitySchema(JSON.parse(rawText) as Record<string, unknown>, { queryId, startedAt, finishedAt, instanceVersion: databaseTarget.configuredInstance?.version });
+      const response = {
+        ...analyzed,
+        target: { ...analyzed.target, ...provenance },
+        queryMetadata: { ...analyzed.queryMetadata, ...provenance, finishedAt, artifact },
+      };
+      writeAudit({ userId: user.id, username: user.username, tool: "samplemanager_entity_schema", ...provenance, finishedAt, artifactPath: artifact.path, artifactBytes: artifact.bytes, artifactSha256: artifact.sha256, logicalFieldCount: response.logical.rowCount, partial: response.partial });
+      context?.phase("completed");
+      return JSON.stringify({ capability: "samplemanager_entity_schema", artifact, ...response });
+    } catch (error) {
+      const finishedAt = new Date().toISOString();
+      const classified = classifyRemoteError(error);
+      const artifact = persistQueryArtifact({ queryId, rawResponse: JSON.stringify({ ok: false, errorKind: classified.category, error: classified.message }), provenance: { ...provenance, finishedAt, ownerUserId: user.id } });
+      writeAudit({ userId: user.id, username: user.username, tool: "samplemanager_entity_schema", ...provenance, finishedAt, errorKind: classified.category, error: classified.message, artifactPath: artifact.path, artifactSha256: artifact.sha256 });
+      if (context) {
+        const jobError = new Error(`Entity schema '${queryId}' failed (${classified.category}); artifact=${artifact.path}; ${classified.message}`) as Error & { category?: string };
+        jobError.category = classified.category;
+        throw jobError;
+      }
+      return JSON.stringify({ capability: "samplemanager_entity_schema", artifact, target: provenance, physical: { columns: [], rowCount: 0 }, logical: { fields: [], rowCount: 0 }, entityDefinitions: [], facts: [], inferences: [], unknowns: ["No entity schema result was received."], evidence: [{ artifact }], errors: [{ kind: classified.category, message: classified.message }], queryMetadata: { ...provenance, finishedAt, artifact }, partial: true });
+    }
+  }
+
+  async function runEnhCheck(
+    toolName: string,
+    mode: "dashboard" | "criteria" | "validate",
+    target: SampleManagerEnhTarget,
+    databaseTarget: SampleManagerDatabaseTarget,
+    maxRows: number,
+    context?: JobContext,
+  ): Promise<string> {
+    const queryId = `enh-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const startedAt = new Date().toISOString();
+    const provenance = {
+      queryId,
+      project: databaseTarget.project.name,
+      environment: databaseTarget.ps.environment,
+      projectServerId: databaseTarget.ps.id,
+      serverId: databaseTarget.ps.server.id,
+      serverName: databaseTarget.ps.server.name,
+      connectionMode: databaseTarget.ps.connectionMode,
+      instance: databaseTarget.configuredInstance?.name,
+      instanceVersion: databaseTarget.configuredInstance?.version,
+      databaseHost: databaseTarget.databaseHost,
+      databaseName: databaseTarget.database,
+      mode,
+      readOnly: true,
+      mutationAttempted: false,
+      startedAt,
+    };
+    try {
+      context?.phase("discovering_enh_configuration");
+      const rawText = await runSampleManagerEnhInspection(databaseTarget.runner, {
+        database: databaseTarget.database,
+        databaseHost: databaseTarget.databaseHost,
+        target,
+        maxRows,
+        execution: executionForJob(context),
+      });
+      const finishedAt = new Date().toISOString();
+      const artifact = persistQueryArtifact({ queryId, rawResponse: rawText, provenance: { ...provenance, finishedAt, ownerUserId: user.id } });
+      const analyzed = analyzeSampleManagerEnhInspection(JSON.parse(rawText) as Record<string, unknown>, { mode, target, queryId, startedAt, finishedAt, instanceVersion: databaseTarget.configuredInstance?.version });
+      const response = {
+        ...analyzed,
+        target: { ...analyzed.target, ...provenance },
+        queryMetadata: { ...analyzed.queryMetadata, ...provenance, finishedAt, artifact },
+      };
+      writeAudit({ userId: user.id, username: user.username, tool: toolName, ...provenance, target, finishedAt, artifactPath: artifact.path, artifactBytes: artifact.bytes, artifactSha256: artifact.sha256, componentCounts: response.componentCounts, violationCount: response.violations.length, partial: response.partial });
+      context?.phase("completed");
+      return JSON.stringify({ capability: toolName, artifact, ...response });
+    } catch (error) {
+      const finishedAt = new Date().toISOString();
+      const classified = classifyRemoteError(error);
+      const artifact = persistQueryArtifact({ queryId, rawResponse: JSON.stringify({ ok: false, errorKind: classified.category, error: classified.message }), provenance: { ...provenance, finishedAt, ownerUserId: user.id } });
+      writeAudit({ userId: user.id, username: user.username, tool: toolName, ...provenance, target, finishedAt, errorKind: classified.category, error: classified.message, artifactPath: artifact.path, artifactSha256: artifact.sha256 });
+      if (context) {
+        const jobError = new Error(`ENH inspection '${queryId}' failed (${classified.category}); artifact=${artifact.path}; ${classified.message}`) as Error & { category?: string };
+        jobError.category = classified.category;
+        throw jobError;
+      }
+      return JSON.stringify({ capability: toolName, artifact, target: { ...target, ...provenance }, components: {}, componentCounts: {}, facts: [], inferences: [], unknowns: ["No ENH configuration result was received."], violations: [], evidence: [{ artifact }], errors: [{ kind: classified.category, message: classified.message }], queryMetadata: { ...provenance, finishedAt, artifact }, partial: true });
+    }
+  }
+
+  async function runVglCheck(
+    connection: RunnerConnection,
+    sourcePath: string,
+    entrypoint: string,
+    maxCallDepth: number,
+    context?: JobContext,
+  ): Promise<string> {
+    const queryId = `vgl-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const startedAt = new Date().toISOString();
+    const provenance = {
+      queryId,
+      project: connection.project.name,
+      environment: connection.ps.environment,
+      projectServerId: connection.ps.id,
+      serverId: connection.ps.server.id,
+      serverName: connection.ps.server.name,
+      connectionMode: connection.ps.connectionMode,
+      instance: connection.ps.limsInstance?.name,
+      instanceVersion: connection.ps.limsInstance?.version,
+      sourcePath,
+      entrypoint,
+      readOnly: true,
+      mutationAttempted: false,
+      startedAt,
+    };
+    try {
+      context?.phase("reading_vgl_source");
+      const rawText = await readSampleManagerVglSource(connection.runner, { sourcePath, execution: executionForJob(context) });
+      const finishedAt = new Date().toISOString();
+      const response = analyzeSampleManagerVglSource(JSON.parse(rawText) as Record<string, unknown>, { sourcePath, entrypoint, maxCallDepth, queryId, startedAt, finishedAt });
+      const persisted = JSON.stringify({ capability: "samplemanager_vgl_inspect_entrypoint", ...response, target: { ...response.target, ...provenance }, queryMetadata: { ...response.queryMetadata, ...provenance, finishedAt } });
+      const artifact = persistQueryArtifact({ queryId, rawResponse: persisted, provenance: { ...provenance, finishedAt, ownerUserId: user.id } });
+      const result = { capability: "samplemanager_vgl_inspect_entrypoint", artifact, ...response, target: { ...response.target, ...provenance }, queryMetadata: { ...response.queryMetadata, ...provenance, finishedAt, artifact } };
+      writeAudit({ userId: user.id, username: user.username, tool: "samplemanager_vgl_inspect_entrypoint", ...provenance, finishedAt, artifactPath: artifact.path, artifactBytes: artifact.bytes, artifactSha256: artifact.sha256, routineCount: response.routines.length, callCount: response.callChain.length, partial: response.partial });
+      context?.phase("completed");
+      return JSON.stringify(result);
+    } catch (error) {
+      const finishedAt = new Date().toISOString();
+      const classified = classifyRemoteError(error);
+      const artifact = persistQueryArtifact({ queryId, rawResponse: JSON.stringify({ ok: false, errorKind: classified.category, error: classified.message }), provenance: { ...provenance, finishedAt, ownerUserId: user.id } });
+      writeAudit({ userId: user.id, username: user.username, tool: "samplemanager_vgl_inspect_entrypoint", ...provenance, finishedAt, errorKind: classified.category, error: classified.message, artifactPath: artifact.path, artifactSha256: artifact.sha256 });
+      if (context) {
+        const jobError = new Error(`VGL inspection '${queryId}' failed (${classified.category}); artifact=${artifact.path}; ${classified.message}`) as Error & { category?: string };
+        jobError.category = classified.category;
+        throw jobError;
+      }
+      return JSON.stringify({ capability: "samplemanager_vgl_inspect_entrypoint", artifact, target: provenance, entrypoint: null, routines: [], constants: [], joins: [], callChain: [], facts: [], inferences: [], unknowns: ["No VGL source analysis was received."], evidence: [{ artifact }], errors: [{ kind: classified.category, message: classified.message }], queryMetadata: { ...provenance, finishedAt, artifact }, partial: true });
+    }
+  }
+
   // ── SampleManager high-level tools ────────────────────────────────────────
+  server.tool(
+    "samplemanager_vgl_inspect_entrypoint",
+    "Statically inspect one bounded VGL source entrypoint, including parameters and VALUE/reference passing, constants, JOINs, CALL_ROUTINE edges, and source line evidence.",
+    {
+      project: z.string().optional(),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
+      sourcePath: z.string().min(1).max(4096).describe("Exact remote .rpf/.sxf source path."),
+      entrypoint: z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/),
+      maxCallDepth: z.number().int().min(1).max(10).optional().describe("Maximum in-file static call depth; default 6."),
+      async: z.boolean().optional().describe("Run as a tracked job; default true."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async ({ project: projectName, environment, serverId, serverName, sourcePath, entrypoint, maxCallDepth = 6, async: runAsync = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const connection = getRunner(projectName, environment, { serverId, serverName });
+      const work = (context?: JobContext) => runVglCheck(connection, sourcePath, entrypoint, maxCallDepth, context);
+      if (runAsync) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_vgl_inspect_entrypoint", { sourcePath, entrypoint, maxCallDepth, environment: connection.ps.environment, serverId: connection.ps.server.id, projectServerId: connection.ps.id }, work);
+        return { structuredContent: { jobId: job.id, status: job.status, sourcePath, entrypoint }, content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status, sourcePath, entrypoint }) }] };
+      }
+      const response = JSON.parse(await work()) as Record<string, unknown>;
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ target: response.target, entrypoint: response.entrypoint, callChain: response.callChain, unknowns: response.unknowns, errors: response.errors, artifact: response.artifact }) }] };
+    },
+  );
+
   server.tool(
     "samplemanager_inspect_assembly_type",
     "Inspect one .NET assembly type with bounded metadata reflection. Returns only flattened type, property, method, event, version, dependency, and SHA-256 evidence.",
@@ -897,6 +1100,88 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
   );
 
   server.tool(
+    "samplemanager_entity_schema",
+    "Return combined SQL physical schema, SampleManager logical field metadata, Entity Definition mapping, and serialization-risk evidence for one table/entity.",
+    {
+      project: z.string().optional(),
+      database: z.string().optional().describe("Optional when the selected LIMS instance has a configured database."),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
+      table: z.string().min(1).max(256),
+      entity: z.string().min(1).max(256).optional(),
+      async: z.boolean().optional().describe("Run as a tracked job; default true."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async ({ project: projectName, database, environment, serverId, serverName, table, entity, async: runAsync = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const databaseTarget = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
+      const work = (context?: JobContext) => runEntitySchemaCheck(table, entity, databaseTarget, context);
+      if (runAsync) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_entity_schema", { table, entity, environment: databaseTarget.ps.environment, serverId: databaseTarget.ps.server.id, projectServerId: databaseTarget.ps.id, database: databaseTarget.database }, work);
+        return { structuredContent: { jobId: job.id, status: job.status, target: { table, entity: entity ?? null } }, content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status, table, entity: entity ?? null }) }] };
+      }
+      const response = JSON.parse(await work()) as Record<string, unknown>;
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ target: response.target, physical: response.physical, logical: response.logical, unknowns: response.unknowns, errors: response.errors, artifact: response.artifact }) }] };
+    },
+  );
+
+  server.tool(
+    "samplemanager_enh_inspect",
+    "Inspect one ENH dashboard or criteria configuration as a bounded graph of folders, criteria, templates, form configs, grids, columns, grouping, procedures, actions, and navigation.",
+    {
+      project: z.string().optional(),
+      database: z.string().optional().describe("Optional when the selected LIMS instance has a configured database."),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
+      mode: z.enum(["dashboard", "criteria"]).optional().describe("Inspection focus; default dashboard."),
+      target: sampleManagerEnhTargetSchema,
+      maxRows: z.number().int().min(1).max(500).optional(),
+      async: z.boolean().optional().describe("Run as a tracked job; default true."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async ({ project: projectName, database, environment, serverId, serverName, mode = "dashboard", target, maxRows = 200, async: runAsync = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const databaseTarget = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
+      const work = (context?: JobContext) => runEnhCheck("samplemanager_enh_inspect", mode, target, databaseTarget, maxRows, context);
+      if (runAsync) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_enh_inspect", { mode, target, environment: databaseTarget.ps.environment, serverId: databaseTarget.ps.server.id, projectServerId: databaseTarget.ps.id, database: databaseTarget.database, maxRows }, work);
+        return { structuredContent: { jobId: job.id, status: job.status, mode, target }, content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status, mode, target }) }] };
+      }
+      const response = JSON.parse(await work()) as Record<string, unknown>;
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ target: response.target, componentCounts: response.componentCounts, violations: response.violations, unknowns: response.unknowns, errors: response.errors, artifact: response.artifact }) }] };
+    },
+  );
+
+  server.tool(
+    "samplemanager_enh_validate_configuration",
+    "Validate one existing or staged ENH configuration for entity keys, field references, grid/template presence, duplicate sequence values, dangling ENH references, and XML/JSON storage formats without mutation.",
+    {
+      project: z.string().optional(),
+      database: z.string().optional().describe("Optional when the selected LIMS instance has a configured database."),
+      environment: z.string().optional(),
+      serverId: z.number().int().optional().describe("Exact linked server ID."),
+      serverName: z.string().optional().describe("Exact linked server display name."),
+      target: sampleManagerEnhTargetSchema,
+      maxRows: z.number().int().min(1).max(500).optional(),
+      async: z.boolean().optional().describe("Run as a tracked job; default true."),
+    },
+    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async ({ project: projectName, database, environment, serverId, serverName, target, maxRows = 200, async: runAsync = true }) => {
+      const resolvedProjectName = resolveProjectName(projectName);
+      const databaseTarget = getSampleManagerDatabaseTarget(projectName, environment, database, { serverId, serverName });
+      const work = (context?: JobContext) => runEnhCheck("samplemanager_enh_validate_configuration", "validate", target, databaseTarget, maxRows, context);
+      if (runAsync) {
+        const job = startJob(user, resolvedProjectName, "samplemanager_enh_validate_configuration", { target, environment: databaseTarget.ps.environment, serverId: databaseTarget.ps.server.id, projectServerId: databaseTarget.ps.id, database: databaseTarget.database, maxRows }, work);
+        return { structuredContent: { jobId: job.id, status: job.status, target }, content: [{ type: "text", text: summarizeJson({ jobId: job.id, status: job.status, target }) }] };
+      }
+      const response = JSON.parse(await work()) as Record<string, unknown>;
+      return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ target: response.target, componentCounts: response.componentCounts, violations: response.violations, unknowns: response.unknowns, errors: response.errors, artifact: response.artifact }) }] };
+    },
+  );
+
+  server.tool(
     "samplemanager_workflow_export",
     "Export one bounded, version-aware SampleManager Workflow snapshot with normalized nodes, links, parameters, topology, provenance, and a complete query artifact.",
     {
@@ -1196,8 +1481,9 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         return { structuredContent: response, content: [{ type: "text", text: summarizeJson({ queryId, provenance: response.provenance, page: response.page, result: { ...response.result, rows: undefined }, artifact }) }] };
       } catch (error) {
         const finishedAt = new Date().toISOString();
-        const message = error instanceof Error ? error.message : String(error);
-        const errorKind = /timeout/i.test(message) ? "timeout" : /approval|bad gateway|passthrough/i.test(message) ? "approval" : /Remote command exited/i.test(message) ? "remote_exit" : "transport";
+        const classified = classifyRemoteError(error);
+        const message = classified.message;
+        const errorKind = classified.category;
         const rawResponse = JSON.stringify({ ok: false, errorKind, error: message });
         const artifact = persistQueryArtifact({ queryId, rawResponse, provenance: { ...baseProvenance, finishedAt, ownerUserId: user.id } });
         const response = {
@@ -1400,17 +1686,10 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
           return JSON.stringify(response);
         } catch (error) {
           const finishedAt = new Date().toISOString();
-          const message = error instanceof Error ? error.message : String(error);
-          const category = error && typeof error === "object" && "category" in error
-            ? String((error as { category?: unknown }).category ?? "unknown")
-            : "unknown";
-          const errorKind = category === "timeout"
-            ? "timeout"
-            : category === "remote_exit"
-              ? "remote_exit"
-            : /approval|bad gateway|passthrough/i.test(message)
-              ? "approval"
-              : "transport";
+          const classified = classifyRemoteError(error);
+          const message = classified.message;
+          const category = classified.category;
+          const errorKind = classified.category;
           const artifact = persistQueryArtifact({
             queryId,
             rawResponse: JSON.stringify({ ok: false, errorKind, transportError: { category, message } }),
@@ -1440,7 +1719,7 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
           writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_sql_query", database: targetDatabase, databaseHost, queryId, startedAt, finishedAt, errorKind, error: message, artifactPath: artifact.path, artifactBytes: artifact.bytes, artifactSha256: artifact.sha256, mutationAttempted });
           if (context) {
             const jobError = new Error(`SQL query '${queryId}' failed (${errorKind}); artifact=${artifact.path}; ${message}`) as Error & { category?: string };
-            jobError.category = errorKind === "timeout" ? "timeout" : "connection";
+            jobError.category = category;
             throw jobError;
           }
           return JSON.stringify(response);
@@ -1962,6 +2241,7 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         values: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
         where: z.string().optional(),
         parameters: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+        readbackKey: z.record(z.union([z.string(), z.number(), z.boolean()])).optional().describe("Stable post-mutation primary/composite key for one row. Unlike where, this must describe the row after the change."),
         expectedAffectedRows: z.number().int().nonnegative().max(1_000_000).optional().describe("Abort the transaction unless this mutation changes exactly this many rows."),
       })).min(1).max(50),
     },
@@ -2068,12 +2348,17 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
             backupTables: parsed.backupTables ?? [],
             rollback: parsed.rollback ?? null,
             transaction: parsed.transaction ?? (dryRun ? "rolled_back" : "committed"),
+            verification: parsed.verification ?? null,
           };
         } catch {
           // Keep the deployment record usable even if a legacy runner returned plain text.
         }
+        const verificationFailed = !dryRun
+          && typeof changeSetSummary.verification === "object"
+          && changeSetSummary.verification !== null
+          && (changeSetSummary.verification as Record<string, unknown>).status === "failed";
         const updated = finishDeployment(run.id, {
-          status: "succeeded",
+          status: verificationFailed ? "pending-validation" : "succeeded",
           rollback: { ...run.rollback, status: dryRun ? "not-needed" : "not-needed" },
           idempotencyKeys: nextKeys,
           committedMutations: committed,
@@ -2081,7 +2366,11 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
           lastCompletedPhase: "verify",
           pendingPhases: [],
           failedMutation: undefined,
-          recommendedResumeAction: dryRun ? "Review dry-run evidence; rerun with the same idempotency keys and dryRun=false to commit." : "No resume required.",
+          recommendedResumeAction: dryRun
+            ? "Review dry-run evidence; rerun with the same idempotency keys and dryRun=false to commit."
+            : verificationFailed
+              ? "The transaction committed, but stable-key readback failed. Inspect the recorded readback evidence; do not repeat the mutation."
+              : "No resume required.",
           output: resultText,
           artifacts: { ...(run.artifacts ?? {}), changeCount: changes.length, skipped: changes.length - runnable.length, changeSet: changeSetSummary },
         });
@@ -2187,6 +2476,10 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       msbuildProperties: z.record(z.string()).optional().describe("Additional validated MSBuild properties, passed as /p:name=value."),
       environmentVariables: z.record(z.string()).optional().describe("Nonsecret environment variables applied only to the remote build process. Preconfigure secrets on the target service account."),
       preflightOnly: z.boolean().optional().describe("Validate build inputs and target context without building, deploying, or restarting."),
+      expectedCurrentTargetSha256: z.string().regex(/^[A-Fa-f0-9]{64}$/).optional().describe("Abort before backup/copy unless the currently deployed DLL has this SHA-256."),
+      expectedBuiltAssemblySha256: z.string().regex(/^[A-Fa-f0-9]{64}$/).optional().describe("Abort before copy unless the newly built DLL has this SHA-256."),
+      expectedProjectSha256: z.string().regex(/^[A-Fa-f0-9]{64}$/).optional().describe("Abort unless the project/solution file matches this source baseline hash."),
+      expectedSourceCommit: z.string().regex(/^[A-Fa-f0-9]{7,64}$/).optional().describe("Abort unless the remote source Git HEAD starts with this commit."),
       restart: z.boolean().optional().describe("Restart SampleManager after deploy. Default true."),
       rollbackOnFailure: z.boolean().optional().describe("Restore the timestamped backup if a later phase fails. Default true."),
       environment: z.string().optional(),
@@ -2207,6 +2500,10 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       msbuildProperties,
       environmentVariables,
       preflightOnly = false,
+      expectedCurrentTargetSha256,
+      expectedBuiltAssemblySha256,
+      expectedProjectSha256,
+      expectedSourceCommit,
       restart = true,
       rollbackOnFailure = true,
       environment,
@@ -2232,7 +2529,9 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         summary?: string;
         error?: string;
       }> = [
+        { name: "baseline", status: "pending" },
         { name: "build", status: "pending" },
+        { name: "artifact-guard", status: "pending" },
         { name: "deploy", status: "pending" },
         { name: "restart", status: restart ? "pending" : "succeeded", summary: restart ? undefined : "Skipped by request" },
       ];
@@ -2327,6 +2626,10 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         const output: string[] = [];
         let backupPath: string | undefined;
         let deployEvidence: Record<string, unknown> | undefined;
+        let baselineEvidence: Record<string, unknown> | undefined;
+        let effectiveCurrentTargetSha256 = expectedCurrentTargetSha256;
+        let expectedTargetAbsent = false;
+        let effectiveBuiltAssemblySha256 = expectedBuiltAssemblySha256;
         let restartEvidence: unknown;
         const appendOperation = (
           status: "succeeded" | "failed" | "unknown",
@@ -2346,6 +2649,7 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
             finishedAt: new Date().toISOString(),
             target: { projectOrSolutionPath, assemblyPath, targetRelativePath: target, instance: instanceName },
             steps: operationStepsSnapshot,
+            baseline: baselineEvidence,
             deploy: deployEvidence,
             restart: restartEvidence,
             rollback,
@@ -2354,6 +2658,23 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
           }, deployEvidence ?? {});
         };
         try {
+          setStep("baseline", "running");
+          const beforeBuildBaseline = await inspectSampleManagerDeploymentBaseline(runner, instanceTarget, {
+            projectOrSolutionPath,
+            assemblyPath,
+            targetRelativePath: target,
+            expectedCurrentTargetSha256,
+            expectedProjectSha256,
+            expectedSourceCommit,
+            requireAssembly: false,
+            execution: executionForJob(context),
+          });
+          const parsedBeforeBuild = deploymentBaselineSchema.parse(JSON.parse(beforeBuildBaseline));
+          baselineEvidence = { beforeBuild: parsedBeforeBuild };
+          expectedTargetAbsent = !parsedBeforeBuild.target.exists;
+          effectiveCurrentTargetSha256 ??= parsedBeforeBuild.target.sha256 ?? undefined;
+          setStep("baseline", "succeeded", compactText(beforeBuildBaseline, 1500));
+
           setStep("build", "running");
           const buildOutput = await buildSampleManagerProject(
             runner,
@@ -2373,6 +2694,26 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
           );
           output.push(`build\n${buildOutput}`);
           setStep("build", "succeeded", compactText(buildOutput, 1500));
+
+          setStep("artifact-guard", "running");
+          const afterBuildBaseline = await inspectSampleManagerDeploymentBaseline(runner, instanceTarget, {
+            projectOrSolutionPath,
+            assemblyPath,
+            targetRelativePath: target,
+            expectedCurrentTargetSha256: effectiveCurrentTargetSha256,
+            expectedTargetAbsent,
+            expectedSourceSha256: preflightOnly ? undefined : expectedBuiltAssemblySha256,
+            expectedProjectSha256,
+            expectedSourceCommit,
+            requireAssembly: !preflightOnly,
+            execution: executionForJob(context),
+          });
+          const parsedAfterBuild = deploymentBaselineSchema.parse(JSON.parse(afterBuildBaseline));
+          baselineEvidence = { ...(baselineEvidence ?? {}), afterBuild: parsedAfterBuild };
+          effectiveBuiltAssemblySha256 ??= parsedAfterBuild.assembly.sha256 ?? undefined;
+          if (!preflightOnly && !effectiveBuiltAssemblySha256) throw new Error("Built assembly baseline has no SHA-256; deployment stopped");
+          updateDeployment(run.id, { artifacts: { ...(currentDeployment().artifacts ?? {}), baseline: baselineEvidence } });
+          setStep("artifact-guard", "succeeded", compactText(afterBuildBaseline, 1500));
 
           if (preflightOnly) {
             setStep("deploy", "succeeded", "Skipped by preflight");
@@ -2399,7 +2740,8 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
             target,
             true,
             true,
-            executionForJob(context)
+            executionForJob(context),
+            { expectedCurrentTargetSha256: effectiveCurrentTargetSha256, expectedSourceSha256: effectiveBuiltAssemblySha256, expectedTargetAbsent }
           );
           output.push(`deploy\n${deployOutput}`);
           try {
@@ -2495,6 +2837,12 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
         msbuildProperties: buildSettingsMetadata(validatedMsbuildProperties),
         environmentVariables: buildSettingsMetadata(validatedEnvironmentVariables),
         preflightOnly,
+        baselineGuard: {
+          expectedCurrentTargetSha256: expectedCurrentTargetSha256 ?? null,
+          expectedBuiltAssemblySha256: expectedBuiltAssemblySha256 ?? null,
+          expectedProjectSha256: expectedProjectSha256 ?? null,
+          expectedSourceCommit: expectedSourceCommit ?? null,
+        },
         async,
       });
       if (async) {
@@ -2508,6 +2856,10 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
           msbuildProperties: buildSettingsMetadata(validatedMsbuildProperties),
           environmentVariables: buildSettingsMetadata(validatedEnvironmentVariables),
           preflightOnly,
+          expectedCurrentTargetSha256,
+          expectedBuiltAssemblySha256,
+          expectedProjectSha256,
+          expectedSourceCommit,
           environment,
           serverId: ps.server.id,
           projectServerId: ps.id,
@@ -2576,13 +2928,15 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
       targetRelativePath: z.string(),
       backup: z.boolean().optional().describe("Create backup before replacement; default true"),
       skipIfUnchanged: z.boolean().optional().describe("Skip the copy when source and target SHA-256 already match; default true"),
+      expectedCurrentTargetSha256: z.string().regex(/^[A-Fa-f0-9]{64}$/).optional().describe("Abort before backup/copy unless the current target has this SHA-256."),
+      expectedSourceSha256: z.string().regex(/^[A-Fa-f0-9]{64}$/).optional().describe("Abort before backup/copy unless the staged source has this SHA-256."),
       environment: z.string().optional(),
       serverId: z.number().int().optional().describe("Exact linked server ID."),
       serverName: z.string().optional().describe("Exact linked server display name."),
       deploymentId: z.string().optional(),
       async: z.boolean().optional().describe("Run as an async job; default true."),
     },
-    async ({ project: projectName, instance, sourcePath, area, targetRelativePath, backup = true, skipIfUnchanged = true, environment, serverId, serverName, deploymentId, async = true }) => {
+    async ({ project: projectName, instance, sourcePath, area, targetRelativePath, backup = true, skipIfUnchanged = true, expectedCurrentTargetSha256, expectedSourceSha256, environment, serverId, serverName, deploymentId, async = true }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const connection = getSampleManagerTarget(projectName, environment, instance, undefined, { serverId, serverName });
       const { runner, instance: target, instanceName } = connection;
@@ -2598,13 +2952,14 @@ export function registerSampleManagerTools(context: SampleManagerToolsContext, l
           targetRelativePath,
           backup,
           skipIfUnchanged,
-          executionForJob(context)
+          executionForJob(context),
+          { expectedCurrentTargetSha256, expectedSourceSha256 }
         ),
         { connection, instanceName }
       );
-      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_deploy_file", environment: connection.ps.environment, serverId: connection.ps.server.id, projectServerId: connection.ps.id, deploymentId, instance: instanceName, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, async });
+      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "samplemanager_deploy_file", environment: connection.ps.environment, serverId: connection.ps.server.id, projectServerId: connection.ps.id, deploymentId, instance: instanceName, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, expectedCurrentTargetSha256, expectedSourceSha256, async });
       if (async) {
-        const job = startJob(user, resolvedProjectName, "samplemanager_deploy_file", { instance: instanceName, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, environment: connection.ps.environment, serverId: connection.ps.server.id, projectServerId: connection.ps.id, deploymentId }, work);
+        const job = startJob(user, resolvedProjectName, "samplemanager_deploy_file", { instance: instanceName, sourcePath, area, targetRelativePath, backup, skipIfUnchanged, expectedCurrentTargetSha256, expectedSourceSha256, environment: connection.ps.environment, serverId: connection.ps.server.id, projectServerId: connection.ps.id, deploymentId }, work);
         return { content: [{ type: "text", text: summarizeJson({ jobId: job.id, deploymentId, status: job.status, target: deploymentTarget(connection) }) }] };
       }
       return { content: [{ type: "text", text: await work() }] };

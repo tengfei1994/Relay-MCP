@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { unzipSync } from "fflate";
 import { parse as parseYaml } from "yaml";
@@ -144,6 +145,12 @@ function expandZip(path: string): string {
   }
   return output;
 }
+function expandChm(path: string): string | undefined {
+  const output = `${path}.expanded-${sha256(path).slice(0, 12)}`; mkdirSync(output, { recursive: true });
+  const extractor = process.env.RELAY_CHM_EXTRACTOR ?? (process.platform === "win32" ? "hh.exe" : "hh");
+  try { execFileSync(extractor, ["-decompile", output, path], { timeout: 120_000, stdio: "ignore", windowsHide: true }); return files(output).some((file) => /\.html?$/i.test(file)) ? output : undefined; }
+  catch { rmSync(output, { recursive: true, force: true }); return undefined; }
+}
 
 export function importKnowledgeProducts(store: KnowledgeStore, options: ProductDocumentImportOptions): ProductDocumentImportReport {
   let root = resolve(options.root);
@@ -163,10 +170,11 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
   if (hasIdempotencyColumn && hasColumn(store, "knowledge_ingest_runs", "batch_metadata_json") && hasColumn(store, "knowledge_ingest_runs", "source_root") && hasColumn(store, "knowledge_ingest_runs", "source_commit")) store.db.prepare("INSERT OR IGNORE INTO knowledge_ingest_runs(id,source_locator,status,started_at,operation_idempotency_key,batch_metadata_json,source_root,source_commit) VALUES (?,?,?,?,?,?,?,?)").run(runId, `product-docs:${options.root}`, "queued", now, options.idempotencyKey ?? null, batchMeta, options.root, options.sourceCommit ?? null);
   else store.db.prepare("INSERT OR IGNORE INTO knowledge_ingest_runs(id,source_locator,status,started_at) VALUES (?,?,?,?)").run(runId, `product-docs:${options.root}`, "queued", now);
   store.db.prepare("UPDATE knowledge_ingest_runs SET status=? WHERE id=?").run("running", runId); report.status = "running";
-  const sourceHashes: string[] = [];
+  const sourceHashes: string[] = []; const expandedChm: string[] = [];
   try {
     if (!base.sampleManagerVersion) throw new Error("sampleManagerVersion is required (or provide it in manifest.yaml)");
-    for (const path of files(root)) {
+    const inputFiles = files(root); for (const chm of inputFiles.filter((path) => extname(path).toLowerCase() === ".chm")) { const expandedPath = expandChm(chm); if (expandedPath) { expandedChm.push(expandedPath); inputFiles.push(...files(expandedPath)); } else report.warnings.push(`${chm}: CHM extraction unavailable; metadata-only placeholder retained`); }
+    for (const path of inputFiles) {
       const relativePath = relative(root, path).replaceAll("\\", "/");
       const rule = matchRule(relativePath, loaded.rules) ?? {};
       const local = { ...base, ...rule };
@@ -218,7 +226,7 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
     const aggregateSourceHash = sourceHashes.length ? sha256(sourceHashes.sort().join("\n")) : null;
     if (hasColumn(store, "knowledge_ingest_runs", "source_sha256")) store.db.prepare("UPDATE knowledge_ingest_runs SET status=?,imported=?,skipped=?,failed=?,finished_at=?,error=?,source_sha256=COALESCE(?,source_sha256) WHERE id=?").run(report.status, report.imported + report.updated, report.unchanged, report.failed, new Date().toISOString(), report.errors.length ? JSON.stringify(report.errors) : report.warnings.length ? JSON.stringify(report.warnings) : null, aggregateSourceHash, runId);
     else store.db.prepare("UPDATE knowledge_ingest_runs SET status=?,imported=?,skipped=?,failed=?,finished_at=?,error=? WHERE id=?").run(report.status, report.imported + report.updated, report.unchanged, report.failed, new Date().toISOString(), report.errors.length ? JSON.stringify(report.errors) : report.warnings.length ? JSON.stringify(report.warnings) : null, runId);
-    if (expanded) rmSync(expanded, { recursive: true, force: true });
+    if (expanded) rmSync(expanded, { recursive: true, force: true }); for (const path of expandedChm) rmSync(path, { recursive: true, force: true });
   }
   return report;
 }

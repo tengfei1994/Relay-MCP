@@ -118,6 +118,8 @@ export const api = {
   productTopics: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ topics: any[]; page?: any }>("GET", `/knowledge/product-topics?${query.toString()}`); },
   productTopic: (id: string) => request<{ topic: any; versions: any[] }>("GET", `/knowledge/product-topics/${encodeURIComponent(id)}`),
   knowledgeArtifactSets: (limit = 100) => request<{ sets: any[] }>("GET", `/knowledge/artifact-sets?limit=${limit}`),
+  knowledgeArtifactImport: (body: Record<string, unknown>) => request<any>("POST", "/knowledge/artifact-sets/import", body),
+  knowledgeArtifactPublish: (id: string) => request<any>("POST", `/knowledge/artifact-sets/${encodeURIComponent(id)}/publish`, {}),
   knowledgeSourceBaselineFiles: (id: string) => request<any>("GET", `/knowledge/source-baselines/${encodeURIComponent(id)}/files`),
   knowledgeSourceSearch: (params: Record<string, string | number | undefined>) => { const q = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") q.set(key, String(value)); }); return request<any>("GET", `/knowledge/source-search?${q.toString()}`); },
   knowledgeProjectSnapshot: (body: Record<string, unknown>) => request<any>("POST", "/knowledge/project-snapshots/import", body),

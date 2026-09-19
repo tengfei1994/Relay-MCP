@@ -901,10 +901,10 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     if (version) { where.push("b.product_version = ?"); params.push(version); }
     if (search) { where.push("(lower(t.canonical_title) LIKE ? OR lower(t.canonical_key) LIKE ?)"); params.push(`%${search.toLowerCase()}%`, `%${search.toLowerCase()}%`); }
     const rows = store.db.prepare(`SELECT t.id,t.canonical_key,t.canonical_title,t.kind,t.domain,t.metadata_json,
-      COUNT(DISTINCT b.product_version) AS version_count, COUNT(DISTINCT b.document_id) AS revision_count,
+      COUNT(DISTINCT b.product_version) AS version_count, COUNT(DISTINCT COALESCE(json_extract(p.metadata_json, '$.normalizedContentSha256'), b.document_id)) AS revision_count,
       MAX(b.updated_at) AS updated_at,
       GROUP_CONCAT(DISTINCT b.product_version) AS versions
-      FROM knowledge_topics t JOIN knowledge_product_document_bindings b ON b.topic_id=t.id
+      FROM knowledge_topics t JOIN knowledge_product_document_bindings b ON b.topic_id=t.id JOIN knowledge_product_documents p ON p.id=b.document_id
       WHERE ${where.join(" AND ")} GROUP BY t.id ORDER BY t.canonical_title LIMIT ? OFFSET ?`).all(...params, limit, offset) as KnowledgeRow[];
     const total = store.db.prepare(`SELECT COUNT(*) AS count FROM (SELECT t.id FROM knowledge_topics t JOIN knowledge_product_document_bindings b ON b.topic_id=t.id WHERE ${where.join(" AND ")} GROUP BY t.id)`).get(...params) as { count?: number };
     return reply.send({ topics: rows.map((row) => ({ ...row, versions: String(row.versions ?? "").split(",").filter(Boolean), versionCount: Number(row.version_count ?? 0), revisionCount: Number(row.revision_count ?? 0), metadata: safeRows(() => JSON.parse(String(row.metadata_json ?? "{}")), {}) })), page: { limit, offset, total: Number(total.count ?? 0) } });

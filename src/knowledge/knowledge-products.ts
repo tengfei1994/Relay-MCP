@@ -22,6 +22,8 @@ export interface ProductDocumentImportOptions {
   manifestPath?: string;
   idempotencyKey?: string;
   sourceCommit?: string;
+  /** Async worker supplied real PDF text; sync callers retain bounded fallback behavior. */
+  pdfText?: Record<string, string>;
 }
 
 export interface ProductDocumentImportReport {
@@ -182,7 +184,7 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
       const ext = extname(path).toLowerCase();
       const htmlParsed = ext === ".html" || ext === ".htm" ? parseHelpHtml(raw.toString("utf8")) : undefined;
       const tocEntries = ext === ".js" ? parseToc(raw.toString("utf8")) : [];
-      const body = ext === ".pdf" ? pdfToText(raw) : ext === ".chm" ? `[CHM archive: ${raw.length} bytes; extraction is staged for the CHM parser]` : tocEntries.length ? `# Navigation\n\n${tocEntries.map((entry) => `- ${entry.title} -> ${entry.path}`).join("\n")}` : htmlParsed?.text ?? raw.toString("utf8");
+      const body = ext === ".pdf" ? (options.pdfText?.[path] ?? pdfToText(raw)) : ext === ".chm" ? `[CHM archive: ${raw.length} bytes; extraction is staged for the CHM parser]` : tocEntries.length ? `# Navigation\n\n${tocEntries.map((entry) => `- ${entry.title} -> ${entry.path}`).join("\n")}` : htmlParsed?.text ?? raw.toString("utf8");
       const sourceHash = sha256(raw);
       sourceHashes.push(`${relativePath}:${sourceHash}`);
       const parsed = infer(relativePath, body, local.documentFamilyId, local.documentType, local.module, ext === ".html" || ext === ".htm" ? raw.toString("utf8") : undefined);

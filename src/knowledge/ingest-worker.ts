@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { extname, join, resolve } from "node:path";
 import type { KnowledgeStore } from "./store.js";
 import { importKnowledgeProducts, type ProductDocumentImportOptions, type ProductDocumentImportReport } from "./knowledge-products.js";
 import { ingestArtifactSet, type ArtifactIngestReport } from "./artifact-ingest.js";
+import { parsePdfBytes } from "./parsers.js";
 
 export interface IngestJob { id: string; kind: string; status: string; result?: unknown; error?: string; }
+function pdfFiles(root: string): string[] { if (!existsSync(root) || statSync(root).isFile()) return extname(root).toLowerCase() === ".pdf" ? [root] : []; return readdirSync(root, { withFileTypes: true }).flatMap((entry) => { const path = join(root, entry.name); return entry.isDirectory() ? pdfFiles(path) : extname(path).toLowerCase() === ".pdf" ? [path] : []; }); }
 
 export function enqueueProductImport(store: KnowledgeStore, options: ProductDocumentImportOptions): IngestJob {
   const id = randomUUID(); const now = new Date().toISOString();
@@ -23,6 +27,7 @@ export async function runIngestJob(store: KnowledgeStore, id: string): Promise<I
   const now = new Date().toISOString(); store.db.prepare("UPDATE knowledge_ingest_jobs SET status='running',attempts=attempts+1,started_at=?,updated_at=? WHERE id=? AND status='queued'").run(now, now, id);
   try {
     const options = JSON.parse(String(row.payload_json)) as ProductDocumentImportOptions; const kind = store.db.prepare("SELECT kind FROM knowledge_ingest_jobs WHERE id=?").get(id) as { kind: string };
+    if (kind.kind === "product_documents") { const pdfText: Record<string, string> = { ...(options.pdfText ?? {}) }; for (const path of pdfFiles(resolve(options.root))) pdfText[path] = await parsePdfBytes(readFileSync(path)); options.pdfText = pdfText; }
     const result: ProductDocumentImportReport | ArtifactIngestReport = kind.kind === "artifact_set" ? ingestArtifactSet(store, options as never) : importKnowledgeProducts(store, options);
     const resultStatus = kind.kind === "artifact_set" ? "succeeded" : (result as ProductDocumentImportReport).status;
     store.db.prepare("UPDATE knowledge_ingest_jobs SET status=?,finished_at=?,result_json=?,updated_at=? WHERE id=?").run(resultStatus === "failed" ? "failed" : "succeeded", new Date().toISOString(), JSON.stringify(result), new Date().toISOString(), id);

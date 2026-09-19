@@ -1,4 +1,5 @@
 /** Small, dependency-free parsers used by the Product/Solution ingestion boundary. */
+import { PDFParse } from "pdf-parse";
 export interface ParsedHelpHtml { text: string; title?: string; stableIdentifiers: Record<string, string>; links: string[]; images: string[]; sourceFormat: "madcap-html" | "innovasys-html" | "html"; }
 
 function decode(value: string): string { return value.replace(/&nbsp;|&#160;|&#xA0;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'"); }
@@ -22,3 +23,8 @@ export function parseToc(source: string): Array<{ title: string; path: string; h
 }
 
 export function parseChmExtractedHtml(source: string): ParsedHelpHtml { return { ...parseHelpHtml(source), sourceFormat: "html" }; }
+
+export async function parsePdfBytes(bytes: Uint8Array): Promise<string> {
+  const parser = new PDFParse({ data: bytes });
+  try { return (await parser.getText()).text.trim(); } finally { await parser.destroy(); }
+}

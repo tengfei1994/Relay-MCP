@@ -11,6 +11,8 @@ import { importCasebook, importContextFacts } from "../../knowledge/importer.js"
 import { analyzeRelationImpact, queryRelations } from "../../knowledge/relations.js";
 import { searchKnowledge } from "../../knowledge/retriever.js";
 import { importKnowledgeProducts, searchKnowledgeProducts, diffKnowledgeProducts, updateProductDocumentLifecycle } from "../../knowledge/knowledge-products.js";
+import { ingestArtifactSet, ingestProjectSnapshot } from "../../knowledge/artifact-ingest.js";
+import { compareSourceBaselines, type SourceManifest } from "../../knowledge/source-baseline.js";
 import { classifyRelayEvent } from "../../knowledge/event-classifier.js";
 import { describeCandidate } from "../../knowledge/candidate-narrative.js";
 import { readDeadLetterPage } from "../../knowledge/dead-letter-page.js";
@@ -885,6 +887,37 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       }, body.data);
       return reply.send(result);
     } catch (error) { return sendError(reply, error, 400); }
+  });
+
+  app.post("/api/knowledge/artifact-sets/import", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const body = z.object({ source: z.string().min(1), name: z.string().min(1), kind: z.string().optional(), version: z.string().optional(), solution: z.string().optional(), storageUri: z.string().optional() }).safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: "Invalid artifact import request", details: body.error.issues });
+    try { const report = ingestArtifactSet(getKnowledgeStore(), body.data); return reply.send(report); } catch (error) { return sendError(reply, error, 400); }
+  });
+  app.get("/api/knowledge/artifact-sets", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const store = getKnowledgeStore(); const q = request.query as Record<string, unknown>; const limit = parseBoundedInt(q.limit, 100, 1, 500);
+    const sets = store.db.prepare("SELECT s.*, (SELECT COUNT(*) FROM knowledge_artifacts a WHERE a.set_id=s.id) AS file_count FROM knowledge_artifact_sets s ORDER BY s.created_at DESC LIMIT ?").all(limit);
+    return reply.send({ sets });
+  });
+  app.post("/api/knowledge/project-snapshots/import", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const body = z.object({ source: z.string().min(1), name: z.string().min(1), projectId: z.string().optional(), version: z.string().optional(), storageUri: z.string().optional() }).safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: "Invalid project snapshot request", details: body.error.issues });
+    try { return reply.send(ingestProjectSnapshot(getKnowledgeStore(), body.data)); } catch (error) { return sendError(reply, error, 400); }
+  });
+  app.get("/api/knowledge/source-baselines/:id/files", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const id = String((request.params as { id: string }).id); const store = getKnowledgeStore();
+    const baseline = store.db.prepare("SELECT * FROM knowledge_source_baselines WHERE id=?").get(id); if (!baseline) return reply.status(404).send({ error: "Source baseline not found" });
+    return reply.send({ baseline, files: store.db.prepare("SELECT relative_path AS path,sha256,size_bytes AS size,language,storage_uri FROM knowledge_source_files WHERE baseline_id=? ORDER BY relative_path").all(id) });
+  });
+  app.post("/api/knowledge/source-baselines/compare", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const body = z.object({ oldBaselineId: z.string(), projectSnapshotId: z.string(), newBaselineId: z.string() }).safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: "Invalid baseline comparison request", details: body.error.issues });
+    const store = getKnowledgeStore();
+    const manifest = (table: string, id: string): SourceManifest => {
+      const rows = store.db.prepare(`SELECT relative_path AS path,sha256,size_bytes AS size,language FROM ${table} WHERE ${table === "knowledge_project_snapshot_files" ? "snapshot_id" : "baseline_id"}=? ORDER BY relative_path`).all(id) as Array<{ path: string; sha256: string; size: number; language?: string }>;
+      if (!rows.length) throw new Error("Source snapshot not found or empty"); return { root: id, files: rows, sha256: createHash("sha256").update(JSON.stringify(rows)).digest("hex") };
+    };
+    try { return reply.send({ changes: compareSourceBaselines(manifest("knowledge_source_files", body.data.oldBaselineId), manifest("knowledge_project_snapshot_files", body.data.projectSnapshotId), manifest("knowledge_source_files", body.data.newBaselineId)) }); } catch (error) { return sendError(reply, error, 404); }
   });
 
   // Logical Product Knowledge topics. These sit above the legacy

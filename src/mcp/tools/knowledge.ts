@@ -7,6 +7,7 @@ import { searchKnowledge } from "../../knowledge/retriever.js";
 import type { KnowledgeStore } from "../../knowledge/store.js";
 import { summarizeJson } from "../../shared/output.js";
 import { EvidenceStore } from "../../knowledge/evidence-store.js";
+import { compareSourceBaselines, type SourceManifest } from "../../knowledge/source-baseline.js";
 
 /**
  * P00 extension boundary. Knowledge tools arrive in P01 and must be registered
@@ -19,6 +20,15 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
     : { server: context as McpServer, user: { id: 0, username: "boundary" } };
   const { server, user, knowledge, resolveProjectName } = ctx;
   const requireKnowledge = () => { if (!knowledge) throw new Error("Knowledge Plane is unavailable"); return knowledge; };
+  const sourceManifest = (store: KnowledgeStore, id: string, snapshot = false): SourceManifest => {
+    const table = snapshot ? "knowledge_project_snapshot_files" : "knowledge_source_files"; const key = snapshot ? "snapshot_id" : "baseline_id";
+    const rows = store.db.prepare(`SELECT relative_path AS path,sha256,size_bytes AS size,language FROM ${table} WHERE ${key}=? ORDER BY relative_path`).all(id) as SourceManifest["files"];
+    if (!rows.length) throw new Error("Source baseline or project snapshot not found"); return { root: id, files: rows, sha256: id };
+  };
+  const assertPublishedBaseline = (store: KnowledgeStore, id: string) => {
+    const row = store.db.prepare(`SELECT p.status FROM knowledge_source_baselines b JOIN knowledge_artifact_publications p ON p.artifact_set_id=b.artifact_set_id WHERE b.id=?`).get(id) as { status?: string } | undefined;
+    if (row?.status !== "published") throw new Error("Source baseline is not published");
+  };
   const project = (name?: string) => resolveProjectName?.(name) ?? user.defaultProject;
   const canReadDocument = (store: KnowledgeStore, row: Record<string, unknown>, targetProjectId?: string): boolean => {
     const sourceProjectId = row.project_id === null || row.project_id === undefined ? undefined : String(row.project_id);
@@ -111,6 +121,38 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
     const result = { ok: true, projectId, documents, facts, embeddingsInvalidated: Boolean(invalidateEmbeddings), completedAt: new Date().toISOString() };
     store.audit({ actorId: user.id, projectId, action: "knowledge.reindex", entityType: "index", entityId: `project:${projectId}`, details: result });
     return { content: [{ type: "text", text: summarizeJson(result) }] };
+  });
+  server.tool("knowledge_source_search", "Search published Product/Solution source chunks with path, symbol, line and version provenance.", { query: z.string().min(1), baselineId: z.string().optional(), projectSnapshotId: z.string().optional(), solution: z.string().optional(), version: z.string().optional(), limit: z.number().int().min(1).max(50).optional() }, async ({ query, baselineId, projectSnapshotId, solution, version, limit }) => {
+    const store = requireKnowledge(); if (!baselineId && !projectSnapshotId) throw new Error("baselineId or projectSnapshotId is required");
+    if (baselineId) assertPublishedBaseline(store, baselineId);
+    if (projectSnapshotId) { const row = store.db.prepare("SELECT project_id FROM knowledge_project_snapshots WHERE id=?").get(projectSnapshotId) as { project_id?: string } | undefined; if (!row || (row.project_id && !store.canRead(user.id, row.project_id))) throw new Error("Knowledge access denied"); }
+    const where = ["knowledge_source_chunks_fts MATCH ?"]; const params: unknown[] = [query];
+    if (baselineId) { where.push("c.baseline_id=?"); params.push(baselineId); } if (projectSnapshotId) { where.push("c.snapshot_id=?"); params.push(projectSnapshotId); }
+    if (solution) { where.push("b.solution=?"); params.push(solution); } if (version) { where.push("b.version=?"); params.push(version); }
+    const rows = store.db.prepare(`SELECT c.id,c.relative_path,c.symbol,c.line_start,c.line_end,c.content,c.content_sha256,c.parser_version,b.solution,b.version FROM knowledge_source_chunks_fts f JOIN knowledge_source_chunks c ON c.id=f.chunk_id LEFT JOIN knowledge_source_baselines b ON b.id=c.baseline_id WHERE ${where.join(" AND ")} ORDER BY rank LIMIT ?`).all(...params, limit ?? 10);
+    return { content: [{ type: "text", text: summarizeJson({ query, results: rows }) }] };
+  });
+  server.tool("knowledge_source_read", "Read one bounded source chunk or file range from a published baseline/project snapshot.", { chunkId: z.string().optional(), baselineId: z.string().optional(), projectSnapshotId: z.string().optional(), path: z.string().optional(), lineStart: z.number().int().min(1).optional(), lineEnd: z.number().int().min(1).optional() }, async ({ chunkId, baselineId, projectSnapshotId, path, lineStart, lineEnd }) => {
+    const store = requireKnowledge(); if (baselineId) assertPublishedBaseline(store, baselineId); if (!chunkId && (!path || (!baselineId && !projectSnapshotId))) throw new Error("chunkId or scoped path is required");
+    const row = chunkId ? store.db.prepare("SELECT * FROM knowledge_source_chunks WHERE id=?").get(chunkId) as Record<string, unknown> | undefined : (store.db.prepare(`SELECT * FROM knowledge_source_chunks WHERE relative_path=? AND ${baselineId ? "baseline_id=?" : "snapshot_id=?"} AND line_end>=? ORDER BY line_start LIMIT 1`).get(path, baselineId ?? projectSnapshotId, lineStart ?? 1) as Record<string, unknown> | undefined);
+    if (!row) throw new Error("Source chunk not found"); if (baselineId && row.baseline_id !== baselineId) throw new Error("Source scope mismatch"); if (projectSnapshotId && row.snapshot_id !== projectSnapshotId) throw new Error("Source scope mismatch");
+    return { content: [{ type: "text", text: summarizeJson({ path: row.relative_path, symbol: row.symbol, lineStart: row.line_start, lineEnd: row.line_end, content: row.content, contentHash: row.content_sha256, parserVersion: row.parser_version, requestedRange: { lineStart, lineEnd } }) }] };
+  });
+  server.tool("knowledge_topic_get", "Read one logical Product Knowledge topic with all version bindings and revision content.", { topicId: z.string() }, async ({ topicId }) => {
+    const store = requireKnowledge(); const topic = store.db.prepare("SELECT * FROM knowledge_topics WHERE id=?").get(topicId); if (!topic) throw new Error("Knowledge topic not found");
+    const bindings = store.db.prepare(`SELECT b.topic_id,b.product,b.product_version,b.source_path,b.match_method,b.match_confidence,d.id AS document_id,d.title,d.body,d.source_locator,d.source_sha256 FROM knowledge_product_document_bindings b JOIN knowledge_documents d ON d.id=b.document_id WHERE b.topic_id=? ORDER BY b.product_version`).all(topicId);
+    return { content: [{ type: "text", text: summarizeJson({ topic, bindings }) }] };
+  });
+  server.tool("knowledge_topic_diff", "Compare the bound Product Knowledge revisions for two versions of one topic.", { topicId: z.string(), fromVersion: z.string(), toVersion: z.string() }, async ({ topicId, fromVersion, toVersion }) => {
+    const store = requireKnowledge(); const rows = store.db.prepare("SELECT product_version,document_id FROM knowledge_product_document_bindings WHERE topic_id=? AND product_version IN (?,?)").all(topicId, fromVersion, toVersion) as Array<{ product_version: string; document_id: string }>;
+    const ids = new Map(rows.map((row) => [row.product_version, row.document_id])); const left = ids.get(fromVersion), right = ids.get(toVersion); if (!left || !right) throw new Error("Topic versions not found");
+    const load = (id: string) => store.db.prepare("SELECT sections_json FROM knowledge_product_documents WHERE id=?").get(id) as { sections_json?: string };
+    return { content: [{ type: "text", text: summarizeJson({ topicId, fromVersion, toVersion, from: load(left), to: load(right) }) }] };
+  });
+  server.tool("knowledge_solution_upgrade_analysis", "Run a published-baseline three-way upgrade comparison against a project snapshot.", { oldBaselineId: z.string(), currentProjectSnapshotId: z.string(), newBaselineId: z.string(), limit: z.number().int().min(1).max(1000).optional() }, async ({ oldBaselineId, currentProjectSnapshotId, newBaselineId, limit }) => {
+    const store = requireKnowledge(); assertPublishedBaseline(store, oldBaselineId); assertPublishedBaseline(store, newBaselineId);
+    const changes = compareSourceBaselines(sourceManifest(store, oldBaselineId), sourceManifest(store, currentProjectSnapshotId, true), sourceManifest(store, newBaselineId));
+    return { content: [{ type: "text", text: summarizeJson({ oldBaselineId, currentProjectSnapshotId, newBaselineId, changes: changes.slice(0, limit ?? 1000), counts: changes.reduce<Record<string, number>>((acc, item) => { acc[item.status] = (acc[item.status] ?? 0) + 1; return acc; }, {}) }) }] };
   });
 
   // Resource templates keep large document bodies out of search responses and

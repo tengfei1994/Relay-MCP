@@ -29,6 +29,9 @@ import { CHUNK_FTS_OWNERSHIP_MIGRATION } from "./migrations/022-chunk-fts-owners
 import { BUSINESS_CONTEXT_MIGRATION } from "./migrations/023-business-context.js";
 import { PRODUCT_TOPICS_MIGRATION } from "./migrations/024-product-topics.js";
 import { ARTIFACT_BASELINES_MIGRATION } from "./migrations/025-artifact-baselines.js";
+import { SOURCE_INDEX_MIGRATION } from "./migrations/026-source-index.js";
+import { INGEST_JOBS_MIGRATION } from "./migrations/027-ingest-jobs.js";
+import { PRODUCT_REVISIONS_MIGRATION } from "./migrations/028-product-revisions.js";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
 import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type CandidateCard, type KnowledgeDocument, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeBinding, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
@@ -70,6 +73,9 @@ const KNOWLEDGE_MIGRATIONS = [
   BUSINESS_CONTEXT_MIGRATION,
   PRODUCT_TOPICS_MIGRATION,
   ARTIFACT_BASELINES_MIGRATION,
+  SOURCE_INDEX_MIGRATION,
+  INGEST_JOBS_MIGRATION,
+  PRODUCT_REVISIONS_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(
@@ -208,6 +214,9 @@ export class KnowledgeStore {
           } else if (migration.version === "023-business-context" && /duplicate column name/i.test(String(error))) {
             // One or both additive context columns may have been applied before
             // a process stopped and the migration marker was written.
+          } else if (migration.version === "028-product-revisions" && /duplicate column name/i.test(String(error))) {
+            // The revision_id column may have been added before a crash; the
+            // repair pass below completes the table and index.
           } else throw error;
         }
         insert.run(migration.version, this.now().toISOString());
@@ -217,7 +226,7 @@ export class KnowledgeStore {
     // Databases created by the early P01 preview may already carry the
     // 002-domain marker but not the type projections introduced later. Make
     // this additive repair safe and idempotent without rewriting user data.
-    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions", "knowledge_topics", "knowledge_product_document_bindings", "knowledge_artifact_sets", "knowledge_artifacts", "knowledge_source_baselines", "knowledge_source_files", "knowledge_project_snapshots", "knowledge_project_snapshot_files"];
+    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions", "knowledge_topics", "knowledge_product_document_bindings", "knowledge_artifact_sets", "knowledge_artifacts", "knowledge_source_baselines", "knowledge_source_files", "knowledge_project_snapshots", "knowledge_project_snapshot_files", "knowledge_source_chunks", "knowledge_source_chunks_fts", "knowledge_artifact_publications", "knowledge_ingest_jobs", "knowledge_product_revisions"];
     const missingTable = requiredTables.some((name) => !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
     if (missingTable) this.db.exec(KNOWLEDGE_DOMAIN_MIGRATION.sql);
     const columns: Record<string, Array<[string, string]>> = {
@@ -242,6 +251,14 @@ export class KnowledgeStore {
       evidence_refs_json TEXT NOT NULL DEFAULT '[]', source_locator TEXT NOT NULL, source_sha256 TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     ); CREATE INDEX IF NOT EXISTS idx_knowledge_observations_project ON knowledge_observations(project_id, created_at);`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS knowledge_product_revisions (
+      id TEXT PRIMARY KEY, normalized_content_sha256 TEXT NOT NULL UNIQUE, raw_sha256 TEXT,
+      title TEXT NOT NULL, body TEXT NOT NULL, sections_json TEXT NOT NULL DEFAULT '[]', parser_version TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );`);
+    const productColumns = new Set((this.db.prepare("PRAGMA table_info(knowledge_product_documents)").all() as Array<{ name: string }>).map((column) => column.name));
+    if (!productColumns.has("revision_id")) this.db.exec("ALTER TABLE knowledge_product_documents ADD COLUMN revision_id TEXT");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_product_documents_revision ON knowledge_product_documents(revision_id)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_knowledge_evidence_environment ON knowledge_evidence(environment, created_at);");
     this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_ingest_idempotency
       ON knowledge_ingest_runs(operation_idempotency_key)
@@ -546,7 +563,10 @@ export class KnowledgeStore {
   private syncDocumentChunks(document: KnowledgeDocument): void {
     const chunkSize = 2_000;
     const chunks: string[] = [];
-    for (let offset = 0; offset < document.body.length; offset += chunkSize) chunks.push(document.body.slice(offset, offset + chunkSize));
+    // Prefer semantic document sections (the Product parser emits Markdown
+    // heading boundaries) and retain a bounded fallback for long sections.
+    const sections = document.body.split(/(?=^#{1,6}\s+)/m).map((section) => section.trim()).filter(Boolean);
+    for (const section of (sections.length ? sections : [document.body])) for (let offset = 0; offset < section.length; offset += chunkSize) chunks.push(section.slice(offset, offset + chunkSize));
     if (chunks.length === 0) chunks.push("");
     const remove = this.db.prepare("DELETE FROM knowledge_chunks WHERE document_id = ?");
     const insert = this.db.prepare("INSERT INTO knowledge_chunks(id,document_id,ordinal,content,content_sha256) VALUES (?,?,?,?,?)");

@@ -362,6 +362,11 @@ Knowledge 审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [`d
 | Context | `knowledge_feedback` | 记录检索结果是否有帮助，不直接修改 Casebook 或生产 Skill。 |
 | Context | `knowledge_ingest` | 幂等导入 Git Casebook Markdown/YAML 与 legacy context JSONL。 |
 | Context | `knowledge_reindex` | 重建 Project 范围的 FTS 索引，并可受控地失效 embedding 缓存。 |
+| Context | `knowledge_source_search` | 检索已发布 Product/Solution 源码块并返回路径、符号、行号和版本证据。 |
+| Context | `knowledge_source_read` | 读取已发布基线或项目快照中的有界源码片段。 |
+| Context | `knowledge_topic_get` | 读取逻辑 Product Knowledge 主题及其版本绑定。 |
+| Context | `knowledge_topic_diff` | 比较同一主题的两个产品版本。 |
+| Context | `knowledge_solution_upgrade_analysis` | 对 Old Baseline、Current Project、New Baseline 执行升级分析。 |
 | SampleManager | `samplemanager_capabilities` | 解析实例使用的版本化 Capability Pack，并列出已就绪、规划中和不可用的语义检查能力。 |
 | SampleManager | `samplemanager_instance_preflight` | 一次性只读检查实例目录、指定文件哈希/XML、FormsBin、服务、进程和近期错误摘要。 |
 | SampleManager | `samplemanager_diagnose` | 组合版本过滤的 Knowledge 检索与 Form/Task/Assembly 只读检查；不执行 deploy、restart、clear 或 SQL mutation。 |

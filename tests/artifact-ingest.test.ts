@@ -14,5 +14,7 @@ test("artifact ingest records metadata and creates source baseline without execu
   assert.equal(report.files.length, 2); assert.ok(report.baselineId);
   assert.equal(store.db.prepare("SELECT category FROM knowledge_artifacts WHERE relative_path='setup.exe'").get()?.category, "installer");
   assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_source_files WHERE baseline_id=?").get(report.baselineId)?.n, 1);
+  assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_source_chunks WHERE baseline_id=?").get(report.baselineId)?.n, 1);
+  assert.equal(store.db.prepare("SELECT status FROM knowledge_artifact_sets WHERE id=?").get(report.setId)?.status, "staged");
   store.close(); rmSync(root, { recursive: true, force: true });
 });

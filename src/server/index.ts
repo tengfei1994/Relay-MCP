@@ -21,6 +21,8 @@ import { instanceRoutes } from "./routes/instances.js";
 import { toolRoutes } from "./routes/tools.js";
 import { knowledgeRoutes } from "./routes/knowledge.js";
 import { requireJwtSecret } from "../shared/auth-secret.js";
+import { getKnowledgeStore } from "./knowledge-context.js";
+import { runPendingIngestJobs } from "../knowledge/ingest-worker.js";
 
 declare module "@fastify/jwt" {
   interface FastifyJWT {
@@ -116,6 +118,10 @@ await app.register(agentTokenRoutes);
 await app.register(instanceRoutes);
 await app.register(toolRoutes);
 await app.register(knowledgeRoutes);
+// Resume durable document imports after a process restart. The worker claims
+// only queued rows and keeps the HTTP server responsive while large packages
+// are parsed.
+void runPendingIngestJobs(getKnowledgeStore()).catch((error) => app.log.error(error, "knowledge ingest recovery failed"));
 
 // Health check
 app.get("/api/health", async () => ({

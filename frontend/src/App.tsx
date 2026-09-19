@@ -12,6 +12,7 @@ import KnowledgeOverview from "./pages/KnowledgeOverview";
 import KnowledgeProduct from "./pages/KnowledgeProduct";
 import KnowledgeProject from "./pages/KnowledgeProject";
 import KnowledgeOperations from "./pages/KnowledgeOperations";
+import KnowledgeSource from "./pages/KnowledgeSource";
 import Layout from "./components/Layout";
 
 interface AuthCtx {
@@ -87,6 +88,7 @@ export default function App() {
           <Route path="knowledge/product-docs/imports" element={<KnowledgeProduct />} />
           <Route path="knowledge/product-docs/versions" element={<KnowledgeProduct />} />
           <Route path="knowledge/product-docs/search" element={<KnowledgeProduct />} />
+          <Route path="knowledge/solution" element={<KnowledgeSource />} />
           <Route path="knowledge/evidence" element={<KnowledgeProject />} />
           <Route path="knowledge/observations" element={<KnowledgeProject />} />
           <Route path="knowledge/candidates" element={<KnowledgeProject />} />

@@ -12,6 +12,7 @@ import { analyzeRelationImpact, queryRelations } from "../../knowledge/relations
 import { searchKnowledge } from "../../knowledge/retriever.js";
 import { importKnowledgeProducts, searchKnowledgeProducts, diffKnowledgeProducts, updateProductDocumentLifecycle } from "../../knowledge/knowledge-products.js";
 import { ingestArtifactSet, ingestProjectSnapshot } from "../../knowledge/artifact-ingest.js";
+import { enqueueProductImport } from "../../knowledge/ingest-worker.js";
 import { compareSourceBaselines, type SourceManifest } from "../../knowledge/source-baseline.js";
 import { classifyRelayEvent } from "../../knowledge/event-classifier.js";
 import { describeCandidate } from "../../knowledge/candidate-narrative.js";
@@ -792,13 +793,18 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   });
 
   app.post("/api/knowledge/product-docs/import", { onRequest: [app.authenticate] }, async (request, reply) => {
-    const body = z.object({ root: z.string().min(1).optional(), projectId: z.number().int().positive().optional(), path: z.string().min(1).optional(), product: z.string().max(200).optional(), sampleManagerVersion: z.string().max(80).optional(), solution: z.string().max(200).optional(), module: z.string().max(200).optional(), language: z.string().max(20).optional(), authority: z.string().max(80).optional(), documentFamilyId: z.string().max(200).optional(), manifestPath: z.string().min(1).optional() }).refine((value) => Boolean(value.root || (value.projectId && value.path)), "root or projectId/path is required").safeParse(request.body);
+    const body = z.object({ root: z.string().min(1).optional(), projectId: z.number().int().positive().optional(), path: z.string().min(1).optional(), product: z.string().max(200).optional(), sampleManagerVersion: z.string().max(80).optional(), solution: z.string().max(200).optional(), module: z.string().max(200).optional(), language: z.string().max(20).optional(), authority: z.string().max(80).optional(), documentFamilyId: z.string().max(200).optional(), manifestPath: z.string().min(1).optional(), asynchronous: z.boolean().optional().default(true) }).refine((value) => Boolean(value.root || (value.projectId && value.path)), "root or projectId/path is required").safeParse(request.body);
     if (!body.success) return reply.status(400).send({ error: "Invalid product document import", details: body.error.issues });
     if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
     try {
       const root = body.data.root ?? (() => { const project = db.select().from(projects).where(and(eq(projects.id, body.data.projectId!), eq(projects.userId, request.user.id))).get(); if (!project) throw new Error("Project not found"); return resolveWorkspacePath(project.workspacePath, body.data.path!, { mustExist: true }); })();
       if (!existsSync(root)) return reply.status(403).send({ error: "An existing source directory is required" });
       const store = getKnowledgeStore(); const key = idempotencyKey(request);
+      if (body.data.asynchronous) {
+        const job = enqueueProductImport(store, { ...body.data, root, sampleManagerVersion: body.data.sampleManagerVersion ?? "", idempotencyKey: key });
+        store.audit({ actorId: request.user.id, action: "knowledge.product_documents.import_queued", entityType: "ingest_job", entityId: job.id, details: { root, key } });
+        return reply.status(202).send(job);
+      }
       const report = replayOrRun(store, request.user.id, "product-documents:import", key, () => importKnowledgeProducts(store, { ...body.data, root, sampleManagerVersion: body.data.sampleManagerVersion ?? "", idempotencyKey: key }), body.data);
       store.audit({ actorId: request.user.id, action: "knowledge.product_documents.import", entityType: "product_document_batch", entityId: report.runId, details: { ...report } });
       return reply.send(report);
@@ -899,10 +905,28 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     const sets = store.db.prepare("SELECT s.*, (SELECT COUNT(*) FROM knowledge_artifacts a WHERE a.set_id=s.id) AS file_count FROM knowledge_artifact_sets s ORDER BY s.created_at DESC LIMIT ?").all(limit);
     return reply.send({ sets });
   });
+  app.post("/api/knowledge/artifact-sets/:id/publish", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const id = String((request.params as { id: string }).id); const store = getKnowledgeStore(); const exists = store.db.prepare("SELECT id FROM knowledge_artifact_sets WHERE id=?").get(id);
+    if (!exists) return reply.status(404).send({ error: "Artifact set not found" });
+    const now = new Date().toISOString(); store.db.transaction(() => { store.db.prepare("UPDATE knowledge_artifact_sets SET status='published',updated_at=? WHERE id=?").run(now, id); store.db.prepare("INSERT INTO knowledge_artifact_publications(artifact_set_id,status,published_by,published_at) VALUES(?,?,?,?) ON CONFLICT(artifact_set_id) DO UPDATE SET status='published',published_by=excluded.published_by,published_at=excluded.published_at,retired_at=NULL").run(id, "published", request.user.id, now); })();
+    store.audit({ actorId: request.user.id, action: "knowledge.artifact_set.publish", entityType: "artifact_set", entityId: id }); return reply.send({ ok: true, id, status: "published", publishedAt: now });
+  });
+  app.post("/api/knowledge/artifact-sets/:id/retire", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const id = String((request.params as { id: string }).id); const store = getKnowledgeStore(); const now = new Date().toISOString(); const result = store.db.prepare("UPDATE knowledge_artifact_sets SET status='retired',updated_at=? WHERE id=?").run(now, id);
+    if (!result.changes) return reply.status(404).send({ error: "Artifact set not found" }); store.db.prepare("UPDATE knowledge_artifact_publications SET status='retired',retired_at=? WHERE artifact_set_id=?").run(now, id); store.audit({ actorId: request.user.id, action: "knowledge.artifact_set.retire", entityType: "artifact_set", entityId: id }); return reply.send({ ok: true, id, status: "retired" });
+  });
   app.post("/api/knowledge/project-snapshots/import", { onRequest: [app.authenticate] }, async (request, reply) => {
     const body = z.object({ source: z.string().min(1), name: z.string().min(1), projectId: z.string().optional(), version: z.string().optional(), storageUri: z.string().optional() }).safeParse(request.body);
     if (!body.success) return reply.status(400).send({ error: "Invalid project snapshot request", details: body.error.issues });
     try { return reply.send(ingestProjectSnapshot(getKnowledgeStore(), body.data)); } catch (error) { return sendError(reply, error, 400); }
+  });
+  app.get("/api/knowledge/source-search", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const q = request.query as Record<string, unknown>; const query = queryValue(q, "query") ?? queryValue(q, "q"); if (!query) return reply.status(400).send({ error: "query is required" }); const store = getKnowledgeStore(); const baselineId = queryValue(q, "baselineId"); const snapshotId = queryValue(q, "projectSnapshotId");
+    if (!baselineId && !snapshotId) return reply.status(400).send({ error: "baselineId or projectSnapshotId is required" }); if (baselineId) { const published = store.db.prepare("SELECT 1 FROM knowledge_source_baselines b JOIN knowledge_artifact_publications p ON p.artifact_set_id=b.artifact_set_id AND p.status='published' WHERE b.id=?").get(baselineId); if (!published) return reply.status(409).send({ error: "Source baseline is not published" }); }
+    if (snapshotId) { const snapshot = store.db.prepare("SELECT project_id FROM knowledge_project_snapshots WHERE id=?").get(snapshotId) as { project_id?: string } | undefined; if (!snapshot) return reply.status(404).send({ error: "Project snapshot not found" }); if (snapshot.project_id && !store.canRead(request.user.id, snapshot.project_id)) return reply.status(403).send({ error: "Knowledge access denied" }); }
+    const limit = parseBoundedInt(q.limit, 10, 1, 50); const where = ["knowledge_source_chunks_fts MATCH ?"]; const params: unknown[] = [query]; if (baselineId) { where.push("c.baseline_id=?"); params.push(baselineId); } if (snapshotId) { where.push("c.snapshot_id=?"); params.push(snapshotId); }
+    const rows = store.db.prepare(`SELECT c.id,c.relative_path,c.symbol,c.line_start,c.line_end,c.content,c.content_sha256,c.parser_version,b.solution,b.version FROM knowledge_source_chunks_fts f JOIN knowledge_source_chunks c ON c.id=f.chunk_id LEFT JOIN knowledge_source_baselines b ON b.id=c.baseline_id WHERE ${where.join(" AND ")} ORDER BY rank LIMIT ?`).all(...params, limit);
+    return reply.send({ results: rows, page: { limit, total: rows.length } });
   });
   app.get("/api/knowledge/source-baselines/:id/files", { onRequest: [app.authenticate] }, async (request, reply) => {
     const id = String((request.params as { id: string }).id); const store = getKnowledgeStore();
@@ -913,6 +937,10 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     const body = z.object({ oldBaselineId: z.string(), projectSnapshotId: z.string(), newBaselineId: z.string() }).safeParse(request.body);
     if (!body.success) return reply.status(400).send({ error: "Invalid baseline comparison request", details: body.error.issues });
     const store = getKnowledgeStore();
+    const published = store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_source_baselines b JOIN knowledge_artifact_publications p ON p.artifact_set_id=b.artifact_set_id AND p.status='published' WHERE b.id IN (?,?)").get(body.data.oldBaselineId, body.data.newBaselineId) as { n?: number };
+    if (Number(published.n ?? 0) !== 2) return reply.status(409).send({ error: "Both source baselines must be published" });
+    const snapshot = store.db.prepare("SELECT project_id FROM knowledge_project_snapshots WHERE id=?").get(body.data.projectSnapshotId) as { project_id?: string } | undefined;
+    if (!snapshot) return reply.status(404).send({ error: "Project snapshot not found" }); if (snapshot.project_id && !store.canRead(request.user.id, snapshot.project_id)) return reply.status(403).send({ error: "Knowledge access denied" });
     const manifest = (table: string, id: string): SourceManifest => {
       const rows = store.db.prepare(`SELECT relative_path AS path,sha256,size_bytes AS size,language FROM ${table} WHERE ${table === "knowledge_project_snapshot_files" ? "snapshot_id" : "baseline_id"}=? ORDER BY relative_path`).all(id) as Array<{ path: string; sha256: string; size: number; language?: string }>;
       if (!rows.length) throw new Error("Source snapshot not found or empty"); return { root: id, files: rows, sha256: createHash("sha256").update(JSON.stringify(rows)).digest("hex") };
@@ -1006,6 +1034,10 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     if (!run) return reply.status(404).send({ error: "Ingest run not found" });
     const items = safeRows(() => store.db.prepare("SELECT id,relative_path,document_id,status,source_sha256,metadata_json,warning,error,created_at,updated_at FROM knowledge_product_document_items WHERE run_id=? ORDER BY relative_path").all(id), []);
     return reply.send({ run, items });
+  });
+  app.get("/api/knowledge/ingest-jobs/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const id = String((request.params as { id: string }).id); const store = getKnowledgeStore(); const row = store.db.prepare("SELECT id,kind,status,attempts,available_at,started_at,finished_at,result_json,error,created_at,updated_at FROM knowledge_ingest_jobs WHERE id=?").get(id) as KnowledgeRow | undefined;
+    if (!row) return reply.status(404).send({ error: "Ingest job not found" }); return reply.send({ job: { ...row, result: row.result_json ? safeRows(() => JSON.parse(String(row.result_json)), undefined) : undefined } });
   });
 
   app.post("/api/knowledge/product-documents/imports/:id/retry", { onRequest: [app.authenticate] }, async (request, reply) => {

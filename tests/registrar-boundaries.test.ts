@@ -82,7 +82,7 @@ function registerByDomain(): Record<string, string[]> {
 test("every registrar owns an exact tool set, domains never overlap, and the union equals the catalog", () => {
   const sets = registerByDomain();
 
-  assert.deepEqual(sets.knowledge, ["knowledge_evidence_get", "knowledge_feedback", "knowledge_get", "knowledge_ingest", "knowledge_playbook_get", "knowledge_reindex", "knowledge_relation_query", "knowledge_search"]);
+  assert.deepEqual(sets.knowledge, ["knowledge_evidence_get", "knowledge_feedback", "knowledge_get", "knowledge_ingest", "knowledge_playbook_get", "knowledge_reindex", "knowledge_relation_query", "knowledge_search", "knowledge_solution_upgrade_analysis", "knowledge_source_read", "knowledge_source_search", "knowledge_topic_diff", "knowledge_topic_get"]);
   assert.deepEqual(sets.diagnostics, ["samplemanager_diagnose", "samplemanager_impact_analysis"]);
 
   const seen = new Map<string, string>();

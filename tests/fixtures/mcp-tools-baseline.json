@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "generatedFrom": "McpServer tools/list",
   "sourceVersion": {
-    "gitCommit": "06a05bd013592db34bf4f52e184790c97046e1ae",
+    "gitCommit": "80d4054fc5e1c3ecc5771e0714be242b8b15566d",
     "mcpSdkVersion": "1.29.0",
     "generationCommand": "npm run generate:mcp-baseline",
-    "generatedAt": "2026-09-13T14:58:09.668Z",
+    "generatedAt": "2026-09-19T15:49:56.798Z",
     "worktreeDirty": true
   },
   "tools": [
@@ -774,6 +774,164 @@
         },
         "required": [
           "query"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_solution_upgrade_analysis",
+      "description": "Run a published-baseline three-way upgrade comparison against a project snapshot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "oldBaselineId": {
+            "type": "string"
+          },
+          "currentProjectSnapshotId": {
+            "type": "string"
+          },
+          "newBaselineId": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "oldBaselineId",
+          "currentProjectSnapshotId",
+          "newBaselineId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_source_read",
+      "description": "Read one bounded source chunk or file range from a published baseline/project snapshot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "chunkId": {
+            "type": "string"
+          },
+          "baselineId": {
+            "type": "string"
+          },
+          "projectSnapshotId": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "lineStart": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "lineEnd": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_source_search",
+      "description": "Search published Product/Solution source chunks with path, symbol, line and version provenance.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "baselineId": {
+            "type": "string"
+          },
+          "projectSnapshotId": {
+            "type": "string"
+          },
+          "solution": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_topic_diff",
+      "description": "Compare the bound Product Knowledge revisions for two versions of one topic.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "topicId": {
+            "type": "string"
+          },
+          "fromVersion": {
+            "type": "string"
+          },
+          "toVersion": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "topicId",
+          "fromVersion",
+          "toVersion"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_topic_get",
+      "description": "Read one logical Product Knowledge topic with all version bindings and revision content.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "topicId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "topicId"
         ],
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
@@ -1838,6 +1996,17 @@
                     ]
                   }
                 },
+                "readbackKey": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean"
+                    ]
+                  },
+                  "description": "Stable post-mutation primary/composite key for one row. Unlike where, this must describe the row after the change."
+                },
                 "expectedAffectedRows": {
                   "type": "integer",
                   "minimum": 0,
@@ -1915,6 +2084,26 @@
           "preflightOnly": {
             "type": "boolean",
             "description": "Validate build inputs and target context without building, deploying, or restarting."
+          },
+          "expectedCurrentTargetSha256": {
+            "type": "string",
+            "pattern": "^[A-Fa-f0-9]{64}$",
+            "description": "Abort before backup/copy unless the currently deployed DLL has this SHA-256."
+          },
+          "expectedBuiltAssemblySha256": {
+            "type": "string",
+            "pattern": "^[A-Fa-f0-9]{64}$",
+            "description": "Abort before copy unless the newly built DLL has this SHA-256."
+          },
+          "expectedProjectSha256": {
+            "type": "string",
+            "pattern": "^[A-Fa-f0-9]{64}$",
+            "description": "Abort unless the project/solution file matches this source baseline hash."
+          },
+          "expectedSourceCommit": {
+            "type": "string",
+            "pattern": "^[A-Fa-f0-9]{7,64}$",
+            "description": "Abort unless the remote source Git HEAD starts with this commit."
           },
           "restart": {
             "type": "boolean",
@@ -2296,6 +2485,16 @@
             "type": "boolean",
             "description": "Skip the copy when source and target SHA-256 already match; default true"
           },
+          "expectedCurrentTargetSha256": {
+            "type": "string",
+            "pattern": "^[A-Fa-f0-9]{64}$",
+            "description": "Abort before backup/copy unless the current target has this SHA-256."
+          },
+          "expectedSourceSha256": {
+            "type": "string",
+            "pattern": "^[A-Fa-f0-9]{64}$",
+            "description": "Abort before backup/copy unless the staged source has this SHA-256."
+          },
           "environment": {
             "type": "string"
           },
@@ -2581,6 +2780,174 @@
       }
     },
     {
+      "name": "samplemanager_enh_inspect",
+      "description": "Inspect one ENH dashboard or criteria configuration as a bounded graph of folders, criteria, templates, form configs, grids, columns, grouping, procedures, actions, and navigation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string",
+            "description": "Optional when the selected LIMS instance has a configured database."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "dashboard",
+              "criteria"
+            ],
+            "description": "Inspection focus; default dashboard."
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "dashboardId": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "folderId": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "criteriaId": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "formConfigId": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "entity": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxRows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job; default true."
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_enh_validate_configuration",
+      "description": "Validate one existing or staged ENH configuration for entity keys, field references, grid/template presence, duplicate sequence values, dangling ENH references, and XML/JSON storage formats without mutation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string",
+            "description": "Optional when the selected LIMS instance has a configured database."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "dashboardId": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "folderId": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "criteriaId": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "formConfigId": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "entity": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxRows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job; default true."
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
       "name": "samplemanager_entity_inspect",
       "description": "Run one bounded, read-only SampleManager semantic inspection for Execution readiness, Plate/Batch integrity, Test/Result lineage, or Lab Method definition.",
       "inputSchema": {
@@ -2657,6 +3024,61 @@
         "required": [
           "entryPoint",
           "target"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "samplemanager_entity_schema",
+      "description": "Return combined SQL physical schema, SampleManager logical field metadata, Entity Definition mapping, and serialization-risk evidence for one table/entity.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string",
+            "description": "Optional when the selected LIMS instance has a configured database."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
+          "table": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "entity": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job; default true."
+          }
+        },
+        "required": [
+          "table"
         ],
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
@@ -3814,6 +4236,64 @@
       }
     },
     {
+      "name": "samplemanager_vgl_inspect_entrypoint",
+      "description": "Statically inspect one bounded VGL source entrypoint, including parameters and VALUE/reference passing, constants, JOINs, CALL_ROUTINE edges, and source line evidence.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "serverId": {
+            "type": "integer",
+            "description": "Exact linked server ID."
+          },
+          "serverName": {
+            "type": "string",
+            "description": "Exact linked server display name."
+          },
+          "sourcePath": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "Exact remote .rpf/.sxf source path."
+          },
+          "entrypoint": {
+            "type": "string",
+            "pattern": "^[A-Za-z_$][A-Za-z0-9_$]*$"
+          },
+          "maxCallDepth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "description": "Maximum in-file static call depth; default 6."
+          },
+          "async": {
+            "type": "boolean",
+            "description": "Run as a tracked job; default true."
+          }
+        },
+        "required": [
+          "sourcePath",
+          "entrypoint"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
       "name": "samplemanager_workflow_compare",
       "description": "Compare the current bounded SampleManager Workflow snapshot with a caller-provided export baseline and return normalized node, link, contract, and metadata differences.",
       "inputSchema": {
@@ -4505,6 +4985,26 @@
       "category": "context"
     },
     {
+      "name": "knowledge_source_search",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_source_read",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_topic_get",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_topic_diff",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_solution_upgrade_analysis",
+      "category": "context"
+    },
+    {
       "name": "samplemanager_diagnose",
       "category": "samplemanager",
       "entity": "diagnostic",
@@ -4527,6 +5027,12 @@
       "category": "samplemanager",
       "entity": "instance",
       "capability": "readiness"
+    },
+    {
+      "name": "samplemanager_vgl_inspect_entrypoint",
+      "category": "samplemanager",
+      "entity": "vgl",
+      "capability": "entrypoint"
     },
     {
       "name": "samplemanager_inspect_assembly_type",
@@ -4577,6 +5083,12 @@
       "capability": "schema"
     },
     {
+      "name": "samplemanager_entity_schema",
+      "category": "samplemanager",
+      "entity": "data_model",
+      "capability": "logical_schema"
+    },
+    {
       "name": "samplemanager_read_query_artifact",
       "category": "samplemanager"
     },
@@ -4603,6 +5115,18 @@
       "category": "samplemanager",
       "entity": "plate",
       "capability": "layout_integrity"
+    },
+    {
+      "name": "samplemanager_enh_inspect",
+      "category": "samplemanager",
+      "entity": "enh",
+      "capability": "dashboard"
+    },
+    {
+      "name": "samplemanager_enh_validate_configuration",
+      "category": "samplemanager",
+      "entity": "enh",
+      "capability": "validation"
     },
     {
       "name": "samplemanager_workflow_export",

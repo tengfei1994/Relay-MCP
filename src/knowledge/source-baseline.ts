@@ -23,6 +23,7 @@ export interface ThreeWayChange {
   old?: SourceManifestFile;
   project?: SourceManifestFile;
   next?: SourceManifestFile;
+  potentialConflict?: boolean;
 }
 
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
@@ -65,6 +66,6 @@ export function compareSourceBaselines(oldBaseline: SourceManifest, project: Sou
     else if (oldHash === projectHash && projectHash !== newHash) status = "BASELINE_ONLY";
     else if (oldHash !== projectHash && projectHash === newHash) status = "PROJECT_ONLY";
     else status = "BOTH_CHANGED";
-    return { path, status, ...(oldFile ? { old: oldFile } : {}), ...(projectFile ? { project: projectFile } : {}), ...(newFile ? { next: newFile } : {}) };
+    return { path, status, ...(status === "BOTH_CHANGED" ? { potentialConflict: true } : {}), ...(oldFile ? { old: oldFile } : {}), ...(projectFile ? { project: projectFile } : {}), ...(newFile ? { next: newFile } : {}) };
   });
 }

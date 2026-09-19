@@ -70,3 +70,15 @@ test("HTML help templates preserve semantic headings and structured sections", (
     assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_product_document_bindings").get().count, 2);
   } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test("equivalent content across versions reuses one revision and topic", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-product-revision-")); const firstRoot = join(root, "21.1"); const nextRoot = join(root, "21.3"); mkdirSync(firstRoot); mkdirSync(nextRoot);
+  const html = `<html><head><meta name="AIT_Topic_ID" content="entity-template" /></head><body><h1>Entity Template</h1><p>Configure the entity template.</p></body></html>`;
+  // Create the moved path after the first write so the test mirrors a TOC/path move.
+  mkdirSync(join(firstRoot, "old"), { recursive: true }); writeFileSync(join(firstRoot, "old", "entity-template.html"), html, "utf8"); mkdirSync(join(nextRoot, "config"), { recursive: true }); writeFileSync(join(nextRoot, "config", "entity-template.html"), html, "utf8");
+  const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db"), appDbPath: join(root, "app.db") });
+  try {
+    const a = importKnowledgeProducts(store, { root: firstRoot, sampleManagerVersion: "21.1", product: "SampleManager" }); const b = importKnowledgeProducts(store, { root: nextRoot, sampleManagerVersion: "21.3", product: "SampleManager" });
+    assert.equal(a.imported, 1); assert.equal(b.imported, 1); assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_product_revisions").get().n, 1); assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_topics WHERE canonical_title='Entity Template'").get().n, 1); assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_product_document_bindings WHERE topic_id=(SELECT id FROM knowledge_topics WHERE canonical_title='Entity Template')").get().n, 2);
+  } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});

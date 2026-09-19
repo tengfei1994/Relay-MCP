@@ -5,8 +5,9 @@ import { unzipSync } from "fflate";
 import { parse as parseYaml } from "yaml";
 import { diffLines } from "diff";
 import type { KnowledgeStore } from "./store.js";
+import { parseHelpHtml, parseToc } from "./parsers.js";
 
-const SUPPORTED = new Set([".md", ".markdown", ".html", ".htm", ".pdf"]);
+const SUPPORTED = new Set([".md", ".markdown", ".html", ".htm", ".pdf", ".chm"]);
 
 export interface ProductDocumentImportOptions {
   root: string;
@@ -73,27 +74,9 @@ function files(root: string): string[] {
     const path = join(root, entry);
     const info = statSync(path);
     if (info.isDirectory()) result.push(...files(path));
-    else if (SUPPORTED.has(extname(entry).toLowerCase())) result.push(path);
+    else if (SUPPORTED.has(extname(entry).toLowerCase()) || (extname(entry).toLowerCase() === ".js" && /(?:^|[\\/])(?:_toc|Data[\\/]Tocs)(?:[\\/]|$)/i.test(relative(root, path)))) result.push(path);
   }
   return result;
-}
-function htmlToText(value: string): string {
-  // SampleManager help is published as MadCap or Innovasys HTML. Preserve
-  // semantic headings before stripping tags so the existing section indexer
-  // can work with both templates (which do not use Markdown headings).
-  return value
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<(?:nav|aside|footer|header)[^>]*>[\s\S]*?<\/(?:nav|aside|footer|header)>/gi, "")
-    .replace(/<div[^>]*class=["'][^"']*i-page-title-text[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi, "\n# $1\n")
-    .replace(/<div[^>]*class=["'][^"']*i-section-heading[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi, "\n## $1\n")
-    .replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_match, depth: string, body: string) => `\n${"#".repeat(Number(depth))} ${body}\n`)
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_match, body: string) => `\n\n${body}\n\n`)
-    .replace(/<\/p>|<\/div>|<\/li>|<\/tr>|<\/td>|<\/th>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'")
-    .replace(/\r\n?/g, "\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 function pdfToText(raw: Buffer): string {
   // The Knowledge Plane must retain and index PDFs even when a native PDF
@@ -154,7 +137,9 @@ function expandZip(path: string): string {
   for (const [entry, content] of Object.entries(unzipSync(readFileSync(path)))) {
     const target = resolve(output, entry);
     if (target !== root && !target.startsWith(root + sep)) throw new Error(`ZIP entry escapes extraction root: ${entry}`);
-    if (entry.endsWith("/") || ![...SUPPORTED, ".yaml", ".yml"].includes(extname(entry).toLowerCase())) continue;
+    const entryExt = extname(entry).toLowerCase();
+    const isToc = entryExt === ".js" && /(?:^|[\\/])(?:_toc|Data[\\/]Tocs)(?:[\\/]|$)/i.test(entry);
+    if (entry.endsWith("/") || (![...SUPPORTED, ".yaml", ".yml"].includes(entryExt) && !isToc)) continue;
     mkdirSync(join(target, ".."), { recursive: true }); writeFileSync(target, content);
   }
   return output;
@@ -175,7 +160,7 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
   const existingRun = options.idempotencyKey && hasIdempotencyColumn ? store.db.prepare("SELECT id,status,imported,skipped,failed,error FROM knowledge_ingest_runs WHERE operation_idempotency_key = ?").get(options.idempotencyKey) as Record<string, unknown> | undefined : undefined;
   if (existingRun) return { ...report, runId: String(existingRun.id), status: String(existingRun.status) as ProductDocumentImportReport["status"], imported: Number(existingRun.imported ?? 0), unchanged: Number(existingRun.skipped ?? 0), failed: Number(existingRun.failed ?? 0), errors: safeJson(existingRun.error, []) as ProductDocumentImportReport["errors"] };
   const batchMeta = JSON.stringify({ product: base.product, sampleManagerVersion: base.sampleManagerVersion, solution: base.solution, module: base.module, language: base.language, authority: base.authority, documentFamilyId: base.documentFamilyId, manifestPath: options.manifestPath });
-  if (hasIdempotencyColumn && hasColumn(store, "knowledge_ingest_runs", "batch_metadata_json") && hasColumn(store, "knowledge_ingest_runs", "source_root") && hasColumn(store, "knowledge_ingest_runs", "source_commit")) store.db.prepare("INSERT OR IGNORE INTO knowledge_ingest_runs(id,source_locator,status,started_at,operation_idempotency_key,batch_metadata_json,source_root,source_commit) VALUES (?,?,?,?,?,?,?,?)").run(runId, `product-docs:${options.root}`, "queued", now, options.idempotencyKey ?? null, batchMeta, root, options.sourceCommit ?? null);
+  if (hasIdempotencyColumn && hasColumn(store, "knowledge_ingest_runs", "batch_metadata_json") && hasColumn(store, "knowledge_ingest_runs", "source_root") && hasColumn(store, "knowledge_ingest_runs", "source_commit")) store.db.prepare("INSERT OR IGNORE INTO knowledge_ingest_runs(id,source_locator,status,started_at,operation_idempotency_key,batch_metadata_json,source_root,source_commit) VALUES (?,?,?,?,?,?,?,?)").run(runId, `product-docs:${options.root}`, "queued", now, options.idempotencyKey ?? null, batchMeta, options.root, options.sourceCommit ?? null);
   else store.db.prepare("INSERT OR IGNORE INTO knowledge_ingest_runs(id,source_locator,status,started_at) VALUES (?,?,?,?)").run(runId, `product-docs:${options.root}`, "queued", now);
   store.db.prepare("UPDATE knowledge_ingest_runs SET status=? WHERE id=?").run("running", runId); report.status = "running";
   const sourceHashes: string[] = [];
@@ -187,32 +172,40 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
       const local = { ...base, ...rule };
       const raw = readFileSync(path);
       const ext = extname(path).toLowerCase();
-      const body = ext === ".pdf" ? pdfToText(raw) : ext === ".html" || ext === ".htm" ? htmlToText(raw.toString("utf8")) : raw.toString("utf8");
+      const htmlParsed = ext === ".html" || ext === ".htm" ? parseHelpHtml(raw.toString("utf8")) : undefined;
+      const tocEntries = ext === ".js" ? parseToc(raw.toString("utf8")) : [];
+      const body = ext === ".pdf" ? pdfToText(raw) : ext === ".chm" ? `[CHM archive: ${raw.length} bytes; extraction is staged for the CHM parser]` : tocEntries.length ? `# Navigation\n\n${tocEntries.map((entry) => `- ${entry.title} -> ${entry.path}`).join("\n")}` : htmlParsed?.text ?? raw.toString("utf8");
       const sourceHash = sha256(raw);
       sourceHashes.push(`${relativePath}:${sourceHash}`);
       const parsed = infer(relativePath, body, local.documentFamilyId, local.documentType, local.module, ext === ".html" || ext === ".htm" ? raw.toString("utf8") : undefined);
       const familyId = parsed.familyId;
       const version = String(local.sampleManagerVersion);
+      const normalizedContentSha256 = sha256(parsed.body.replace(/\s+/g, " ").trim().toLowerCase());
+      const revisionId = `product-revision-${normalizedContentSha256.slice(0, 32)}`;
+      store.db.prepare(`INSERT INTO knowledge_product_revisions(id,normalized_content_sha256,raw_sha256,title,body,sections_json,parser_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(normalized_content_sha256) DO UPDATE SET updated_at=excluded.updated_at`).run(revisionId, normalizedContentSha256, sourceHash, parsed.title, parsed.body, JSON.stringify(parsed.sections), HTML_PARSER_VERSION, now, now);
       const id = `product-document-${sha256(`${familyId}\0${version}\0${relativePath}\0${sourceHash}`).slice(0, 32)}`;
       const existing = store.db.prepare("SELECT source_sha256 FROM knowledge_product_documents WHERE id = ?").get(id) as { source_sha256?: string } | undefined;
       if (existing) { report.unchanged++; report.documents.push(id); report.items.push({ path: relativePath, id, status: "unchanged" }); continue; }
       const prior = store.db.prepare("SELECT d.id,d.lifecycle FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE p.document_family_id=? AND p.version=? AND p.source_path=? AND d.id<>?").get(familyId, version, relativePath, id) as { id?: string; lifecycle?: string } | undefined;
       const createdAt = now;
       store.upsertDocument({ id, kind: "product_document", title: parsed.title, body, lifecycle: "approved", projectNameSnapshot: local.product, sampleManagerVersion: version, solution: local.solution, module: parsed.module, visibility: "global", scopeType: "version", scopeKey: version, locator: `product-doc:${relativePath}`, commit: options.sourceCommit, sha256: sourceHash, createdAt, updatedAt: createdAt });
-      const normalizedContentSha256 = sha256(parsed.body.replace(/\s+/g, " ").trim().toLowerCase());
-      const metadata = { confidence: parsed.confidence, reasons: parsed.reasons, module: parsed.module, sourceFormat: parsed.sourceFormat, sourcePath: relativePath, sourceHash, normalizedContentSha256, parserVersion: HTML_PARSER_VERSION, stableIdentifiers: parsed.stableIdentifiers, manifestRule: rule };
+      const metadata = { confidence: parsed.confidence, reasons: parsed.reasons, module: parsed.module, sourceFormat: htmlParsed?.sourceFormat ?? (tocEntries.length ? "toc" : parsed.sourceFormat), sourcePath: relativePath, sourceHash, normalizedContentSha256, parserVersion: HTML_PARSER_VERSION, stableIdentifiers: parsed.stableIdentifiers, links: htmlParsed?.links ?? [], images: htmlParsed?.images ?? [], tocEntries, manifestRule: rule };
+      store.db.prepare("UPDATE knowledge_product_documents SET revision_id=? WHERE id=?").run(revisionId, id);
       store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,sections_json,metadata_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`).run(id, familyId, parsed.documentType, local.language ?? "en", local.authority ?? "official", relativePath, sourceHash, version, JSON.stringify(parsed.sections), JSON.stringify(metadata), createdAt, createdAt);
       // A document family is the compatibility identity used by the first
       // generation importer. Keep it as the fallback topic identity while
       // allowing later stable-ID matching to merge families safely.
-      const topicId = `topic-${sha256(`product:${familyId}`).slice(0, 24)}`;
+      const titleKey = parsed.title.toLowerCase().replace(/\s+/g, " ").trim();
+      const titleMatch = store.db.prepare("SELECT id,canonical_key FROM knowledge_topics WHERE lower(canonical_title)=? LIMIT 1").get(titleKey) as { id?: string; canonical_key?: string } | undefined;
+      const topicId = titleMatch?.id ?? `topic-${sha256(`product:${familyId}`).slice(0, 24)}`;
+      const canonicalKey = titleMatch?.canonical_key ?? `product:${familyId}`;
       store.db.prepare(`INSERT INTO knowledge_topics(id,canonical_key,canonical_title,kind,domain,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?) ON CONFLICT(canonical_key) DO UPDATE SET canonical_title=excluded.canonical_title,updated_at=excluded.updated_at`)
-        .run(topicId, `product:${familyId}`, parsed.title, "product_document", "product", createdAt, createdAt);
+        .run(topicId, canonicalKey, parsed.title, "product_document", "product", createdAt, createdAt);
       store.db.prepare(`INSERT OR IGNORE INTO knowledge_product_document_bindings
         (id,topic_id,document_id,product,product_version,source_path,match_method,match_confidence,status,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(`binding-${sha256(`${topicId}\0${version}\0${id}`).slice(0, 24)}`, topicId, id, local.product ?? null, version, relativePath, "family_id", local.documentFamilyId ? 0.95 : 0.7, "active", createdAt, createdAt);
+        .run(`binding-${sha256(`${topicId}\0${version}\0${id}`).slice(0, 24)}`, topicId, id, local.product ?? null, version, relativePath, titleMatch ? "title_module" : "family_id", titleMatch ? 0.78 : (local.documentFamilyId ? 0.95 : 0.7), "active", createdAt, createdAt);
       if (prior?.id) { store.db.prepare("UPDATE knowledge_documents SET lifecycle='deprecated',updated_at=? WHERE id=? AND lifecycle<>'deprecated'").run(now, prior.id); report.deprecated++; }
       if (prior?.id) report.updated++; else report.imported++;
       report.documents.push(id); report.items.push({ path: relativePath, id, status: prior?.id ? "updated" : "imported" });

@@ -1,0 +1,33 @@
+import { randomUUID } from "node:crypto";
+import type { KnowledgeStore } from "./store.js";
+import { importKnowledgeProducts, type ProductDocumentImportOptions, type ProductDocumentImportReport } from "./knowledge-products.js";
+
+export interface IngestJob { id: string; kind: string; status: string; result?: unknown; error?: string; }
+
+export function enqueueProductImport(store: KnowledgeStore, options: ProductDocumentImportOptions): IngestJob {
+  const id = randomUUID(); const now = new Date().toISOString();
+  store.db.prepare("INSERT INTO knowledge_ingest_jobs(id,kind,payload_json,status,available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").run(id, "product_documents", JSON.stringify(options), "queued", now, now, now);
+  // The durable row is written before dispatch. A process restart can claim it
+  // again through runPendingIngestJobs; no upload bytes are held in memory here.
+  setImmediate(() => { void runIngestJob(store, id); });
+  return { id, kind: "product_documents", status: "queued" };
+}
+
+export async function runIngestJob(store: KnowledgeStore, id: string): Promise<IngestJob> {
+  const row = store.db.prepare("SELECT * FROM knowledge_ingest_jobs WHERE id=?").get(id) as { payload_json?: string; status?: string; attempts?: number } | undefined;
+  if (!row) throw new Error("Ingest job not found"); if (["succeeded", "failed", "running"].includes(String(row.status))) return { id, kind: "product_documents", status: String(row.status) };
+  const now = new Date().toISOString(); store.db.prepare("UPDATE knowledge_ingest_jobs SET status='running',attempts=attempts+1,started_at=?,updated_at=? WHERE id=? AND status='queued'").run(now, now, id);
+  try {
+    const options = JSON.parse(String(row.payload_json)) as ProductDocumentImportOptions; const result: ProductDocumentImportReport = importKnowledgeProducts(store, options);
+    store.db.prepare("UPDATE knowledge_ingest_jobs SET status=?,finished_at=?,result_json=?,updated_at=? WHERE id=?").run(result.status === "failed" ? "failed" : "succeeded", new Date().toISOString(), JSON.stringify(result), new Date().toISOString(), id);
+    return { id, kind: "product_documents", status: result.status, result };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error); store.db.prepare("UPDATE knowledge_ingest_jobs SET status='failed',finished_at=?,error=?,updated_at=? WHERE id=?").run(new Date().toISOString(), message, new Date().toISOString(), id); return { id, kind: "product_documents", status: "failed", error: message };
+  }
+}
+
+export async function runPendingIngestJobs(store: KnowledgeStore, limit = 2): Promise<number> {
+  store.db.prepare("UPDATE knowledge_ingest_jobs SET status='queued',updated_at=? WHERE status='running'").run(new Date().toISOString());
+  const rows = store.db.prepare("SELECT id FROM knowledge_ingest_jobs WHERE status='queued' AND available_at<=? ORDER BY created_at LIMIT ?").all(new Date().toISOString(), limit) as Array<{ id: string }>;
+  for (const row of rows) await runIngestJob(store, row.id); return rows.length;
+}

@@ -45,3 +45,28 @@ test("manifest rules provide per-document metadata and confidence reasons", () =
     assert.match(String(row.metadata_json), /document family supplied/);
   } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test("HTML help templates preserve semantic headings and structured sections", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-product-html-"));
+  const source = join(root, "docs"); mkdirSync(source);
+  writeFileSync(join(source, "madcap.htm"), `<!doctype html><html><head><title>Entity Template</title><meta name="AIT_Topic_ID" content="1234"></head><body><nav>Navigation</nav><main><h1>Entity Template</h1><h2>Default Values</h2><p>The default value is active.</p><table><tr><th>Property</th><th>Value</th></tr><tr><td>Status</td><td>Active</td></tr></table></main><footer>Copyright</footer></body></html>`, "utf8");
+  writeFileSync(join(source, "innovasys.html"), `<!doctype html><html><head><meta name="Title" content="Form Designer"><meta name="Microsoft.Help.Id" content="form-123"></head><body><div class="i-page-title-text">Form Designer</div><div class="i-section-heading"><span class="i-section-heading-text">Creating a Form</span></div><div id="main"><p>Create a form.</p><pre>public void CreateForm()</pre></div></body></html>`, "utf8");
+  const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });
+  try {
+    const report = importKnowledgeProducts(store, { root: source, sampleManagerVersion: "21.3", product: "SampleManager" });
+    assert.equal(report.imported, 2);
+    const rows = store.db.prepare("SELECT d.title,d.body,p.sections_json,p.metadata_json FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id ORDER BY d.title").all() as Array<Record<string, string>>;
+    assert.equal(rows.length, 2);
+    assert.match(rows[0].body, /^# Entity Template/m);
+    assert.match(rows[0].body, /## Default Values/);
+    assert.ok(JSON.parse(rows[0].sections_json).length >= 2);
+    assert.match(rows[0].metadata_json, /normalizedContentSha256/);
+    assert.match(rows[0].metadata_json, /AIT_Topic_ID/i);
+    assert.match(rows[1].body, /^# Form Designer/m);
+    assert.match(rows[1].body, /## Creating a Form/);
+    assert.ok(JSON.parse(rows[1].sections_json).length >= 2);
+    assert.match(rows[1].body, /Create a form/);
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_topics").get().count, 2);
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_product_document_bindings").get().count, 2);
+  } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});

@@ -27,6 +27,7 @@ import { OBSERVATION_CANDIDATE_MIGRATION } from "./migrations/020-observation-ca
 import { OBSERVATION_REVIEW_MIGRATION } from "./migrations/021-observation-review.js";
 import { CHUNK_FTS_OWNERSHIP_MIGRATION } from "./migrations/022-chunk-fts-ownership.js";
 import { BUSINESS_CONTEXT_MIGRATION } from "./migrations/023-business-context.js";
+import { PRODUCT_TOPICS_MIGRATION } from "./migrations/024-product-topics.js";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
 import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type CandidateCard, type KnowledgeDocument, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeBinding, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
@@ -66,6 +67,7 @@ const KNOWLEDGE_MIGRATIONS = [
   OBSERVATION_REVIEW_MIGRATION,
   CHUNK_FTS_OWNERSHIP_MIGRATION,
   BUSINESS_CONTEXT_MIGRATION,
+  PRODUCT_TOPICS_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(
@@ -213,7 +215,7 @@ export class KnowledgeStore {
     // Databases created by the early P01 preview may already carry the
     // 002-domain marker but not the type projections introduced later. Make
     // this additive repair safe and idempotent without rewriting user data.
-    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions"];
+    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions", "knowledge_topics", "knowledge_product_document_bindings"];
     const missingTable = requiredTables.some((name) => !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
     if (missingTable) this.db.exec(KNOWLEDGE_DOMAIN_MIGRATION.sql);
     const columns: Record<string, Array<[string, string]>> = {
@@ -259,6 +261,26 @@ export class KnowledgeStore {
       );
       CREATE INDEX IF NOT EXISTS idx_product_document_revisions_review ON knowledge_product_document_revisions(review_status, updated_at);`);
     this.backfillDefaultScopes();
+    this.backfillProductTopics();
+  }
+
+  private backfillProductTopics(): void {
+    const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 24);
+    const now = this.now().toISOString();
+    const rows = this.db.prepare(`SELECT d.id,d.title,d.project_name_snapshot,d.samplemanager_version,p.document_family_id,p.source_path
+      FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id
+      WHERE NOT EXISTS (SELECT 1 FROM knowledge_product_document_bindings b WHERE b.document_id=d.id)`).all() as Array<Record<string, unknown>>;
+    const topic = this.db.prepare(`INSERT INTO knowledge_topics(id,canonical_key,canonical_title,kind,domain,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?) ON CONFLICT(canonical_key) DO UPDATE SET canonical_title=excluded.canonical_title,updated_at=excluded.updated_at`);
+    const bind = this.db.prepare(`INSERT OR IGNORE INTO knowledge_product_document_bindings
+      (id,topic_id,document_id,product,product_version,source_path,match_method,match_confidence,status,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+    this.db.transaction(() => rows.forEach((row) => {
+      const family = String(row.document_family_id ?? row.id);
+      const topicId = `topic-${hash(family)}`;
+      topic.run(topicId, `product:${family}`, String(row.title ?? family), "product_document", "product", now, now);
+      bind.run(`binding-${hash(`${topicId}\0${row.samplemanager_version}\0${row.id}`)}`, topicId, String(row.id), row.project_name_snapshot ?? null, String(row.samplemanager_version ?? ""), String(row.source_path ?? ""), "family_id", 1, "active", now, now);
+    }))();
   }
 
   private backfillDefaultScopes(): void {

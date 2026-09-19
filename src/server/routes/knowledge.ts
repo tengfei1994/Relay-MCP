@@ -887,6 +887,41 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     } catch (error) { return sendError(reply, error, 400); }
   });
 
+  // Logical Product Knowledge topics. These sit above the legacy
+  // product-document APIs: one topic can bind the same immutable revision to
+  // multiple product versions without duplicating its content.
+  app.get("/api/knowledge/product-topics", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const store = getKnowledgeStore();
+    const query = request.query as Record<string, unknown>;
+    const limit = parseBoundedInt(query.limit, 100, 1, 500);
+    const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
+    const version = queryValue(query, "productVersion") ?? queryValue(query, "sampleManagerVersion");
+    const search = queryValue(query, "q");
+    const where = ["1=1"]; const params: unknown[] = [];
+    if (version) { where.push("b.product_version = ?"); params.push(version); }
+    if (search) { where.push("(lower(t.canonical_title) LIKE ? OR lower(t.canonical_key) LIKE ?)"); params.push(`%${search.toLowerCase()}%`, `%${search.toLowerCase()}%`); }
+    const rows = store.db.prepare(`SELECT t.id,t.canonical_key,t.canonical_title,t.kind,t.domain,t.metadata_json,
+      COUNT(DISTINCT b.product_version) AS version_count, COUNT(DISTINCT b.document_id) AS revision_count,
+      MAX(b.updated_at) AS updated_at,
+      GROUP_CONCAT(DISTINCT b.product_version) AS versions
+      FROM knowledge_topics t JOIN knowledge_product_document_bindings b ON b.topic_id=t.id
+      WHERE ${where.join(" AND ")} GROUP BY t.id ORDER BY t.canonical_title LIMIT ? OFFSET ?`).all(...params, limit, offset) as KnowledgeRow[];
+    const total = store.db.prepare(`SELECT COUNT(*) AS count FROM (SELECT t.id FROM knowledge_topics t JOIN knowledge_product_document_bindings b ON b.topic_id=t.id WHERE ${where.join(" AND ")} GROUP BY t.id)`).get(...params) as { count?: number };
+    return reply.send({ topics: rows.map((row) => ({ ...row, versions: String(row.versions ?? "").split(",").filter(Boolean), versionCount: Number(row.version_count ?? 0), revisionCount: Number(row.revision_count ?? 0), metadata: safeRows(() => JSON.parse(String(row.metadata_json ?? "{}")), {}) })), page: { limit, offset, total: Number(total.count ?? 0) } });
+  });
+
+  app.get("/api/knowledge/product-topics/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const id = String((request.params as { id: string }).id);
+    const store = getKnowledgeStore();
+    const topic = store.db.prepare("SELECT * FROM knowledge_topics WHERE id=?").get(id) as KnowledgeRow | undefined;
+    if (!topic) return reply.status(404).send({ error: "Product topic not found" });
+    const bindings = store.db.prepare(`SELECT b.*,d.title,d.body,d.lifecycle,d.source_locator,d.source_sha256,d.updated_at AS document_updated_at,
+      p.document_family_id,p.document_type,p.language,p.authority,p.sections_json,p.metadata_json
+      FROM knowledge_product_document_bindings b JOIN knowledge_documents d ON d.id=b.document_id
+      JOIN knowledge_product_documents p ON p.id=d.id WHERE b.topic_id=? ORDER BY b.product_version`).all(id) as KnowledgeRow[];
+    return reply.send({ topic: { ...topic, metadata: safeRows(() => JSON.parse(String(topic.metadata_json ?? "{}")), {}) }, versions: bindings.map((row) => ({ ...row, metadata: safeRows(() => JSON.parse(String(row.metadata_json ?? "{}")), {}), sections: safeRows(() => JSON.parse(String(row.sections_json ?? "[]")), []) })) });
+  });
+
   // Stable Product Knowledge API names. Keep /product-docs above as a
   // backwards-compatible alias for existing clients.
   app.get("/api/knowledge/product-documents", { onRequest: [app.authenticate] }, async (request, reply) => {

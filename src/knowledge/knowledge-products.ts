@@ -59,7 +59,10 @@ interface ParsedDocument {
   confidence: number;
   reasons: string[];
   sourceFormat: string;
+  stableIdentifiers: Record<string, string>;
 }
+
+const HTML_PARSER_VERSION = "html-2";
 
 function sha256(content: Buffer | string): string { return createHash("sha256").update(content).digest("hex"); }
 function safeJson(value: unknown, fallback: unknown): unknown { try { return JSON.parse(String(value ?? "")); } catch { return fallback; } }
@@ -75,10 +78,22 @@ function files(root: string): string[] {
   return result;
 }
 function htmlToText(value: string): string {
-  return value.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>|<\/div>|<\/li>|<\/h[1-6]>/gi, "\n")
-    .replace(/<[^>]+>/g, "").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n").trim();
+  // SampleManager help is published as MadCap or Innovasys HTML. Preserve
+  // semantic headings before stripping tags so the existing section indexer
+  // can work with both templates (which do not use Markdown headings).
+  return value
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<(?:nav|aside|footer|header)[^>]*>[\s\S]*?<\/(?:nav|aside|footer|header)>/gi, "")
+    .replace(/<div[^>]*class=["'][^"']*i-page-title-text[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi, "\n# $1\n")
+    .replace(/<div[^>]*class=["'][^"']*i-section-heading[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi, "\n## $1\n")
+    .replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_match, depth: string, body: string) => `\n${"#".repeat(Number(depth))} ${body}\n`)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_match, body: string) => `\n\n${body}\n\n`)
+    .replace(/<\/p>|<\/div>|<\/li>|<\/tr>|<\/td>|<\/th>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'")
+    .replace(/\r\n?/g, "\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 function pdfToText(raw: Buffer): string {
   // The Knowledge Plane must retain and index PDFs even when a native PDF
@@ -102,17 +117,24 @@ function headingSections(body: string): Array<{ key: string; path: string; title
     return { key: `${depth}:${path.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, path, title, anchor, text: body.slice((match.index ?? 0) + match[0].length, matches[index + 1]?.index ?? body.length).trim() };
   });
 }
-function infer(relativePath: string, body: string, familyOverride?: string, typeOverride?: string, moduleOverride?: string): ParsedDocument {
+function infer(relativePath: string, body: string, familyOverride?: string, typeOverride?: string, moduleOverride?: string, sourceMarkup?: string): ParsedDocument {
   const lower = `${relativePath}\n${body.slice(0, 6000)}`.toLowerCase();
   const sourceFormat = extname(relativePath).slice(1).toLowerCase();
   const module = moduleOverride ?? ["samplemanager", "lims", "stability", "inventory", "quality", "environmental", "process", "security"].find((item) => lower.includes(item));
   const documentType = typeOverride ?? (sourceFormat === "pdf" ? "pdf" : /release\s*note|what['’]s\s*new|changelog/.test(lower) ? "release_notes" : /install|upgrade|deployment/.test(lower) ? "deployment_guide" : /api|reference|command/.test(lower) ? "reference" : "guide");
+  const stableIdentifiers: Record<string, string> = {};
+  for (const match of (sourceMarkup ?? "").matchAll(/<meta\s+[^>]*name=["']([^"']+)["'][^>]*content=["']([^"']*)["'][^>]*>/gi)) {
+    const key = match[1].toLowerCase();
+    if (["ait_topic_id", "microsoft.help.id", "microsoft.help.f1", "title", "product"].includes(key)) stableIdentifiers[key] = match[2].trim();
+  }
   const withoutVersion = relativePath.replace(/\.[^.]+$/, "").replace(/(?:[-_])?v?\d+(?:\.\d+)+$/i, "");
-  const familyId = familyOverride ?? `family-${withoutVersion.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
+  const stableFamily = stableIdentifiers["ait_topic_id"] ? `ait:${stableIdentifiers["ait_topic_id"]}` : stableIdentifiers["microsoft.help.id"] ? `help:${stableIdentifiers["microsoft.help.id"]}` : undefined;
+  const familyId = familyOverride ?? stableFamily ?? `family-${withoutVersion.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
   const reasons = [`document type inferred from ${sourceFormat || "source"}`];
   if (module) reasons.push(`module keyword '${module}' found in source`); else reasons.push("no known module keyword found");
   if (familyOverride) reasons.push("document family supplied by batch metadata or manifest"); else reasons.push("document family inferred from normalized source path");
-  return { title: body.match(/^#\s+(.+)$/m)?.[1]?.trim() ?? relativePath.split(/[\\/]/).pop()!.replace(/\.[^.]+$/, ""), body, sections: headingSections(body), documentType, familyId, module, confidence: module ? (familyOverride ? 0.95 : 0.82) : (familyOverride ? 0.75 : 0.58), reasons, sourceFormat };
+  if (stableFamily) reasons.push(`stable documentation identifier '${stableFamily}' extracted from source metadata`);
+  return { title: body.match(/^#\s+(.+)$/m)?.[1]?.trim() ?? stableIdentifiers.title ?? relativePath.split(/[\\/]/).pop()!.replace(/\.[^.]+$/, ""), body, sections: headingSections(body), documentType, familyId, module, confidence: module ? (familyOverride || stableFamily ? 0.95 : 0.82) : (familyOverride || stableFamily ? 0.9 : 0.58), reasons, sourceFormat, stableIdentifiers };
 }
 function matchRule(relativePath: string, rules: ManifestRule[]): ManifestRule | undefined {
   return rules.find((rule) => rule.path === relativePath || rule.path === relativePath.replaceAll("\\", "/") || (rule.glob && new RegExp(`^${rule.glob.replace(/[.+^${}()|[\]\\*]/g, "\\$&").replace(/\\\*/g, ".*")}$`).test(relativePath)));
@@ -168,7 +190,7 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
       const body = ext === ".pdf" ? pdfToText(raw) : ext === ".html" || ext === ".htm" ? htmlToText(raw.toString("utf8")) : raw.toString("utf8");
       const sourceHash = sha256(raw);
       sourceHashes.push(`${relativePath}:${sourceHash}`);
-      const parsed = infer(relativePath, body, local.documentFamilyId, local.documentType, local.module);
+      const parsed = infer(relativePath, body, local.documentFamilyId, local.documentType, local.module, ext === ".html" || ext === ".htm" ? raw.toString("utf8") : undefined);
       const familyId = parsed.familyId;
       const version = String(local.sampleManagerVersion);
       const id = `product-document-${sha256(`${familyId}\0${version}\0${relativePath}\0${sourceHash}`).slice(0, 32)}`;
@@ -177,8 +199,20 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
       const prior = store.db.prepare("SELECT d.id,d.lifecycle FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE p.document_family_id=? AND p.version=? AND p.source_path=? AND d.id<>?").get(familyId, version, relativePath, id) as { id?: string; lifecycle?: string } | undefined;
       const createdAt = now;
       store.upsertDocument({ id, kind: "product_document", title: parsed.title, body, lifecycle: "approved", projectNameSnapshot: local.product, sampleManagerVersion: version, solution: local.solution, module: parsed.module, visibility: "global", scopeType: "version", scopeKey: version, locator: `product-doc:${relativePath}`, commit: options.sourceCommit, sha256: sourceHash, createdAt, updatedAt: createdAt });
-      const metadata = { confidence: parsed.confidence, reasons: parsed.reasons, module: parsed.module, sourceFormat: parsed.sourceFormat, sourcePath: relativePath, sourceHash, manifestRule: rule };
+      const normalizedContentSha256 = sha256(parsed.body.replace(/\s+/g, " ").trim().toLowerCase());
+      const metadata = { confidence: parsed.confidence, reasons: parsed.reasons, module: parsed.module, sourceFormat: parsed.sourceFormat, sourcePath: relativePath, sourceHash, normalizedContentSha256, parserVersion: HTML_PARSER_VERSION, stableIdentifiers: parsed.stableIdentifiers, manifestRule: rule };
       store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,sections_json,metadata_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`).run(id, familyId, parsed.documentType, local.language ?? "en", local.authority ?? "official", relativePath, sourceHash, version, JSON.stringify(parsed.sections), JSON.stringify(metadata), createdAt, createdAt);
+      // A document family is the compatibility identity used by the first
+      // generation importer. Keep it as the fallback topic identity while
+      // allowing later stable-ID matching to merge families safely.
+      const topicId = `topic-${sha256(`product:${familyId}`).slice(0, 24)}`;
+      store.db.prepare(`INSERT INTO knowledge_topics(id,canonical_key,canonical_title,kind,domain,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?) ON CONFLICT(canonical_key) DO UPDATE SET canonical_title=excluded.canonical_title,updated_at=excluded.updated_at`)
+        .run(topicId, `product:${familyId}`, parsed.title, "product_document", "product", createdAt, createdAt);
+      store.db.prepare(`INSERT OR IGNORE INTO knowledge_product_document_bindings
+        (id,topic_id,document_id,product,product_version,source_path,match_method,match_confidence,status,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(`binding-${sha256(`${topicId}\0${version}\0${id}`).slice(0, 24)}`, topicId, id, local.product ?? null, version, relativePath, "family_id", local.documentFamilyId ? 0.95 : 0.7, "active", createdAt, createdAt);
       if (prior?.id) { store.db.prepare("UPDATE knowledge_documents SET lifecycle='deprecated',updated_at=? WHERE id=? AND lifecycle<>'deprecated'").run(now, prior.id); report.deprecated++; }
       if (prior?.id) report.updated++; else report.imported++;
       report.documents.push(id); report.items.push({ path: relativePath, id, status: prior?.id ? "updated" : "imported" });

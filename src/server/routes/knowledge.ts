@@ -12,7 +12,7 @@ import { analyzeRelationImpact, queryRelations } from "../../knowledge/relations
 import { searchKnowledge } from "../../knowledge/retriever.js";
 import { importKnowledgeProducts, searchKnowledgeProducts, diffKnowledgeProducts, updateProductDocumentLifecycle } from "../../knowledge/knowledge-products.js";
 import { ingestArtifactSet, ingestProjectSnapshot } from "../../knowledge/artifact-ingest.js";
-import { enqueueProductImport } from "../../knowledge/ingest-worker.js";
+import { enqueueArtifactImport, enqueueProductImport } from "../../knowledge/ingest-worker.js";
 import { compareSourceBaselines, type SourceManifest } from "../../knowledge/source-baseline.js";
 import { classifyRelayEvent } from "../../knowledge/event-classifier.js";
 import { describeCandidate } from "../../knowledge/candidate-narrative.js";
@@ -896,9 +896,9 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   });
 
   app.post("/api/knowledge/artifact-sets/import", { onRequest: [app.authenticate] }, async (request, reply) => {
-    const body = z.object({ source: z.string().min(1), name: z.string().min(1), kind: z.string().optional(), version: z.string().optional(), solution: z.string().optional(), storageUri: z.string().optional() }).safeParse(request.body);
+    const body = z.object({ source: z.string().min(1), name: z.string().min(1), kind: z.string().optional(), version: z.string().optional(), solution: z.string().optional(), storageUri: z.string().optional(), asynchronous: z.boolean().optional().default(true) }).safeParse(request.body);
     if (!body.success) return reply.status(400).send({ error: "Invalid artifact import request", details: body.error.issues });
-    try { const report = ingestArtifactSet(getKnowledgeStore(), body.data); return reply.send(report); } catch (error) { return sendError(reply, error, 400); }
+    try { const store = getKnowledgeStore(); if (body.data.asynchronous) return reply.status(202).send(enqueueArtifactImport(store, body.data)); const report = ingestArtifactSet(store, body.data); return reply.send(report); } catch (error) { return sendError(reply, error, 400); }
   });
   app.get("/api/knowledge/artifact-sets", { onRequest: [app.authenticate] }, async (request, reply) => {
     const store = getKnowledgeStore(); const q = request.query as Record<string, unknown>; const limit = parseBoundedInt(q.limit, 100, 1, 500);

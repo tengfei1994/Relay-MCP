@@ -120,6 +120,7 @@ export const api = {
   knowledgeArtifactSets: (limit = 100) => request<{ sets: any[] }>("GET", `/knowledge/artifact-sets?limit=${limit}`),
   knowledgeArtifactImport: (body: Record<string, unknown>) => request<any>("POST", "/knowledge/artifact-sets/import", body),
   knowledgeArtifactPublish: (id: string) => request<any>("POST", `/knowledge/artifact-sets/${encodeURIComponent(id)}/publish`, {}),
+  knowledgeIngestJob: (id: string) => request<any>("GET", `/knowledge/ingest-jobs/${encodeURIComponent(id)}`),
   knowledgeSourceBaselineFiles: (id: string) => request<any>("GET", `/knowledge/source-baselines/${encodeURIComponent(id)}/files`),
   knowledgeSourceSearch: (params: Record<string, string | number | undefined>) => { const q = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") q.set(key, String(value)); }); return request<any>("GET", `/knowledge/source-search?${q.toString()}`); },
   knowledgeProjectSnapshot: (body: Record<string, unknown>) => request<any>("POST", "/knowledge/project-snapshots/import", body),

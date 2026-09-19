@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { KnowledgeStore } from "./store.js";
 import { importKnowledgeProducts, type ProductDocumentImportOptions, type ProductDocumentImportReport } from "./knowledge-products.js";
+import { ingestArtifactSet, type ArtifactIngestReport } from "./artifact-ingest.js";
 
 export interface IngestJob { id: string; kind: string; status: string; result?: unknown; error?: string; }
 
@@ -12,15 +13,20 @@ export function enqueueProductImport(store: KnowledgeStore, options: ProductDocu
   setImmediate(() => { void runIngestJob(store, id); });
   return { id, kind: "product_documents", status: "queued" };
 }
+export function enqueueArtifactImport(store: KnowledgeStore, options: { source: string; kind?: string; name: string; version?: string; solution?: string; storageUri?: string }): IngestJob {
+  const id = randomUUID(); const now = new Date().toISOString(); store.db.prepare("INSERT INTO knowledge_ingest_jobs(id,kind,payload_json,status,available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").run(id, "artifact_set", JSON.stringify(options), "queued", now, now, now); setImmediate(() => { void runIngestJob(store, id); }); return { id, kind: "artifact_set", status: "queued" };
+}
 
 export async function runIngestJob(store: KnowledgeStore, id: string): Promise<IngestJob> {
-  const row = store.db.prepare("SELECT * FROM knowledge_ingest_jobs WHERE id=?").get(id) as { payload_json?: string; status?: string; attempts?: number } | undefined;
-  if (!row) throw new Error("Ingest job not found"); if (["succeeded", "failed", "running"].includes(String(row.status))) return { id, kind: "product_documents", status: String(row.status) };
+  const row = store.db.prepare("SELECT * FROM knowledge_ingest_jobs WHERE id=?").get(id) as { kind?: string; payload_json?: string; status?: string; attempts?: number } | undefined;
+  if (!row) throw new Error("Ingest job not found"); if (["succeeded", "failed", "running"].includes(String(row.status))) return { id, kind: String(row.kind ?? "product_documents"), status: String(row.status) };
   const now = new Date().toISOString(); store.db.prepare("UPDATE knowledge_ingest_jobs SET status='running',attempts=attempts+1,started_at=?,updated_at=? WHERE id=? AND status='queued'").run(now, now, id);
   try {
-    const options = JSON.parse(String(row.payload_json)) as ProductDocumentImportOptions; const result: ProductDocumentImportReport = importKnowledgeProducts(store, options);
-    store.db.prepare("UPDATE knowledge_ingest_jobs SET status=?,finished_at=?,result_json=?,updated_at=? WHERE id=?").run(result.status === "failed" ? "failed" : "succeeded", new Date().toISOString(), JSON.stringify(result), new Date().toISOString(), id);
-    return { id, kind: "product_documents", status: result.status, result };
+    const options = JSON.parse(String(row.payload_json)) as ProductDocumentImportOptions; const kind = store.db.prepare("SELECT kind FROM knowledge_ingest_jobs WHERE id=?").get(id) as { kind: string };
+    const result: ProductDocumentImportReport | ArtifactIngestReport = kind.kind === "artifact_set" ? ingestArtifactSet(store, options as never) : importKnowledgeProducts(store, options);
+    const resultStatus = kind.kind === "artifact_set" ? "succeeded" : (result as ProductDocumentImportReport).status;
+    store.db.prepare("UPDATE knowledge_ingest_jobs SET status=?,finished_at=?,result_json=?,updated_at=? WHERE id=?").run(resultStatus === "failed" ? "failed" : "succeeded", new Date().toISOString(), JSON.stringify(result), new Date().toISOString(), id);
+    return { id, kind: kind.kind, status: resultStatus, result };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error); store.db.prepare("UPDATE knowledge_ingest_jobs SET status='failed',finished_at=?,error=?,updated_at=? WHERE id=?").run(new Date().toISOString(), message, new Date().toISOString(), id); return { id, kind: "product_documents", status: "failed", error: message };
   }

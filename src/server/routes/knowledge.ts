@@ -898,30 +898,35 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   app.post("/api/knowledge/artifact-sets/import", { onRequest: [app.authenticate] }, async (request, reply) => {
     const body = z.object({ source: z.string().min(1), name: z.string().min(1), kind: z.string().optional(), version: z.string().optional(), solution: z.string().optional(), storageUri: z.string().optional(), asynchronous: z.boolean().optional().default(true) }).safeParse(request.body);
     if (!body.success) return reply.status(400).send({ error: "Invalid artifact import request", details: body.error.issues });
+    if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
     try { const store = getKnowledgeStore(); if (body.data.asynchronous) return reply.status(202).send(enqueueArtifactImport(store, body.data)); const report = ingestArtifactSet(store, body.data); return reply.send(report); } catch (error) { return sendError(reply, error, 400); }
   });
   app.get("/api/knowledge/artifact-sets", { onRequest: [app.authenticate] }, async (request, reply) => {
-    const store = getKnowledgeStore(); const q = request.query as Record<string, unknown>; const limit = parseBoundedInt(q.limit, 100, 1, 500);
+    const accessStore = getKnowledgeStore(); if (!request.user.isAdmin && !knowledgeReadAllowed(accessStore, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
+    const store = accessStore; const q = request.query as Record<string, unknown>; const limit = parseBoundedInt(q.limit, 100, 1, 500);
     const sets = store.db.prepare("SELECT s.*, (SELECT COUNT(*) FROM knowledge_artifacts a WHERE a.set_id=s.id) AS file_count FROM knowledge_artifact_sets s ORDER BY s.created_at DESC LIMIT ?").all(limit);
     return reply.send({ sets });
   });
   app.post("/api/knowledge/artifact-sets/:id/publish", { onRequest: [app.authenticate] }, async (request, reply) => {
+    if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
     const id = String((request.params as { id: string }).id); const store = getKnowledgeStore(); const exists = store.db.prepare("SELECT id FROM knowledge_artifact_sets WHERE id=?").get(id);
     if (!exists) return reply.status(404).send({ error: "Artifact set not found" });
     const now = new Date().toISOString(); store.db.transaction(() => { store.db.prepare("UPDATE knowledge_artifact_sets SET status='published',updated_at=? WHERE id=?").run(now, id); store.db.prepare("INSERT INTO knowledge_artifact_publications(artifact_set_id,status,published_by,published_at) VALUES(?,?,?,?) ON CONFLICT(artifact_set_id) DO UPDATE SET status='published',published_by=excluded.published_by,published_at=excluded.published_at,retired_at=NULL").run(id, "published", request.user.id, now); })();
     store.audit({ actorId: request.user.id, action: "knowledge.artifact_set.publish", entityType: "artifact_set", entityId: id }); return reply.send({ ok: true, id, status: "published", publishedAt: now });
   });
   app.post("/api/knowledge/artifact-sets/:id/retire", { onRequest: [app.authenticate] }, async (request, reply) => {
+    if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
     const id = String((request.params as { id: string }).id); const store = getKnowledgeStore(); const now = new Date().toISOString(); const result = store.db.prepare("UPDATE knowledge_artifact_sets SET status='retired',updated_at=? WHERE id=?").run(now, id);
     if (!result.changes) return reply.status(404).send({ error: "Artifact set not found" }); store.db.prepare("UPDATE knowledge_artifact_publications SET status='retired',retired_at=? WHERE artifact_set_id=?").run(now, id); store.audit({ actorId: request.user.id, action: "knowledge.artifact_set.retire", entityType: "artifact_set", entityId: id }); return reply.send({ ok: true, id, status: "retired" });
   });
   app.post("/api/knowledge/project-snapshots/import", { onRequest: [app.authenticate] }, async (request, reply) => {
     const body = z.object({ source: z.string().min(1), name: z.string().min(1), projectId: z.string().optional(), version: z.string().optional(), storageUri: z.string().optional() }).safeParse(request.body);
     if (!body.success) return reply.status(400).send({ error: "Invalid project snapshot request", details: body.error.issues });
+    if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
     try { return reply.send(ingestProjectSnapshot(getKnowledgeStore(), body.data)); } catch (error) { return sendError(reply, error, 400); }
   });
   app.get("/api/knowledge/source-search", { onRequest: [app.authenticate] }, async (request, reply) => {
-    const q = request.query as Record<string, unknown>; const query = queryValue(q, "query") ?? queryValue(q, "q"); if (!query) return reply.status(400).send({ error: "query is required" }); const store = getKnowledgeStore(); const baselineId = queryValue(q, "baselineId"); const snapshotId = queryValue(q, "projectSnapshotId");
+    const q = request.query as Record<string, unknown>; const query = queryValue(q, "query") ?? queryValue(q, "q"); if (!query) return reply.status(400).send({ error: "query is required" }); const store = getKnowledgeStore(); if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" }); const baselineId = queryValue(q, "baselineId"); const snapshotId = queryValue(q, "projectSnapshotId");
     if (!baselineId && !snapshotId) return reply.status(400).send({ error: "baselineId or projectSnapshotId is required" }); if (baselineId) { const published = store.db.prepare("SELECT 1 FROM knowledge_source_baselines b JOIN knowledge_artifact_publications p ON p.artifact_set_id=b.artifact_set_id AND p.status='published' WHERE b.id=?").get(baselineId); if (!published) return reply.status(409).send({ error: "Source baseline is not published" }); }
     if (snapshotId) { const snapshot = store.db.prepare("SELECT project_id FROM knowledge_project_snapshots WHERE id=?").get(snapshotId) as { project_id?: string } | undefined; if (!snapshot) return reply.status(404).send({ error: "Project snapshot not found" }); if (snapshot.project_id && !store.canRead(request.user.id, snapshot.project_id)) return reply.status(403).send({ error: "Knowledge access denied" }); }
     const limit = parseBoundedInt(q.limit, 10, 1, 50); const where = ["knowledge_source_chunks_fts MATCH ?"]; const params: unknown[] = [query]; if (baselineId) { where.push("c.baseline_id=?"); params.push(baselineId); } if (snapshotId) { where.push("c.snapshot_id=?"); params.push(snapshotId); }
@@ -929,14 +934,14 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     return reply.send({ results: rows, page: { limit, total: rows.length } });
   });
   app.get("/api/knowledge/source-baselines/:id/files", { onRequest: [app.authenticate] }, async (request, reply) => {
-    const id = String((request.params as { id: string }).id); const store = getKnowledgeStore();
+    const id = String((request.params as { id: string }).id); const store = getKnowledgeStore(); if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     const baseline = store.db.prepare("SELECT * FROM knowledge_source_baselines WHERE id=?").get(id); if (!baseline) return reply.status(404).send({ error: "Source baseline not found" });
     return reply.send({ baseline, files: store.db.prepare("SELECT relative_path AS path,sha256,size_bytes AS size,language,storage_uri FROM knowledge_source_files WHERE baseline_id=? ORDER BY relative_path").all(id) });
   });
   app.post("/api/knowledge/source-baselines/compare", { onRequest: [app.authenticate] }, async (request, reply) => {
     const body = z.object({ oldBaselineId: z.string(), projectSnapshotId: z.string(), newBaselineId: z.string() }).safeParse(request.body);
     if (!body.success) return reply.status(400).send({ error: "Invalid baseline comparison request", details: body.error.issues });
-    const store = getKnowledgeStore();
+    const store = getKnowledgeStore(); if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     const published = store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_source_baselines b JOIN knowledge_artifact_publications p ON p.artifact_set_id=b.artifact_set_id AND p.status='published' WHERE b.id IN (?,?)").get(body.data.oldBaselineId, body.data.newBaselineId) as { n?: number };
     if (Number(published.n ?? 0) !== 2) return reply.status(409).send({ error: "Both source baselines must be published" });
     const snapshot = store.db.prepare("SELECT project_id FROM knowledge_project_snapshots WHERE id=?").get(body.data.projectSnapshotId) as { project_id?: string } | undefined;
@@ -945,7 +950,12 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       const rows = store.db.prepare(`SELECT relative_path AS path,sha256,size_bytes AS size,language FROM ${table} WHERE ${table === "knowledge_project_snapshot_files" ? "snapshot_id" : "baseline_id"}=? ORDER BY relative_path`).all(id) as Array<{ path: string; sha256: string; size: number; language?: string }>;
       if (!rows.length) throw new Error("Source snapshot not found or empty"); return { root: id, files: rows, sha256: createHash("sha256").update(JSON.stringify(rows)).digest("hex") };
     };
-    try { return reply.send({ changes: compareSourceBaselines(manifest("knowledge_source_files", body.data.oldBaselineId), manifest("knowledge_project_snapshot_files", body.data.projectSnapshotId), manifest("knowledge_source_files", body.data.newBaselineId)) }); } catch (error) { return sendError(reply, error, 404); }
+    try {
+      const changes = compareSourceBaselines(manifest("knowledge_source_files", body.data.oldBaselineId), manifest("knowledge_project_snapshot_files", body.data.projectSnapshotId), manifest("knowledge_source_files", body.data.newBaselineId));
+      const ids = (table: string, key: string, id: string) => new Map((store.db.prepare(`SELECT relative_path,id FROM ${table} WHERE ${key}=?`).all(id) as Array<{ relative_path: string; id: string }>).map((row) => [row.relative_path, row.id]));
+      const oldIds = ids("knowledge_source_files", "baseline_id", body.data.oldBaselineId); const projectIds = ids("knowledge_project_snapshot_files", "snapshot_id", body.data.projectSnapshotId); const newIds = ids("knowledge_source_files", "baseline_id", body.data.newBaselineId);
+      return reply.send({ changes: changes.map((change) => ({ ...change, evidenceRefs: { old: oldIds.get(change.path), project: projectIds.get(change.path), next: newIds.get(change.path) } })) });
+    } catch (error) { return sendError(reply, error, 404); }
   });
 
   // Logical Product Knowledge topics. These sit above the legacy
@@ -953,6 +963,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   // multiple product versions without duplicating its content.
   app.get("/api/knowledge/product-topics", { onRequest: [app.authenticate] }, async (request, reply) => {
     const store = getKnowledgeStore();
+    if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     const query = request.query as Record<string, unknown>;
     const limit = parseBoundedInt(query.limit, 100, 1, 500);
     const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
@@ -974,6 +985,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   app.get("/api/knowledge/product-topics/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
     const id = String((request.params as { id: string }).id);
     const store = getKnowledgeStore();
+    if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     const topic = store.db.prepare("SELECT * FROM knowledge_topics WHERE id=?").get(id) as KnowledgeRow | undefined;
     if (!topic) return reply.status(404).send({ error: "Product topic not found" });
     const bindings = store.db.prepare(`SELECT b.*,d.title,d.body,d.lifecycle,d.source_locator,d.source_sha256,d.updated_at AS document_updated_at,

@@ -124,6 +124,7 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   });
   server.tool("knowledge_source_search", "Search published Product/Solution source chunks with path, symbol, line and version provenance.", { query: z.string().min(1), baselineId: z.string().optional(), projectSnapshotId: z.string().optional(), solution: z.string().optional(), version: z.string().optional(), limit: z.number().int().min(1).max(50).optional() }, async ({ query, baselineId, projectSnapshotId, solution, version, limit }) => {
     const store = requireKnowledge(); if (!baselineId && !projectSnapshotId) throw new Error("baselineId or projectSnapshotId is required");
+    if (!user.isAdmin && !store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id=? AND can_read=1 LIMIT 1").get(user.id)) throw new Error("Knowledge access denied");
     if (baselineId) assertPublishedBaseline(store, baselineId);
     if (projectSnapshotId) { const row = store.db.prepare("SELECT project_id FROM knowledge_project_snapshots WHERE id=?").get(projectSnapshotId) as { project_id?: string } | undefined; if (!row || (row.project_id && !store.canRead(user.id, row.project_id))) throw new Error("Knowledge access denied"); }
     const where = ["knowledge_source_chunks_fts MATCH ?"]; const params: unknown[] = [query];
@@ -134,12 +135,14 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   });
   server.tool("knowledge_source_read", "Read one bounded source chunk or file range from a published baseline/project snapshot.", { chunkId: z.string().optional(), baselineId: z.string().optional(), projectSnapshotId: z.string().optional(), path: z.string().optional(), lineStart: z.number().int().min(1).optional(), lineEnd: z.number().int().min(1).optional() }, async ({ chunkId, baselineId, projectSnapshotId, path, lineStart, lineEnd }) => {
     const store = requireKnowledge(); if (baselineId) assertPublishedBaseline(store, baselineId); if (!chunkId && (!path || (!baselineId && !projectSnapshotId))) throw new Error("chunkId or scoped path is required");
+    if (!user.isAdmin && !store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id=? AND can_read=1 LIMIT 1").get(user.id)) throw new Error("Knowledge access denied");
     const row = chunkId ? store.db.prepare("SELECT * FROM knowledge_source_chunks WHERE id=?").get(chunkId) as Record<string, unknown> | undefined : (store.db.prepare(`SELECT * FROM knowledge_source_chunks WHERE relative_path=? AND ${baselineId ? "baseline_id=?" : "snapshot_id=?"} AND line_end>=? ORDER BY line_start LIMIT 1`).get(path, baselineId ?? projectSnapshotId, lineStart ?? 1) as Record<string, unknown> | undefined);
     if (!row) throw new Error("Source chunk not found"); if (baselineId && row.baseline_id !== baselineId) throw new Error("Source scope mismatch"); if (projectSnapshotId && row.snapshot_id !== projectSnapshotId) throw new Error("Source scope mismatch");
     return { content: [{ type: "text", text: summarizeJson({ path: row.relative_path, symbol: row.symbol, lineStart: row.line_start, lineEnd: row.line_end, content: row.content, contentHash: row.content_sha256, parserVersion: row.parser_version, requestedRange: { lineStart, lineEnd } }) }] };
   });
   server.tool("knowledge_topic_get", "Read one logical Product Knowledge topic with all version bindings and revision content.", { topicId: z.string() }, async ({ topicId }) => {
     const store = requireKnowledge(); const topic = store.db.prepare("SELECT * FROM knowledge_topics WHERE id=?").get(topicId); if (!topic) throw new Error("Knowledge topic not found");
+    if (!user.isAdmin && !store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id=? AND can_read=1 LIMIT 1").get(user.id)) throw new Error("Knowledge access denied");
     const bindings = store.db.prepare(`SELECT b.topic_id,b.product,b.product_version,b.source_path,b.match_method,b.match_confidence,d.id AS document_id,d.title,d.body,d.source_locator,d.source_sha256 FROM knowledge_product_document_bindings b JOIN knowledge_documents d ON d.id=b.document_id WHERE b.topic_id=? ORDER BY b.product_version`).all(topicId);
     return { content: [{ type: "text", text: summarizeJson({ topic, bindings }) }] };
   });
@@ -151,8 +154,12 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   });
   server.tool("knowledge_solution_upgrade_analysis", "Run a published-baseline three-way upgrade comparison against a project snapshot.", { oldBaselineId: z.string(), currentProjectSnapshotId: z.string(), newBaselineId: z.string(), limit: z.number().int().min(1).max(1000).optional() }, async ({ oldBaselineId, currentProjectSnapshotId, newBaselineId, limit }) => {
     const store = requireKnowledge(); assertPublishedBaseline(store, oldBaselineId); assertPublishedBaseline(store, newBaselineId);
+    if (!user.isAdmin && !store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id=? AND can_read=1 LIMIT 1").get(user.id)) throw new Error("Knowledge access denied");
     const changes = compareSourceBaselines(sourceManifest(store, oldBaselineId), sourceManifest(store, currentProjectSnapshotId, true), sourceManifest(store, newBaselineId));
-    return { content: [{ type: "text", text: summarizeJson({ oldBaselineId, currentProjectSnapshotId, newBaselineId, changes: changes.slice(0, limit ?? 1000), counts: changes.reduce<Record<string, number>>((acc, item) => { acc[item.status] = (acc[item.status] ?? 0) + 1; return acc; }, {}) }) }] };
+    const ids = (table: string, key: string, id: string) => new Map((store.db.prepare(`SELECT relative_path,id FROM ${table} WHERE ${key}=?`).all(id) as Array<{ relative_path: string; id: string }>).map((row) => [row.relative_path, row.id]));
+    const oldIds = ids("knowledge_source_files", "baseline_id", oldBaselineId); const projectIds = ids("knowledge_project_snapshot_files", "snapshot_id", currentProjectSnapshotId); const newIds = ids("knowledge_source_files", "baseline_id", newBaselineId);
+    const withEvidence = changes.map((change) => ({ ...change, evidenceRefs: { old: oldIds.get(change.path), project: projectIds.get(change.path), next: newIds.get(change.path) } }));
+    return { content: [{ type: "text", text: summarizeJson({ oldBaselineId, currentProjectSnapshotId, newBaselineId, changes: withEvidence.slice(0, limit ?? 1000), counts: changes.reduce<Record<string, number>>((acc, item) => { acc[item.status] = (acc[item.status] ?? 0) + 1; return acc; }, {}) }) }] };
   });
 
   // Resource templates keep large document bodies out of search responses and

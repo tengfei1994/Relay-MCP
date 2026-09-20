@@ -10,7 +10,7 @@ import { KnowledgeRepository } from "../../knowledge/repository.js";
 import { importCasebook, importContextFacts } from "../../knowledge/importer.js";
 import { analyzeRelationImpact, queryRelations } from "../../knowledge/relations.js";
 import { searchKnowledge } from "../../knowledge/retriever.js";
-import { importKnowledgeProducts, searchKnowledgeProducts, diffKnowledgeProducts, updateProductDocumentLifecycle } from "../../knowledge/knowledge-products.js";
+import { searchKnowledgeProducts, diffKnowledgeProducts, updateProductDocumentLifecycle } from "../../knowledge/knowledge-products.js";
 import { ingestArtifactSet, ingestProjectSnapshot } from "../../knowledge/artifact-ingest.js";
 import { enqueueArtifactImport, enqueueProductImport } from "../../knowledge/ingest-worker.js";
 import { compareSourceBaselines, type SourceManifest } from "../../knowledge/source-baseline.js";
@@ -800,14 +800,9 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       const root = body.data.root ?? (() => { const project = db.select().from(projects).where(and(eq(projects.id, body.data.projectId!), eq(projects.userId, request.user.id))).get(); if (!project) throw new Error("Project not found"); return resolveWorkspacePath(project.workspacePath, body.data.path!, { mustExist: true }); })();
       if (!existsSync(root)) return reply.status(403).send({ error: "An existing source file or directory is required" });
       const store = getKnowledgeStore(); const key = idempotencyKey(request);
-      if (body.data.asynchronous) {
-        const job = enqueueProductImport(store, { ...body.data, root, sampleManagerVersion: body.data.sampleManagerVersion ?? "", idempotencyKey: key });
-        store.audit({ actorId: request.user.id, action: "knowledge.product_documents.import_queued", entityType: "ingest_job", entityId: job.id, details: { root, key } });
-        return reply.status(202).send(job);
-      }
-      const report = replayOrRun(store, request.user.id, "product-documents:import", key, () => importKnowledgeProducts(store, { ...body.data, root, sampleManagerVersion: body.data.sampleManagerVersion ?? "", idempotencyKey: key }), body.data);
-      store.audit({ actorId: request.user.id, action: "knowledge.product_documents.import", entityType: "product_document_batch", entityId: report.runId, details: { ...report } });
-      return reply.send(report);
+      const report = replayOrRun(store, request.user.id, "product-documents:import", key, () => enqueueProductImport(store, { ...body.data, root, sampleManagerVersion: body.data.sampleManagerVersion ?? "", idempotencyKey: key }), body.data);
+      store.audit({ actorId: request.user.id, action: "knowledge.product_documents.import", entityType: "product_document_batch", entityId: report.id, details: { ...report } });
+      return reply.status(202).send(report);
     } catch (error) { return sendError(reply, error, 400); }
   });
 
@@ -1027,9 +1022,9 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       const root = body.data.root ?? (() => { const project = db.select().from(projects).where(and(eq(projects.id, body.data.projectId!), eq(projects.userId, request.user.id))).get(); if (!project) throw new Error("Project not found"); return resolveWorkspacePath(project.workspacePath, body.data.path!, { mustExist: true }); })();
       if (!existsSync(root)) return reply.status(403).send({ error: "An existing source directory or ZIP is required" });
       const store = getKnowledgeStore(); const key = idempotencyKey(request);
-      const report = replayOrRun(store, request.user.id, "product-documents:import", key, () => importKnowledgeProducts(store, { ...body.data, root, sampleManagerVersion: body.data.sampleManagerVersion ?? "", idempotencyKey: key }), body.data);
-      store.audit({ actorId: request.user.id, action: "knowledge.product_documents.import", entityType: "product_document_batch", entityId: report.runId, details: { ...report } });
-      return reply.send(report);
+      const report = replayOrRun(store, request.user.id, "product-documents:import", key, () => enqueueProductImport(store, { ...body.data, root, sampleManagerVersion: body.data.sampleManagerVersion ?? "", idempotencyKey: key }), body.data);
+      store.audit({ actorId: request.user.id, action: "knowledge.product_documents.import", entityType: "product_document_batch", entityId: report.id, details: { ...report } });
+      return reply.status(202).send(report);
     } catch (error) { return sendError(reply, error, 400); }
   });
 
@@ -1060,9 +1055,9 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     try {
       const metadata = safeRows(() => JSON.parse(String(run.batch_metadata_json ?? "{}")), {}) as Record<string, unknown>;
       const key = idempotencyKey(request) ?? `retry:${id}`;
-      const report = replayOrRun(store, request.user.id, "product-documents:retry", key, () => importKnowledgeProducts(store, { root: String(run.source_root), sampleManagerVersion: String(metadata.sampleManagerVersion ?? ""), product: metadata.product ? String(metadata.product) : undefined, solution: metadata.solution ? String(metadata.solution) : undefined, module: metadata.module ? String(metadata.module) : undefined, language: metadata.language ? String(metadata.language) : undefined, authority: metadata.authority ? String(metadata.authority) : undefined, documentFamilyId: metadata.documentFamilyId ? String(metadata.documentFamilyId) : undefined, manifestPath: metadata.manifestPath ? String(metadata.manifestPath) : undefined, idempotencyKey: key }), { id });
-      store.audit({ actorId: request.user.id, action: "knowledge.product_documents.retry", entityType: "product_document_batch", entityId: id, details: { retryRunId: report.runId } });
-      return reply.send(report);
+      const report = replayOrRun(store, request.user.id, "product-documents:retry", key, () => enqueueProductImport(store, { root: String(run.source_root), sampleManagerVersion: String(metadata.sampleManagerVersion ?? ""), product: metadata.product ? String(metadata.product) : undefined, solution: metadata.solution ? String(metadata.solution) : undefined, module: metadata.module ? String(metadata.module) : undefined, language: metadata.language ? String(metadata.language) : undefined, authority: metadata.authority ? String(metadata.authority) : undefined, documentFamilyId: metadata.documentFamilyId ? String(metadata.documentFamilyId) : undefined, manifestPath: metadata.manifestPath ? String(metadata.manifestPath) : undefined, idempotencyKey: key }), { id });
+      store.audit({ actorId: request.user.id, action: "knowledge.product_documents.retry", entityType: "product_document_batch", entityId: id, details: { retryRunId: report.id } });
+      return reply.status(202).send(report);
     } catch (error) { return sendError(reply, error, 400); }
   });
 
@@ -1192,8 +1187,8 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
     const id = String((request.params as { id: string }).id); const store = getKnowledgeStore(); const run = store.db.prepare("SELECT source_root,batch_metadata_json FROM knowledge_ingest_runs WHERE id=?").get(id) as KnowledgeRow | undefined; if (!run?.source_root) return reply.status(404).send({ error: "Retry source is unavailable" });
     const metadata = safeRows(() => JSON.parse(String(run.batch_metadata_json ?? "{}")), {}) as Record<string, unknown>; const key = idempotencyKey(request) ?? `retry:${id}`;
-    const report = replayOrRun(store, request.user.id, "operations:ingest-retry", key, () => importKnowledgeProducts(store, { root: String(run.source_root), sampleManagerVersion: String(metadata.sampleManagerVersion ?? ""), product: metadata.product ? String(metadata.product) : undefined, solution: metadata.solution ? String(metadata.solution) : undefined, module: metadata.module ? String(metadata.module) : undefined, language: metadata.language ? String(metadata.language) : undefined, authority: metadata.authority ? String(metadata.authority) : undefined, documentFamilyId: metadata.documentFamilyId ? String(metadata.documentFamilyId) : undefined, manifestPath: metadata.manifestPath ? String(metadata.manifestPath) : undefined, idempotencyKey: key }), { id });
-    store.audit({ actorId: request.user.id, action: "knowledge.operations.ingest_retry", entityType: "ingest_run", entityId: id, details: { retryRunId: report.runId } }); return reply.send(report);
+    const report = replayOrRun(store, request.user.id, "operations:ingest-retry", key, () => enqueueProductImport(store, { root: String(run.source_root), sampleManagerVersion: String(metadata.sampleManagerVersion ?? ""), product: metadata.product ? String(metadata.product) : undefined, solution: metadata.solution ? String(metadata.solution) : undefined, module: metadata.module ? String(metadata.module) : undefined, language: metadata.language ? String(metadata.language) : undefined, authority: metadata.authority ? String(metadata.authority) : undefined, documentFamilyId: metadata.documentFamilyId ? String(metadata.documentFamilyId) : undefined, manifestPath: metadata.manifestPath ? String(metadata.manifestPath) : undefined, idempotencyKey: key }), { id });
+    store.audit({ actorId: request.user.id, action: "knowledge.operations.ingest_retry", entityType: "ingest_run", entityId: id, details: { retryRunId: report.id } }); return reply.status(202).send(report);
   });
 
   app.get("/api/knowledge/operations/index", { onRequest: [app.authenticate] }, async (_request, reply) => {

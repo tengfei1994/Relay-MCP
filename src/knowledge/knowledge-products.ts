@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, rmSync, openSync, closeSync, readSync, writeSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { extname, join, relative, resolve, sep } from "node:path";
-import { unzipSync } from "fflate";
+import { Unzip, UnzipInflate } from "fflate";
 import { parse as parseYaml } from "yaml";
 import { diffLines } from "diff";
 import type { KnowledgeStore } from "./store.js";
@@ -11,6 +11,7 @@ import { parseHelpHtml, parseToc } from "./parsers.js";
 const SUPPORTED = new Set([".md", ".markdown", ".html", ".htm", ".pdf", ".chm"]);
 
 export interface ProductDocumentImportOptions {
+  onProgress?: (progress: { runId: string; processed: number; total: number; imported: number; unchanged: number; currentFile?: string }) => void;
   root: string;
   product?: string;
   sampleManagerVersion: string;
@@ -73,6 +74,7 @@ function safeJson(value: unknown, fallback: unknown): unknown { try { return JSO
 function hasColumn(store: KnowledgeStore, table: string, column: string): boolean { return (store.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((item) => item.name === column); }
 function files(root: string): string[] {
   const result: string[] = [];
+  if (statSync(root).isFile()) return [root];
   for (const entry of readdirSync(root)) {
     const path = join(root, entry);
     const info = statSync(path);
@@ -133,22 +135,65 @@ function loadManifest(root: string, explicit?: string): { defaults: ManifestRule
   const documents = Array.isArray(parsed?.documents) ? parsed?.documents : [];
   return { defaults, rules: documents.filter((value): value is ManifestRule => Boolean(value && typeof value === "object")) };
 }
-function expandZip(path: string): string {
+function expandZip(path: string, budget = { bytes: 0, entries: 0 }): string {
+  // ZIP byte buffers live outside V8's heap. Release the previous archive's
+  // buffers before opening the next one in a memory-limited worker.
+  global.gc?.();
   const output = `${path}.expanded-${sha256(path).slice(0, 12)}`;
   mkdirSync(output, { recursive: true });
   const root = resolve(output);
-  for (const [entry, content] of Object.entries(unzipSync(readFileSync(path)))) {
+  const handles = new Set<number>();
+  const unzip = new Unzip((file) => {
+    budget.entries++;
+    if (budget.entries > 150_000) throw new Error("ZIP exceeds entry limit");
+    const entry = file.name.replaceAll("\\", "/");
     const target = resolve(output, entry);
-    if (target !== root && !target.startsWith(root + sep)) throw new Error(`ZIP entry escapes extraction root: ${entry}`);
+    if (entry.includes("\0") || /^[a-z]:/i.test(entry) || (target !== root && !target.startsWith(root + sep))) throw new Error(`ZIP entry escapes extraction root: ${entry}`);
     const entryExt = extname(entry).toLowerCase();
-    const isToc = entryExt === ".js" && /(?:^|[\\/])(?:_toc|Data[\\/]Tocs)(?:[\\/]|$)/i.test(entry);
-    if (entry.endsWith("/") || (![...SUPPORTED, ".zip", ".yaml", ".yml"].includes(entryExt) && !isToc)) continue;
-    mkdirSync(join(target, ".."), { recursive: true }); writeFileSync(target, content);
-  }
+    const isToc = entryExt === ".js" && /(?:^|\/)(?:_toc|Data\/Tocs)(?:\/|$)/i.test(entry);
+    if (entry.endsWith("/") || (![...SUPPORTED, ".zip", ".yaml", ".yml"].includes(entryExt) && !isToc)) return;
+    if ((file.originalSize ?? 0) > 512 * 1024 ** 2) throw new Error("ZIP entry exceeds size limit");
+    mkdirSync(join(target, ".."), { recursive: true });
+    const fd = openSync(target, "w"); handles.add(fd);
+    let written = 0;
+    file.ondata = (error, data, final) => {
+      if (error) throw error;
+      budget.bytes += data.length; written += data.length;
+      if (budget.bytes > 2 * 1024 ** 3 || written > 512 * 1024 ** 2) throw new Error("ZIP exceeds extraction limits");
+      let offset = 0;
+      while (offset < data.length) offset += writeSync(fd, data, offset, data.length - offset);
+      if (final) { closeSync(fd); handles.delete(fd); }
+    };
+    file.start();
+  });
+  unzip.register(UnzipInflate);
+  const input = openSync(path, "r");
+  try {
+    // Feed bounded chunks; never hold the full outer ZIP and its inner ZIPs
+    // together in memory. Each entry is written directly to disk.
+    while (true) {
+      const chunk = Buffer.allocUnsafe(64 * 1024);
+      const count = readSync(input, chunk, 0, chunk.length, null);
+      if (!count) break;
+      unzip.push(chunk.subarray(0, count));
+    }
+    unzip.push(new Uint8Array(), true);
+    if (handles.size) throw new Error("Truncated ZIP archive");
+  } finally { closeSync(input); for (const fd of handles) closeSync(fd); }
   return output;
 }
-function filesIncludingZips(root: string): string[] { const result: string[] = []; for (const entry of readdirSync(root)) { const path = join(root, entry); const info = statSync(path); if (info.isDirectory()) result.push(...filesIncludingZips(path)); else if (extname(entry).toLowerCase() === ".zip" || SUPPORTED.has(extname(entry).toLowerCase())) result.push(path); } return result; }
-function expandNestedZips(root: string): string[] { const expanded: string[] = []; for (const zip of filesIncludingZips(root).filter((path) => extname(path).toLowerCase() === ".zip")) { const output = expandZip(zip); expanded.push(output, ...expandNestedZips(output)); } return expanded; }
+function expandNestedZips(root: string, expanded: string[], depth = 0, budget = { bytes: 0, entries: 0 }): void {
+  if (depth > 5) throw new Error("ZIP nesting exceeds 5 levels");
+  if (!statSync(root).isDirectory()) return;
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory() && !entry.name.includes(".expanded-")) expandNestedZips(path, expanded, depth, budget);
+    else if (entry.isFile() && extname(path).toLowerCase() === ".zip") {
+      const output = expandZip(path, budget); expanded.push(output);
+      expandNestedZips(output, expanded, depth + 1, budget);
+    }
+  }
+}
 function expandChm(path: string): string | undefined {
   const output = `${path}.expanded-${sha256(path).slice(0, 12)}`; mkdirSync(output, { recursive: true });
   const extractor = process.env.RELAY_CHM_EXTRACTOR ?? (process.platform === "win32" ? "hh.exe" : "hh");
@@ -177,9 +222,19 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
   const sourceHashes: string[] = []; const expandedChm: string[] = []; let nestedZipPaths: string[] = [];
   try {
     if (!base.sampleManagerVersion) throw new Error("sampleManagerVersion is required (or provide it in manifest.yaml)");
-    nestedZipPaths = expandNestedZips(root);
+    expandNestedZips(root, nestedZipPaths);
+    global.gc?.();
     const inputFiles = files(root); for (const chm of inputFiles.filter((path) => extname(path).toLowerCase() === ".chm")) { const expandedPath = expandChm(chm); if (expandedPath) { expandedChm.push(expandedPath); inputFiles.push(...files(expandedPath)); } else report.warnings.push(`${chm}: CHM extraction unavailable; metadata-only placeholder retained`); }
+    store.db.exec("CREATE INDEX IF NOT EXISTS idx_knowledge_topics_lower_title ON knowledge_topics(lower(canonical_title))");
+    let processed = 0;
+    const progress = (currentFile?: string) => {
+      store.db.prepare("UPDATE knowledge_ingest_runs SET imported=?,skipped=? WHERE id=?").run(report.imported + report.updated, report.unchanged, runId);
+      options.onProgress?.({ runId, processed, total: inputFiles.length, imported: report.imported + report.updated, unchanged: report.unchanged, currentFile });
+    };
+    progress();
     for (const path of inputFiles) {
+      if (processed % 100 === 0) progress(relative(root, path));
+      processed++;
       const relativePath = relative(root, path).replaceAll("\\", "/");
       const rule = matchRule(relativePath, loaded.rules) ?? {};
       const local = { ...base, ...rule };
@@ -195,10 +250,11 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
       const version = String(local.sampleManagerVersion);
       const normalizedContentSha256 = sha256(parsed.body.replace(/\s+/g, " ").trim().toLowerCase());
       const revisionId = `product-revision-${normalizedContentSha256.slice(0, 32)}`;
+      store.db.transaction(() => {
       store.db.prepare(`INSERT INTO knowledge_product_revisions(id,normalized_content_sha256,raw_sha256,title,body,sections_json,parser_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(normalized_content_sha256) DO UPDATE SET updated_at=excluded.updated_at`).run(revisionId, normalizedContentSha256, sourceHash, parsed.title, parsed.body, JSON.stringify(parsed.sections), HTML_PARSER_VERSION, now, now);
       const id = `product-document-${sha256(`${familyId}\0${version}\0${relativePath}\0${sourceHash}`).slice(0, 32)}`;
       const existing = store.db.prepare("SELECT source_sha256 FROM knowledge_product_documents WHERE id = ?").get(id) as { source_sha256?: string } | undefined;
-      if (existing) { report.unchanged++; report.documents.push(id); report.items.push({ path: relativePath, id, status: "unchanged" }); continue; }
+      if (existing) { report.unchanged++; report.documents.push(id); report.items.push({ path: relativePath, id, status: "unchanged" }); return; }
       const prior = store.db.prepare("SELECT d.id,d.lifecycle FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE p.document_family_id=? AND p.version=? AND p.source_path=? AND d.id<>?").get(familyId, version, relativePath, id) as { id?: string; lifecycle?: string } | undefined;
       const createdAt = now;
       store.upsertDocument({ id, kind: "product_document", title: parsed.title, body, lifecycle: "approved", projectNameSnapshot: local.product, sampleManagerVersion: version, solution: local.solution, module: parsed.module, visibility: "global", scopeType: "version", scopeKey: version, locator: `product-doc:${relativePath}`, commit: options.sourceCommit, sha256: sourceHash, createdAt, updatedAt: createdAt });
@@ -223,7 +279,9 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
       if (prior?.id) report.updated++; else report.imported++;
       report.documents.push(id); report.items.push({ path: relativePath, id, status: prior?.id ? "updated" : "imported" });
       if (hasBatchTables) store.db.prepare("INSERT OR REPLACE INTO knowledge_product_document_items(id,run_id,relative_path,document_id,status,source_sha256,metadata_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").run(`${runId}:${relativePath}`, runId, relativePath, id, prior?.id ? "updated" : "imported", sourceHash, JSON.stringify(metadata), now, now);
+      })();
     }
+    progress();
     report.status = report.failed ? (report.imported || report.updated ? "partial" : "failed") : "succeeded";
   } catch (error) {
     report.failed++; report.status = "failed"; const message = error instanceof Error ? error.message : String(error); report.errors.push({ path: options.root, error: message }); report.warnings.push(message);

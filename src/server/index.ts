@@ -22,7 +22,8 @@ import { toolRoutes } from "./routes/tools.js";
 import { knowledgeRoutes } from "./routes/knowledge.js";
 import { requireJwtSecret } from "../shared/auth-secret.js";
 import { getKnowledgeStore } from "./knowledge-context.js";
-import { runPendingIngestJobs } from "../knowledge/ingest-worker.js";
+import { runPendingIngestJobs, recoverInterruptedIngestJobs } from "../knowledge/ingest-worker.js";
+import { stopIngestJobs } from "../knowledge/ingest-dispatch.js";
 
 declare module "@fastify/jwt" {
   interface FastifyJWT {
@@ -121,6 +122,7 @@ await app.register(knowledgeRoutes);
 // Resume durable document imports after a process restart. The worker claims
 // only queued rows and keeps the HTTP server responsive while large packages
 // are parsed.
+recoverInterruptedIngestJobs(getKnowledgeStore());
 void runPendingIngestJobs(getKnowledgeStore()).catch((error) => app.log.error(error, "knowledge ingest recovery failed"));
 
 // Health check
@@ -137,4 +139,7 @@ const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? "0.0.0.0";
 
 await app.listen({ port, host });
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => {
+  void stopIngestJobs().then(() => app.close()).finally(() => process.exit(0));
+});
 console.log(`Web server running on http://${host}:${port}`);

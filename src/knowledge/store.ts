@@ -157,6 +157,7 @@ export class KnowledgeStore {
       mkdirSync(dirname(dbPath), { recursive: true });
       opened = new Database(dbPath);
       this.db = opened;
+      this.db.pragma("journal_mode = WAL");
       this.db.pragma("foreign_keys = ON");
       this.casebookRoot = options.casebookRoot;
       this.evidenceRoot = options.evidenceRoot;
@@ -554,13 +555,13 @@ export class KnowledgeStore {
         VALUES (@id,@status,'case','[]',@sourceLocator,@sourceSha256,@createdAt,@updatedAt)`).run(projection);
       this.db.prepare("UPDATE knowledge_candidates SET status=@status,source_locator=@sourceLocator,source_sha256=@sourceSha256,updated_at=@updatedAt WHERE id=@id").run(projection);
     }
-    this.syncDocumentChunks(document);
+    this.syncDocumentChunks(document, Boolean(existing));
     this.syncScopeBinding(document);
     return document;
   }
 
   /** Keep deterministic chunk rows in sync with the canonical document. */
-  private syncDocumentChunks(document: KnowledgeDocument): void {
+  private syncDocumentChunks(document: KnowledgeDocument, replaceExisting = true): void {
     const chunkSize = 2_000;
     const chunks: string[] = [];
     // Prefer semantic document sections (the Product parser emits Markdown
@@ -574,7 +575,7 @@ export class KnowledgeStore {
     const ftsInsert = this.db.prepare("INSERT INTO knowledge_fts(document_id,title,body) VALUES (?,?,?)");
     this.db.transaction(() => {
       remove.run(document.id);
-      ftsRemove.run(document.id);
+      if (replaceExisting) ftsRemove.run(document.id);
       chunks.forEach((content, ordinal) => {
         const hash = createHash("sha256").update(content, "utf8").digest("hex");
         insert.run(`${document.id}:chunk:${ordinal}`, document.id, ordinal, content, hash);

@@ -36,9 +36,10 @@ function ProductImport() {
           const { job } = await api.knowledgeIngestJob(activeJob);
           if (cancelled) return;
           const result = job?.result;
+          setError("");
           if (result?.total) { setJobProgress(result); setProgress(Math.min(99, 50 + Math.round(49 * result.processed / result.total))); }
           if (["succeeded", "failed"].includes(job?.status)) {
-            setReport(result ?? job); setStage(job.status); setProgress(100);
+            setReport(result ? { ...result, status: job.status } : job); setStage(job.status); setProgress(100);
             if (job.status === "failed") setError(job.error ?? result?.warnings?.join("; ") ?? "Import failed. See import history for details.");
             localStorage.removeItem("product-import-job"); setActiveJob(null);
             window.dispatchEvent(new Event("product-import-completed")); return;

@@ -50,7 +50,9 @@ export async function uploadRoutes(app: FastifyInstance) {
         .get();
       if (!project) return reply.status(404).send({ error: "Project not found" });
 
-      resolveWorkspacePath(project.workspacePath, parsed.data.path);
+      const uploadPath = resolveWorkspacePath(project.workspacePath, parsed.data.path);
+      // New uploads may target a new contained subdirectory.
+      mkdirSync(dirname(uploadPath), { recursive: true });
       const { session, token } = createUploadSession({
         userId: req.user.id,
         projectId: project.id,

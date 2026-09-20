@@ -120,8 +120,10 @@ export default function KnowledgePage() {
         const token = localStorage.getItem("token");
         const sessionResponse = await fetch(`/api/projects/${projectId}/uploads`, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ path }) });
         if (!sessionResponse.ok) throw new Error((await sessionResponse.json().catch(() => ({}))).error ?? "Unable to create upload session");
-        const session = await sessionResponse.json();
-        const uploadResponse = await fetch(session.uploadUrl, { method: "PUT", headers: { "Content-Type": "application/octet-stream", "X-Relay-Upload-Token": session.token }, body: file });
+        const created = await sessionResponse.json();
+        const session = created.upload;
+        if (!session?.token || !created.uploadUrl) throw new Error("Upload session response is incomplete");
+        const uploadResponse = await fetch(created.uploadUrl, { method: "PUT", headers: { "Content-Type": "application/octet-stream", "X-Relay-Upload-Token": session.token }, body: file });
         if (!uploadResponse.ok) throw new Error((await uploadResponse.json().catch(() => ({}))).error ?? `Upload failed for ${file.name}`);
       }
       await api.productDocumentImport({ projectId, path: importPath, product: importProduct || undefined, sampleManagerVersion: version.trim(), solution: solution || undefined, module: moduleName || undefined, language: language || undefined, authority: authority || undefined }, `ui-product-docs-${projectId}-${importPath}-${version}`);

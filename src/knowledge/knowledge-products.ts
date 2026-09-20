@@ -142,11 +142,13 @@ function expandZip(path: string): string {
     if (target !== root && !target.startsWith(root + sep)) throw new Error(`ZIP entry escapes extraction root: ${entry}`);
     const entryExt = extname(entry).toLowerCase();
     const isToc = entryExt === ".js" && /(?:^|[\\/])(?:_toc|Data[\\/]Tocs)(?:[\\/]|$)/i.test(entry);
-    if (entry.endsWith("/") || (![...SUPPORTED, ".yaml", ".yml"].includes(entryExt) && !isToc)) continue;
+    if (entry.endsWith("/") || (![...SUPPORTED, ".zip", ".yaml", ".yml"].includes(entryExt) && !isToc)) continue;
     mkdirSync(join(target, ".."), { recursive: true }); writeFileSync(target, content);
   }
   return output;
 }
+function filesIncludingZips(root: string): string[] { const result: string[] = []; for (const entry of readdirSync(root)) { const path = join(root, entry); const info = statSync(path); if (info.isDirectory()) result.push(...filesIncludingZips(path)); else if (extname(entry).toLowerCase() === ".zip" || SUPPORTED.has(extname(entry).toLowerCase())) result.push(path); } return result; }
+function expandNestedZips(root: string): string[] { const expanded: string[] = []; for (const zip of filesIncludingZips(root).filter((path) => extname(path).toLowerCase() === ".zip")) { const output = expandZip(zip); expanded.push(output, ...expandNestedZips(output)); } return expanded; }
 function expandChm(path: string): string | undefined {
   const output = `${path}.expanded-${sha256(path).slice(0, 12)}`; mkdirSync(output, { recursive: true });
   const extractor = process.env.RELAY_CHM_EXTRACTOR ?? (process.platform === "win32" ? "hh.exe" : "hh");
@@ -172,9 +174,10 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
   if (hasIdempotencyColumn && hasColumn(store, "knowledge_ingest_runs", "batch_metadata_json") && hasColumn(store, "knowledge_ingest_runs", "source_root") && hasColumn(store, "knowledge_ingest_runs", "source_commit")) store.db.prepare("INSERT OR IGNORE INTO knowledge_ingest_runs(id,source_locator,status,started_at,operation_idempotency_key,batch_metadata_json,source_root,source_commit) VALUES (?,?,?,?,?,?,?,?)").run(runId, `product-docs:${options.root}`, "queued", now, options.idempotencyKey ?? null, batchMeta, options.root, options.sourceCommit ?? null);
   else store.db.prepare("INSERT OR IGNORE INTO knowledge_ingest_runs(id,source_locator,status,started_at) VALUES (?,?,?,?)").run(runId, `product-docs:${options.root}`, "queued", now);
   store.db.prepare("UPDATE knowledge_ingest_runs SET status=? WHERE id=?").run("running", runId); report.status = "running";
-  const sourceHashes: string[] = []; const expandedChm: string[] = [];
+  const sourceHashes: string[] = []; const expandedChm: string[] = []; let nestedZipPaths: string[] = [];
   try {
     if (!base.sampleManagerVersion) throw new Error("sampleManagerVersion is required (or provide it in manifest.yaml)");
+    nestedZipPaths = expandNestedZips(root);
     const inputFiles = files(root); for (const chm of inputFiles.filter((path) => extname(path).toLowerCase() === ".chm")) { const expandedPath = expandChm(chm); if (expandedPath) { expandedChm.push(expandedPath); inputFiles.push(...files(expandedPath)); } else report.warnings.push(`${chm}: CHM extraction unavailable; metadata-only placeholder retained`); }
     for (const path of inputFiles) {
       const relativePath = relative(root, path).replaceAll("\\", "/");
@@ -228,7 +231,7 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
     const aggregateSourceHash = sourceHashes.length ? sha256(sourceHashes.sort().join("\n")) : null;
     if (hasColumn(store, "knowledge_ingest_runs", "source_sha256")) store.db.prepare("UPDATE knowledge_ingest_runs SET status=?,imported=?,skipped=?,failed=?,finished_at=?,error=?,source_sha256=COALESCE(?,source_sha256) WHERE id=?").run(report.status, report.imported + report.updated, report.unchanged, report.failed, new Date().toISOString(), report.errors.length ? JSON.stringify(report.errors) : report.warnings.length ? JSON.stringify(report.warnings) : null, aggregateSourceHash, runId);
     else store.db.prepare("UPDATE knowledge_ingest_runs SET status=?,imported=?,skipped=?,failed=?,finished_at=?,error=? WHERE id=?").run(report.status, report.imported + report.updated, report.unchanged, report.failed, new Date().toISOString(), report.errors.length ? JSON.stringify(report.errors) : report.warnings.length ? JSON.stringify(report.warnings) : null, runId);
-    if (expanded) rmSync(expanded, { recursive: true, force: true }); for (const path of expandedChm) rmSync(path, { recursive: true, force: true });
+    if (expanded) rmSync(expanded, { recursive: true, force: true }); for (const path of expandedChm) rmSync(path, { recursive: true, force: true }); for (const path of nestedZipPaths) rmSync(path, { recursive: true, force: true });
   }
   return report;
 }

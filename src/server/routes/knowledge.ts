@@ -798,7 +798,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
     try {
       const root = body.data.root ?? (() => { const project = db.select().from(projects).where(and(eq(projects.id, body.data.projectId!), eq(projects.userId, request.user.id))).get(); if (!project) throw new Error("Project not found"); return resolveWorkspacePath(project.workspacePath, body.data.path!, { mustExist: true }); })();
-      if (!existsSync(root)) return reply.status(403).send({ error: "An existing source directory is required" });
+      if (!existsSync(root)) return reply.status(403).send({ error: "An existing source file or directory is required" });
       const store = getKnowledgeStore(); const key = idempotencyKey(request);
       if (body.data.asynchronous) {
         const job = enqueueProductImport(store, { ...body.data, root, sampleManagerVersion: body.data.sampleManagerVersion ?? "", idempotencyKey: key });

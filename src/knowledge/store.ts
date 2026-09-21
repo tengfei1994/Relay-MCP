@@ -280,6 +280,16 @@ export class KnowledgeStore {
         UNIQUE(document_id, against_document_id), CHECK(review_status IN ('not_reviewed','accepted','rejected','needs_review'))
       );
       CREATE INDEX IF NOT EXISTS idx_product_document_revisions_review ON knowledge_product_document_revisions(review_status, updated_at);`);
+    // Legacy databases may contain product-document rows whose canonical
+    // document rows were removed or never committed.  Backfill only rows
+    // whose parent document still exists; otherwise the binding insert
+    // violates the foreign key and prevents every ingest worker from
+    // starting.  The cleanup is deliberately limited to orphaned legacy
+    // product rows and does not delete user documents.
+    this.db.exec(`
+      DELETE FROM knowledge_product_documents
+      WHERE id NOT IN (SELECT id FROM knowledge_documents);
+    `);
     this.backfillDefaultScopes();
     this.backfillProductTopics();
   }
@@ -289,7 +299,8 @@ export class KnowledgeStore {
     const now = this.now().toISOString();
     const rows = this.db.prepare(`SELECT d.id,d.title,d.project_name_snapshot,d.samplemanager_version,p.document_family_id,p.source_path
       FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id
-      WHERE NOT EXISTS (SELECT 1 FROM knowledge_product_document_bindings b WHERE b.document_id=d.id)`).all() as Array<Record<string, unknown>>;
+      WHERE d.kind='product_document'
+        AND NOT EXISTS (SELECT 1 FROM knowledge_product_document_bindings b WHERE b.document_id=d.id)`).all() as Array<Record<string, unknown>>;
     const topic = this.db.prepare(`INSERT INTO knowledge_topics(id,canonical_key,canonical_title,kind,domain,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?) ON CONFLICT(canonical_key) DO UPDATE SET canonical_title=excluded.canonical_title,updated_at=excluded.updated_at`);
     const bind = this.db.prepare(`INSERT OR IGNORE INTO knowledge_product_document_bindings
@@ -299,7 +310,11 @@ export class KnowledgeStore {
       const family = String(row.document_family_id ?? row.id);
       const topicId = `topic-${hash(family)}`;
       topic.run(topicId, `product:${family}`, String(row.title ?? family), "product_document", "product", now, now);
-      bind.run(`binding-${hash(`${topicId}\0${row.samplemanager_version}\0${row.id}`)}`, topicId, String(row.id), row.project_name_snapshot ?? null, String(row.samplemanager_version ?? ""), String(row.source_path ?? ""), "family_id", 1, "active", now, now);
+      // A legacy database can be repaired while another process is importing.
+      // Re-check the parent before binding so migration remains safe under
+      // partially recovered data and never aborts the whole worker.
+      const parent = this.db.prepare("SELECT 1 FROM knowledge_documents WHERE id=?").get(String(row.id));
+      if (parent) bind.run(`binding-${hash(`${topicId}\0${row.samplemanager_version}\0${row.id}`)}`, topicId, String(row.id), row.project_name_snapshot ?? null, String(row.samplemanager_version ?? ""), String(row.source_path ?? ""), "family_id", 1, "active", now, now);
     }))();
   }
 

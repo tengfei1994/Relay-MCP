@@ -111,7 +111,7 @@ namespace RelayAgent.Service
         {
             var client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(30);
-            client.DefaultRequestHeaders.Add("Authorization", "Bearer " + config.Token);
+            client.DefaultRequestHeaders.Add("Authorization", "Bearer " + AgentConfig.NormalizeToken(config.Token));
             client.DefaultRequestHeaders.Add("X-Relay-Agent-Id", config.AgentId);
             return client;
         }

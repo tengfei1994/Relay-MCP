@@ -965,7 +965,7 @@ namespace RelayAgent.Client
                 using (var client = new HttpClient())
                 {
                     client.Timeout = TimeSpan.FromSeconds(15);
-                    client.DefaultRequestHeaders.Add("Authorization", "Bearer " + config.Token);
+                    client.DefaultRequestHeaders.Add("Authorization", "Bearer " + AgentConfig.NormalizeToken(config.Token));
                     client.DefaultRequestHeaders.Add("X-Relay-Agent-Id", config.AgentId);
                     using (var request = new HttpRequestMessage(
                         HttpMethod.Get,

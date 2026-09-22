@@ -162,6 +162,7 @@ namespace RelayAgent.Shared
 
         public void Validate()
         {
+            Token = NormalizeToken(Token);
             Uri uri;
             if (!Uri.TryCreate(RelayUrl, UriKind.Absolute, out uri))
             {
@@ -179,6 +180,16 @@ namespace RelayAgent.Shared
             {
                 throw new InvalidOperationException("Agent token is required.");
             }
+        }
+
+        public static string NormalizeToken(string token)
+        {
+            var value = (token ?? "").Trim();
+            if (value.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            {
+                value = value.Substring("Bearer ".Length).Trim();
+            }
+            return value;
         }
 
         public static string MaskRelayUrl(string relayUrl)

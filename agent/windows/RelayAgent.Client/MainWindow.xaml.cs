@@ -969,7 +969,8 @@ namespace RelayAgent.Client
                     client.DefaultRequestHeaders.Add("X-Relay-Agent-Id", config.AgentId);
                     using (var request = new HttpRequestMessage(
                         HttpMethod.Get,
-                        config.RelayUrl.TrimEnd('/') + "/api/health"))
+                        config.RelayUrl.TrimEnd('/') + "/api/agents/" +
+                        Uri.EscapeDataString(config.AgentId) + "/jobs/next"))
                     using (var response = await HttpAuditStore.SendAsync(
                         client,
                         request,
@@ -977,10 +978,17 @@ namespace RelayAgent.Client
                         "",
                         CancellationToken.None))
                     {
+                        var responseBody = await response.Content.ReadAsStringAsync();
                         var message = (int)response.StatusCode + " " + response.ReasonPhrase;
+                        if (!response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(responseBody))
+                        {
+                            message += ": " + responseBody;
+                        }
                         SetFooter("Relay test: " + message);
                         SetConnectionNotice(
-                            "Relay test returned " + message + ".",
+                            response.IsSuccessStatusCode
+                                ? "Relay authentication succeeded (" + message + ")."
+                                : "Relay authentication failed: " + message,
                             response.IsSuccessStatusCode ? SuccessBrush : DangerBrush);
                     }
                 }

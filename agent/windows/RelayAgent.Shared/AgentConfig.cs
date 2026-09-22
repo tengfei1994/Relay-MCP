@@ -184,12 +184,12 @@ namespace RelayAgent.Shared
 
         public static string NormalizeToken(string token)
         {
-            var value = (token ?? "").Trim();
-            if (value.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            var value = (token ?? "").Trim().Trim('"');
+            while (value.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
             {
                 value = value.Substring("Bearer ".Length).Trim();
             }
-            return value;
+            return value.Trim().Trim('"');
         }
 
         public static string MaskRelayUrl(string relayUrl)

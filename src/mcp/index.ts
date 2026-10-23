@@ -9,6 +9,7 @@ import { writeAudit } from "../shared/job-store.js";
 import { configureJobStore } from "../shared/job-store.js";
 import { configureDeploymentStore } from "../shared/deployment-store.js";
 import { createKnowledgeStore } from "../knowledge/store.js";
+import { WorkSessionService } from "../knowledge/work-session.js";
 import { captureKnowledgeCandidates, ProjectResolutionUnavailableError } from "../knowledge/capture-worker.js";
 import { drainRelayEventSpool, relayEventSpoolHealth } from "../knowledge/event-sink.js";
 import { sanitizeAuditArguments } from "../shared/audit-sanitizer.js";
@@ -18,6 +19,7 @@ import { requireJwtSecret } from "../shared/auth-secret.js";
 import { assertKnowledgeDbIsolated } from "../shared/canonical-path.js";
 import { parseBoundedNumber } from "../shared/runtime-config.js";
 import { createRequestActivity } from "./request-lifecycle.js";
+import { installMcpShutdown } from "./shutdown.js";
 import "dotenv/config";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? 3001);
@@ -70,6 +72,18 @@ const resolveStableProjectIdForCapture = (userId: number, projectName: string): 
   try { return lookupStableProjectId(userId, projectName); }
   catch (error) { throw new ProjectResolutionUnavailableError("project resolver unavailable", { cause: error }); }
 };
+// Job/Deployment producers only persist a Work Session reference after this
+// gate proves the session belongs to the caller and matches project scope.
+const workSessionValidator = (store: ReturnType<typeof createKnowledgeStore>) =>
+  (userId: number, projectName: string, sessionId: string, environment?: string): boolean => {
+    try {
+      const projectId = lookupStableProjectId(userId, projectName);
+      new WorkSessionService(store).assertSessionUsable({ actorId: userId, sessionId, projectId: projectId === undefined ? undefined : String(projectId), environment });
+      return true;
+    } catch {
+      return false;
+    }
+  };
 let knowledgeStatus: { available: boolean; error?: string } = { available: false, error: "not initialized" };
 let knowledge: ReturnType<typeof createKnowledgeStore> | undefined;
 let captureRunning = false;
@@ -90,8 +104,8 @@ function attemptKnowledgeRecovery(): void {
   }
   try {
     knowledge = createKnowledgeStore({ dbPath: KNOWLEDGE_DB_PATH, appDbPath: DB_PATH, casebookRoot: process.env.KNOWLEDGE_CASEBOOK_ROOT, evidenceRoot: process.env.KNOWLEDGE_EVIDENCE_ROOT });
-    configureJobStore({ eventSink: knowledge, resolveProjectId: resolveStableProjectId });
-    configureDeploymentStore({ eventSink: knowledge, resolveProjectId: resolveStableProjectId });
+    configureJobStore({ eventSink: knowledge, resolveProjectId: resolveStableProjectId, validateWorkSession: workSessionValidator(knowledge) });
+    configureDeploymentStore({ eventSink: knowledge, resolveProjectId: resolveStableProjectId, validateWorkSession: workSessionValidator(knowledge) });
     drainRelayEventSpool(knowledge);
     knowledgeStatus = { available: true };
   } catch (error) {
@@ -291,56 +305,11 @@ app.use((_error: unknown, _req: express.Request, res: express.Response, _next: e
   });
 });
 const mcpHttpServer = app.listen(MCP_PORT, "0.0.0.0", () => console.log(`MCP server running on port ${MCP_PORT}`));
-let shuttingDown = false;
 let sharedResourcesClosed = false;
-
-function closeSharedResources(): void {
+const closeSharedResources = (): void => {
   if (sharedResourcesClosed) return;
   sharedResourcesClosed = true;
   try { knowledge?.close(); } catch { /* ignore */ }
   try { closeSharedProjectRegistry(); } catch { /* ignore */ }
-}
-
-function shutdown(): void {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  clearInterval(recoveryTimer);
-  clearInterval(captureTimer);
-  clearInterval(retentionTimer);
-  let forceCloseTimer: NodeJS.Timeout | undefined;
-  // server.close() stops new connections immediately. Shared database
-  // handles are closed only after every active request has finished its
-  // handler and transport cleanup; the force path is the bounded fallback.
-  const resourcesAfterDrain = requestActivity.waitForDrain().then(closeSharedResources);
-  const finishAfterDrain = (exitCode: number): void => {
-    void resourcesAfterDrain.then(() => {
-      if (forceCloseTimer) clearTimeout(forceCloseTimer);
-      process.exit(exitCode);
-    }, () => process.exit(1));
-  };
-  mcpHttpServer.close((error) => {
-    if (error) {
-      try { process.stderr.write(`[relay-mcp] shutdown failed: ${error.message}\n`); } catch { /* ignore */ }
-      finishAfterDrain(1);
-      return;
-    }
-    // Explicitly finish here because third-party HTTP/MCP internals can retain
-    // inert handles after server.close(), especially on Windows. Wait for the
-    // request drain promise so the callback cannot exit before DB cleanup.
-    finishAfterDrain(0);
-  });
-  // HTTP clients commonly leave keep-alive sockets open after a stateless MCP
-  // request. Release idle sockets while active requests continue draining.
-  mcpHttpServer.closeIdleConnections?.();
-  forceCloseTimer = setTimeout(() => {
-    // The grace period expired; terminate the process after making a best
-    // effort to release native handles. Active work is no longer allowed to
-    // keep shutdown alive beyond this bounded fallback.
-    try { process.stderr.write(`[relay-mcp] forced shutdown after ${MCP_SHUTDOWN_GRACE_MS}ms\n`); } catch { /* ignore logging failure */ }
-    closeSharedResources();
-    mcpHttpServer.closeAllConnections?.();
-    process.exit(process.exitCode ?? 0);
-  }, MCP_SHUTDOWN_GRACE_MS);
-}
-process.once("SIGTERM", shutdown);
-process.once("SIGINT", shutdown);
+};
+installMcpShutdown({ server: mcpHttpServer, waitForDrain: () => requestActivity.waitForDrain(), closeSharedResources, timers: [recoveryTimer, captureTimer, retentionTimer], graceMs: MCP_SHUTDOWN_GRACE_MS });

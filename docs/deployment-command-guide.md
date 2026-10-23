@@ -88,3 +88,13 @@ The final deployment record should retain:
 - cache cleanup and restart results;
 - verification and bounded log evidence;
 - final status and rollback guidance.
+
+## 8. Integrated Knowledge operations
+
+Work Sessions use `knowledge_work_session_open`, `knowledge_work_session_update`, and `knowledge_work_session_close` with an idempotency key and a user-visible IntentEnvelope. Job, Deployment, diagnostics, Evidence, and retrieval calls can carry `workSessionId` plus `intentStep`, `objectiveRef`, and `acceptanceCriterionRef`; Relay validates the actor, project, environment, and session lifecycle before correlating the event.
+
+Managed Embedding, Rerank, Wiki LLM, and Candidate LLM settings use backend secret references such as `env://NAME`; raw tokens are rejected. Use `knowledge_provider_config_list` to inspect state and pending reindex work. Provider probes report only status, latency, HTTP status, numeric usage, and an error class.
+
+Product Knowledge remains on `relay_local` until an administrator stages a local migration, validates it, and explicitly publishes it to WeKnora. `knowledge_migration_from_local`, `knowledge_migration_publish`, and `knowledge_migration_rollback` preserve local data, Evidence, and long-term memory; rollback restores Relay routing without deleting upstream documents. Cleanup is currently dry-run only.
+
+Candidate Insights always remain drafts until a reviewer confirms, edits, rejects, or promotes them with a reason. Provider timeout, rate limiting, malformed output, or unavailable configuration produces a deterministic Evidence-backed fallback instead of blocking Job, Deployment, Evidence, or outbox processing. Wiki pages are Relay-native, revisioned, source-referenced, ACL-scoped, and audited.

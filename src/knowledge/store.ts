@@ -32,6 +32,16 @@ import { ARTIFACT_BASELINES_MIGRATION } from "./migrations/025-artifact-baseline
 import { SOURCE_INDEX_MIGRATION } from "./migrations/026-source-index.js";
 import { INGEST_JOBS_MIGRATION } from "./migrations/027-ingest-jobs.js";
 import { PRODUCT_REVISIONS_MIGRATION } from "./migrations/028-product-revisions.js";
+import { PROVIDER_CONFIG_MIGRATION } from "./migrations/030-provider-configs.js";
+import { WEKNORA_DOCUMENT_MIGRATION } from "./migrations/031-weknora-documents.js";
+import { WORK_SESSION_MIGRATION } from "./migrations/029-work-sessions.js";
+import { CANDIDATE_INSIGHT_MIGRATION } from "./migrations/032-candidate-insights.js";
+import { CANDIDATE_INSIGHT_REVIEW_MIGRATION } from "./migrations/036-candidate-insight-review.js";
+import { WIKI_MIGRATION } from "./migrations/037-wiki.js";
+import { INTEGRATION_ROUTING_MIGRATION } from "./migrations/038-integration-routing.js";
+import { WEKNORA_INGEST_IDENTITY_MIGRATION } from "./migrations/035-weknora-ingest-identity.js";
+import { PROVIDER_RUNTIME_MIGRATION, PROVIDER_RUNTIME_MIGRATION_RECOVERY_SQL } from "./migrations/034-provider-runtime.js";
+import { WORK_SESSION_OPS_MIGRATION } from "./migrations/033-work-session-ops.js";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
 import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type CandidateCard, type KnowledgeDocument, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeBinding, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
@@ -76,6 +86,16 @@ const KNOWLEDGE_MIGRATIONS = [
   SOURCE_INDEX_MIGRATION,
   INGEST_JOBS_MIGRATION,
     PRODUCT_REVISIONS_MIGRATION,
+    WORK_SESSION_MIGRATION,
+    PROVIDER_CONFIG_MIGRATION,
+    WEKNORA_DOCUMENT_MIGRATION,
+    CANDIDATE_INSIGHT_MIGRATION,
+    WORK_SESSION_OPS_MIGRATION,
+    PROVIDER_RUNTIME_MIGRATION,
+    WEKNORA_INGEST_IDENTITY_MIGRATION,
+    CANDIDATE_INSIGHT_REVIEW_MIGRATION,
+    WIKI_MIGRATION,
+    INTEGRATION_ROUTING_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(
@@ -218,6 +238,16 @@ export class KnowledgeStore {
           } else if (migration.version === "028-product-revisions" && /duplicate column name/i.test(String(error))) {
             // The revision_id column may have been added before a crash; the
             // repair pass below completes the table and index.
+          } else if (migration.version === "034-provider-runtime" && /duplicate column name/i.test(String(error))) {
+            // Runtime policy columns may have been added before a crash; the
+            // repair below completes the reindex jobs table and index.
+            this.db.exec(PROVIDER_RUNTIME_MIGRATION_RECOVERY_SQL);
+          } else if (migration.version === "035-weknora-ingest-identity" && /no such column/i.test(String(error))) {
+            // The identity_hash column is ensured by the additive repair pass
+            // below; the 035 indexes are (re)applied after it runs.
+          } else if (migration.version === "036-candidate-insight-review" && /duplicate column name/i.test(String(error))) {
+            // Candidate Insight review columns are additive; the repair pass
+            // below completes columns and tables left behind by a crash.
           } else throw error;
         }
         insert.run(migration.version, this.now().toISOString());
@@ -241,11 +271,17 @@ export class KnowledgeStore {
       knowledge_product_documents: [["metadata_json", "TEXT NOT NULL DEFAULT '{}'"], ["diff_review_status", "TEXT NOT NULL DEFAULT 'not_reviewed'"], ["diff_reviewed_by", "INTEGER"], ["diff_reviewed_at", "TEXT"]],
       knowledge_ingest_runs: [["operation_idempotency_key", "TEXT"], ["batch_metadata_json", "TEXT NOT NULL DEFAULT '{}'"], ["source_root", "TEXT"], ["source_commit", "TEXT"], ["source_sha256", "TEXT"]],
       knowledge_evidence: [["environment", "TEXT"]],
+      knowledge_weknora_documents: [["identity_hash", "TEXT"], ["failure_code", "TEXT"], ["failure_message", "TEXT"], ["attempt_count", "INTEGER NOT NULL DEFAULT 0"]],
+      knowledge_candidate_insights: [["confirmed_facts_json", "TEXT NOT NULL DEFAULT '[]'"], ["observed_behavior_json", "TEXT NOT NULL DEFAULT '[]'"], ["hypothesis", "TEXT"], ["reusable_statement_json", "TEXT"], ["fallback_reason", "TEXT"], ["reviewed_by", "INTEGER"], ["reviewed_at", "TEXT"], ["review_reason", "TEXT"], ["promotion_json", "TEXT"]],
     };
     for (const [table, definitions] of Object.entries(columns)) {
       const present = new Set((this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
       for (const [name, definition] of definitions) if (!present.has(name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
     }
+    // The 035 identity indexes depend on repair-added columns; apply them here
+    // (idempotent) so fresh and recovered databases converge.
+    this.db.exec(WEKNORA_INGEST_IDENTITY_MIGRATION.sql);
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_weknora_documents_identity ON knowledge_weknora_documents(identity_hash)");
     this.db.exec(`CREATE TABLE IF NOT EXISTS knowledge_observations (
       id TEXT PRIMARY KEY, event_id TEXT NOT NULL UNIQUE, project_id TEXT, event_class TEXT NOT NULL,
       capture_reason TEXT NOT NULL, problem_statement TEXT, facts_json TEXT NOT NULL DEFAULT '[]',
@@ -257,6 +293,18 @@ export class KnowledgeStore {
       title TEXT NOT NULL, body TEXT NOT NULL, sections_json TEXT NOT NULL DEFAULT '[]', parser_version TEXT NOT NULL,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS knowledge_candidate_insight_reviews (
+      id TEXT PRIMARY KEY, insight_id TEXT NOT NULL REFERENCES knowledge_candidate_insights(id) ON DELETE CASCADE,
+      reviewer_id INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL,
+      before_json TEXT NOT NULL, after_json TEXT NOT NULL, created_at TEXT NOT NULL,
+      CHECK(action IN ('confirm','edit','reject','promote'))
+    ); CREATE INDEX IF NOT EXISTS idx_candidate_insight_reviews_insight ON knowledge_candidate_insight_reviews(insight_id, created_at);
+    CREATE TABLE IF NOT EXISTS knowledge_candidate_insight_jobs (
+      id TEXT PRIMARY KEY, work_session_id TEXT NOT NULL REFERENCES knowledge_work_sessions(id) ON DELETE CASCADE,
+      actor_id INTEGER NOT NULL, evidence_refs_json TEXT NOT NULL DEFAULT '[]', context_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'queued', insight_id TEXT, error TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, CHECK(status IN ('queued','done','failed'))
+    ); CREATE INDEX IF NOT EXISTS idx_candidate_insight_jobs_queue ON knowledge_candidate_insight_jobs(status, created_at);`);
     const productColumns = new Set((this.db.prepare("PRAGMA table_info(knowledge_product_documents)").all() as Array<{ name: string }>).map((column) => column.name));
     if (!productColumns.has("revision_id")) this.db.exec("ALTER TABLE knowledge_product_documents ADD COLUMN revision_id TEXT");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_product_documents_revision ON knowledge_product_documents(revision_id)");

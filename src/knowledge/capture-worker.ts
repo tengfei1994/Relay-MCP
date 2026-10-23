@@ -1,4 +1,4 @@
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { appendFileSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
 import type { KnowledgeOutboxEvent, KnowledgeStore } from "./store.js";
@@ -86,6 +86,34 @@ export interface CaptureWorkerHooks {
 
 function hasProjectId(projectId: string | number | undefined): boolean {
   return projectId !== undefined && projectId !== "";
+}
+
+function safeRef(value: unknown, max: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, max) : undefined;
+}
+
+/**
+ * Idempotently correlate a relay event with the Work Session named in its
+ * payload. The session must exist and match the event actor (and project /
+ * environment when those are known), so a forged session id can never attach
+ * events to someone else's session. UNIQUE(session_id, event_id) makes
+ * replays and re-runs no-ops. Events without a session flow through
+ * unchanged.
+ */
+export function correlateWorkSessionEvent(store: KnowledgeStore, event: Pick<KnowledgeOutboxEvent, "id" | "type" | "actorId" | "projectId" | "payload">): boolean {
+  const sessionId = safeRef(event.payload.workSessionId, 200);
+  if (!sessionId) return false;
+  const session = store.db.prepare("SELECT id,actor_id,project_id,environment FROM knowledge_work_sessions WHERE id=?").get(sessionId) as { id: string; actor_id: number; project_id: string; environment?: string | null } | undefined;
+  if (!session) return false;
+  if (event.actorId !== undefined && Number(session.actor_id) !== event.actorId) return false;
+  if (hasProjectId(event.projectId) && String(session.project_id) !== String(event.projectId)) return false;
+  const environment = safeRef(event.payload.environment ?? event.payload.env, 200);
+  if (session.environment && environment && session.environment !== environment) return false;
+  const result = store.db.prepare(`INSERT OR IGNORE INTO knowledge_work_session_events(id,session_id,event_id,event_type,intent_step,objective_ref,acceptance_criterion_ref,created_at) VALUES (?,?,?,?,?,?,?,?)`)
+    .run(randomUUID(), session.id, event.id, event.type, safeRef(event.payload.intentStep, 100) ?? null, safeRef(event.payload.objectiveRef, 200) ?? null, safeRef(event.payload.acceptanceCriterionRef, 200) ?? null, new Date().toISOString());
+  return result.changes > 0;
 }
 
 function resolveProject(
@@ -372,6 +400,12 @@ export async function captureKnowledgeCandidates(
 
   for (const event of events) {
     try {
+      // Session correlation precedes classification so started and terminal
+      // events alike attach to their Work Session. Events whose project still
+      // needs resolution correlate after resolveProject() instead, so the
+      // project match is always verified against a concrete id. Replays
+      // collapse on UNIQUE(session_id, event_id).
+      if (hasProjectId(event.projectId) || !CAPTURE_EVENT_TYPES.has(event.type)) correlateWorkSessionEvent(store, event);
       // Non-terminal events are intentionally consumed without project
       // resolution; only candidate-producing events need a project scope.
       if (!CAPTURE_EVENT_TYPES.has(event.type)) {
@@ -394,6 +428,7 @@ export async function captureKnowledgeCandidates(
       // permanently acknowledge and lose the candidate; a resolver that is
       // healthy but returns no project remains finite and dead-letterable.
       projectId = resolveProject(event, resolveProjectId);
+      correlateWorkSessionEvent(store, { ...event, projectId: String(projectId) });
 
       if (!classification.captureCandidate && classification.storeObservation) {
         const now = new Date().toISOString();

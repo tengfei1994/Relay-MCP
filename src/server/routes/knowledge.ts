@@ -21,6 +21,18 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolveWorkspacePath } from "../../shared/workspace-path.js";
 import { relayEventSpoolHealth } from "../../knowledge/event-sink.js";
 import { evidenceDisplaySummary, evidenceDisplayTitle, lifecycleHumanStatus } from "../../knowledge/display-projection.js";
+import { WorkSessionService, validateIntentEnvelope } from "../../knowledge/work-session.js";
+import { ProviderRegistry, type ManagedProviderHandle } from "../../knowledge/provider-registry.js";
+import { EnvironmentSecretResolver } from "../../knowledge/provider-secret.js";
+import { MigrationController } from "../../knowledge/migration-control.js";
+import { runReleaseGates } from "../../knowledge/release-gates.js";
+import { CandidateInsightCompiler, type ManagedCandidateInsightProvider } from "../../knowledge/candidate-insight.js";
+import { CandidateInsightReviewService } from "../../knowledge/candidate-review.js";
+import { enqueueCandidateInsight } from "../../knowledge/candidate-worker.js";
+import { WikiService, WIKI_PAGE_STATUSES } from "../../knowledge/wiki.js";
+import { WeKnoraClient, WeKnoraError } from "../../knowledge/weknora.js";
+import { WeKnoraClientDocumentWriter, WeKnoraIngestor } from "../../knowledge/weknora-ingest.js";
+import { ContextPackService } from "../../knowledge/context-pack.js";
 import {
   acceptCandidate,
   deprecateDocument,
@@ -229,6 +241,33 @@ function replayOrRun<T>(store: ReturnType<typeof getKnowledgeStore>, userId: num
 
 function sendError(reply: FastifyReply, error: unknown, status = 400) {
   return reply.status(status).send({ error: error instanceof Error ? error.message : String(error) });
+}
+
+function managedProviderRegistry(store = getKnowledgeStore()): ProviderRegistry {
+  return new ProviderRegistry(store, undefined, { secrets: new EnvironmentSecretResolver() });
+}
+
+function candidateProviderAdapter(handle: ManagedProviderHandle): ManagedCandidateInsightProvider {
+  return {
+    providerId: handle.providerId,
+    modelId: "managed-model",
+    async complete(request) {
+      const result = await handle.complete(request.prompt);
+      return result.text;
+    },
+  };
+}
+
+function unavailableCandidateProvider(): ManagedCandidateInsightProvider {
+  return { providerId: "unconfigured", modelId: "deterministic-fallback", complete: async () => { throw new Error("Candidate Insight provider is not configured"); } };
+}
+
+function weknoraControlPlane(store = getKnowledgeStore()): { client: WeKnoraClient; ingestor: WeKnoraIngestor } {
+  const baseUrl = process.env.WEKNORA_BASE_URL;
+  const knowledgeBaseId = process.env.WEKNORA_KNOWLEDGE_BASE_ID;
+  if (!baseUrl || !knowledgeBaseId) throw new Error("WeKnora provider is not configured");
+  const client = new WeKnoraClient({ baseUrl, secretResolver: async () => process.env.WEKNORA_API_TOKEN, timeoutMs: Number(process.env.WEKNORA_TIMEOUT_MS ?? 30_000) });
+  return { client, ingestor: new WeKnoraIngestor(store, new WeKnoraClientDocumentWriter(client, knowledgeBaseId)) };
 }
 
 const OBSERVATION_WITH_REVIEW = `SELECT o.*, r.outcome AS review_outcome, r.reason AS review_reason,
@@ -1225,5 +1264,125 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     const result = replayOrRun(store, request.user.id, "operations:index-invalidate-embeddings", idempotencyKey(request), () => { const deleted = projectId ? store.db.prepare("DELETE FROM knowledge_embeddings WHERE document_id IN (SELECT id FROM knowledge_documents WHERE project_id=?)").run(projectId).changes : store.db.prepare("DELETE FROM knowledge_embeddings").run().changes; return { ok: true, deleted, projectId, completedAt: new Date().toISOString() }; }, body.data);
     store.audit({ actorId: request.user.id, projectId, action: "knowledge.operations.index_invalidate_embeddings", entityType: "index", entityId: projectId ? `project:${projectId}` : "global", details: result }); return reply.send(result);
   });
+
+  // Integrated Knowledge control-plane endpoints (#44-#56). These are
+  // additive and deliberately return safe metadata only.
+  app.post("/api/knowledge/sessions", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const body = z.object({ idempotencyKey: z.string().trim().min(1).max(300), intent: z.unknown(), summary: z.string().max(8_000).optional() }).safeParse(request.body ?? {});
+    if (!body.success) return reply.status(400).send({ error: "Invalid Work Session request", details: body.error.issues });
+    try { const store = getKnowledgeStore(); const intent = validateIntentEnvelope({ ...(body.data.intent as Record<string, unknown>), actorId: request.user.id }); const session = new WorkSessionService(store).open({ actorId: request.user.id, idempotencyKey: body.data.idempotencyKey, intent, summary: body.data.summary }); return reply.status(201).send({ session }); } catch (error) { return sendError(reply, error, 403); }
+  });
+  app.get("/api/knowledge/sessions", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const limit = parseBoundedInt((request.query as Record<string, unknown>).limit, 50, 1, 200); const sessions = new WorkSessionService(getKnowledgeStore()).list({ actorId: request.user.id, limit }); return reply.send({ sessions });
+  });
+  app.get("/api/knowledge/sessions/:id", { onRequest: [app.authenticate] }, async (request, reply) => { try { const session = new WorkSessionService(getKnowledgeStore()).get({ actorId: request.user.id, sessionId: String((request.params as { id: string }).id) }); return reply.send({ session }); } catch (error) { return sendError(reply, error, 404); } });
+  app.patch("/api/knowledge/sessions/:id", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ idempotencyKey: z.string().trim().max(300).optional(), patch: z.record(z.unknown()) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Work Session update", details: body.error.issues }); try { const session = new WorkSessionService(getKnowledgeStore()).update({ actorId: request.user.id, sessionId: String((request.params as { id: string }).id), idempotencyKey: body.data.idempotencyKey, patch: body.data.patch as never }); return reply.send({ session }); } catch (error) { return sendError(reply, error, 403); } });
+  app.post("/api/knowledge/sessions/:id/close", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ idempotencyKey: z.string().trim().max(300).optional(), result: z.object({ summary: z.string().max(8_000).optional(), unknowns: z.array(z.string().max(2_000)).max(100).optional(), acceptanceResults: z.record(z.union([z.boolean(), z.string().max(500)])).optional() }).optional() }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Work Session close", details: body.error.issues }); try { const session = new WorkSessionService(getKnowledgeStore()).close({ actorId: request.user.id, sessionId: String((request.params as { id: string }).id), idempotencyKey: body.data.idempotencyKey, result: body.data.result }); return reply.send({ session }); } catch (error) { return sendError(reply, error, 403); } });
+  app.get("/api/knowledge/sessions/:id/events", { onRequest: [app.authenticate] }, async (request, reply) => { try { const events = new WorkSessionService(getKnowledgeStore()).listEvents({ actorId: request.user.id, sessionId: String((request.params as { id: string }).id) }); return reply.send({ events }); } catch (error) { return sendError(reply, error, 404); } });
+
+  app.get("/api/knowledge/providers/managed", { onRequest: [app.authenticate] }, async (_request, reply) => reply.send({ providers: managedProviderRegistry().list() }));
+  app.get("/api/knowledge/providers/managed/reindex", { onRequest: [app.authenticate] }, async (_request, reply) => reply.send({ jobs: managedProviderRegistry().pendingReindex() }));
+  app.put("/api/knowledge/providers/managed/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
+    if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
+    const body = z.object({ kind: z.enum(["embedding", "rerank", "wiki_llm", "candidate_llm"]), provider: z.string().min(1).max(100), baseUrl: z.string().url().optional(), modelId: z.string().min(1).max(200), dimensions: z.number().int().positive().optional(), batchSize: z.number().int().positive().optional(), timeoutMs: z.number().int().min(100).max(120000).optional(), concurrency: z.number().int().min(1).max(100).optional(), maxRetries: z.number().int().min(0).max(10).optional(), dataResidency: z.string().max(100).optional(), secretRef: z.string().max(500).optional(), quota: z.object({ maxCalls: z.number().int().min(1).max(1_000_000), windowMs: z.number().int().min(1_000).max(86_400_000) }).optional() }).safeParse(request.body ?? {});
+    if (!body.success) return reply.status(400).send({ error: "Invalid provider configuration", details: body.error.issues });
+    try { const provider = managedProviderRegistry().upsert({ ...body.data, id: String((request.params as { id: string }).id), actorId: request.user.id }); return reply.send({ provider }); } catch (error) { return sendError(reply, error, 400); }
+  });
+  app.post("/api/knowledge/providers/managed/:id/test", { onRequest: [app.authenticate] }, async (request, reply) => {
+    if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
+    try { return reply.send({ report: await managedProviderRegistry().probe(String((request.params as { id: string }).id), request.user.id) }); } catch (error) { return sendError(reply, error, 404); }
+  });
+  app.post("/api/knowledge/providers/managed/:id/rotate", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const body = z.object({ secretRef: z.string().min(1).max(500) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid provider secret reference" }); try { return reply.send({ provider: managedProviderRegistry().rotateSecret(String((request.params as { id: string }).id), body.data.secretRef, request.user.id) }); } catch (error) { return sendError(reply, error, 400); } });
+  app.post("/api/knowledge/providers/managed/:id/disable", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); try { return reply.send({ provider: managedProviderRegistry().disable(String((request.params as { id: string }).id), request.user.id) }); } catch (error) { return sendError(reply, error, 404); } });
+  app.post("/api/knowledge/providers/managed/reindex/:jobId/complete", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); try { return reply.send({ job: managedProviderRegistry().completeReindex(String((request.params as { jobId: string }).jobId), request.user.id) }); } catch (error) { return sendError(reply, error, 404); } });
+
+  app.get("/api/knowledge/candidate-insights", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    const body = z.object({ projectId: z.string().min(1), status: z.enum(["draft", "accepted", "edited", "rejected"]).optional(), limit: z.coerce.number().int().min(1).max(200).optional(), offset: z.coerce.number().int().min(0).optional() }).safeParse(query);
+    if (!body.success) return reply.status(400).send({ error: "projectId is required" });
+    try { return reply.send({ insights: new CandidateInsightReviewService(getKnowledgeStore()).list({ actorId: request.user.id, ...body.data }) }); } catch (error) { return sendError(reply, error, 403); }
+  });
+  app.post("/api/knowledge/candidate-insights/compile", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const body = z.object({ sessionId: z.string().min(1), evidenceRefs: z.array(z.string().min(1)).max(100), context: z.record(z.unknown()).default({}), providerId: z.string().optional(), async: z.boolean().optional() }).safeParse(request.body ?? {});
+    if (!body.success) return reply.status(400).send({ error: "Invalid Candidate Insight compile request", details: body.error.issues });
+    const store = getKnowledgeStore();
+    try {
+      if (body.data.async) return reply.status(202).send(enqueueCandidateInsight(store, { actorId: request.user.id, sessionId: body.data.sessionId, evidenceRefs: body.data.evidenceRefs, context: body.data.context }));
+      const registry = managedProviderRegistry(store);
+      const providerConfig = body.data.providerId ? registry.get(body.data.providerId) : undefined;
+      const provider = providerConfig ? candidateProviderAdapter(registry.resolveCandidateProvider(providerConfig.id)) : unavailableCandidateProvider();
+      const insight = await new CandidateInsightCompiler(store, provider).compile({ actorId: request.user.id, sessionId: body.data.sessionId, evidenceRefs: body.data.evidenceRefs, context: body.data.context });
+      return reply.status(insight.persisted ? 201 : 200).send({ insight });
+    } catch (error) { return sendError(reply, error, 400); }
+  });
+  app.get("/api/knowledge/candidate-insights/:id", { onRequest: [app.authenticate] }, async (request, reply) => { try { return reply.send({ insight: new CandidateInsightReviewService(getKnowledgeStore()).get({ actorId: request.user.id, id: String((request.params as { id: string }).id) }) }); } catch (error) { return sendError(reply, error, 404); } });
+  app.get("/api/knowledge/candidate-insights/:id/history", { onRequest: [app.authenticate] }, async (request, reply) => { try { return reply.send({ history: new CandidateInsightReviewService(getKnowledgeStore()).reviewHistory({ actorId: request.user.id, id: String((request.params as { id: string }).id) }) }); } catch (error) { return sendError(reply, error, 404); } });
+  for (const action of ["confirm", "reject"] as const) {
+    app.post(`/api/knowledge/candidate-insights/:id/${action}`, { onRequest: [app.authenticate] }, async (request, reply) => {
+      const body = z.object({ reason: z.string().trim().min(1).max(2_000) }).safeParse(request.body ?? {});
+      if (!body.success) return reply.status(400).send({ error: "A review reason is required" });
+      const service = new CandidateInsightReviewService(getKnowledgeStore());
+      try { return reply.send({ insight: action === "confirm" ? service.confirm({ actorId: request.user.id, id: String((request.params as { id: string }).id), reason: body.data.reason }) : service.reject({ actorId: request.user.id, id: String((request.params as { id: string }).id), reason: body.data.reason }) }); } catch (error) { return sendError(reply, error, 403); }
+    });
+  }
+  app.patch("/api/knowledge/candidate-insights/:id", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ patch: z.record(z.unknown()), reason: z.string().trim().min(1).max(2_000) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Candidate Insight edit" }); try { return reply.send({ insight: new CandidateInsightReviewService(getKnowledgeStore()).edit({ actorId: request.user.id, id: String((request.params as { id: string }).id), patch: body.data.patch as never, reason: body.data.reason }) }); } catch (error) { return sendError(reply, error, 403); } });
+  app.post("/api/knowledge/candidate-insights/:id/promote", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ target: z.enum(["case", "decision"]), reason: z.string().trim().min(1).max(2_000), title: z.string().max(300).optional() }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid promotion request" }); try { return reply.send({ promotion: new CandidateInsightReviewService(getKnowledgeStore()).promote({ actorId: request.user.id, id: String((request.params as { id: string }).id), ...body.data }) }); } catch (error) { return sendError(reply, error, 403); } });
+
+  app.get("/api/knowledge/wiki", { onRequest: [app.authenticate] }, async (request, reply) => { const query = request.query as Record<string, unknown>; const status = typeof query.status === "string" && WIKI_PAGE_STATUSES.includes(query.status as never) ? query.status as never : undefined; try { return reply.send(new WikiService(getKnowledgeStore()).list({ actorId: request.user.id, projectId: query.projectId ? String(query.projectId) : undefined, status, productVersion: query.productVersion ? String(query.productVersion) : undefined, topicId: query.topicId ? String(query.topicId) : undefined, solution: query.solution ? String(query.solution) : undefined, module: query.module ? String(query.module) : undefined, search: query.search ? String(query.search) : undefined, limit: parseBoundedInt(query.limit, 50, 1, 200), offset: parseBoundedInt(query.offset, 0, 0, 1_000_000) })); } catch (error) { return sendError(reply, error, 403); } });
+  app.post("/api/knowledge/wiki", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ pageKey: z.string().min(1).max(300), title: z.string().min(1).max(500), body: z.string().min(1), projectId: z.string().optional(), productVersion: z.string().optional(), topicId: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), sourceRefs: z.array(z.string()).max(100).optional(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Wiki page" }); try { return reply.status(201).send({ page: new WikiService(getKnowledgeStore()).create({ actorId: request.user.id, ...body.data }) }); } catch (error) { return sendError(reply, error, 403); } });
+  app.get("/api/knowledge/wiki/:id", { onRequest: [app.authenticate] }, async (request, reply) => { try { return reply.send({ page: new WikiService(getKnowledgeStore()).get({ actorId: request.user.id, id: String((request.params as { id: string }).id) }) }); } catch (error) { return sendError(reply, error, 404); } });
+  app.patch("/api/knowledge/wiki/:id", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ title: z.string().min(1).max(500).optional(), body: z.string().min(1).optional(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Wiki edit" }); try { return reply.send({ page: new WikiService(getKnowledgeStore()).edit({ actorId: request.user.id, id: String((request.params as { id: string }).id), ...body.data }) }); } catch (error) { return sendError(reply, error, 403); } });
+  for (const action of ["publish", "deprecate"] as const) {
+    app.post(`/api/knowledge/wiki/:id/${action}`, { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "A reason is required" }); const service = new WikiService(getKnowledgeStore()); try { const id = String((request.params as { id: string }).id); return reply.send({ page: action === "publish" ? service.publish({ actorId: request.user.id, id, reason: body.data.reason }) : service.deprecate({ actorId: request.user.id, id, reason: body.data.reason }) }); } catch (error) { return sendError(reply, error, 403); } });
+  }
+  app.get("/api/knowledge/wiki/:id/revisions", { onRequest: [app.authenticate] }, async (request, reply) => { try { return reply.send({ revisions: new WikiService(getKnowledgeStore()).listRevisions({ actorId: request.user.id, id: String((request.params as { id: string }).id) }) }); } catch (error) { return sendError(reply, error, 404); } });
+  app.get("/api/knowledge/wiki/:id/diff", { onRequest: [app.authenticate] }, async (request, reply) => { const query = request.query as Record<string, unknown>; try { return reply.send({ diff: new WikiService(getKnowledgeStore()).diffRevisions({ actorId: request.user.id, id: String((request.params as { id: string }).id), fromRevision: parseBoundedInt(query.fromRevision, 1, 1, 1_000_000), toRevision: parseBoundedInt(query.toRevision, 1, 1, 1_000_000) }) }); } catch (error) { return sendError(reply, error, 404); } });
+  app.post("/api/knowledge/wiki/:id/rollback", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ revision: z.number().int().positive(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Wiki rollback" }); try { return reply.send({ page: new WikiService(getKnowledgeStore()).rollback({ actorId: request.user.id, id: String((request.params as { id: string }).id), ...body.data }) }); } catch (error) { return sendError(reply, error, 403); } });
+
+  app.get("/api/knowledge/weknora/documents", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>; const projectId = query.projectId ? String(query.projectId) : undefined; const store = getKnowledgeStore();
+    if (projectId && !store.canRead(request.user.id, projectId)) return reply.status(403).send({ error: "Knowledge access denied" });
+    const conditions: string[] = []; const params: unknown[] = [];
+    for (const [key, column] of [["status", "status"], ["productVersion", "product_version"], ["solution", "solution"], ["module", "module"], ["projectId", "project_id"]] as const) { if (query[key]) { conditions.push(`${column} = ?`); params.push(String(query[key])); } }
+    if (!request.user.isAdmin && !projectId) conditions.push("(project_id IS NULL OR EXISTS(SELECT 1 FROM knowledge_acl a WHERE a.project_id=knowledge_weknora_documents.project_id AND a.user_id=? AND a.can_read=1))"), params.push(request.user.id);
+    const limit = parseBoundedInt(query.limit, 50, 1, 200); const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000); const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const documents = store.db.prepare(`SELECT id,external_document_id,title,normalized_content_sha256,raw_sha256,parser_version,product_version,solution,module,topic_id,source_path,language,project_id,status,failure_code,failure_message,attempt_count,created_at,updated_at,published_at FROM knowledge_weknora_documents ${where} ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
+    const total = (store.db.prepare(`SELECT COUNT(*) AS count FROM knowledge_weknora_documents ${where}`).get(...params) as { count: number }).count;
+    return reply.send({ documents, page: { limit, offset, total } });
+  });
+  app.post("/api/knowledge/weknora/documents", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const body = z.object({ idempotencyKey: z.string().min(1).max(300), title: z.string().min(1).max(500), content: z.string().min(1), productVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), topicId: z.string().optional(), sourcePath: z.string().optional(), language: z.string().optional(), projectId: z.string().optional(), parserVersion: z.string().min(1).max(100).default("relay-normalizer-v1"), rawSha256: z.string().length(64).optional(), retry: z.boolean().optional() }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid WeKnora document" }); try { const document = await weknoraControlPlane().ingestor.stage(body.data, { retry: body.data.retry }); return reply.status(201).send({ document }); } catch (error) { return sendError(reply, error, error instanceof WeKnoraError ? 502 : 400); } });
+  for (const action of ["publish", "deprecate"] as const) {
+    app.post(`/api/knowledge/weknora/documents/:id/${action}`, { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const writer = { upsertDocument: async () => ({ externalDocumentId: "unused" }) }; const ingestor = new WeKnoraIngestor(getKnowledgeStore(), writer); try { const id = String((request.params as { id: string }).id); return reply.send({ document: action === "publish" ? ingestor.publish(id, request.user.id) : ingestor.deprecate(id, request.user.id) }); } catch (error) { return sendError(reply, error, 400); } });
+  }
+  app.post("/api/knowledge/weknora/search", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const body = z.object({ query: z.string().min(1), workSessionId: z.string().optional(), projectId: z.string().optional(), productVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), language: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }).safeParse(request.body ?? {});
+    if (!body.success) return reply.status(400).send({ error: "Invalid Product Knowledge search" });
+    const store = getKnowledgeStore();
+    try {
+      const sessions = new WorkSessionService(store);
+      const session = body.data.workSessionId ? sessions.assertSessionUsable({ actorId: request.user.id, sessionId: body.data.workSessionId, projectId: body.data.projectId }) : undefined;
+      const projectId = body.data.projectId ?? session?.projectId;
+      if (projectId && !store.canRead(request.user.id, projectId)) throw new Error("Knowledge access denied");
+      const ingestor = new WeKnoraIngestor(store, { upsertDocument: async () => ({ externalDocumentId: "unused" }) });
+      const knowledgeIds = ingestor.retrievalKnowledgeIds({ projectId, productVersion: body.data.productVersion ?? session?.intent.sampleManagerVersion, solution: body.data.solution ?? session?.intent.solution, module: body.data.module ?? session?.intent.module, language: body.data.language });
+      if (!knowledgeIds.length) return reply.send({ retrievalRunId: "local-scope-empty", references: [], degraded: { productKnowledge: "no_published_documents" } });
+      const result = await weknoraControlPlane(store).client.search({ query: body.data.query, knowledgeIds, limit: body.data.limit });
+      const visible = new Set(knowledgeIds);
+      const references = result.references.filter((reference) => visible.has(reference.documentId));
+      const pack = new ContextPackService({ provider: "weknora" }).build({ intent: session?.intent, authoritativeDocs: references, acl: { documentIds: knowledgeIds }, maxItemsPerSection: body.data.limit ?? 10 });
+      return reply.send({ ...result, references: pack.authoritativeDocs, contextPack: pack });
+    } catch (error) { return sendError(reply, error, error instanceof WeKnoraError ? 502 : 403); }
+  });
+
+  app.get("/api/knowledge/integrations/product-provider", { onRequest: [app.authenticate] }, async (_request, reply) => reply.send({ provider: new MigrationController(getKnowledgeStore()).activeProductProvider() }));
+  app.post("/api/knowledge/integrations/product-provider", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const body = z.object({ provider: z.enum(["relay_local", "weknora"]), migrationId: z.string().optional() }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid product provider" }); try { return reply.send(new MigrationController(getKnowledgeStore()).setProductProvider(body.data.provider, request.user.id, { migrationId: body.data.migrationId })); } catch (error) { return sendError(reply, error, 400); } });
+  app.post("/api/knowledge/migrations", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const body = z.object({ idempotencyKey: z.string().min(1).max(300), kind: z.string().max(100).optional(), sourceManifest: z.record(z.unknown()) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid migration request", details: body.error.issues }); const migration = new MigrationController(getKnowledgeStore()).create({ actorId: request.user.id, ...body.data }); return reply.status(201).send({ migration }); });
+  app.post("/api/knowledge/migrations/from-local", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const body = z.object({ idempotencyKey: z.string().min(1).max(300), parserVersion: z.string().min(1).max(100), productVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), projectId: z.string().optional(), limit: z.number().int().min(1).max(10_000).optional(), retry: z.boolean().optional() }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid local migration request" }); try { return reply.send({ migration: await new MigrationController(getKnowledgeStore()).createFromLocal({ actorId: request.user.id, ...body.data }, weknoraControlPlane().ingestor) }); } catch (error) { return sendError(reply, error, 400); } });
+  app.get("/api/knowledge/migrations/:id", { onRequest: [app.authenticate] }, async (request, reply) => { const migration = new MigrationController(getKnowledgeStore()).get(String((request.params as { id: string }).id)); return migration ? reply.send({ migration }) : reply.status(404).send({ error: "Migration not found" }); });
+  app.post("/api/knowledge/migrations/:id/stage", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const body = z.object({ report: z.record(z.unknown()) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid migration report" }); try { return reply.send({ migration: new MigrationController(getKnowledgeStore()).markStaged(String((request.params as { id: string }).id), body.data.report, request.user.id) }); } catch (error) { return sendError(reply, error, 400); } });
+  app.post("/api/knowledge/migrations/:id/publish", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); try { return reply.send({ migration: new MigrationController(getKnowledgeStore()).validateAndPublish(String((request.params as { id: string }).id), request.user.id) }); } catch (error) { return sendError(reply, error, 400); } });
+  app.post("/api/knowledge/migrations/:id/rollback", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const body = z.object({ reason: z.string().trim().min(1).max(2_000) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Rollback reason is required" }); try { return reply.send({ migration: new MigrationController(getKnowledgeStore()).rollback(String((request.params as { id: string }).id), request.user.id, body.data.reason) }); } catch (error) { return sendError(reply, error, 400); } });
+  app.get("/api/knowledge/migrations/:id/cleanup", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); return reply.send(new MigrationController(getKnowledgeStore()).cleanupDryRun({ actorId: request.user.id, migrationId: String((request.params as { id: string }).id) })); });
+  app.get("/api/knowledge/release-gates", { onRequest: [app.authenticate] }, async (_request, reply) => reply.send(runReleaseGates(getKnowledgeStore())));
 }
 

@@ -23,6 +23,15 @@ export interface RemoteToolsContext {
 export function registerRemoteTools(context: RemoteToolsContext, legacy?: (context: RemoteToolsContext) => void): void {
   if (legacy) { legacy(context); return; }
   const { server, user, resolveProjectName, getRunner, relayRoute, executionForJob, waitForTrackedJob, getSampleManagerDatabaseTarget } = context;
+  // Optional Work Session correlation. Async executions persist validated
+  // references on the Job record and its relay events; synchronous executions
+  // carry the same safe references in the audit payload.
+  const sessionCorrelationSchema = {
+    workSessionId: z.string().min(1).max(200).optional().describe("Optional Work Session to correlate; must belong to the caller and match project/environment."),
+    intentStep: z.string().max(100).optional(),
+    objectiveRef: z.string().max(200).optional(),
+    acceptanceCriterionRef: z.string().max(200).optional(),
+  };
 
   server.tool(
     "exec_remote",
@@ -35,8 +44,9 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
       serverName: z.string().optional().describe("Exact linked server display name, matched case-insensitively."),
       timeoutMs: z.number().optional().describe("Command timeout in milliseconds (default 60000)"),
       async: z.boolean().optional().describe("Run as an async job and return a jobId."),
+      ...sessionCorrelationSchema,
     },
-    async ({ project: projectName, command, environment, serverId, serverName, timeoutMs = 60000, async = false }) => {
+    async ({ project: projectName, command, environment, serverId, serverName, timeoutMs = 60000, async = false, workSessionId, intentStep, objectiveRef, acceptanceCriterionRef }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { ps, runner } = getRunner(projectName, environment, { serverId, serverName });
       const targetLabel = ps.server.host || ps.server.agentId || ps.server.name;
@@ -54,12 +64,16 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
           host: targetLabel,
           command,
           async,
+          workSessionId,
+          intentStep,
+          objectiveRef,
+          acceptanceCriterionRef,
           exitCode: result.code,
         });
         return `[${targetLabel} | env=${ps.environment} | server=${ps.server.name}#${ps.server.id}]\n${summarizeExec(command, result)}`;
       };
       if (async) {
-        const job = startJob(user, resolvedProjectName, "exec_remote", { command, environment, serverId, serverName, timeoutMs }, work);
+        const job = startJob(user, resolvedProjectName, "exec_remote", { command, environment, serverId, serverName, timeoutMs, workSessionId, intentStep, objectiveRef, acceptanceCriterionRef }, work);
         return {
           content: [{
             type: "text",
@@ -92,6 +106,7 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
       maxArrayItems: z.number().int().min(1).max(5000).optional().describe("Maximum items retained per JSON array; default 200."),
       maxStringLength: z.number().int().min(100).max(100000).optional().describe("Maximum characters retained per JSON string; default 8000."),
       async: z.boolean().optional().describe("Run as an async job and return a jobId."),
+      ...sessionCorrelationSchema,
     },
     async ({
       project: projectName,
@@ -105,6 +120,10 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
       maxArrayItems,
       maxStringLength,
       async = false,
+      workSessionId,
+      intentStep,
+      objectiveRef,
+      acceptanceCriterionRef,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { ps, runner } = getRunner(projectName, environment, { serverId, serverName });
@@ -122,6 +141,10 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
           serverName: ps.server.name,
           host: targetLabel,
           async,
+          workSessionId,
+          intentStep,
+          objectiveRef,
+          acceptanceCriterionRef,
           exitCode: result.code,
         });
         if (outputFormat === "json") {
@@ -175,6 +198,10 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
           maxArrayItems,
           maxStringLength,
           scriptLength: script.length,
+          workSessionId,
+          intentStep,
+          objectiveRef,
+          acceptanceCriterionRef,
         }, work);
         return {
           content: [{
@@ -207,6 +234,7 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
       cleanup: z.boolean().optional().describe("Remove the remote script after execution. Default true."),
       preserveOnFailure: z.boolean().optional().describe("Keep the remote script when execution fails. Default false."),
       async: z.boolean().optional().describe("Run as an async job and return a jobId. Default true."),
+      ...sessionCorrelationSchema,
     },
     async ({
       project: projectName,
@@ -219,6 +247,10 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
       cleanup = true,
       preserveOnFailure = false,
       async = true,
+      workSessionId,
+      intentStep,
+      objectiveRef,
+      acceptanceCriterionRef,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
       const { ps, runner } = getRunner(projectName, environment, { serverId, serverName });
@@ -244,6 +276,10 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
           remotePath: result.remotePath,
           cleanedUp: result.cleanedUp,
           async,
+          workSessionId,
+          intentStep,
+          objectiveRef,
+          acceptanceCriterionRef,
           exitCode: result.code,
         });
         return [
@@ -262,6 +298,10 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
         cleanup,
         preserveOnFailure,
         scriptLength: script.length,
+        workSessionId,
+        intentStep,
+        objectiveRef,
+        acceptanceCriterionRef,
       }, work);
       if (async) {
         return {

@@ -169,7 +169,7 @@ test("job store persists structured error evidence in a failed job summary", asy
     assert.ok(event);
     assert.equal(event.payload.error, "Restart failed: SM22.Queue");
     assert.equal(event.payload.phase, "failed");
-    assert.equal(event.payload.retrySafe, true);
+    assert.equal(event.payload.retrySafe, false);
     assert.deepEqual(JSON.parse(event.payload.summary), failure.evidence);
     store.configureJobStore({});
   } finally {
@@ -364,6 +364,68 @@ test("startup compensation re-emits an unmarked terminal job event with immutabl
     store.configureJobStore({ eventSink: { append: (event: any) => events.push(event) } });
     drainRelayEventSpool({ append: (event: any) => events.push(event) });
     assert.equal(events.length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("job store rejects forged work sessions and carries validated correlation through events and restart recovery", async () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-job-ws-"));
+  process.env.RELAY_STATE_ROOT = root;
+  try {
+    const store = await import(`../src/shared/job-store.ts?ws=${Date.now()}`);
+    const events: any[] = [];
+    // Without a composition-root validator no session claim can be trusted.
+    assert.throws(() => store.startJob({ id: 7, username: "tester" }, "project", "ws_job", { workSessionId: "session-x" }, async () => "done"), /not usable/);
+    store.configureJobStore({
+      eventSink: { append: (event: any) => events.push(event) },
+      validateWorkSession: (_userId: number, _project: string, sessionId: string) => sessionId === "session-good",
+    });
+    assert.throws(() => store.startJob({ id: 7, username: "tester" }, "project", "ws_job", { workSessionId: "session-forged" }, async () => "done"), /not usable/);
+    assert.equal(events.length, 0, "a forged session never reaches the event stream");
+
+    const job = store.startJob(
+      { id: 7, username: "tester" },
+      "project",
+      "ws_job",
+      { workSessionId: "session-good", intentStep: "verify", objectiveRef: "obj-1", acceptanceCriterionRef: "ac-1" },
+      async () => "done"
+    );
+    assert.equal(job.workSessionId, "session-good");
+    const sink = { append: (event: any) => events.push(event) };
+    const { drainRelayEventSpool } = await import("../src/knowledge/event-sink.ts");
+    const drain = async () => { try { drainRelayEventSpool(sink); } catch { /* lock contention with a stale timer is retried */ } };
+    const deadline = Date.now() + 4000;
+    while (!events.some((event) => event.type === "job.finished") && Date.now() < deadline) {
+      await drain();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const started = events.find((event) => event.type === "job.started");
+    const finished = events.find((event) => event.type === "job.finished");
+    assert.equal(started?.payload.workSessionId, "session-good");
+    assert.equal(started?.payload.intentStep, "verify");
+    assert.equal(finished?.payload.workSessionId, "session-good");
+    assert.equal(finished?.payload.objectiveRef, "obj-1");
+    assert.equal(finished?.payload.acceptanceCriterionRef, "ac-1");
+    assert.equal(store.getJob(job.id)?.workSessionId, "session-good");
+
+    // Restart recovery: a terminal record persisted before a crash replays its
+    // event with the same session correlation payload.
+    store.saveJob({
+      id: "ws-job-recovered", userId: 7, username: "tester", project: "project", kind: "ws_job",
+      status: "succeeded", input: {}, logs: [], startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+      workSessionId: "session-good", intentStep: "verify",
+    });
+    store.recoverUnemittedTerminalJobEvents();
+    const recoveryDeadline = Date.now() + 4000;
+    while (!events.some((event) => event.type === "job.finished" && event.jobId === "ws-job-recovered") && Date.now() < recoveryDeadline) {
+      await drain();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const recovered = events.find((event) => event.type === "job.finished" && event.jobId === "ws-job-recovered");
+    assert.equal(recovered?.payload.workSessionId, "session-good");
+    assert.equal(recovered?.payload.intentStep, "verify");
+    store.configureJobStore({});
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

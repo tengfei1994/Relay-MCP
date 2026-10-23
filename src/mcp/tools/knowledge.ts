@@ -8,6 +8,18 @@ import type { KnowledgeStore } from "../../knowledge/store.js";
 import { summarizeJson } from "../../shared/output.js";
 import { EvidenceStore } from "../../knowledge/evidence-store.js";
 import { compareSourceBaselines, type SourceManifest } from "../../knowledge/source-baseline.js";
+import { WorkSessionService, validateIntentEnvelope } from "../../knowledge/work-session.js";
+import { ProviderRegistry } from "../../knowledge/provider-registry.js";
+import { MigrationController } from "../../knowledge/migration-control.js";
+import { runReleaseGates } from "../../knowledge/release-gates.js";
+import { WeKnoraClient, WeKnoraError } from "../../knowledge/weknora.js";
+import { WeKnoraClientDocumentWriter, WeKnoraIngestor } from "../../knowledge/weknora-ingest.js";
+import { ContextPackService } from "../../knowledge/context-pack.js";
+import { CandidateInsightCompiler, type ManagedCandidateInsightProvider } from "../../knowledge/candidate-insight.js";
+import { CandidateInsightReviewService } from "../../knowledge/candidate-review.js";
+import { enqueueCandidateInsight } from "../../knowledge/candidate-worker.js";
+import { WikiService, WIKI_PAGE_STATUSES } from "../../knowledge/wiki.js";
+import { EnvironmentSecretResolver } from "../../knowledge/provider-secret.js";
 
 /**
  * P00 extension boundary. Knowledge tools arrive in P01 and must be registered
@@ -20,6 +32,28 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
     : { server: context as McpServer, user: { id: 0, username: "boundary" } };
   const { server, user, knowledge, resolveProjectName } = ctx;
   const requireKnowledge = () => { if (!knowledge) throw new Error("Knowledge Plane is unavailable"); return knowledge; };
+  const managedRegistry = () => new ProviderRegistry(requireKnowledge(), undefined, { secrets: new EnvironmentSecretResolver() });
+  const candidateProvider = (providerId?: string): ManagedCandidateInsightProvider => {
+    if (!providerId) return { providerId: "unconfigured", modelId: "deterministic-fallback", complete: async () => { throw new Error("Candidate Insight provider is not configured"); } };
+    const registry = managedRegistry();
+    const config = registry.get(providerId);
+    if (!config) throw new Error("Candidate Insight provider is not configured");
+    const handle = registry.resolveCandidateProvider(providerId);
+    return { providerId: config.id, modelId: config.modelId, complete: async (request) => (await handle.complete(request.prompt)).text };
+  };
+  const weknoraClient = () => {
+    const baseUrl = process.env.WEKNORA_BASE_URL;
+    if (!baseUrl) throw new WeKnoraError("unavailable", "WeKnora provider is not configured");
+    return new WeKnoraClient({ baseUrl, secretResolver: async () => process.env.WEKNORA_API_TOKEN, timeoutMs: Number(process.env.WEKNORA_TIMEOUT_MS ?? 30_000) });
+  };
+  const retrievalScope = (input: { workSessionId?: string; projectId?: string; productVersion?: string; solution?: string; module?: string; language?: string }) => {
+    const store = requireKnowledge();
+    const session = input.workSessionId ? new WorkSessionService(store).assertSessionUsable({ actorId: user.id, sessionId: input.workSessionId, projectId: input.projectId }) : undefined;
+    const projectId = input.projectId ?? session?.projectId;
+    if (projectId && !store.canRead(user.id, projectId)) throw new Error("Knowledge access denied");
+    const ingestor = new WeKnoraIngestor(store, { upsertDocument: async () => ({ externalDocumentId: "unused" }) });
+    return { session, ingestor, knowledgeIds: ingestor.retrievalKnowledgeIds({ projectId, productVersion: input.productVersion ?? session?.intent.sampleManagerVersion, solution: input.solution ?? session?.intent.solution, module: input.module ?? session?.intent.module, language: input.language }) };
+  };
   const sourceManifest = (store: KnowledgeStore, id: string, snapshot = false): SourceManifest => {
     const table = snapshot ? "knowledge_project_snapshot_files" : "knowledge_source_files"; const key = snapshot ? "snapshot_id" : "baseline_id";
     const rows = store.db.prepare(`SELECT relative_path AS path,sha256,size_bytes AS size,language FROM ${table} WHERE ${key}=? ORDER BY relative_path`).all(id) as SourceManifest["files"];
@@ -160,6 +194,78 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
     const oldIds = ids("knowledge_source_files", "baseline_id", oldBaselineId); const projectIds = ids("knowledge_project_snapshot_files", "snapshot_id", currentProjectSnapshotId); const newIds = ids("knowledge_source_files", "baseline_id", newBaselineId);
     const withEvidence = changes.map((change) => ({ ...change, evidenceRefs: { old: oldIds.get(change.path), project: projectIds.get(change.path), next: newIds.get(change.path) } }));
     return { content: [{ type: "text", text: summarizeJson({ oldBaselineId, currentProjectSnapshotId, newBaselineId, changes: withEvidence.slice(0, limit ?? 1000), counts: changes.reduce<Record<string, number>>((acc, item) => { acc[item.status] = (acc[item.status] ?? 0) + 1; return acc; }, {}) }) }] };
+  });
+
+  server.tool("knowledge_work_session_open", "Open an ACL-scoped Work Session with an IntentEnvelope for a multi-step task.", { idempotencyKey: z.string().min(1).max(300), intent: z.record(z.unknown()), summary: z.string().max(8000).optional() }, async ({ idempotencyKey, intent, summary }) => {
+    const store = requireKnowledge(); const validated = validateIntentEnvelope({ ...intent, actorId: user.id }); const session = new WorkSessionService(store).open({ actorId: user.id, idempotencyKey, intent: validated, summary }); return { content: [{ type: "text", text: summarizeJson({ session }) }] };
+  });
+  server.tool("knowledge_work_session_update", "Update a Work Session phase or user-visible IntentEnvelope fields.", { sessionId: z.string(), patch: z.record(z.unknown()), idempotencyKey: z.string().max(300).optional() }, async ({ sessionId, patch, idempotencyKey }) => { const session = new WorkSessionService(requireKnowledge()).update({ actorId: user.id, sessionId, patch: patch as never, idempotencyKey }); return { content: [{ type: "text", text: summarizeJson({ session }) }] }; });
+  server.tool("knowledge_work_session_close", "Close a Work Session with acceptance results and unknowns.", { sessionId: z.string(), result: z.object({ summary: z.string().max(8000).optional(), unknowns: z.array(z.string().max(2000)).max(100).optional(), acceptanceResults: z.record(z.union([z.boolean(), z.string().max(500)])).optional() }).optional(), idempotencyKey: z.string().max(300).optional() }, async ({ sessionId, result, idempotencyKey }) => { const session = new WorkSessionService(requireKnowledge()).close({ actorId: user.id, sessionId, result, idempotencyKey }); return { content: [{ type: "text", text: summarizeJson({ session }) }] }; });
+  server.tool("knowledge_work_session_get", "Read a Work Session and its correlated event metadata after ACL enforcement.", { sessionId: z.string() }, async ({ sessionId }) => { const service = new WorkSessionService(requireKnowledge()); return { content: [{ type: "text", text: summarizeJson({ session: service.get({ actorId: user.id, sessionId }), events: service.listEvents({ actorId: user.id, sessionId }) }) }] }; });
+  server.tool("knowledge_work_session_list", "List the caller's Work Sessions on projects they can still read, with time-ordered event aggregation.", { limit: z.number().int().min(1).max(200).optional(), sessionId: z.string().optional() }, async ({ limit, sessionId }) => {
+    const service = new WorkSessionService(requireKnowledge());
+    if (sessionId) return { content: [{ type: "text", text: summarizeJson(service.summarize({ actorId: user.id, sessionId })) }] };
+    return { content: [{ type: "text", text: summarizeJson({ sessions: service.list({ actorId: user.id, limit }) }) }] };
+  });
+  server.tool("knowledge_provider_config_list", "List safe Relay provider metadata without returning secrets.", {}, async () => { return { content: [{ type: "text", text: summarizeJson({ providers: managedRegistry().list(), pendingReindex: managedRegistry().pendingReindex() }) }] }; });
+  server.tool("knowledge_candidate_insight_compile", "Compile an Evidence-backed Candidate Insight for a Work Session, with deterministic fallback and no auto-approval.", { sessionId: z.string(), evidenceRefs: z.array(z.string().min(1)).max(100), context: z.record(z.unknown()).optional(), providerId: z.string().optional(), async: z.boolean().optional() }, async ({ sessionId, evidenceRefs, context, providerId, async: enqueue }) => {
+    const store = requireKnowledge();
+    if (enqueue) return { content: [{ type: "text", text: summarizeJson(enqueueCandidateInsight(store, { actorId: user.id, sessionId, evidenceRefs, context: context ?? {} })) }] };
+    const insight = await new CandidateInsightCompiler(store, candidateProvider(providerId)).compile({ actorId: user.id, sessionId, evidenceRefs, context: context ?? {} });
+    return { content: [{ type: "text", text: summarizeJson({ insight }) }] };
+  });
+  server.tool("knowledge_candidate_insight_list", "List ACL-scoped Candidate Insights pending or completed through human review.", { projectId: z.string(), status: z.enum(["draft", "accepted", "edited", "rejected"]).optional(), limit: z.number().int().min(1).max(200).optional(), offset: z.number().int().min(0).optional() }, async (input) => {
+    const insights = new CandidateInsightReviewService(requireKnowledge()).list({ actorId: user.id, ...input });
+    return { content: [{ type: "text", text: summarizeJson({ insights }) }] };
+  });
+  server.tool("knowledge_candidate_insight_review", "Explicitly confirm, edit, reject, or promote a Candidate Insight; every action requires a reason.", { insightId: z.string(), action: z.enum(["confirm", "edit", "reject", "promote"]), reason: z.string().min(1).max(2000), patch: z.record(z.unknown()).optional(), target: z.enum(["case", "decision"]).optional(), title: z.string().max(300).optional() }, async ({ insightId, action, reason, patch, target, title }) => {
+    const service = new CandidateInsightReviewService(requireKnowledge());
+    const result = action === "confirm" ? service.confirm({ actorId: user.id, id: insightId, reason })
+      : action === "reject" ? service.reject({ actorId: user.id, id: insightId, reason })
+      : action === "edit" ? service.edit({ actorId: user.id, id: insightId, patch: patch as never, reason })
+      : service.promote({ actorId: user.id, id: insightId, target: target ?? "case", title, reason });
+    return { content: [{ type: "text", text: summarizeJson({ result }) }] };
+  });
+  server.tool("knowledge_wiki_search", "Search Relay-native Wiki pages with ACL, version, topic, solution and module filters.", { projectId: z.string().optional(), query: z.string().optional(), status: z.enum(WIKI_PAGE_STATUSES).optional(), productVersion: z.string().optional(), topicId: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), limit: z.number().int().min(1).max(200).optional(), offset: z.number().int().min(0).optional() }, async (input) => {
+    const result = new WikiService(requireKnowledge()).list({ actorId: user.id, projectId: input.projectId, status: input.status, productVersion: input.productVersion, topicId: input.topicId, solution: input.solution, module: input.module, search: input.query, limit: input.limit, offset: input.offset });
+    return { content: [{ type: "text", text: summarizeJson(result) }] };
+  });
+  server.tool("knowledge_wiki_get", "Read a Relay-native Wiki page and optionally its revision history or unified diff.", { pageId: z.string(), includeRevisions: z.boolean().optional(), fromRevision: z.number().int().positive().optional(), toRevision: z.number().int().positive().optional() }, async ({ pageId, includeRevisions, fromRevision, toRevision }) => {
+    const wiki = new WikiService(requireKnowledge()); const page = wiki.get({ actorId: user.id, id: pageId });
+    const revisions = includeRevisions ? wiki.listRevisions({ actorId: user.id, id: pageId }) : undefined;
+    const diff = fromRevision && toRevision ? wiki.diffRevisions({ actorId: user.id, id: pageId, fromRevision, toRevision }) : undefined;
+    return { content: [{ type: "text", text: summarizeJson({ page, revisions, diff }) }] };
+  });
+  server.tool("knowledge_wiki_write", "Create a page idempotently or append a reviewed edit; content is scanned before persistence.", { pageKey: z.string().max(300).optional(), pageId: z.string().optional(), title: z.string().min(1).max(500), body: z.string().min(1), projectId: z.string().optional(), productVersion: z.string().optional(), topicId: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), sourceRefs: z.array(z.string()).max(100).optional(), reason: z.string().min(1).max(2000) }, async (input) => {
+    const wiki = new WikiService(requireKnowledge());
+    const page = input.pageId ? wiki.edit({ actorId: user.id, id: input.pageId, title: input.title, body: input.body, reason: input.reason }) : wiki.create({ actorId: user.id, pageKey: input.pageKey ?? "", title: input.title, body: input.body, projectId: input.projectId, productVersion: input.productVersion, topicId: input.topicId, solution: input.solution, module: input.module, sourceRefs: input.sourceRefs, reason: input.reason });
+    return { content: [{ type: "text", text: summarizeJson({ page }) }] };
+  });
+  server.tool("knowledge_wiki_review", "Publish, deprecate, or roll back a Wiki page with an explicit reason and audit trail.", { pageId: z.string(), action: z.enum(["publish", "deprecate", "rollback"]), revision: z.number().int().positive().optional(), reason: z.string().min(1).max(2000) }, async ({ pageId, action, revision, reason }) => {
+    const wiki = new WikiService(requireKnowledge());
+    const page = action === "publish" ? wiki.publish({ actorId: user.id, id: pageId, reason }) : action === "deprecate" ? wiki.deprecate({ actorId: user.id, id: pageId, reason }) : wiki.rollback({ actorId: user.id, id: pageId, revision: revision ?? 0, reason });
+    return { content: [{ type: "text", text: summarizeJson({ page }) }] };
+  });
+  server.tool("knowledge_migration_create", "Create an idempotent staged Product Knowledge migration record.", { idempotencyKey: z.string().min(1).max(300), sourceManifest: z.record(z.unknown()), kind: z.string().max(100).optional() }, async ({ idempotencyKey, sourceManifest, kind }) => { if (!user.isAdmin) throw new Error("Administrator access is required"); const migration = new MigrationController(requireKnowledge()).create({ actorId: user.id, idempotencyKey, sourceManifest, kind }); return { content: [{ type: "text", text: summarizeJson({ migration }) }] }; });
+  server.tool("knowledge_migration_from_local", "Stage local Product Knowledge into WeKnora with a metadata-only manifest and per-document report.", { idempotencyKey: z.string().min(1).max(300), parserVersion: z.string().min(1).max(100), productVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), projectId: z.string().optional(), limit: z.number().int().min(1).max(10000).optional(), retry: z.boolean().optional() }, async (input) => {
+    if (!user.isAdmin) throw new Error("Administrator access is required");
+    const knowledgeBaseId = process.env.WEKNORA_KNOWLEDGE_BASE_ID;
+    if (!knowledgeBaseId) throw new Error("WeKnora provider is not configured");
+    const ingestor = new WeKnoraIngestor(requireKnowledge(), new WeKnoraClientDocumentWriter(weknoraClient(), knowledgeBaseId));
+    const migration = await new MigrationController(requireKnowledge()).createFromLocal({ actorId: user.id, ...input }, ingestor);
+    return { content: [{ type: "text", text: summarizeJson({ migration }) }] };
+  });
+  server.tool("knowledge_migration_publish", "Validate, publish and switch a staged Product Knowledge migration to WeKnora.", { migrationId: z.string() }, async ({ migrationId }) => { if (!user.isAdmin) throw new Error("Administrator access is required"); const migration = new MigrationController(requireKnowledge()).validateAndPublish(migrationId, user.id); return { content: [{ type: "text", text: summarizeJson({ migration }) }] }; });
+  server.tool("knowledge_migration_rollback", "Rollback a Product Knowledge migration and restore Relay local retrieval with an audit reason.", { migrationId: z.string(), reason: z.string().min(1).max(2000) }, async ({ migrationId, reason }) => { if (!user.isAdmin) throw new Error("Administrator access is required"); const migration = new MigrationController(requireKnowledge()).rollback(migrationId, user.id, reason); return { content: [{ type: "text", text: summarizeJson({ migration }) }] }; });
+  server.tool("knowledge_release_gates", "Run deterministic security, migration, provider, ACL and visibility release gates.", {}, async () => { if (!user.isAdmin) throw new Error("Administrator access is required"); return { content: [{ type: "text", text: summarizeJson(runReleaseGates(requireKnowledge())) }] }; });
+  server.tool("knowledge_weknora_search", "Search published Product Knowledge through Relay's ACL-checked internal WeKnora boundary.", { query: z.string().min(1), workSessionId: z.string().optional(), projectId: z.string().optional(), productVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), language: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }, async ({ query, workSessionId, projectId, productVersion, solution, module, language, limit }) => {
+    const scope = retrievalScope({ workSessionId, projectId, productVersion, solution, module, language });
+    if (!scope.knowledgeIds.length) return { content: [{ type: "text", text: summarizeJson({ retrievalRunId: "local-scope-empty", references: [], degraded: { productKnowledge: "no_published_documents" } }) }] };
+    const result = await weknoraClient().search({ query, knowledgeIds: scope.knowledgeIds, limit });
+    const visible = new Set(scope.knowledgeIds);
+    const references = result.references.filter((reference) => visible.has(reference.documentId));
+    const contextPack = new ContextPackService({ provider: "weknora" }).build({ intent: scope.session?.intent, authoritativeDocs: references, acl: { documentIds: scope.knowledgeIds }, maxItemsPerSection: limit ?? 10 });
+    return { content: [{ type: "text", text: summarizeJson({ ...result, references: contextPack.authoritativeDocs, contextPack }) }] };
   });
 
   // Resource templates keep large document bodies out of search responses and

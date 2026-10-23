@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from "path";
 import { validateStateId } from "./state-id.js";
 import { emitRelayEvent, type RelayEventSink } from "../knowledge/event-sink.js";
+import { classifyRemoteError } from "./remote-runner.js";
 import "dotenv/config";
 
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT ?? "/workspace";
@@ -9,6 +10,35 @@ const STATE_ROOT = process.env.RELAY_STATE_ROOT ?? join(WORKSPACE_ROOT, ".relay-
 const DEPLOYMENT_ROOT = join(STATE_ROOT, "deployments");
 let eventSink: RelayEventSink | undefined;
 let resolveProjectId: ((userId: number, projectName: string) => number | undefined) | undefined;
+/** Composition-root hook proving a Work Session belongs to the caller and scope. */
+let validateWorkSession: ((userId: number, projectName: string, sessionId: string, environment?: string) => boolean) | undefined;
+
+function boundedRef(value: unknown, max: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, max) : undefined;
+}
+
+/**
+ * A Work Session reference is only persisted/emitted after the composition
+ * root validator proves it belongs to the caller, project and environment.
+ * Without a validator no session claim can be trusted, so it is rejected
+ * rather than letting a forged session reach Deployment records and events.
+ */
+function resolveWorkSessionCorrelation(input: { workSessionId?: unknown; intentStep?: unknown; objectiveRef?: unknown; acceptanceCriterionRef?: unknown; environment?: unknown }, userId: number, project: string): Pick<DeploymentRecord, "workSessionId" | "intentStep" | "objectiveRef" | "acceptanceCriterionRef"> {
+  const workSessionId = boundedRef(input.workSessionId, 200);
+  if (!workSessionId) return {};
+  const environment = boundedRef(input.environment, 200);
+  if (!validateWorkSession || !validateWorkSession(userId, project, workSessionId, environment)) {
+    throw new Error(`Work Session '${workSessionId}' is not usable for this caller, project, and environment`);
+  }
+  return {
+    workSessionId,
+    ...(boundedRef(input.intentStep, 100) ? { intentStep: boundedRef(input.intentStep, 100) } : {}),
+    ...(boundedRef(input.objectiveRef, 200) ? { objectiveRef: boundedRef(input.objectiveRef, 200) } : {}),
+    ...(boundedRef(input.acceptanceCriterionRef, 200) ? { acceptanceCriterionRef: boundedRef(input.acceptanceCriterionRef, 200) } : {}),
+  };
+}
 
 export type DeploymentStatus = "running" | "succeeded" | "failed" | "unknown" | "needs-review" | "pending-validation";
 
@@ -44,6 +74,11 @@ export interface DeploymentRecord {
   terminalEventKind?: "finished" | "failed" | "unknown" | "interrupted" | "needs-review" | "pending-validation";
   /** Stable project identity used to make terminal-event replay immutable. */
   projectIdSnapshot?: string;
+  /** Optional Work Session correlation carried through deployment events. */
+  workSessionId?: string;
+  intentStep?: string;
+  objectiveRef?: string;
+  acceptanceCriterionRef?: string;
   commitBefore?: string;
   commitAfter?: string;
   rollback: {
@@ -89,15 +124,14 @@ export function deploymentFailureDisposition(
   retrySafe: boolean;
   category: string;
 } {
-  const category = error instanceof Error && "category" in error
-    ? String((error as Error & { category?: string }).category ?? "unknown")
-    : "unknown";
-  const executionUnknown = category === "timeout";
+  const classification = classifyRemoteError(error);
+  const category = classification.category;
+  const executionUnknown = classification.executionState === "unknown";
   return {
     status: executionUnknown ? "unknown" : "failed",
     stepStatus: executionUnknown ? "unknown" : "failed",
-    rollbackAllowed: !executionUnknown && options.rollbackRequested && options.backupAvailable,
-    retrySafe: false,
+    rollbackAllowed: classification.executionState === "failed" && category !== "committed_verification_failed" && options.rollbackRequested && options.backupAvailable,
+    retrySafe: classification.retrySafe && !options.backupAvailable,
     category,
   };
 }
@@ -124,7 +158,7 @@ function resolveProjectIdSnapshot(userId: number, projectName: string): string |
   }
 }
 
-function startedDeploymentEvent(record: Pick<DeploymentRecord, "id" | "userId" | "project" | "environment" | "instance" | "kind" | "target" | "startedAt" | "projectIdSnapshot">): Parameters<typeof emitRelayEvent>[1] {
+function startedDeploymentEvent(record: Pick<DeploymentRecord, "id" | "userId" | "project" | "environment" | "instance" | "kind" | "target" | "startedAt" | "projectIdSnapshot" | "workSessionId" | "intentStep" | "objectiveRef" | "acceptanceCriterionRef">): Parameters<typeof emitRelayEvent>[1] {
   return {
     type: "deployment.started",
     eventKey: `deployment:${record.id}:started`,
@@ -133,7 +167,7 @@ function startedDeploymentEvent(record: Pick<DeploymentRecord, "id" | "userId" |
     projectId: record.projectIdSnapshot,
     projectNameSnapshot: record.project,
     deploymentId: record.id,
-    payload: { environment: record.environment, instance: record.instance, kind: record.kind, target: record.target },
+    payload: { environment: record.environment, instance: record.instance, kind: record.kind, target: record.target, workSessionId: record.workSessionId, intentStep: record.intentStep, objectiveRef: record.objectiveRef, acceptanceCriterionRef: record.acceptanceCriterionRef },
   };
 }
 
@@ -188,6 +222,10 @@ function terminalDeploymentEvent(record: DeploymentRecord): Parameters<typeof em
       dryRunOnlyMutations: record.dryRunOnlyMutations,
       failedMutation: record.failedMutation,
       recommendedResumeAction: record.recommendedResumeAction,
+      workSessionId: record.workSessionId,
+      intentStep: record.intentStep,
+      objectiveRef: record.objectiveRef,
+      acceptanceCriterionRef: record.acceptanceCriterionRef,
     },
   };
 }
@@ -205,7 +243,7 @@ function emitTerminal(record: DeploymentRecord): boolean {
       projectId: record.projectIdSnapshot,
       projectNameSnapshot: record.project,
       deploymentId: record.id,
-      payload: { environment: record.environment, instance: record.instance },
+      payload: { environment: record.environment, instance: record.instance, workSessionId: record.workSessionId, intentStep: record.intentStep, objectiveRef: record.objectiveRef, acceptanceCriterionRef: record.acceptanceCriterionRef },
     });
   }
   return emitted;
@@ -258,9 +296,10 @@ export function recoverUnemittedStartedDeploymentEvents(): number {
 }
 
 /** Composition-root injection point; never required for deployment availability. */
-export function configureDeploymentStore(options: { eventSink?: RelayEventSink; resolveProjectId?: (userId: number, projectName: string) => number | undefined } = {}): void {
+export function configureDeploymentStore(options: { eventSink?: RelayEventSink; resolveProjectId?: (userId: number, projectName: string) => number | undefined; validateWorkSession?: (userId: number, projectName: string, sessionId: string, environment?: string) => boolean } = {}): void {
   eventSink = options.eventSink;
   resolveProjectId = options.resolveProjectId;
+  validateWorkSession = options.validateWorkSession;
   recoverUnemittedStartedDeploymentEvents();
   recoverUnemittedTerminalDeploymentEvents();
 }
@@ -299,6 +338,7 @@ export function startDeployment(input: Omit<DeploymentRecord, "id" | "status" | 
     status: "running",
     startedAt: new Date().toISOString(),
     ...(projectIdSnapshot !== undefined ? { projectIdSnapshot } : {}),
+    ...resolveWorkSessionCorrelation(input, input.userId, input.project),
     rollback: {
       requested: input.rollbackRequested,
       attempted: false,

@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { McpUser } from "../register-tools.js";
 import { z } from "zod";
 import type { KnowledgeStore } from "../../knowledge/store.js";
+import { WorkSessionService } from "../../knowledge/work-session.js";
 import { searchKnowledge } from "../../knowledge/retriever.js";
 import { analyzeRelationImpact } from "../../knowledge/relations.js";
 import { recentErrors, sampleManagerTableSchema } from "../../shared/samplemanager-tools.js";
@@ -19,8 +20,17 @@ export function registerDiagnosticTools(context: McpServer | DiagnosticToolsCont
     : { server: context as McpServer, user: { id: 0, username: "boundary" }, knowledge: undefined, resolveProjectName: () => { throw new Error("diagnostic context unavailable"); }, getRunner: () => { throw new Error("diagnostic context unavailable"); }, registry: {} as ProjectRegistry };
   const { server, user, knowledge, resolveProjectName, getRunner } = ctx;
   const requireKnowledge = () => { if (!knowledge) throw new Error("Knowledge Plane is unavailable"); return knowledge; };
-  server.tool("samplemanager_diagnose", "Read-only SampleManager diagnosis combining version-scoped Knowledge retrieval with Form/Task/Assembly checks. It never deploys, restarts, clears cache, or mutates SQL.", { project: z.string().optional(), environment: z.string().optional(), query: z.string().min(1), formName: z.string().optional(), taskName: z.string().optional(), controlNames: z.array(z.string()).optional(), includeRecentErrors: z.boolean().optional(), recentErrorMinutes: z.number().int().min(1).max(1440).optional(), databaseTable: z.string().optional() }, async ({ project, environment, query, formName, taskName, controlNames, includeRecentErrors, recentErrorMinutes, databaseTable }) => {
+  const sessionCorrelationSchema = { workSessionId: z.string().min(1).max(200).optional(), intentStep: z.string().max(100).optional(), objectiveRef: z.string().max(200).optional(), acceptanceCriterionRef: z.string().max(200).optional() };
+  const assertSession = (store: KnowledgeStore, workSessionId: string | undefined, projectId: string, environment?: string) => {
+    if (!workSessionId) return undefined;
+    // The caller must own the session and match its project/environment scope;
+    // a forged or foreign session id fails here before any payload is written.
+    new WorkSessionService(store).assertSessionUsable({ actorId: user.id, sessionId: workSessionId, projectId, environment });
+    return workSessionId;
+  };
+  server.tool("samplemanager_diagnose", "Read-only SampleManager diagnosis combining version-scoped Knowledge retrieval with Form/Task/Assembly checks. It never deploys, restarts, clears cache, or mutates SQL.", { project: z.string().optional(), environment: z.string().optional(), query: z.string().min(1), formName: z.string().optional(), taskName: z.string().optional(), controlNames: z.array(z.string()).optional(), includeRecentErrors: z.boolean().optional(), recentErrorMinutes: z.number().int().min(1).max(1440).optional(), databaseTable: z.string().optional(), ...sessionCorrelationSchema }, async ({ project, environment, query, formName, taskName, controlNames, includeRecentErrors, recentErrorMinutes, databaseTable, workSessionId, intentStep, objectiveRef, acceptanceCriterionRef }) => {
     const name = resolveProjectName(project); const store = requireKnowledge(); const connection = getRunner(name, environment); const projectId = connection.project.id.toString(); store.grantAcl(projectId, user.id, false);
+    const sessionRef = assertSession(store, workSessionId, projectId, connection.ps.environment);
     const knowledgeResult = await searchKnowledge(store, { userId: user.id, projectId, query, sampleManagerVersion: connection.ps.limsInstance?.version, environment: connection.ps.environment, limit: 10 });
     const unknowns: string[] = []; const evidence: unknown[] = []; const facts: unknown[] = []; const inferences: unknown[] = [];
     if (formName && taskName && connection.ps.limsInstance?.databaseName) {
@@ -49,11 +59,12 @@ export function registerDiagnosticTools(context: McpServer | DiagnosticToolsCont
     }
     facts.push({ target: { project: name, environment: connection.ps.environment, server: connection.ps.server.name, instance: connection.ps.limsInstance?.name, version: connection.ps.limsInstance?.version } });
     inferences.push(...knowledgeResult.results.map((result) => ({ from: result.id, statement: result.title, reasons: result.matchReasons })));
-    return { content: [{ type: "text", text: summarizeJson(createSampleManagerInspectionEnvelope({ capability: "samplemanager_diagnose", provenance: { retrievalRunId: knowledgeResult.retrievalRunId, projectId, traceId: `trace-${Date.now()}` }, facts, inferences, unknowns, evidence })) }] };
+    return { content: [{ type: "text", text: summarizeJson(createSampleManagerInspectionEnvelope({ capability: "samplemanager_diagnose", provenance: { retrievalRunId: knowledgeResult.retrievalRunId, projectId, traceId: `trace-${Date.now()}`, ...(sessionRef ? { workSessionId: sessionRef, intentStep, objectiveRef, acceptanceCriterionRef } : {}) }, facts, inferences, unknowns, evidence })) }] };
   });
-  server.tool("samplemanager_impact_analysis", "Compute a read-only, source-backed impact graph for a SampleManager Form/Task/Assembly/Menu object.", { project: z.string().optional(), environment: z.string().optional(), objectId: z.string(), relationType: z.string().optional(), verifiedOnly: z.boolean().optional(), limit: z.number().int().min(1).max(500).optional(), maxDepth: z.number().int().min(0).max(20).optional(), direction: z.enum(["upstream", "downstream", "both"]).optional() }, async ({ project, environment, objectId, relationType, verifiedOnly, limit, maxDepth, direction }) => {
+  server.tool("samplemanager_impact_analysis", "Compute a read-only, source-backed impact graph for a SampleManager Form/Task/Assembly/Menu object.", { project: z.string().optional(), environment: z.string().optional(), objectId: z.string(), relationType: z.string().optional(), verifiedOnly: z.boolean().optional(), limit: z.number().int().min(1).max(500).optional(), maxDepth: z.number().int().min(0).max(20).optional(), direction: z.enum(["upstream", "downstream", "both"]).optional(), ...sessionCorrelationSchema }, async ({ project, environment, objectId, relationType, verifiedOnly, limit, maxDepth, direction, workSessionId, intentStep, objectiveRef, acceptanceCriterionRef }) => {
     const name = resolveProjectName(project); const store = requireKnowledge(); const connection = getRunner(name, environment); const projectId = connection.project.id.toString(); store.grantAcl(projectId, user.id, false);
+    const sessionRef = assertSession(store, workSessionId, projectId, connection.ps.environment);
     const report = analyzeRelationImpact(store, { userId: user.id, projectId, objectId, relationType: relationType as never, verifiedOnly, limit, maxDepth, direction, sampleManagerVersion: connection.ps.limsInstance?.version, environment: connection.ps.environment });
-    return { content: [{ type: "text", text: summarizeJson(createSampleManagerInspectionEnvelope({ capability: "samplemanager_impact_analysis", provenance: { projectId, objectId, maxDepth, direction }, facts: report.relations, inferences: [{ affectedObjects: report.nodes.length, depth: report.depth }], unknowns: report.relations.length ? [] : ["No source-backed relations found"] })) }] };
+    return { content: [{ type: "text", text: summarizeJson(createSampleManagerInspectionEnvelope({ capability: "samplemanager_impact_analysis", provenance: { projectId, objectId, maxDepth, direction, ...(sessionRef ? { workSessionId: sessionRef, intentStep, objectiveRef, acceptanceCriterionRef } : {}) }, facts: report.relations, inferences: [{ affectedObjects: report.nodes.length, depth: report.depth }], unknowns: report.relations.length ? [] : ["No source-backed relations found"] })) }] };
   });
 }

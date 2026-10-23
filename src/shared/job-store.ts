@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { validateStateId } from "./state-id.js";
-import { RemoteCommandTimeoutError } from "./remote-runner.js";
+import { classifyRemoteError, RemoteCommandTimeoutError } from "./remote-runner.js";
 import { emitRelayEvent, type RelayEventSink } from "../knowledge/event-sink.js";
 import { sanitizeAuditArguments } from "./audit-sanitizer.js";
 import { extractExecutionSummaryStreams } from "./output.js";
@@ -51,6 +51,11 @@ export interface JobRecord {
   terminalEventKind?: "finished" | "failed" | "cancelled" | "unknown" | "interrupted";
   /** Stable project identity used to make terminal-event replay immutable. */
   projectIdSnapshot?: string;
+  /** Optional Work Session correlation carried through every event. */
+  workSessionId?: string;
+  intentStep?: string;
+  objectiveRef?: string;
+  acceptanceCriterionRef?: string;
 }
 
 export interface JobRetryOptions {
@@ -109,7 +114,7 @@ function boundedSanitizedText(value: string, limit: number): string {
 
 /** Bounded and sanitized terminal context retained in Knowledge candidates. */
 function knowledgeTerminalPayload(
-  job: Pick<JobRecord, "status" | "kind" | "errorCategory" | "error" | "summary" | "phase" | "retrySafe" | "cancelRequestedAt" | "cancelReason" | "retryOf" | "retryAttempt" | "retryReason" | "input" | "logs">,
+  job: Pick<JobRecord, "status" | "kind" | "errorCategory" | "error" | "summary" | "phase" | "retrySafe" | "cancelRequestedAt" | "cancelReason" | "retryOf" | "retryAttempt" | "retryReason" | "input" | "logs" | "workSessionId" | "intentStep" | "objectiveRef" | "acceptanceCriterionRef">,
 ): Record<string, unknown> {
   const executionStreams = extractExecutionSummaryStreams(job.summary);
   const logs = (job.logs ?? []).slice(-50).map((entry) => ({
@@ -118,6 +123,10 @@ function knowledgeTerminalPayload(
     message: boundedSanitizedText(entry.message, 2_000),
   }));
   return sanitizeAuditArguments({
+    workSessionId: job.workSessionId,
+    intentStep: job.intentStep,
+    objectiveRef: job.objectiveRef,
+    acceptanceCriterionRef: job.acceptanceCriterionRef,
     status: job.status,
     kind: job.kind,
     errorCategory: job.errorCategory,
@@ -146,6 +155,43 @@ function boundedRetryAttempt(value: number | undefined): number {
 const activeJobs = new Map<string, AbortController>();
 let eventSink: RelayEventSink | undefined;
 let resolveProjectId: ((userId: number, projectName: string) => number | undefined) | undefined;
+/** Composition-root hook proving a Work Session belongs to the caller and scope. */
+let validateWorkSession: ((userId: number, projectName: string, sessionId: string, environment?: string) => boolean) | undefined;
+
+export interface WorkSessionCorrelation {
+  workSessionId?: string;
+  intentStep?: string;
+  objectiveRef?: string;
+  acceptanceCriterionRef?: string;
+}
+
+function boundedRef(value: unknown, max: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, max) : undefined;
+}
+
+/**
+ * A Work Session reference is only persisted/emitted after the composition
+ * root validator proves it belongs to the caller, project and environment.
+ * Without a validator no session claim can be trusted, so it is rejected
+ * rather than letting a forged session reach Job records and events.
+ */
+export function resolveWorkSessionCorrelation(input: unknown, userId: number, project: string): WorkSessionCorrelation {
+  const value = input && typeof input === "object" ? input as Record<string, unknown> : {};
+  const workSessionId = boundedRef(value.workSessionId, 200);
+  if (!workSessionId) return {};
+  const environment = boundedRef(value.environment, 200);
+  if (!validateWorkSession || !validateWorkSession(userId, project, workSessionId, environment)) {
+    throw new Error(`Work Session '${workSessionId}' is not usable for this caller, project, and environment`);
+  }
+  return {
+    workSessionId,
+    ...(boundedRef(value.intentStep, 100) ? { intentStep: boundedRef(value.intentStep, 100) } : {}),
+    ...(boundedRef(value.objectiveRef, 200) ? { objectiveRef: boundedRef(value.objectiveRef, 200) } : {}),
+    ...(boundedRef(value.acceptanceCriterionRef, 200) ? { acceptanceCriterionRef: boundedRef(value.acceptanceCriterionRef, 200) } : {}),
+  };
+}
 
 function resolveProjectIdSnapshot(userId: number, projectName: string): string | undefined {
   try {
@@ -158,7 +204,7 @@ function resolveProjectIdSnapshot(userId: number, projectName: string): string |
   }
 }
 
-function startedJobEvent(job: Pick<JobRecord, "id" | "userId" | "username" | "project" | "kind" | "input" | "startedAt" | "projectIdSnapshot">): Parameters<typeof emitRelayEvent>[1] {
+function startedJobEvent(job: Pick<JobRecord, "id" | "userId" | "username" | "project" | "kind" | "input" | "startedAt" | "projectIdSnapshot" | "workSessionId" | "intentStep" | "objectiveRef" | "acceptanceCriterionRef">): Parameters<typeof emitRelayEvent>[1] {
   return {
     type: "job.started",
     eventKey: `job:${job.id}:started`,
@@ -167,7 +213,7 @@ function startedJobEvent(job: Pick<JobRecord, "id" | "userId" | "username" | "pr
     projectId: job.projectIdSnapshot,
     projectNameSnapshot: job.project,
     jobId: job.id,
-    payload: { userId: job.userId, username: job.username, kind: job.kind, input: job.input },
+    payload: sanitizeAuditArguments({ userId: job.userId, username: job.username, kind: job.kind, input: job.input, workSessionId: job.workSessionId, intentStep: job.intentStep, objectiveRef: job.objectiveRef, acceptanceCriterionRef: job.acceptanceCriterionRef }) as Record<string, unknown>,
   };
 }
 
@@ -261,9 +307,10 @@ export function recoverUnemittedStartedJobEvents(): number {
 }
 
 /** Composition-root injection point; tests can provide an isolated sink. */
-export function configureJobStore(options: { eventSink?: RelayEventSink; resolveProjectId?: (userId: number, projectName: string) => number | undefined } = {}): void {
+export function configureJobStore(options: { eventSink?: RelayEventSink; resolveProjectId?: (userId: number, projectName: string) => number | undefined; validateWorkSession?: (userId: number, projectName: string, sessionId: string, environment?: string) => boolean } = {}): void {
   eventSink = options.eventSink;
   resolveProjectId = options.resolveProjectId;
+  validateWorkSession = options.validateWorkSession;
   recoverUnemittedStartedJobEvents();
   recoverUnemittedTerminalJobEvents();
 }
@@ -371,6 +418,7 @@ export function startJob(
     startedAt: new Date().toISOString(),
     ...(retryOf ? { retryOf, retryAttempt, retryReason } : {}),
     ...(stableProjectId !== undefined ? { projectIdSnapshot: stableProjectId } : {}),
+    ...resolveWorkSessionCorrelation(input, user.id, project),
   };
   const controller = new AbortController();
   activeJobs.set(job.id, controller);
@@ -443,24 +491,26 @@ export function startJob(
     .catch((err) => {
       const current = getJob(job.id) ?? job;
       const cancelled = Boolean(controller.signal.aborted || current.cancelRequestedAt);
-      const errorCategory = err instanceof Error && "category" in err
-        ? String((err as Error & { category?: string }).category)
-        : "remote_or_relay";
+      const classification = classifyRemoteError(err);
+      const errorCategory = classification.category;
       const timedOut = err instanceof RemoteCommandTimeoutError || errorCategory === "timeout";
+      const executionUnknown = timedOut || classification.executionState === "unknown";
       const summary = cancelled ? undefined : structuredErrorSummary(err);
       const error = cancelled
         ? "Job cancelled"
         : timedOut
           ? "Remote command timed out; execution state is unknown. Verify the target before retrying."
+          : executionUnknown
+            ? `${classification.message} Execution state is unknown; verify the target before retrying.`
           : err instanceof Error ? err.message : String(err);
       const terminal = {
         ...current,
-        status: cancelled ? "cancelled" : timedOut ? "unknown" : "failed",
-        terminalEventKind: cancelled ? "cancelled" : timedOut ? "unknown" : "failed",
-        phase: cancelled ? "cancelled" : timedOut ? "unknown" : "failed",
+        status: cancelled ? "cancelled" : executionUnknown ? "unknown" : "failed",
+        terminalEventKind: cancelled ? "cancelled" : executionUnknown ? "unknown" : "failed",
+        phase: cancelled ? "cancelled" : executionUnknown ? "unknown" : "failed",
         lastHeartbeatAt: new Date().toISOString(),
         errorCategory: cancelled ? "cancelled" : timedOut ? "timeout" : errorCategory,
-        retrySafe: timedOut || errorCategory === "remote_exit" ? false : true,
+        retrySafe: cancelled ? false : classification.retrySafe,
         summary,
         error,
         finishedAt: new Date().toISOString(),

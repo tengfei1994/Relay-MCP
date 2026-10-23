@@ -166,6 +166,32 @@ test("deployment timeout disposition is unknown and never permits automatic roll
   });
 });
 
+test("approval outages do not trigger rollback or replay a deployment with earlier changes", async () => {
+  const store = await import(`../src/shared/deployment-store.ts?approval=${Date.now()}`);
+  const disposition = store.deploymentFailureDisposition(
+    new Error("Automatic approval review failed: 502 Bad Gateway: passthrough network error"),
+    { rollbackRequested: true, backupAvailable: true }
+  );
+  assert.deepEqual(disposition, {
+    status: "failed",
+    stepStatus: "failed",
+    rollbackAllowed: false,
+    retrySafe: false,
+    category: "approval_unavailable",
+  });
+  const beforeDispatch = store.deploymentFailureDisposition(
+    Object.assign(new Error("Approval unavailable"), { category: "approval_unavailable" }),
+    { rollbackRequested: true, backupAvailable: false }
+  );
+  assert.equal(beforeDispatch.retrySafe, true);
+  const afterCommit = store.deploymentFailureDisposition(
+    Object.assign(new Error("Readback timeout"), { category: "committed_verification_failed" }),
+    { rollbackRequested: true, backupAvailable: true }
+  );
+  assert.equal(afterCommit.rollbackAllowed, false);
+  assert.equal(afterCommit.retrySafe, false);
+});
+
 test("deployment operation artifacts append history while compatibility fields track latest evidence", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-deploy-history-"));
   process.env.RELAY_STATE_ROOT = root;
@@ -367,6 +393,54 @@ test("startup compensation re-emits an unmarked terminal deployment event with f
     store.configureDeploymentStore({ eventSink: { append: (event: any) => events.push(event) } });
     drainRelayEventSpool({ append: (event: any) => events.push(event) });
     assert.equal(events.length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("deployment store validates work sessions and correlates terminal and rollback events", async () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-deploy-ws-"));
+  process.env.RELAY_STATE_ROOT = root;
+  try {
+    const store = await import(`../src/shared/deployment-store.ts?ws=${Date.now()}`);
+    const events: any[] = [];
+    // Without a composition-root validator no session claim can be trusted.
+    assert.throws(() => store.startDeployment({ userId: 7, username: "tester", project: "demo", environment: "test", host: "server", rollbackRequested: true, workSessionId: "session-x" }), /not usable/);
+    store.configureDeploymentStore({
+      eventSink: { append: (event: any) => events.push(event) },
+      validateWorkSession: (_userId: number, _project: string, sessionId: string) => sessionId === "session-good",
+    });
+    assert.throws(() => store.startDeployment({ userId: 7, username: "tester", project: "demo", environment: "test", host: "server", rollbackRequested: true, workSessionId: "session-forged" }), /not usable/);
+    assert.equal(events.length, 0, "a forged session never reaches the event stream");
+
+    const started = store.startDeployment({
+      userId: 7, username: "tester", project: "demo", environment: "test", host: "server", branch: "main",
+      rollbackRequested: true, workSessionId: "session-good", intentStep: "deploy", objectiveRef: "obj-1", acceptanceCriterionRef: "ac-1",
+    });
+    assert.equal(started.workSessionId, "session-good");
+    store.finishDeployment(started.id, {
+      status: "failed",
+      rollback: { requested: true, attempted: true, status: "succeeded", commit: "a" },
+      error: "boom",
+    });
+    const sink = { append: (event: any) => events.push(event) };
+    const { drainRelayEventSpool } = await import("../src/knowledge/event-sink.ts");
+    const drain = async () => { try { drainRelayEventSpool(sink); } catch { /* lock contention with a stale timer is retried */ } };
+    const deadline = Date.now() + 4000;
+    while (!events.some((event) => event.type === "deployment.rolled_back") && Date.now() < deadline) {
+      await drain();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const startedEvent = events.find((event) => event.type === "deployment.started");
+    const failedEvent = events.find((event) => event.type === "deployment.failed");
+    const rollbackEvent = events.find((event) => event.type === "deployment.rolled_back");
+    assert.equal(startedEvent?.payload.workSessionId, "session-good");
+    assert.equal(failedEvent?.payload.workSessionId, "session-good");
+    assert.equal(failedEvent?.payload.acceptanceCriterionRef, "ac-1");
+    assert.equal(rollbackEvent?.payload.workSessionId, "session-good");
+    assert.equal(rollbackEvent?.payload.intentStep, "deploy");
+    assert.equal(store.getDeployment(started.id)?.workSessionId, "session-good");
+    store.configureDeploymentStore({});
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -115,7 +115,13 @@ function infer(relativePath: string, body: string, familyOverride?: string, type
     const key = match[1].toLowerCase();
     if (["ait_topic_id", "microsoft.help.id", "microsoft.help.f1", "title", "product"].includes(key)) stableIdentifiers[key] = match[2].trim();
   }
-  const withoutVersion = relativePath.replace(/\.[^.]+$/, "").replace(/(?:[-_])?v?\d+(?:\.\d+)+$/i, "");
+  // Version directories are common in vendor documentation batches (for
+  // example `21.1 Docs/` and `21.3 Docs/`). Remove those segments before
+  // deriving the family so equivalent topics across releases compare.
+  const withoutVersion = relativePath
+    .replace(/\.[^.]+$/, "")
+    .replace(/(?:^|[\\/])v?\d+(?:\.\d+)+(?:[-_ ]+docs?)?(?=[\\/]|$)/gi, "$1")
+    .replace(/(?:[-_])?v?\d+(?:\.\d+)+$/i, "");
   const stableFamily = stableIdentifiers["ait_topic_id"] ? `ait:${stableIdentifiers["ait_topic_id"]}` : stableIdentifiers["microsoft.help.id"] ? `help:${stableIdentifiers["microsoft.help.id"]}` : undefined;
   const familyId = familyOverride ?? stableFamily ?? `family-${withoutVersion.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
   const reasons = [`document type inferred from ${sourceFormat || "source"}`];

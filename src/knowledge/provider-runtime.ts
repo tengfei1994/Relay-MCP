@@ -25,6 +25,7 @@ export interface ProviderConfig {
   retryBaseMs?: number;
   circuitFailureThreshold?: number;
   circuitCooldownMs?: number;
+  concurrency?: number;
   quota?: { maxCalls: number; windowMs: number };
 }
 
@@ -34,6 +35,7 @@ export interface ProviderPolicyOptions {
   retryBaseMs?: number;
   circuitFailureThreshold?: number;
   circuitCooldownMs?: number;
+  concurrency?: number;
   quota?: { maxCalls: number; windowMs: number };
   now?: () => number;
   sleep?: (delayMs: number) => Promise<void>;
@@ -88,7 +90,11 @@ function bounded(value: number | undefined, fallback: number, min: number, max: 
   return Number.isFinite(value) ? Math.max(min, Math.min(max, Math.trunc(value!))) : fallback;
 }
 
-function normalizePolicy(config: ProviderConfig, options: ProviderPolicyOptions): Required<Pick<ProviderPolicyOptions, "timeoutMs" | "maxRetries" | "retryBaseMs" | "circuitFailureThreshold" | "circuitCooldownMs">> & Pick<ProviderPolicyOptions, "quota"> {
+function boundedOptional(value: number | undefined, min: number, max: number): number | undefined {
+  return Number.isFinite(value) ? Math.max(min, Math.min(max, Math.trunc(value!))) : undefined;
+}
+
+function normalizePolicy(config: ProviderConfig, options: ProviderPolicyOptions): Required<Pick<ProviderPolicyOptions, "timeoutMs" | "maxRetries" | "retryBaseMs" | "circuitFailureThreshold" | "circuitCooldownMs">> & Pick<ProviderPolicyOptions, "quota" | "concurrency"> {
   return {
     // Keep the lower bound at 1 ms so deterministic tests and local adapters
     // can exercise timeout/circuit behavior; production callers should still
@@ -98,6 +104,7 @@ function normalizePolicy(config: ProviderConfig, options: ProviderPolicyOptions)
     retryBaseMs: bounded(config.retryBaseMs ?? options.retryBaseMs, DEFAULT_POLICY.retryBaseMs, 10, 60_000),
     circuitFailureThreshold: bounded(config.circuitFailureThreshold ?? options.circuitFailureThreshold, DEFAULT_POLICY.circuitFailureThreshold, 1, 100),
     circuitCooldownMs: bounded(config.circuitCooldownMs ?? options.circuitCooldownMs, DEFAULT_POLICY.circuitCooldownMs, 100, 60 * 60_000),
+    concurrency: boundedOptional(config.concurrency ?? options.concurrency, 1, 256),
     quota: config.quota ?? options.quota,
   };
 }
@@ -105,6 +112,10 @@ function normalizePolicy(config: ProviderConfig, options: ProviderPolicyOptions)
 function retryable(error: unknown): boolean {
   if (error instanceof ProviderTimeoutError) return true;
   if (error instanceof ProviderCircuitOpenError || error instanceof ProviderQuotaExceededError) return false;
+  // Errors that carry an explicit retryable classification (for example the
+  // managed-provider HTTP layer) win over message-based heuristics.
+  const explicit = (error as { retryable?: unknown } | null | undefined)?.retryable;
+  if (typeof explicit === "boolean") return explicit;
   if (error instanceof DOMException && error.name === "AbortError") return false;
   if (error instanceof Error && /invalid|unauthori[sz]ed|forbidden|policy|schema/i.test(error.message)) return false;
   return true;
@@ -122,6 +133,8 @@ export class ProviderPolicy {
   private state: ProviderHealth;
   private quotaCalls: number[] = [];
   private halfOpenProbe = false;
+  private running = 0;
+  private readonly queue: Array<() => void> = [];
 
   constructor(config: ProviderConfig, options: ProviderPolicyOptions = {}) {
     assertProviderConfig(config);
@@ -161,37 +174,58 @@ export class ProviderPolicy {
     this.quotaCalls.push(this.now());
     this.state.totalCalls += 1;
 
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= this.options.maxRetries; attempt++) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(new ProviderTimeoutError(this.config.providerId, this.options.timeoutMs)), this.options.timeoutMs);
-      try {
-        const result = await Promise.race([
-          operation(controller.signal),
-          new Promise<never>((_, reject) => controller.signal.addEventListener("abort", () => reject(abortError(controller.signal)), { once: true })),
-        ]);
-        clearTimeout(timer);
-        this.state.consecutiveFailures = 0;
-        this.state.state = "closed";
-        this.state.nextRetryAt = undefined;
-        this.halfOpenProbe = false;
-        return result;
-      } catch (error) {
-        clearTimeout(timer);
-        lastError = error;
-        if (attempt >= this.options.maxRetries || !retryable(error)) break;
-        await this.sleep(Math.min(60_000, this.options.retryBaseMs * 2 ** attempt));
+    await this.acquire();
+    try {
+      let lastError: unknown;
+      for (let attempt = 0; attempt <= this.options.maxRetries; attempt++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(new ProviderTimeoutError(this.config.providerId, this.options.timeoutMs)), this.options.timeoutMs);
+        try {
+          const result = await Promise.race([
+            operation(controller.signal),
+            new Promise<never>((_, reject) => controller.signal.addEventListener("abort", () => reject(abortError(controller.signal)), { once: true })),
+          ]);
+          clearTimeout(timer);
+          this.state.consecutiveFailures = 0;
+          this.state.state = "closed";
+          this.state.nextRetryAt = undefined;
+          this.halfOpenProbe = false;
+          return result;
+        } catch (error) {
+          clearTimeout(timer);
+          lastError = error;
+          if (attempt >= this.options.maxRetries || !retryable(error)) break;
+          await this.sleep(Math.min(60_000, this.options.retryBaseMs * 2 ** attempt));
+        }
       }
+      this.state.totalFailures += 1;
+      this.state.consecutiveFailures += 1;
+      this.state.lastFailureAt = this.now();
+      this.halfOpenProbe = false;
+      if (this.state.consecutiveFailures >= this.options.circuitFailureThreshold) {
+        this.state.state = "open";
+        this.state.nextRetryAt = this.now() + this.options.circuitCooldownMs;
+      }
+      throw lastError instanceof Error ? lastError : new ProviderUnavailableError(`Provider '${this.config.providerId}' failed`);
+    } finally {
+      this.release();
     }
-    this.state.totalFailures += 1;
-    this.state.consecutiveFailures += 1;
-    this.state.lastFailureAt = this.now();
-    this.halfOpenProbe = false;
-    if (this.state.consecutiveFailures >= this.options.circuitFailureThreshold) {
-      this.state.state = "open";
-      this.state.nextRetryAt = this.now() + this.options.circuitCooldownMs;
+  }
+
+  private async acquire(): Promise<void> {
+    const limit = this.options.concurrency;
+    if (limit === undefined || this.running < limit) {
+      this.running += 1;
+      return;
     }
-    throw lastError instanceof Error ? lastError : new ProviderUnavailableError(`Provider '${this.config.providerId}' failed`);
+    await new Promise<void>((resolve) => this.queue.push(resolve));
+    this.running += 1;
+  }
+
+  private release(): void {
+    this.running -= 1;
+    const next = this.queue.shift();
+    next?.();
   }
 }
 
@@ -220,6 +254,7 @@ export class ProviderRegistry {
       retryBaseMs: config?.retryBaseMs,
       circuitFailureThreshold: config?.circuitFailureThreshold,
       circuitCooldownMs: config?.circuitCooldownMs,
+      concurrency: config?.concurrency,
       quota: config?.quota,
     };
     this.providers.set(kind, { config: normalized, provider, policy: new ProviderPolicy(normalized, this.policyOptions) });

@@ -5,7 +5,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { createKnowledgeStore } from "../src/knowledge/store.ts";
-import { captureKnowledgeCandidates, projectResolutionRetryDelay } from "../src/knowledge/capture-worker.ts";
+import { captureKnowledgeCandidates, correlateWorkSessionEvent, projectResolutionRetryDelay } from "../src/knowledge/capture-worker.ts";
+import { WorkSessionService, type IntentEnvelope } from "../src/knowledge/work-session.ts";
 
 function cleanup(root: string): void {
   rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 });
@@ -284,6 +285,64 @@ test("a routine success without actor identity is acknowledged as telemetry", as
       }), 0);
       assert.equal(existsSync(join(root, "knowledge-capture-dead-letter.jsonl")), false);
       assert.equal(store.claim("capture").length, 0);
+    } finally {
+      store.close();
+    }
+  } finally {
+    if (previous === undefined) delete process.env.RELAY_STATE_ROOT; else process.env.RELAY_STATE_ROOT = previous;
+    cleanup(root);
+  }
+});
+
+const sessionIntent: IntentEnvelope = {
+  actions: ["diagnose", "verify"], phase: "diagnosis", objective: "Trace the incident", constraints: ["read only"], acceptanceCriteria: ["Evidence linked"], projectId: "42", environment: "test", risk: "read_only", knowledgeMode: "retrieve_and_capture", actorId: 7,
+};
+
+test("capture worker correlates events to work sessions idempotently and rejects forged sessions", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "relay-capture-session-"));
+  const previous = process.env.RELAY_STATE_ROOT;
+  process.env.RELAY_STATE_ROOT = root;
+  try {
+    let store;
+    try {
+      store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/Could not locate the bindings file|better-sqlite3/i.test(message)) t.skip(`better-sqlite3 binding unavailable: ${message.split("\n")[0]}`);
+      else throw error;
+      return;
+    }
+    try {
+      store.grantAcl("42", 7);
+      store.grantAcl("42", 8);
+      const service = new WorkSessionService(store);
+      const session = service.open({ actorId: 7, idempotencyKey: "capture-1", intent: sessionIntent });
+      const foreign = service.open({ actorId: 8, idempotencyKey: "capture-2", intent: { ...sessionIntent, actorId: 8 } });
+
+      // Non-terminal started event and a terminal capture event, both scoped.
+      store.append({ id: "event-ws-started", type: "job.started", occurredAt: "2026-10-23T00:00:00.000Z", projectId: "42", jobId: "job-ws", actorId: 7, payload: { workSessionId: session.id, intentStep: "diagnose", environment: "test" } });
+      store.append({ id: "event-ws-finished", type: "job.finished", occurredAt: "2026-10-23T00:01:00.000Z", projectId: "42", jobId: "job-ws", actorId: 7, payload: { workSessionId: session.id, intentStep: "verify", environment: "test", status: "succeeded", summary: "done" } });
+      // Forged session id, another actor's session, and a project mismatch must never correlate.
+      store.append({ id: "event-ws-forged", type: "job.started", occurredAt: "2026-10-23T00:02:00.000Z", projectId: "42", jobId: "job-ws-forged", actorId: 7, payload: { workSessionId: "session-does-not-exist" } });
+      store.append({ id: "event-ws-foreign", type: "job.started", occurredAt: "2026-10-23T00:03:00.000Z", projectId: "42", jobId: "job-ws-foreign", actorId: 7, payload: { workSessionId: foreign.id } });
+      store.append({ id: "event-ws-project", type: "job.started", occurredAt: "2026-10-23T00:04:00.000Z", projectId: "43", jobId: "job-ws-project", actorId: 7, payload: { workSessionId: session.id } });
+
+      await captureKnowledgeCandidates(store, "capture", 20, () => 42);
+
+      const events = service.listEvents({ actorId: 7, sessionId: session.id });
+      assert.deepEqual(events.map((event) => event.event_id), ["event-ws-started", "event-ws-finished"], "only the caller's in-scope events correlate, in time order");
+      assert.equal(events[1].intent_step, "verify");
+      assert.equal(service.listEvents({ actorId: 8, sessionId: foreign.id }).length, 0);
+
+      // Replay safety: re-correlating the same events is a no-op.
+      assert.equal(correlateWorkSessionEvent(store, { id: "event-ws-started", type: "job.started", actorId: 7, projectId: "42", payload: { workSessionId: session.id } }), false, "re-correlation reports no new row");
+      correlateWorkSessionEvent(store, { id: "event-ws-finished", type: "job.finished", actorId: 7, projectId: "42", payload: { workSessionId: session.id } });
+      assert.equal(service.listEvents({ actorId: 7, sessionId: session.id }).length, 2, "replayed events never duplicate correlation rows");
+
+      // Session-less events keep flowing unchanged.
+      store.append({ id: "event-no-session", type: "job.started", occurredAt: "2026-10-23T00:05:00.000Z", projectId: "42", jobId: "job-plain", actorId: 7, payload: {} });
+      await captureKnowledgeCandidates(store, "capture", 20, () => 42);
+      assert.equal(service.listEvents({ actorId: 7, sessionId: session.id }).length, 2);
     } finally {
       store.close();
     }

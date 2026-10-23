@@ -367,6 +367,25 @@ Knowledge 审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [`d
 | Context | `knowledge_topic_get` | 读取逻辑 Product Knowledge 主题及其版本绑定。 |
 | Context | `knowledge_topic_diff` | 比较同一主题的两个产品版本。 |
 | Context | `knowledge_solution_upgrade_analysis` | 对 Old Baseline、Current Project、New Baseline 执行升级分析。 |
+| Context | `knowledge_work_session_open` | 创建带 IntentEnvelope 的 ACL 范围 Work Session。 |
+| Context | `knowledge_work_session_update` | 更新 Work Session 阶段和用户可见意图字段。 |
+| Context | `knowledge_work_session_close` | 关闭 Work Session 并保存验收结果与未知项。 |
+| Context | `knowledge_work_session_get` | 读取 Work Session 及其关联事件元数据。 |
+| Context | `knowledge_work_session_list` | 列出或汇总当前用户可读的 Work Session。 |
+| Context | `knowledge_provider_config_list` | 列出不包含密钥的 Relay Provider 配置。 |
+| Context | `knowledge_candidate_insight_compile` | 基于真实 Evidence 编译 Candidate Insight，失败时安全降级且不自动批准。 |
+| Context | `knowledge_candidate_insight_list` | 按 Project ACL 列出待人工审核或已处理的 Candidate Insight。 |
+| Context | `knowledge_candidate_insight_review` | 使用必填理由确认、编辑、拒绝或晋级 Candidate Insight。 |
+| Context | `knowledge_wiki_search` | 按 ACL、版本、主题、Solution 和模块搜索 Relay Wiki。 |
+| Context | `knowledge_wiki_get` | 读取 Wiki 页面、修订历史或两个修订的 unified diff。 |
+| Context | `knowledge_wiki_write` | 幂等创建 Wiki 页面或追加受审核编辑修订。 |
+| Context | `knowledge_wiki_review` | 以审计理由发布、弃用或回滚 Wiki 页面。 |
+| Context | `knowledge_migration_create` | 创建幂等的 Product Knowledge 迁移记录。 |
+| Context | `knowledge_migration_from_local` | 将本地 Product Knowledge 分阶段导入 WeKnora 并生成逐文件报告。 |
+| Context | `knowledge_migration_publish` | 发布已验证的 Product Knowledge 迁移。 |
+| Context | `knowledge_migration_rollback` | 以审计理由回滚 Product Knowledge 迁移。 |
+| Context | `knowledge_release_gates` | 执行安全、迁移、Provider、ACL 和发布可见性门禁。 |
+| Context | `knowledge_weknora_search` | 通过 Relay 内部 WeKnora 边界检索 Product Knowledge。 |
 | SampleManager | `samplemanager_capabilities` | 解析实例使用的版本化 Capability Pack，并列出已就绪、规划中和不可用的语义检查能力。 |
 | SampleManager | `samplemanager_instance_preflight` | 一次性只读检查实例目录、指定文件哈希/XML、FormsBin、服务、进程和近期错误摘要。 |
 | SampleManager | `samplemanager_diagnose` | 组合版本过滤的 Knowledge 检索与 Form/Task/Assembly 只读检查；不执行 deploy、restart、clear 或 SQL mutation。 |

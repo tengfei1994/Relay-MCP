@@ -4,7 +4,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../App";
 
 const knowledgeGroups = [
-  ["", [["Overview", "/knowledge"]]],
+  ["", [["Overview", "/knowledge"], ["Integrated control plane", "/knowledge/integrated"]]],
   ["Product Knowledge", [["Product Documents", "/knowledge/product-docs"], ["Topics", "/knowledge/product-docs/topics"], ["Import Runs", "/knowledge/product-docs/imports"], ["Versions & Diffs", "/knowledge/product-docs/versions"], ["Product Search", "/knowledge/product-docs/search"]]],
   ["Solution Knowledge", [["Artifacts & Source", "/knowledge/solution"]]],
   ["Project Knowledge", [["Evidence", "/knowledge/evidence"], ["Observations", "/knowledge/observations"], ["Candidate Inbox", "/knowledge/candidates"], ["Cases", "/knowledge/cases"], ["Patterns", "/knowledge/patterns"], ["Playbooks", "/knowledge/playbooks"]]],

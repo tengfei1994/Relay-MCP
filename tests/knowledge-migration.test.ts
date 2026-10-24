@@ -111,6 +111,21 @@ test("createFromLocal stages each local product document and re-running the idem
   assert.equal(weknoraCount.count, 2);
 }));
 
+test("a different migration key reuses the deduplicated external document id", async () => withStore(async (store) => {
+  seedProductDocument(store, "doc-1");
+  const { writer } = countingWriter();
+  const ingestor = new WeKnoraIngestor(store, writer, () => new Date("2026-10-23T00:00:00.000Z"));
+  const controller = makeController(store);
+
+  const first = await controller.createFromLocal({ actorId: 7, idempotencyKey: "mig-dedupe-a", parserVersion: "parser-1" }, ingestor);
+  const second = await controller.createFromLocal({ actorId: 7, idempotencyKey: "mig-dedupe-b", parserVersion: "parser-1" }, ingestor);
+  const firstDocument = (first.report.documents as Array<Record<string, unknown>>)[0];
+  const secondDocument = (second.report.documents as Array<Record<string, unknown>>)[0];
+
+  assert.equal(secondDocument.externalDocumentId, firstDocument.externalDocumentId);
+  assert.doesNotThrow(() => controller.validateAndPublish(second.id, 7));
+}));
+
 test("failed staging is reported, blocks publish, and explicit retry recovers without duplicating documents", async () => withStore(async (store) => {
   seedProductDocument(store, "doc-1");
   seedProductDocument(store, "doc-2");

@@ -95,6 +95,10 @@ const MAX_SNIPPET = 500;
 function normalizeBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.trim().replace(/\/+$/, "");
   if (!trimmed) throw new Error("WeKnora baseUrl is required");
+  let parsed: URL;
+  try { parsed = new URL(trimmed); } catch { throw new Error("WeKnora baseUrl must be a valid URL"); }
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error("WeKnora baseUrl must use HTTP or HTTPS");
+  if (parsed.username || parsed.password) throw new Error("WeKnora baseUrl must not contain credentials");
   return trimmed.replace(/\/api\/v1$/i, "");
 }
 

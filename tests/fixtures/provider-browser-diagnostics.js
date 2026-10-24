@@ -15,6 +15,7 @@ async (page) => {
   const embedding = page.getByRole('alert').filter({ hasText: 'Embedding failed (POST /embeddings)' });
   await embedding.waitFor();
   const message = await embedding.innerText();
+  if (!message.includes('upstream code: bad_response_status_code') || !message.includes('upstream reported HTTP 404')) throw new Error('Safe upstream JSON summary is missing');
   if (!message.includes('fixture-gateway-request-502') || !/Relay request ID: [a-f0-9-]{36}/.test(message)) throw new Error('Embedding error lacks correlation IDs');
   if (/e2e-provider-token|private gateway detail/.test(message)) throw new Error('Upstream secrets leaked into alert');
   if (await page.getByText('diagnostics-only · openai-compatible · fixture-embedding', { exact: true }).count()) throw new Error('Failed provider was saved');

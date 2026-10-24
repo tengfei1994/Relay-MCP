@@ -12,10 +12,24 @@ export type ManagedProviderErrorCode =
   | "dimension_mismatch"
   | "unavailable";
 
+const stages = { "/models": "models", "/embeddings": "embedding", "/rerank": "rerank", "/chat/completions": "inference" } as const;
+export interface ManagedProviderDiagnostics {
+  stage: (typeof stages)[keyof typeof stages];
+  method: "GET" | "POST";
+  /** Fixed adapter path only: never a user-supplied URL or query string. */
+  endpoint: keyof typeof stages;
+  upstreamStatus?: number;
+  upstreamRequestId?: string;
+  responseFormat?: "json" | "html" | "other";
+}
+
 export class ManagedProviderError extends Error {
   readonly retryable: boolean;
-  constructor(readonly code: ManagedProviderErrorCode, message: string, readonly status?: number) {
-    super(message);
+  constructor(readonly code: ManagedProviderErrorCode, message: string, readonly status?: number, readonly diagnostics?: ManagedProviderDiagnostics) {
+    const labels = { models: "Model discovery", embedding: "Embedding", rerank: "Rerank", inference: "Inference" };
+    super(diagnostics
+      ? `${labels[diagnostics.stage]} failed (${diagnostics.method} ${diagnostics.endpoint}): ${message}${diagnostics.upstreamRequestId ? `; upstream request ID: ${diagnostics.upstreamRequestId}` : ""}`
+      : message);
     this.name = "ManagedProviderError";
     this.retryable = code === "timeout" || code === "rate_limited" || (code === "unavailable" && (status === undefined || status >= 500));
   }
@@ -77,25 +91,43 @@ function tokenUsageOf(body: unknown): ProviderTokenUsage | undefined {
   return result.promptTokens === undefined && result.completionTokens === undefined && result.totalTokens === undefined ? undefined : result;
 }
 
-async function requestJson(options: ManagedHttpOptions, path: string, payload?: unknown): Promise<{ status: number; latencyMs: number; body: unknown }> {
+function safeUpstreamRequestId(response: Response, token?: string): string | undefined {
+  // Never forward response bodies or arbitrary headers. Reject even a syntactically
+  // valid ID if the upstream echoed this call's credential (raw or encoded).
+  const secrets = token ? [token, encodeURIComponent(token), Buffer.from(token).toString("base64"), Buffer.from(token).toString("base64url")] : [];
+  for (const header of ["x-request-id", "request-id", "cf-ray"]) {
+    const id = response.headers.get(header);
+    if (id && /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/.test(id) && !secrets.some((secret) => id.includes(secret))) return id;
+  }
+  return undefined;
+}
+
+async function requestJson(options: ManagedHttpOptions, path: keyof typeof stages, payload?: unknown): Promise<{ status: number; latencyMs: number; body: unknown; diagnostics: ManagedProviderDiagnostics }> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? (() => Date.now());
   const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json" };
   if (options.token) headers.authorization = `Bearer ${options.token}`;
+  const diagnostics: ManagedProviderDiagnostics = { stage: stages[path], method: payload === undefined ? "GET" : "POST", endpoint: path };
+  const fail = (code: ManagedProviderErrorCode, message: string) => new ManagedProviderError(code, message, diagnostics.upstreamStatus, diagnostics);
   const started = now();
   let response: Response;
   try {
-    response = await fetchImpl(endpoint(options.baseUrl, path), { method: payload === undefined ? "GET" : "POST", headers, body: payload === undefined ? undefined : JSON.stringify(payload), signal: options.signal, redirect: "error" });
+    response = await fetchImpl(endpoint(options.baseUrl, path), { method: diagnostics.method, headers, body: payload === undefined ? undefined : JSON.stringify(payload), signal: options.signal, redirect: "error" });
   } catch {
-    if (options.signal?.aborted) throw new ManagedProviderError("timeout", "Managed provider request timed out");
-    throw new ManagedProviderError("unavailable", "Managed provider request failed");
+    if (options.signal?.aborted) throw fail("timeout", "Managed provider request timed out");
+    throw fail("unavailable", "Managed provider request failed before an HTTP response was received");
   }
+  diagnostics.upstreamStatus = response.status;
+  const upstreamRequestId = safeUpstreamRequestId(response, options.token);
+  if (upstreamRequestId) diagnostics.upstreamRequestId = upstreamRequestId;
+  const contentType = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  diagnostics.responseFormat = contentType === "application/json" || contentType.endsWith("+json") ? "json" : contentType === "text/html" ? "html" : "other";
   const latencyMs = Math.max(0, Math.round(now() - started));
   if (!response.ok) {
-    await response.body?.cancel();
-    if (response.status === 401 || response.status === 403) throw new ManagedProviderError("unauthorized", "Managed provider authorization failed; check the token", response.status);
-    if (response.status === 429) throw new ManagedProviderError("rate_limited", "Managed provider rate limit exceeded", response.status);
-    throw new ManagedProviderError("unavailable", `Managed provider returned HTTP ${response.status}`, response.status);
+    await response.body?.cancel().catch(() => undefined);
+    if (response.status === 401 || response.status === 403) throw fail("unauthorized", "Managed provider authorization failed; check the token");
+    if (response.status === 429) throw fail("rate_limited", "Managed provider rate limit exceeded");
+    throw fail("unavailable", `Managed provider returned HTTP ${response.status}`);
   }
   let body: unknown;
   try {
@@ -115,21 +147,21 @@ async function requestJson(options: ManagedHttpOptions, path: string, payload?: 
       body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     } finally { await reader.cancel(); }
   } catch {
-    if (options.signal?.aborted) throw new ManagedProviderError("timeout", "Managed provider request timed out");
-    throw new ManagedProviderError("invalid_response", "Managed provider returned invalid JSON");
+    if (options.signal?.aborted) throw fail("timeout", "Managed provider request timed out");
+    throw fail("invalid_response", "Managed provider returned invalid JSON");
   }
-  return { status: response.status, latencyMs, body };
+  return { status: response.status, latencyMs, body, diagnostics };
 }
 
 export async function listOpenAiModels(options: ManagedHttpOptions): Promise<Array<{ id: string }>> {
-  const { body } = await requestJson(options, "/models");
+  const { body, diagnostics } = await requestJson(options, "/models");
   const data = asRecord(body)?.data;
-  if (!Array.isArray(data) || data.length > 10_000) throw new ManagedProviderError("invalid_response", "Provider returned an invalid model list");
+  if (!Array.isArray(data) || data.length > 10_000) throw new ManagedProviderError("invalid_response", "Provider returned an invalid model list", diagnostics.upstreamStatus, diagnostics);
   const ids = new Set<string>();
   for (const entry of data) {
     const id = asRecord(entry)?.id;
     if (typeof id !== "string" || !id.trim() || id.length > 200 || /[\x00-\x1f\x7f]/.test(id) || (options.token && id.includes(options.token))) {
-      throw new ManagedProviderError("invalid_response", "Provider returned an invalid model ID");
+      throw new ManagedProviderError("invalid_response", "Provider returned an invalid model ID", diagnostics.upstreamStatus, diagnostics);
     }
     ids.add(id);
   }
@@ -137,20 +169,20 @@ export async function listOpenAiModels(options: ManagedHttpOptions): Promise<Arr
 }
 
 export async function callOpenAiEmbedding(options: ManagedHttpOptions & { texts: string[]; expectedDimensions?: number }): Promise<EmbeddingCallResult> {
-  const { status, latencyMs, body } = await requestJson(options, "/embeddings", { model: options.modelId, input: options.texts });
+  const { status, latencyMs, body, diagnostics } = await requestJson(options, "/embeddings", { model: options.modelId, input: options.texts });
   const data = asRecord(body)?.data;
-  if (!Array.isArray(data) || data.length !== options.texts.length) throw new ManagedProviderError("invalid_response", "Embedding response does not match the request shape");
+  if (!Array.isArray(data) || data.length !== options.texts.length) throw new ManagedProviderError("invalid_response", "Embedding response does not match the request shape", status, diagnostics);
   const vectors = data.map((entry) => {
     const embedding = asRecord(entry)?.embedding;
     if (!Array.isArray(embedding) || embedding.length === 0 || embedding.some((value) => typeof value !== "number" || !Number.isFinite(value))) {
-      throw new ManagedProviderError("invalid_vector", "Embedding response contains an invalid vector");
+      throw new ManagedProviderError("invalid_vector", "Embedding response contains an invalid vector", status, diagnostics);
     }
     return embedding as number[];
   });
   if (options.expectedDimensions !== undefined) {
     for (const vector of vectors) {
       if (vector.length !== options.expectedDimensions) {
-        throw new ManagedProviderError("dimension_mismatch", `Embedding dimension ${vector.length} does not match configured ${options.expectedDimensions}`);
+        throw new ManagedProviderError("dimension_mismatch", `Embedding dimension ${vector.length} does not match configured ${options.expectedDimensions}`, status, diagnostics);
       }
     }
   }
@@ -158,15 +190,15 @@ export async function callOpenAiEmbedding(options: ManagedHttpOptions & { texts:
 }
 
 export async function callOpenAiRerank(options: ManagedHttpOptions & { query: string; documents: string[] }): Promise<RerankCallResult> {
-  const { status, latencyMs, body } = await requestJson(options, "/rerank", { model: options.modelId, query: options.query, documents: options.documents });
+  const { status, latencyMs, body, diagnostics } = await requestJson(options, "/rerank", { model: options.modelId, query: options.query, documents: options.documents });
   const results = asRecord(body)?.results;
-  if (!Array.isArray(results)) throw new ManagedProviderError("invalid_response", "Rerank response has no results array");
+  if (!Array.isArray(results)) throw new ManagedProviderError("invalid_response", "Rerank response has no results array", status, diagnostics);
   const scores = results.map((entry) => {
     const record = asRecord(entry);
     const index = record?.index;
     const score = record?.relevance_score ?? record?.score;
     if (!Number.isInteger(index) || typeof score !== "number" || !Number.isFinite(score) || (index as number) < 0 || (index as number) >= options.documents.length) {
-      throw new ManagedProviderError("invalid_response", "Rerank response contains an invalid result entry");
+      throw new ManagedProviderError("invalid_response", "Rerank response contains an invalid result entry", status, diagnostics);
     }
     return { index: index as number, score };
   });
@@ -174,13 +206,13 @@ export async function callOpenAiRerank(options: ManagedHttpOptions & { query: st
 }
 
 export async function callOpenAiChat(options: ManagedHttpOptions & { prompt: string; maxTokens?: number }): Promise<ChatCallResult> {
-  const { status, latencyMs, body } = await requestJson(options, "/chat/completions", {
+  const { status, latencyMs, body, diagnostics } = await requestJson(options, "/chat/completions", {
     model: options.modelId,
     messages: [{ role: "user", content: options.prompt }],
     max_tokens: Math.max(1, Math.min(options.maxTokens ?? 16, 256)),
   });
   const choices = asRecord(body)?.choices;
   const content = Array.isArray(choices) ? asRecord(asRecord(choices[0])?.message)?.content : undefined;
-  if (typeof content !== "string") throw new ManagedProviderError("invalid_response", "Chat response has no message content");
+  if (typeof content !== "string") throw new ManagedProviderError("invalid_response", "Chat response has no message content", status, diagnostics);
   return { status, latencyMs, text: content, tokenUsage: tokenUsageOf(body) };
 }

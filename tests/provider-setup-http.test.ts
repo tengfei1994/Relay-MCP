@@ -21,6 +21,9 @@ test("provider setup discovers models, tests before saving and persists only enc
     if (mode === "unauthorized") return new Response(token, { status: 401 });
     if (mode === "malformed") return new Response("not json " + token);
     if (mode === "redirect") return new Response(null, { status: 302, headers: { location: "https://other.test" } });
+    if (mode === "models-502" || (mode === "embedding-502" && String(url).endsWith("/embeddings"))) {
+      return new Response("private upstream error " + token, { status: 502, headers: { "x-request-id": "gateway-request-123", "content-type": "text/html" } });
+    }
     if (String(url).endsWith("/models")) return Response.json({ data: [{ id: "embed-model", secret: token }, { id: "chat-model" }, { id: "embed-model" }] });
     const body = JSON.parse(String(init?.body));
     if (String(url).endsWith("/embeddings")) {
@@ -35,7 +38,8 @@ test("provider setup discovers models, tests before saving and persists only enc
   const { getKnowledgeStore } = await import("../src/server/knowledge-context.js");
   runMigrations();
   const store = getKnowledgeStore();
-  const app = Fastify();
+  let logs = "";
+  const app = Fastify({ logger: { stream: { write: (line: string) => { logs += line; } } } });
   app.decorate("authenticate", async (req: any) => { req.user = { id: 7, isAdmin: req.headers["x-reader"] !== "true" }; });
   await app.register(knowledgeRoutes);
   const base = "/api/knowledge/providers/managed";
@@ -93,6 +97,32 @@ test("provider setup discovers models, tests before saving and persists only enc
       const freshRuntime = (await import("../src/knowledge/provider-setup.js")).createManagedProviderRegistry(store);
       assert.equal((await freshRuntime.probe("embed", 7)).ok, true);
       assert.equal(calls.at(-1)?.auth, "Bearer " + token);
+    });
+    await t.test("setup errors identify discovery versus embedding failures and correlate safe logs without saving", async () => {
+      const before = JSON.stringify(store.db.prepare("SELECT * FROM knowledge_provider_configs").all());
+      for (const [failure, stage, method, endpoint, count] of [
+        ["models-502", "models", "GET", "/models", 1],
+        ["embedding-502", "embedding", "POST", "/embeddings", 2],
+      ] as const) {
+        mode = failure; calls = []; logs = "";
+        const response = await app.inject({ method: "POST", url: base + "/embed/configure", payload: setup });
+        assert.equal(response.statusCode, 502);
+        const body = response.json();
+        assert.deepEqual(body.diagnostics, { stage, method, endpoint, upstreamStatus: 502, upstreamRequestId: "gateway-request-123", responseFormat: "html" });
+        assert.match(body.error, new RegExp(method + " " + endpoint));
+        assert.match(body.error, /gateway-request-123/);
+        assert.match(body.requestId, /^[a-f0-9-]{36}$/);
+        assert.ok(body.error.includes(body.requestId), "the existing frontend must display the Relay diagnostic ID");
+        assert.equal(response.headers["cache-control"], "no-store");
+        const diagnosticLog = logs.split("\n").filter(Boolean).map((line) => JSON.parse(line)).find((entry) => entry.event === "provider_setup_failed");
+        assert.equal(diagnosticLog.requestId, body.requestId);
+        assert.deepEqual(diagnosticLog.diagnostics, body.diagnostics);
+        assert.doesNotMatch(response.body + logs, /fixture-private-token-one|private upstream error/);
+        assert.equal(calls.length, count);
+        assert.equal(JSON.stringify(store.db.prepare("SELECT * FROM knowledge_provider_configs").all()), before);
+        assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_provider_secrets").get().n, 1);
+      }
+      mode = "ok";
     });
     await t.test("failed validation leaves the working provider and credential intact", async () => {
       mode = "unauthorized";

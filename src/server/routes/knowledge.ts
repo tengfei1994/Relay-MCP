@@ -1292,7 +1292,13 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   const providerConnectionSchema = z.object({ baseUrl: z.string().trim().min(1).max(2048), token: providerTokenSchema });
   const providerSetupError = (reply: FastifyReply, error: unknown) => {
     reply.header("Cache-Control", "no-store");
-    if (error instanceof ManagedProviderError) return reply.status(502).send({ error: error.message, code: error.code });
+    if (error instanceof ManagedProviderError) {
+      // Generate our own correlation ID; never trust a caller-supplied ID or log
+      // the request/error object, which could contain provider credentials.
+      const requestId = randomUUID();
+      reply.request.log.warn({ event: "provider_setup_failed", requestId, code: error.code, diagnostics: error.diagnostics }, "Managed provider setup failed");
+      return reply.status(502).send({ error: `${error.message}; Relay request ID: ${requestId}`, code: error.code, requestId, diagnostics: error.diagnostics });
+    }
     return reply.status(400).send({ error: "Unable to configure provider. Check the Base URL, token, selected model and server credential key." });
   };
   app.post("/api/knowledge/providers/managed/models", { onRequest: [app.authenticate], bodyLimit: 16384 }, async (request, reply) => {

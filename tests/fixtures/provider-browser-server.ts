@@ -17,7 +17,11 @@ const gateway = createServer(async (req, res) => {
   }
   let payload = "";
   for await (const chunk of req) payload += chunk;
-  if (req.url === "/v1/models" && req.method === "GET") {
+  if (req.url === "/models-unavailable/models" || req.url === "/embedding-unavailable/embeddings") {
+    res.setHeader("x-request-id", "fixture-gateway-request-502");
+    res.writeHead(502); res.end(JSON.stringify({ error: "private gateway detail" })); return;
+  }
+  if (["/v1/models", "/embedding-unavailable/models"].includes(req.url ?? "") && req.method === "GET") {
     res.end(JSON.stringify({ data: [{ id: "fixture-embedding" }, { id: "fixture-chat" }, { id: "fixture-rerank" }] })); return;
   }
   const body = JSON.parse(payload || "{}");

@@ -110,7 +110,7 @@ export const api = {
   productDocumentImports: (limit = 50) => request<{ runs: any[] }>("GET", `/knowledge/product-documents/imports?limit=${limit}`),
   productDocumentImportDetail: (id: string) => request<any>("GET", `/knowledge/product-documents/imports/${encodeURIComponent(id)}`),
   productDocumentRetry: (id: string, idempotencyKey?: string) => request<any>("POST", `/knowledge/product-documents/imports/${encodeURIComponent(id)}/retry`, {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  productDocumentVersions: () => request<{ versions: any[] }>("GET", "/knowledge/product-documents/versions"),
+  productDocumentVersions: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ versions: any[]; page?: any }>("GET", `/knowledge/product-documents/versions?${query.toString()}`); },
   productDocumentDiffs: (left: string, right: string) => request<any>("GET", `/knowledge/product-documents/diffs?left=${encodeURIComponent(left)}&right=${encodeURIComponent(right)}`),
   productDocumentSearch: (params: Record<string, string | number | boolean | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ documents: any[]; page?: any }>("GET", `/knowledge/product-documents/search?${query.toString()}`); },
   productDocumentDiff: (id: string, against: string) => request<any>("GET", `/knowledge/product-docs/${encodeURIComponent(id)}/diff?against=${encodeURIComponent(against)}`),

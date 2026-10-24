@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { BookOpen, CheckCircle2, ChevronLeft, ChevronRight, FileText, GitBranch, KeyRound, RefreshCw, ServerCog, ShieldAlert, Workflow } from "lucide-react";
 import { api } from "../api/client";
 import { useAuth } from "../App";
 import { Badge, cardClass, formatDate, inputClass, PageShell, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
+import { ProviderSetupForm, type ProviderSetupDefaults } from "../components/ProviderSetupForm";
 import { buildWeknoraSearchBody } from "../knowledge/integrated-search";
 
 const btn = "inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-xs text-white hover:bg-indigo-500 disabled:opacity-50";
@@ -82,16 +84,14 @@ function SessionsPane() {
   </section>;
 }
 
-const PROVIDER_KINDS = ["embedding", "rerank", "wiki_llm", "candidate_llm"] as const;
-
 function ProvidersPane({ isAdmin }: { isAdmin: boolean }) {
-  const emptyForm = { id: "", kind: "embedding" as string, provider: "", baseUrl: "", modelId: "", dimensions: "", secretRef: "" };
   const [providers, setProviders] = useState<any[]>();
   const [jobs, setJobs] = useState<any[]>([]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [form, setForm] = useState(emptyForm);
-  const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState<ProviderSetupDefaults>();
+  const [formVersion, setFormVersion] = useState(0);
+  const [rotating, setRotating] = useState(false);
   const [probe, setProbe] = useState<Record<string, any>>({});
   const [rotateId, setRotateId] = useState("");
   const [rotateRef, setRotateRef] = useState("");
@@ -102,32 +102,21 @@ function ProvidersPane({ isAdmin }: { isAdmin: boolean }) {
       .catch((err) => setError(errText(err, "Unable to load managed providers")));
   };
   useEffect(() => { load(); }, []);
-  const run = async (task: () => Promise<any>, ok: string) => { setError(""); setNotice(""); try { await task(); setNotice(ok); load(); } catch (err) { setError(errText(err, "Provider operation failed")); } };
-  const save = () => run(async () => {
-    setSaving(true);
-    try {
-      const body: Record<string, unknown> = { kind: form.kind, provider: form.provider.trim(), modelId: form.modelId.trim() };
-      if (form.baseUrl.trim()) body.baseUrl = form.baseUrl.trim();
-      if (form.dimensions.trim()) body.dimensions = Number(form.dimensions);
-      if (form.secretRef.trim()) body.secretRef = form.secretRef.trim();
-      await api.knowledgeManagedProviderUpsert(form.id.trim(), body);
-      setForm(emptyForm);
-    } finally { setSaving(false); }
-  }, "Provider configuration saved.");
+  const run = async (task: () => Promise<any>, ok: string) => { setError(""); setNotice(""); try { await task(); setProbe({}); setNotice(ok); load(); } catch (err) { setError(errText(err, "Provider operation failed")); } };
   const test = async (id: string) => { setError(""); try { const { report } = await api.knowledgeManagedProviderTest(id); setProbe((current) => ({ ...current, [id]: report })); load(); } catch (err) { setError(errText(err, "Provider probe failed")); } };
   if (error && !providers) return <StatePanel state="error" message={error} onRetry={load} />;
   if (!providers) return <StatePanel state="loading" message="Loading managed providers…" />;
   return <div className="space-y-4">
     <section className={cardClass}>
       <div className="flex items-center gap-2"><ServerCog size={16} className="text-indigo-300" /><h3 className="font-medium text-gray-100">Managed providers</h3></div>
-      <p className="mt-1 text-xs text-gray-500">Credentials are secret references only — never paste a raw token.</p>
+      <p className="mt-1 text-xs text-gray-500">Tokens are encrypted on the server. Use the connection form below to select a model.</p>
       <div className="mt-3 divide-y divide-gray-800">
         {providers.length === 0 && <p className="py-3 text-sm text-gray-500">No remote providers configured.</p>}
         {providers.map((provider) => <div key={provider.id} className="py-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-sm text-gray-200">{provider.id} · {provider.provider} · {provider.modelId}</p>
-              <p className="text-xs text-gray-500">{provider.kind} · index v{provider.indexVersion} · {provider.tokenConfigured ? "secretRef configured" : "no secret reference"}{provider.dimensions ? ` · ${provider.dimensions}d` : ""}{provider.lastTestAt ? ` · tested ${formatDate(provider.lastTestAt)}` : ""}{provider.lastErrorCode ? ` · last error ${provider.lastErrorCode}` : ""}</p>
+              <p className="text-xs text-gray-500">{provider.kind} · index v{provider.indexVersion} · {provider.tokenConfigured ? "token configured" : "no token configured"}{provider.dimensions ? ` · ${provider.dimensions}d` : ""}{provider.lastTestAt ? ` · tested ${formatDate(provider.lastTestAt)}` : ""}{provider.lastErrorCode ? ` · last error ${provider.lastErrorCode}` : ""}</p>
             </div>
             <div className="flex items-center gap-2">
               {provider.reindexRequired && <Badge tone="amber">reindex pending</Badge>}
@@ -136,30 +125,20 @@ function ProvidersPane({ isAdmin }: { isAdmin: boolean }) {
           </div>
           {isAdmin && <div className="mt-2 flex flex-wrap items-center gap-2">
             <button className={btnGhost} onClick={() => test(provider.id)}>Test</button>
-            <button className={btnGhost} onClick={() => { setRotateId(rotateId === provider.id ? "" : provider.id); setRotateRef(""); }}><KeyRound size={12} /> Rotate secret</button>
+            <button className={btnGhost} onClick={() => { setEditing({ id: provider.id, kind: provider.kind, provider: provider.provider, baseUrl: provider.baseUrl, modelId: "" }); setFormVersion((n) => n + 1); }}>Edit configuration</button>
+            <button className={btnGhost} onClick={() => { setRotateId(rotateId === provider.id ? "" : provider.id); setRotateRef(""); }}><KeyRound size={12} /> Replace token</button>
+            <button className={btnDanger} disabled={!provider.tokenConfigured || rotating} onClick={() => { if (window.confirm("Clear the token and disable this provider?")) run(() => api.knowledgeProviderToken(provider.id, null), "Token cleared; provider disabled."); }}>Clear token</button>
             <button className={btnDanger} disabled={provider.status === "disabled"} onClick={() => { if (window.confirm(`Disable provider '${provider.id}'? This is audited.`)) run(() => api.knowledgeManagedProviderDisable(provider.id), "Provider disabled."); }}>Disable</button>
           </div>}
           {rotateId === provider.id && <div className="mt-2 flex flex-wrap items-center gap-2">
-            <input className={`${inputClass} w-72`} placeholder="New secret reference (e.g. vault://knowledge/provider-key)" value={rotateRef} onChange={(event) => setRotateRef(event.target.value)} />
-            <button className={btn} disabled={!rotateRef.trim()} onClick={() => run(async () => { await api.knowledgeManagedProviderRotate(provider.id, rotateRef.trim()); setRotateId(""); }, "Secret reference rotated.")}>Apply rotation</button>
+            <label className="space-y-1 text-sm text-gray-300"><span className="block">Replacement token</span><input type="password" autoComplete="new-password" disabled={rotating} className={`${inputClass} w-72`} value={rotateRef} onChange={(event) => setRotateRef(event.target.value)} /></label>
+            <button className={btn} disabled={!rotateRef.trim() || rotating} onClick={() => run(async () => { setRotating(true); try { await api.knowledgeProviderToken(provider.id, rotateRef.trim()); setRotateId(""); setRotateRef(""); } finally { setRotating(false); } }, "Token tested and replaced.")}>{rotating ? "Testing…" : "Test and replace"}</button>
           </div>}
           {probe[provider.id] && <p className={`mt-2 text-xs ${probe[provider.id].ok ? "text-emerald-300" : "text-rose-300"}`}>Probe {probe[provider.id].ok ? `ok · ${probe[provider.id].latencyMs ?? "?"}ms · HTTP ${probe[provider.id].httpStatus ?? "?"}` : `failed · ${probe[provider.id].errorCode ?? "unknown"}`}</p>}
         </div>)}
       </div>
     </section>
-    {isAdmin && <section className={cardClass}>
-      <h3 className="font-medium text-gray-100">Configure provider (admin)</h3>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-        <input className={inputClass} placeholder="Provider id" value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} />
-        <select className={inputClass} value={form.kind} onChange={(event) => setForm({ ...form, kind: event.target.value })}>{PROVIDER_KINDS.map((kind) => <option key={kind} value={kind}>{kind}</option>)}</select>
-        <input className={inputClass} placeholder="Provider name (e.g. openai)" value={form.provider} onChange={(event) => setForm({ ...form, provider: event.target.value })} />
-        <input className={inputClass} placeholder="Model id" value={form.modelId} onChange={(event) => setForm({ ...form, modelId: event.target.value })} />
-        <input className={inputClass} placeholder="Base URL (optional)" value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} />
-        <input className={inputClass} placeholder="Dimensions (embedding)" value={form.dimensions} onChange={(event) => setForm({ ...form, dimensions: event.target.value })} />
-        <input className={`${inputClass} sm:col-span-2`} placeholder="secretRef only — raw tokens are rejected" value={form.secretRef} onChange={(event) => setForm({ ...form, secretRef: event.target.value })} />
-      </div>
-      <button disabled={saving || !form.id.trim() || !form.provider.trim() || !form.modelId.trim()} onClick={save} className={`${btn} mt-3`}>{saving ? <RefreshCw size={12} className="animate-spin" /> : null} Save configuration</button>
-    </section>}
+    {isAdmin && <ProviderSetupForm key={formVersion} initial={editing} onCancel={() => { setEditing(undefined); setFormVersion((n) => n + 1); }} onSaved={(dimensions) => { setEditing(undefined); setFormVersion((n) => n + 1); setNotice("Provider tested and saved." + (dimensions ? " Detected " + dimensions + " dimensions." : "")); load(); }} />}
     <section className={cardClass}>
       <h3 className="font-medium text-gray-100">Pending reindex</h3>
       <div className="mt-3 divide-y divide-gray-800">
@@ -630,8 +609,10 @@ const TABS = [
 export default function KnowledgeIntegrated() {
   const { user } = useAuth();
   const isAdmin = Boolean(user?.isAdmin);
-  const [tab, setTab] = useState<string>("sessions");
-  return <PageShell title="Integrated Knowledge" description="Relay owns sessions, ACL, review and publication while WeKnora supplies Product Knowledge retrieval. Secrets are secretRef references only." breadcrumbs={[{ label: "Knowledge", to: "/knowledge" }, { label: "Integrated" }]}>
+  const [params, setParams] = useSearchParams();
+  const tab = params.get("tab") ?? "sessions";
+  const setTab = (value: string) => setParams({ tab: value });
+  return <PageShell title="Integrated Knowledge" description="Relay owns sessions, ACL, review and publication while WeKnora supplies Product Knowledge retrieval. Provider credentials are encrypted and managed on the server." breadcrumbs={[{ label: "Knowledge", to: "/knowledge" }, { label: "Integrated" }]}>
     <div className="mb-5 flex flex-wrap gap-2">
       {TABS.map(([key, label, Icon]) => <button key={key} onClick={() => setTab(key)} className={`inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-xs ${tab === key ? "bg-indigo-600 text-white" : "border border-gray-700 text-gray-300 hover:bg-gray-800"}`}><Icon size={13} /> {label}</button>)}
     </div>

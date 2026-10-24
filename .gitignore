@@ -8,3 +8,5 @@ data/
 logs/
 *.log
 .DS_Store
+.playwright-cli/
+output/playwright/

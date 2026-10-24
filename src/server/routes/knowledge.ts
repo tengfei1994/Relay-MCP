@@ -23,7 +23,8 @@ import { relayEventSpoolHealth } from "../../knowledge/event-sink.js";
 import { evidenceDisplaySummary, evidenceDisplayTitle, lifecycleHumanStatus } from "../../knowledge/display-projection.js";
 import { WorkSessionService, validateIntentEnvelope } from "../../knowledge/work-session.js";
 import { ProviderRegistry, type ManagedProviderHandle } from "../../knowledge/provider-registry.js";
-import { EnvironmentSecretResolver } from "../../knowledge/provider-secret.js";
+import { createManagedProviderRegistry, ProviderSetupService } from "../../knowledge/provider-setup.js";
+import { ManagedProviderError } from "../../knowledge/provider-probe.js";
 import { MigrationController } from "../../knowledge/migration-control.js";
 import { runReleaseGates } from "../../knowledge/release-gates.js";
 import { CandidateInsightCompiler, type ManagedCandidateInsightProvider } from "../../knowledge/candidate-insight.js";
@@ -247,7 +248,7 @@ function sendError(reply: FastifyReply, error: unknown, status = 400) {
 }
 
 function managedProviderRegistry(store = getKnowledgeStore()): ProviderRegistry {
-  return new ProviderRegistry(store, undefined, { secrets: new EnvironmentSecretResolver() });
+  return createManagedProviderRegistry(store);
 }
 
 function candidateProviderAdapter(handle: ManagedProviderHandle): ManagedCandidateInsightProvider {
@@ -1287,6 +1288,41 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   app.get("/api/knowledge/sessions/:id/events", { onRequest: [app.authenticate] }, async (request, reply) => { try { const events = new WorkSessionService(getKnowledgeStore()).listEvents({ actorId: request.user.id, sessionId: String((request.params as { id: string }).id) }); return reply.send({ events }); } catch (error) { return sendError(reply, error, 404); } });
 
   app.get("/api/knowledge/providers/managed", { onRequest: [app.authenticate] }, async (_request, reply) => reply.send({ providers: managedProviderRegistry().list() }));
+  const providerTokenSchema = z.string().trim().min(1).max(8192).refine((value) => !/[\r\n\0]/.test(value));
+  const providerConnectionSchema = z.object({ baseUrl: z.string().trim().min(1).max(2048), token: providerTokenSchema });
+  const providerSetupError = (reply: FastifyReply, error: unknown) => {
+    reply.header("Cache-Control", "no-store");
+    if (error instanceof ManagedProviderError) return reply.status(502).send({ error: error.message, code: error.code });
+    return reply.status(400).send({ error: "Unable to configure provider. Check the Base URL, token, selected model and server credential key." });
+  };
+  app.post("/api/knowledge/providers/managed/models", { onRequest: [app.authenticate], bodyLimit: 16384 }, async (request, reply) => {
+    if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
+    const body = providerConnectionSchema.safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: "Base URL and token are required" });
+    reply.header("Cache-Control", "no-store");
+    try { return reply.send(await new ProviderSetupService(getKnowledgeStore()).models(body.data)); }
+    catch (error) { return providerSetupError(reply, error); }
+  });
+  app.post("/api/knowledge/providers/managed/:id/configure", { onRequest: [app.authenticate], bodyLimit: 16384 }, async (request, reply) => {
+    if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
+    const body = providerConnectionSchema.extend({
+      kind: z.enum(["embedding", "rerank", "wiki_llm", "candidate_llm"]),
+      provider: z.string().trim().min(1).max(100), modelId: z.string().min(1).max(200),
+    }).safeParse(request.body);
+    const id = z.string().trim().min(1).max(200).safeParse((request.params as { id: string }).id);
+    if (!body.success || !id.success) return reply.status(400).send({ error: "Invalid provider configuration" });
+    reply.header("Cache-Control", "no-store");
+    try { return reply.send(await new ProviderSetupService(getKnowledgeStore()).configure({ ...body.data, id: id.data, actorId: request.user.id })); }
+    catch (error) { return providerSetupError(reply, error); }
+  });
+  app.post("/api/knowledge/providers/managed/:id/token", { onRequest: [app.authenticate], bodyLimit: 16384 }, async (request, reply) => {
+    if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
+    const body = z.object({ token: providerTokenSchema.nullable() }).safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: "Enter a replacement token, or null to clear it" });
+    reply.header("Cache-Control", "no-store");
+    try { return reply.send(await new ProviderSetupService(getKnowledgeStore()).updateToken(String((request.params as { id: string }).id), body.data.token, request.user.id)); }
+    catch (error) { return providerSetupError(reply, error); }
+  });
   app.get("/api/knowledge/providers/managed/reindex", { onRequest: [app.authenticate] }, async (_request, reply) => reply.send({ jobs: managedProviderRegistry().pendingReindex() }));
   app.put("/api/knowledge/providers/managed/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
     if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });

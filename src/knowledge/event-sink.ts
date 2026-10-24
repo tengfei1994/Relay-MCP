@@ -85,7 +85,10 @@ function drainErrorClass(message: string | undefined): string | undefined {
 export function relayEventSpoolHealth(): RelayEventSpoolHealth {
   const path = spoolPath();
   const draining = `${path}.draining`;
-  const pendingPaths = [path, draining].filter(existsSync);
+  const pendingPaths = [path, draining].filter((pendingPath) => {
+    try { return statSync(pendingPath).size > 0; }
+    catch { return false; }
+  });
   const oldestPendingAgeMs = pendingPaths.reduce((oldest, pendingPath) => {
     try { return Math.max(oldest, Date.now() - statSync(pendingPath).mtimeMs); }
     catch { return oldest; }

@@ -33,7 +33,7 @@ export interface SampleManagerInstanceDescriptor {
 
 export interface SampleManagerCapabilityDescriptor {
   id: string;
-  objectType: "instance" | "plate" | "workflow" | "lab_method" | "entity";
+  objectType: "instance" | "plate" | "workflow" | "lab_method" | "enh" | "vgl" | "entity";
   status: SampleManagerCapabilityStatus;
   readOnly: boolean;
   description: string;
@@ -115,6 +115,22 @@ const COMMON_CAPABILITIES: SampleManagerCapabilityDescriptor[] = [
     readOnly: true,
     description: "Lint Lab Method versions, Steps, Parameters, Variables, formulas, placeholders, and instruction evidence.",
     plannedTool: "samplemanager_lab_method_lint",
+  },
+  {
+    id: "enh.inspect",
+    objectType: "enh",
+    status: "ready",
+    readOnly: true,
+    description: "Discover, inspect, and validate bounded ENH dashboard, criteria, form, grid, action, and navigation configuration graphs.",
+    plannedTool: "samplemanager_enh_inspect",
+  },
+  {
+    id: "vgl.inspect",
+    objectType: "vgl",
+    status: "ready",
+    readOnly: true,
+    description: "Inspect bounded VGL entrypoint parameters, value/reference passing, constants, JOINs, and static CALL_ROUTINE edges with source locations.",
+    plannedTool: "samplemanager_vgl_inspect_entrypoint",
   },
 ];
 
@@ -200,6 +216,25 @@ export const SAMPLEMANAGER_ENTITY_CATALOG: SampleManagerEntityCatalogEntry[] = [
     ],
   },
   {
+    id: "vgl",
+    label: "VGL",
+    description: "VGL report, syntax, routine, library, parameter, constant, and static call-chain inspection.",
+    inspectors: [
+      { id: "entrypoint", label: "Entrypoint", status: "ready", readOnly: true, description: "Inspect one VGL routine declaration, parameter passing contract, constants, JOINs, and bounded in-file call graph.", plannedTool: "samplemanager_vgl_inspect_entrypoint", relatedEntities: ["workflow", "form_task"], evidenceKinds: ["artifact", "runtime"] },
+    ],
+  },
+  {
+    id: "enh",
+    label: "ENH Dashboards",
+    description: "ENH folders, criteria, templates, form/grid configuration, grouping, procedures, actions, and navigation.",
+    inspectors: [
+      { id: "dashboard", label: "Dashboard Graph", status: "ready", readOnly: true, description: "Discover one bounded ENH dashboard configuration graph without assuming a single solution-kit table layout.", plannedTool: "samplemanager_enh_inspect", relatedEntities: ["form_task", "data_model"], evidenceKinds: ["sql", "schema", "artifact"] },
+      { id: "criteria", label: "Criteria Evidence", status: "ready", readOnly: true, description: "Inspect stored criteria, variables, ordering, and related configuration; runtime user-variable resolution remains explicit evidence.", plannedTool: "samplemanager_enh_inspect", relatedEntities: ["data_model"], evidenceKinds: ["sql", "schema", "artifact"] },
+      { id: "validation", label: "Configuration Validation", status: "ready", readOnly: true, description: "Validate entity keys, field references, sequence values, ENH references, and XML/JSON storage formats before mutation.", plannedTool: "samplemanager_enh_validate_configuration", relatedEntities: ["deployment", "data_model"], evidenceKinds: ["sql", "schema", "artifact"] },
+      { id: "profile", label: "Runtime Profile", status: "planned", readOnly: true, description: "Correlate SQL, entity materialization, grouping, subset loading, and client rendering with runtime instrumentation.", plannedTool: "samplemanager_enh_profile_dashboard", relatedEntities: ["instance"], evidenceKinds: ["runtime", "logs", "playwright"] },
+    ],
+  },
+  {
     id: "deployment",
     label: "Deployment",
     description: "Package state, database changes, files, assemblies, services, runtime loading, and rollback.",
@@ -222,6 +257,7 @@ export const SAMPLEMANAGER_ENTITY_CATALOG: SampleManagerEntityCatalogEntry[] = [
     description: "Physical table schema, Entity Definition mapping, SQL access, and data mutation utilities.",
     inspectors: [
       { id: "schema", label: "Schema", status: "ready", readOnly: true, description: "Inspect SQL Server columns, keys, identity, defaults, and physical mappings.", plannedTool: "samplemanager_table_schema", evidenceKinds: ["schema", "sql"] },
+      { id: "logical_schema", label: "Logical Entity Schema", status: "ready", readOnly: true, description: "Combine physical SQL metadata with SCHEMA_TABLE_FIELD, Entity Definition, logical type, phrase, link, and serialization-risk evidence.", plannedTool: "samplemanager_entity_schema", evidenceKinds: ["schema", "sql", "artifact"] },
     ],
   },
   {

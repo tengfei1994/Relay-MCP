@@ -5,6 +5,22 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { drainRelayEventSpool, emitRelayEvent, relayEventSpoolHealth } from "../src/knowledge/event-sink.ts";
 
+test("empty spool files are not pending events or stale backlog", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-event-empty-spool-"));
+  const previous = process.env.RELAY_STATE_ROOT;
+  process.env.RELAY_STATE_ROOT = root;
+  try {
+    const spool = join(root, "knowledge-event-spool.jsonl");
+    writeFileSync(spool, "", "utf8");
+    const health = relayEventSpoolHealth();
+    assert.equal(health.pending, false);
+    assert.equal(health.oldestPendingAgeMs, 0);
+  } finally {
+    if (previous === undefined) delete process.env.RELAY_STATE_ROOT; else process.env.RELAY_STATE_ROOT = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("domain events spool while Knowledge is unavailable and drain with redacted payload", () => {
   const root = mkdtempSync(join(tmpdir(), "relay-event-spool-"));
   const previous = process.env.RELAY_STATE_ROOT;

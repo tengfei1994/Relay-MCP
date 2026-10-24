@@ -388,6 +388,7 @@ Knowledge 审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [`d
 | Context | `knowledge_weknora_search` | 通过 Relay 内部 WeKnora 边界检索 Product Knowledge。 |
 | SampleManager | `samplemanager_capabilities` | 解析实例使用的版本化 Capability Pack，并列出已就绪、规划中和不可用的语义检查能力。 |
 | SampleManager | `samplemanager_instance_preflight` | 一次性只读检查实例目录、指定文件哈希/XML、FormsBin、服务、进程和近期错误摘要。 |
+| SampleManager | `samplemanager_vgl_inspect_entrypoint` | 静态检查 VGL 例程参数、引用/值传递、常量、JOIN、`CALL_ROUTINE` 调用链和源码行证据。 |
 | SampleManager | `samplemanager_diagnose` | 组合版本过滤的 Knowledge 检索与 Form/Task/Assembly 只读检查；不执行 deploy、restart、clear 或 SQL mutation。 |
 | SampleManager | `samplemanager_impact_analysis` | 根据确定性、带来源的关系计算只读影响范围。 |
 | SampleManager | `samplemanager_inspect_assembly_type` | 对单一程序集类型执行受限反射，返回扁平化属性、方法、事件、依赖、版本和 SHA-256 证据。 |
@@ -398,11 +399,14 @@ Knowledge 审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [`d
 | SampleManager | `samplemanager_clear_form_cache` | 清理一个 form 的 FormsBin cache。 |
 | SampleManager | `samplemanager_recent_errors` | 按时间范围检索紧凑错误证据。 |
 | SampleManager | `samplemanager_table_schema` | 查询列、键、identity、默认值和物理映射。 |
+| SampleManager | `samplemanager_entity_schema` | 联合返回 SQL 物理结构、`SCHEMA_TABLE_FIELD` 逻辑类型、Entity Definition 映射和序列化风险。 |
 | SampleManager | `samplemanager_read_query_artifact` | 分页读取已保存的 SQL 响应，不重新执行远程查询。 |
 | SampleManager | `samplemanager_sql_query` | 执行参数化只读 SQL，并返回详细 SQL Server 错误。 |
 | SampleManager | `samplemanager_entity_inspect` | 统一检查 Execution readiness、Plate/Batch integrity、Test/Result lineage 或 Lab Method definition。 |
 | SampleManager | `samplemanager_lab_method_lint` | 检查 Lab Method 的重复标识、断裂引用、类型风险、placeholder 和 Instruction evidence。 |
 | SampleManager | `samplemanager_plate_plan_validate` | 将 Plate/Batch 孔位、数量和 Test 链接与声明式 layout plan 对比。 |
+| SampleManager | `samplemanager_enh_inspect` | 聚合检查 ENH Folder、Criteria、Template、Form/Grid、Column、Grouping、Procedure、Action 和 Navigation。 |
+| SampleManager | `samplemanager_enh_validate_configuration` | 写入前校验 ENH 实体键、字段引用、模板/Grid、重复序号、悬空引用及 XML/JSON 存储格式。 |
 | SampleManager | `samplemanager_workflow_export` | 按目标实例实际表结构导出有界 Workflow 快照、节点、连线、参数和拓扑。 |
 | SampleManager | `samplemanager_workflow_validate` | 校验 Workflow 的断链、孤立节点、环、静态节点契约和证据缺口。 |
 | SampleManager | `samplemanager_workflow_compare` | 将当前 Workflow 快照与导出基线比较，返回节点、连线和元数据差异。 |

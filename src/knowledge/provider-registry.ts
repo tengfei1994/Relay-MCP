@@ -21,8 +21,24 @@ const EMBEDDING_PROBE_TEXT = "relay managed provider connectivity probe";
 const RERANK_PROBE_DOCUMENT = "relay managed provider connectivity probe";
 const CHAT_PROBE_PROMPT = "Reply with the word ok.";
 
+/** Provider endpoints are configuration, never a credential transport. */
+export function validateProviderBaseUrl(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  let parsed: URL;
+  try { parsed = new URL(trimmed); } catch { throw new Error("Provider base URL must be a valid URL"); }
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error("Provider base URL must use HTTP or HTTPS");
+  if (parsed.username || parsed.password) throw new Error("Provider base URL must not contain credentials");
+  return trimmed;
+}
+
+function safeProviderBaseUrl(value: unknown): string | undefined {
+  try { return validateProviderBaseUrl(value == null ? undefined : String(value)); } catch { return undefined; }
+}
+
 function rowToConfig(row: Record<string, unknown>): ProviderConfigMetadata {
-  return { id: String(row.id), kind: String(row.kind) as ManagedProviderKind, provider: String(row.provider), baseUrl: row.base_url ? String(row.base_url) : undefined, modelId: String(row.model_id), dimensions: row.dimensions == null ? undefined : Number(row.dimensions), batchSize: row.batch_size == null ? undefined : Number(row.batch_size), timeoutMs: Number(row.timeout_ms), concurrency: Number(row.concurrency), maxRetries: Number(row.max_retries), dataResidency: row.data_residency ? String(row.data_residency) : undefined, status: String(row.status) as ManagedProviderStatus, tokenConfigured: Number(row.token_configured) === 1, reindexRequired: Number(row.reindex_required) === 1, indexVersion: Number(row.index_version ?? 1), quota: row.quota_max_calls != null && row.quota_window_ms != null ? { maxCalls: Number(row.quota_max_calls), windowMs: Number(row.quota_window_ms) } : undefined, lastTestAt: row.last_test_at ? String(row.last_test_at) : undefined, lastErrorCode: row.last_error_code ? String(row.last_error_code) : undefined, createdAt: String(row.created_at), updatedAt: String(row.updated_at), disabledAt: row.disabled_at ? String(row.disabled_at) : undefined };
+  return { id: String(row.id), kind: String(row.kind) as ManagedProviderKind, provider: String(row.provider), baseUrl: safeProviderBaseUrl(row.base_url), modelId: String(row.model_id), dimensions: row.dimensions == null ? undefined : Number(row.dimensions), batchSize: row.batch_size == null ? undefined : Number(row.batch_size), timeoutMs: Number(row.timeout_ms), concurrency: Number(row.concurrency), maxRetries: Number(row.max_retries), dataResidency: row.data_residency ? String(row.data_residency) : undefined, status: String(row.status) as ManagedProviderStatus, tokenConfigured: Number(row.token_configured) === 1, reindexRequired: Number(row.reindex_required) === 1, indexVersion: Number(row.index_version ?? 1), quota: row.quota_max_calls != null && row.quota_window_ms != null ? { maxCalls: Number(row.quota_max_calls), windowMs: Number(row.quota_window_ms) } : undefined, lastTestAt: row.last_test_at ? String(row.last_test_at) : undefined, lastErrorCode: row.last_error_code ? String(row.last_error_code) : undefined, createdAt: String(row.created_at), updatedAt: String(row.updated_at), disabledAt: row.disabled_at ? String(row.disabled_at) : undefined };
 }
 
 function rowToReindexJob(row: Record<string, unknown>): ProviderReindexJob {
@@ -103,6 +119,7 @@ export class ProviderRegistry {
 
   upsert(input: ProviderConfigInput): ProviderConfigMetadata {
     if (!input.id.trim() || !input.provider.trim() || !input.modelId.trim()) throw new Error("Provider id, provider and modelId are required");
+    const baseUrl = validateProviderBaseUrl(input.baseUrl);
     assertSecretRef(input.secretRef);
     assertQuota(input.quota);
     if (input.dimensions !== undefined && (!Number.isInteger(input.dimensions) || input.dimensions <= 0 || input.dimensions > 100_000)) throw new Error("Invalid embedding dimensions");
@@ -113,7 +130,7 @@ export class ProviderRegistry {
     const status: ManagedProviderStatus = changedEmbedding ? "pending_reindex" : "ready";
     this.store.db.prepare(`INSERT INTO knowledge_provider_configs(id,kind,provider,base_url,model_id,dimensions,batch_size,timeout_ms,concurrency,max_retries,data_residency,status,secret_ref,token_configured,reindex_required,index_version,quota_max_calls,quota_window_ms,last_test_at,last_error_code,created_by,created_at,updated_at,disabled_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,provider=excluded.provider,base_url=excluded.base_url,model_id=excluded.model_id,dimensions=excluded.dimensions,batch_size=excluded.batch_size,timeout_ms=excluded.timeout_ms,concurrency=excluded.concurrency,max_retries=excluded.max_retries,data_residency=excluded.data_residency,status=excluded.status,secret_ref=COALESCE(excluded.secret_ref,knowledge_provider_configs.secret_ref),token_configured=CASE WHEN excluded.secret_ref IS NOT NULL THEN 1 ELSE knowledge_provider_configs.token_configured END,reindex_required=CASE WHEN excluded.reindex_required=1 THEN 1 ELSE knowledge_provider_configs.reindex_required END,index_version=excluded.index_version,quota_max_calls=excluded.quota_max_calls,quota_window_ms=excluded.quota_window_ms,updated_at=excluded.updated_at,disabled_at=NULL`).run(input.id, input.kind, input.provider, input.baseUrl ?? null, input.modelId, input.dimensions ?? null, input.batchSize ?? null, input.timeoutMs ?? 30_000, input.concurrency ?? 4, input.maxRetries ?? 2, input.dataResidency ?? null, status, input.secretRef ?? null, input.secretRef ? 1 : Number(existing?.token_configured ?? 0), changedEmbedding ? 1 : Number(existing?.reindex_required ?? 0), indexVersion, input.quota?.maxCalls ?? null, input.quota?.windowMs ?? null, existing?.last_test_at ?? null, existing?.last_error_code ?? null, input.actorId, String(existing?.created_at ?? now), now, null);
+      ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,provider=excluded.provider,base_url=excluded.base_url,model_id=excluded.model_id,dimensions=excluded.dimensions,batch_size=excluded.batch_size,timeout_ms=excluded.timeout_ms,concurrency=excluded.concurrency,max_retries=excluded.max_retries,data_residency=excluded.data_residency,status=excluded.status,secret_ref=COALESCE(excluded.secret_ref,knowledge_provider_configs.secret_ref),token_configured=CASE WHEN excluded.secret_ref IS NOT NULL THEN 1 ELSE knowledge_provider_configs.token_configured END,reindex_required=CASE WHEN excluded.reindex_required=1 THEN 1 ELSE knowledge_provider_configs.reindex_required END,index_version=excluded.index_version,quota_max_calls=excluded.quota_max_calls,quota_window_ms=excluded.quota_window_ms,updated_at=excluded.updated_at,disabled_at=NULL`).run(input.id, input.kind, input.provider, baseUrl ?? null, input.modelId, input.dimensions ?? null, input.batchSize ?? null, input.timeoutMs ?? 30_000, input.concurrency ?? 4, input.maxRetries ?? 2, input.dataResidency ?? null, status, input.secretRef ?? null, input.secretRef ? 1 : Number(existing?.token_configured ?? 0), changedEmbedding ? 1 : Number(existing?.reindex_required ?? 0), indexVersion, input.quota?.maxCalls ?? null, input.quota?.windowMs ?? null, existing?.last_test_at ?? null, existing?.last_error_code ?? null, input.actorId, String(existing?.created_at ?? now), now, null);
     if (changedEmbedding && existing) {
       this.store.db.prepare("INSERT INTO knowledge_provider_reindex_jobs(id,provider_id,index_version,from_model_id,from_dimensions,to_model_id,to_dimensions,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,'pending',?,?)")
         .run(randomUUID(), input.id, indexVersion, String(existing.model_id), existing.dimensions == null ? null : Number(existing.dimensions), input.modelId, input.dimensions ?? null, now, now);
@@ -236,7 +253,7 @@ export class ProviderRegistry {
       return row;
     };
     const httpOptions = async (row: Record<string, unknown>, signal: AbortSignal): Promise<ManagedHttpOptions> => {
-      const baseUrl = row.base_url ? String(row.base_url) : undefined;
+      const baseUrl = validateProviderBaseUrl(row.base_url ? String(row.base_url) : undefined);
       if (!baseUrl) throw new ManagedProviderError("unavailable", `Provider '${id}' has no base URL configured`);
       const token = row.secret_ref && this.secrets ? await this.secrets.resolve(String(row.secret_ref)) : undefined;
       return { baseUrl, modelId: String(row.model_id), token, fetchImpl: this.fetchImpl, signal };

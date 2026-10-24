@@ -25,3 +25,15 @@ test("provider model or dimension changes create pending reindex state and rotat
   assert.equal(registry.rotateSecret("embed", "vault://new", 7).tokenConfigured, true);
   assert.equal(registry.disable("embed", 7).status, "disabled");
 }));
+
+test("provider configuration rejects credentials embedded in the base URL", () => withStore((registry) => {
+  assert.throws(() => registry.upsert({ id: "embed", kind: "embedding", provider: "openai", baseUrl: "https://user:password@example.test", modelId: "m1", actorId: 7 }), /credentials/i);
+}));
+
+test("provider metadata suppresses credentials from legacy base URL rows", () => withStore((registry, store) => {
+  registry.upsert({ id: "embed", kind: "embedding", provider: "openai", modelId: "m1", actorId: 7 });
+  store.db.prepare("UPDATE knowledge_provider_configs SET base_url=? WHERE id=?").run("https://legacy-user:legacy-password@example.test", "embed");
+  const listed = registry.list()[0];
+  assert.equal(listed.baseUrl, undefined);
+  assert.doesNotMatch(JSON.stringify(listed), /legacy-user|legacy-password/);
+}));

@@ -33,6 +33,9 @@ import { WikiService, WIKI_PAGE_STATUSES } from "../../knowledge/wiki.js";
 import { WeKnoraClient, WeKnoraError } from "../../knowledge/weknora.js";
 import { WeKnoraClientDocumentWriter, WeKnoraIngestor } from "../../knowledge/weknora-ingest.js";
 import { ContextPackService } from "../../knowledge/context-pack.js";
+import { loadRelayContextSources } from "../../knowledge/context-sources.js";
+import { resolveRetrievalProjectId } from "../../knowledge/weknora-scope.js";
+import { canReadTopicBinding } from "../../knowledge/topic-access.js";
 import {
   acceptCandidate,
   deprecateDocument,
@@ -1004,15 +1007,16 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     const version = queryValue(query, "productVersion") ?? queryValue(query, "sampleManagerVersion");
     const search = queryValue(query, "q");
     const where = ["1=1"]; const params: unknown[] = [];
+    if (!request.user.isAdmin) where.push("((d.project_id IS NULL AND EXISTS (SELECT 1 FROM knowledge_acl a0 WHERE a0.user_id=? AND a0.can_read=1)) OR EXISTS (SELECT 1 FROM knowledge_acl a1 WHERE a1.project_id=d.project_id AND a1.user_id=? AND a1.can_read=1))"), params.push(request.user.id, request.user.id);
     if (version) { where.push("b.product_version = ?"); params.push(version); }
     if (search) { where.push("(lower(t.canonical_title) LIKE ? OR lower(t.canonical_key) LIKE ?)"); params.push(`%${search.toLowerCase()}%`, `%${search.toLowerCase()}%`); }
     const rows = store.db.prepare(`SELECT t.id,t.canonical_key,t.canonical_title,t.kind,t.domain,t.metadata_json,
       COUNT(DISTINCT b.product_version) AS version_count, COUNT(DISTINCT COALESCE(json_extract(p.metadata_json, '$.normalizedContentSha256'), b.document_id)) AS revision_count,
       MAX(b.updated_at) AS updated_at,
       GROUP_CONCAT(DISTINCT b.product_version) AS versions
-      FROM knowledge_topics t JOIN knowledge_product_document_bindings b ON b.topic_id=t.id JOIN knowledge_product_documents p ON p.id=b.document_id
+      FROM knowledge_topics t JOIN knowledge_product_document_bindings b ON b.topic_id=t.id JOIN knowledge_product_documents p ON p.id=b.document_id JOIN knowledge_documents d ON d.id=b.document_id
       WHERE ${where.join(" AND ")} GROUP BY t.id ORDER BY t.canonical_title LIMIT ? OFFSET ?`).all(...params, limit, offset) as KnowledgeRow[];
-    const total = store.db.prepare(`SELECT COUNT(*) AS count FROM (SELECT t.id FROM knowledge_topics t JOIN knowledge_product_document_bindings b ON b.topic_id=t.id WHERE ${where.join(" AND ")} GROUP BY t.id)`).get(...params) as { count?: number };
+    const total = store.db.prepare(`SELECT COUNT(*) AS count FROM (SELECT t.id FROM knowledge_topics t JOIN knowledge_product_document_bindings b ON b.topic_id=t.id JOIN knowledge_documents d ON d.id=b.document_id WHERE ${where.join(" AND ")} GROUP BY t.id)`).get(...params) as { count?: number };
     return reply.send({ topics: rows.map((row) => ({ ...row, versions: String(row.versions ?? "").split(",").filter(Boolean), versionCount: Number(row.version_count ?? 0), revisionCount: Number(row.revision_count ?? 0), metadata: safeRows(() => JSON.parse(String(row.metadata_json ?? "{}")), {}) })), page: { limit, offset, total: Number(total.count ?? 0) } });
   });
 
@@ -1022,11 +1026,13 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     const topic = store.db.prepare("SELECT * FROM knowledge_topics WHERE id=?").get(id) as KnowledgeRow | undefined;
     if (!topic) return reply.status(404).send({ error: "Product topic not found" });
-    const bindings = store.db.prepare(`SELECT b.*,d.title,d.body,d.lifecycle,d.source_locator,d.source_sha256,d.updated_at AS document_updated_at,
+    const rows = store.db.prepare(`SELECT b.*,d.title,d.body,d.lifecycle,d.source_locator,d.source_sha256,d.project_id AS document_project_id,d.updated_at AS document_updated_at,
       p.document_family_id,p.document_type,p.language,p.authority,p.sections_json,p.metadata_json
       FROM knowledge_product_document_bindings b JOIN knowledge_documents d ON d.id=b.document_id
       JOIN knowledge_product_documents p ON p.id=d.id WHERE b.topic_id=? ORDER BY b.product_version`).all(id) as KnowledgeRow[];
-    return reply.send({ topic: { ...topic, metadata: safeRows(() => JSON.parse(String(topic.metadata_json ?? "{}")), {}) }, versions: bindings.map((row) => ({ ...row, metadata: safeRows(() => JSON.parse(String(row.metadata_json ?? "{}")), {}), sections: safeRows(() => JSON.parse(String(row.sections_json ?? "[]")), []) })) });
+    const bindings = request.user.isAdmin ? rows : rows.filter((row) => canReadTopicBinding(store, request.user.id, row.document_project_id));
+    if (!request.user.isAdmin && !bindings.length) return reply.status(403).send({ error: "Knowledge access denied" });
+    return reply.send({ topic: { ...topic, metadata: safeRows(() => JSON.parse(String(topic.metadata_json ?? "{}")), {}) }, versions: bindings.map(({ document_project_id: _project, ...row }) => ({ ...row, metadata: safeRows(() => JSON.parse(String(row.metadata_json ?? "{}")), {}), sections: safeRows(() => JSON.parse(String(row.sections_json ?? "[]")), []) })) });
   });
 
   // Stable Product Knowledge API names. Keep /product-docs above as a
@@ -1361,15 +1367,20 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     try {
       const sessions = new WorkSessionService(store);
       const session = body.data.workSessionId ? sessions.assertSessionUsable({ actorId: request.user.id, sessionId: body.data.workSessionId, projectId: body.data.projectId }) : undefined;
-      const projectId = body.data.projectId ?? session?.projectId;
-      if (projectId && !store.canRead(request.user.id, projectId)) throw new Error("Knowledge access denied");
+      const projectId = resolveRetrievalProjectId({ projectId: body.data.projectId, sessionProjectId: session?.projectId });
+      if (!store.canRead(request.user.id, projectId)) throw new Error("Knowledge access denied");
       const ingestor = new WeKnoraIngestor(store, { upsertDocument: async () => ({ externalDocumentId: "unused" }) });
       const knowledgeIds = ingestor.retrievalKnowledgeIds({ projectId, productVersion: body.data.productVersion ?? session?.intent.sampleManagerVersion, solution: body.data.solution ?? session?.intent.solution, module: body.data.module ?? session?.intent.module, language: body.data.language });
-      if (!knowledgeIds.length) return reply.send({ retrievalRunId: "local-scope-empty", references: [], degraded: { productKnowledge: "no_published_documents" } });
+      let relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: undefined } as Awaited<ReturnType<typeof loadRelayContextSources>>;
+      try { relaySources = await loadRelayContextSources({ store, userId: request.user.id, projectId, query: body.data.query, intent: session?.intent, limit: body.data.limit ?? 10 }); } catch { relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: { relayMemory: "unavailable" } }; }
+      if (!knowledgeIds.length) {
+        const contextPack = new ContextPackService({ provider: "weknora" }).build({ intent: session?.intent, authoritativeDocs: [], confirmedKnowledge: relaySources.confirmedKnowledge, candidates: relaySources.candidates, currentFacts: relaySources.currentFacts, degraded: { ...relaySources.degraded, productKnowledge: "no_published_documents" }, acl: { documentIds: [] }, maxItemsPerSection: body.data.limit ?? 10 });
+        return reply.send({ retrievalRunId: "local-scope-empty", references: [], degraded: contextPack.degraded, contextPack });
+      }
       const result = await weknoraControlPlane(store).client.search({ query: body.data.query, knowledgeIds, limit: body.data.limit });
       const visible = new Set(knowledgeIds);
       const references = result.references.filter((reference) => visible.has(reference.documentId));
-      const pack = new ContextPackService({ provider: "weknora" }).build({ intent: session?.intent, authoritativeDocs: references, acl: { documentIds: knowledgeIds }, maxItemsPerSection: body.data.limit ?? 10 });
+      const pack = new ContextPackService({ provider: "weknora" }).build({ intent: session?.intent, authoritativeDocs: references, confirmedKnowledge: relaySources.confirmedKnowledge, candidates: relaySources.candidates, currentFacts: relaySources.currentFacts, degraded: { ...relaySources.degraded, ...(result.degraded ? { productKnowledge: "degraded" } : {}) }, acl: { documentIds: knowledgeIds }, maxItemsPerSection: body.data.limit ?? 10 });
       return reply.send({ ...result, references: pack.authoritativeDocs, contextPack: pack });
     } catch (error) { return sendError(reply, error, error instanceof WeKnoraError ? 502 : 403); }
   });
@@ -1378,11 +1389,11 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   app.post("/api/knowledge/integrations/product-provider", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const body = z.object({ provider: z.enum(["relay_local", "weknora"]), migrationId: z.string().optional() }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid product provider" }); try { return reply.send(new MigrationController(getKnowledgeStore()).setProductProvider(body.data.provider, request.user.id, { migrationId: body.data.migrationId })); } catch (error) { return sendError(reply, error, 400); } });
   app.post("/api/knowledge/migrations", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const body = z.object({ idempotencyKey: z.string().min(1).max(300), kind: z.string().max(100).optional(), sourceManifest: z.record(z.unknown()) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid migration request", details: body.error.issues }); const migration = new MigrationController(getKnowledgeStore()).create({ actorId: request.user.id, ...body.data }); return reply.status(201).send({ migration }); });
   app.post("/api/knowledge/migrations/from-local", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const body = z.object({ idempotencyKey: z.string().min(1).max(300), parserVersion: z.string().min(1).max(100), productVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), projectId: z.string().optional(), limit: z.number().int().min(1).max(10_000).optional(), retry: z.boolean().optional() }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid local migration request" }); try { return reply.send({ migration: await new MigrationController(getKnowledgeStore()).createFromLocal({ actorId: request.user.id, ...body.data }, weknoraControlPlane().ingestor) }); } catch (error) { return sendError(reply, error, 400); } });
-  app.get("/api/knowledge/migrations/:id", { onRequest: [app.authenticate] }, async (request, reply) => { const migration = new MigrationController(getKnowledgeStore()).get(String((request.params as { id: string }).id)); return migration ? reply.send({ migration }) : reply.status(404).send({ error: "Migration not found" }); });
+  app.get("/api/knowledge/migrations/:id", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const migration = new MigrationController(getKnowledgeStore()).get(String((request.params as { id: string }).id)); return migration ? reply.send({ migration }) : reply.status(404).send({ error: "Migration not found" }); });
   app.post("/api/knowledge/migrations/:id/stage", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const body = z.object({ report: z.record(z.unknown()) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid migration report" }); try { return reply.send({ migration: new MigrationController(getKnowledgeStore()).markStaged(String((request.params as { id: string }).id), body.data.report, request.user.id) }); } catch (error) { return sendError(reply, error, 400); } });
   app.post("/api/knowledge/migrations/:id/publish", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); try { return reply.send({ migration: new MigrationController(getKnowledgeStore()).validateAndPublish(String((request.params as { id: string }).id), request.user.id) }); } catch (error) { return sendError(reply, error, 400); } });
   app.post("/api/knowledge/migrations/:id/rollback", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const body = z.object({ reason: z.string().trim().min(1).max(2_000) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Rollback reason is required" }); try { return reply.send({ migration: new MigrationController(getKnowledgeStore()).rollback(String((request.params as { id: string }).id), request.user.id, body.data.reason) }); } catch (error) { return sendError(reply, error, 400); } });
   app.get("/api/knowledge/migrations/:id/cleanup", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); return reply.send(new MigrationController(getKnowledgeStore()).cleanupDryRun({ actorId: request.user.id, migrationId: String((request.params as { id: string }).id) })); });
-  app.get("/api/knowledge/release-gates", { onRequest: [app.authenticate] }, async (_request, reply) => reply.send(runReleaseGates(getKnowledgeStore())));
+  app.get("/api/knowledge/release-gates", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); return reply.send(runReleaseGates(getKnowledgeStore())); });
 }
 

@@ -105,6 +105,7 @@ export class MigrationController {
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(migration_id,local_document_id) DO UPDATE SET document_id=excluded.document_id,external_document_id=excluded.external_document_id,status=excluded.status,failure_code=excluded.failure_code,failure_message=excluded.failure_message,content_sha256=excluded.content_sha256,parser_version=excluded.parser_version,updated_at=excluded.updated_at`);
     const findStagedByKey = this.store.db.prepare("SELECT id,external_document_id,status FROM knowledge_weknora_documents WHERE idempotency_key=?");
+    const findStagedById = this.store.db.prepare("SELECT id,external_document_id,status FROM knowledge_weknora_documents WHERE id=?");
     const now = () => this.clock().toISOString();
 
     for (const document of rows) {
@@ -130,7 +131,12 @@ export class MigrationController {
       };
       const batch = await ingestor.stageBatch([weknoraInput], { retry: Boolean(prior) });
       const item = batch.items[0];
-      const stagedRow = findStagedByKey.get(documentKey) as Record<string, unknown> | undefined;
+      // Identity dedupe may return an existing control-plane row whose
+      // idempotency key belongs to an earlier migration. Resolve that row by
+      // the returned document id before writing the migration mapping.
+      const stagedRowByKey = findStagedByKey.get(documentKey) as Record<string, unknown> | undefined;
+      const stagedRowById = item?.documentId ? findStagedById.get(item.documentId) as Record<string, unknown> | undefined : undefined;
+      const stagedRow = stagedRowById ?? stagedRowByKey;
       const status = item?.status === "failed" || String(stagedRow?.status ?? "") === "failed" ? "failed" : "staged";
       upsertMapping.run(migrationId, document.localDocumentId, item?.documentId ?? (stagedRow ? String(stagedRow.id) : null), documentKey, stagedRow ? String(stagedRow.external_document_id) : null, status, item?.failureCode ?? null, item?.error ?? null, document.bodySha256, parserVersion, now(), now());
       this.store.audit({ actorId: input.actorId, action: "knowledge.migration.stage_document", entityType: "migration", entityId: migrationId, details: { localDocumentId: document.localDocumentId, status, externalDocumentId: stagedRow?.external_document_id ?? null } });

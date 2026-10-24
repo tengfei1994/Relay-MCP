@@ -15,6 +15,9 @@ import { runReleaseGates } from "../../knowledge/release-gates.js";
 import { WeKnoraClient, WeKnoraError } from "../../knowledge/weknora.js";
 import { WeKnoraClientDocumentWriter, WeKnoraIngestor } from "../../knowledge/weknora-ingest.js";
 import { ContextPackService } from "../../knowledge/context-pack.js";
+import { loadRelayContextSources } from "../../knowledge/context-sources.js";
+import { resolveRetrievalProjectId } from "../../knowledge/weknora-scope.js";
+import { canReadTopicBinding } from "../../knowledge/topic-access.js";
 import { CandidateInsightCompiler, type ManagedCandidateInsightProvider } from "../../knowledge/candidate-insight.js";
 import { CandidateInsightReviewService } from "../../knowledge/candidate-review.js";
 import { enqueueCandidateInsight } from "../../knowledge/candidate-worker.js";
@@ -49,10 +52,10 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   const retrievalScope = (input: { workSessionId?: string; projectId?: string; productVersion?: string; solution?: string; module?: string; language?: string }) => {
     const store = requireKnowledge();
     const session = input.workSessionId ? new WorkSessionService(store).assertSessionUsable({ actorId: user.id, sessionId: input.workSessionId, projectId: input.projectId }) : undefined;
-    const projectId = input.projectId ?? session?.projectId;
-    if (projectId && !store.canRead(user.id, projectId)) throw new Error("Knowledge access denied");
+    const projectId = resolveRetrievalProjectId({ projectId: input.projectId, sessionProjectId: session?.projectId, fallbackProjectId: user.defaultProjectId ? String(user.defaultProjectId) : undefined, fallbackProjectName: user.defaultProject });
+    if (!store.canRead(user.id, projectId)) throw new Error("Knowledge access denied");
     const ingestor = new WeKnoraIngestor(store, { upsertDocument: async () => ({ externalDocumentId: "unused" }) });
-    return { session, ingestor, knowledgeIds: ingestor.retrievalKnowledgeIds({ projectId, productVersion: input.productVersion ?? session?.intent.sampleManagerVersion, solution: input.solution ?? session?.intent.solution, module: input.module ?? session?.intent.module, language: input.language }) };
+    return { session, projectId, ingestor, knowledgeIds: ingestor.retrievalKnowledgeIds({ projectId, productVersion: input.productVersion ?? session?.intent.sampleManagerVersion, solution: input.solution ?? session?.intent.solution, module: input.module ?? session?.intent.module, language: input.language }) };
   };
   const sourceManifest = (store: KnowledgeStore, id: string, snapshot = false): SourceManifest => {
     const table = snapshot ? "knowledge_project_snapshot_files" : "knowledge_source_files"; const key = snapshot ? "snapshot_id" : "baseline_id";
@@ -176,13 +179,16 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   });
   server.tool("knowledge_topic_get", "Read one logical Product Knowledge topic with all version bindings and revision content.", { topicId: z.string() }, async ({ topicId }) => {
     const store = requireKnowledge(); const topic = store.db.prepare("SELECT * FROM knowledge_topics WHERE id=?").get(topicId); if (!topic) throw new Error("Knowledge topic not found");
-    if (!user.isAdmin && !store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id=? AND can_read=1 LIMIT 1").get(user.id)) throw new Error("Knowledge access denied");
-    const bindings = store.db.prepare(`SELECT b.topic_id,b.product,b.product_version,b.source_path,b.match_method,b.match_confidence,d.id AS document_id,d.title,d.body,d.source_locator,d.source_sha256 FROM knowledge_product_document_bindings b JOIN knowledge_documents d ON d.id=b.document_id WHERE b.topic_id=? ORDER BY b.product_version`).all(topicId);
+    const rows = store.db.prepare(`SELECT b.topic_id,b.product,b.product_version,b.source_path,b.match_method,b.match_confidence,d.id AS document_id,d.title,d.body,d.source_locator,d.source_sha256,d.project_id AS document_project_id FROM knowledge_product_document_bindings b JOIN knowledge_documents d ON d.id=b.document_id WHERE b.topic_id=? ORDER BY b.product_version`).all(topicId) as Array<Record<string, unknown>>;
+    const visibleRows = user.isAdmin ? rows : rows.filter((row) => canReadTopicBinding(store, user.id, row.document_project_id));
+    const bindings = visibleRows.map(({ document_project_id: _project, ...row }) => row);
+    if (!user.isAdmin && !bindings.length) throw new Error("Knowledge access denied");
     return { content: [{ type: "text", text: summarizeJson({ topic, bindings }) }] };
   });
   server.tool("knowledge_topic_diff", "Compare the bound Product Knowledge revisions for two versions of one topic.", { topicId: z.string(), fromVersion: z.string(), toVersion: z.string() }, async ({ topicId, fromVersion, toVersion }) => {
-    const store = requireKnowledge(); const rows = store.db.prepare("SELECT product_version,document_id FROM knowledge_product_document_bindings WHERE topic_id=? AND product_version IN (?,?)").all(topicId, fromVersion, toVersion) as Array<{ product_version: string; document_id: string }>;
-    const ids = new Map(rows.map((row) => [row.product_version, row.document_id])); const left = ids.get(fromVersion), right = ids.get(toVersion); if (!left || !right) throw new Error("Topic versions not found");
+    const store = requireKnowledge(); const rows = store.db.prepare("SELECT b.product_version,b.document_id,d.project_id AS document_project_id FROM knowledge_product_document_bindings b JOIN knowledge_documents d ON d.id=b.document_id WHERE b.topic_id=? AND b.product_version IN (?,?)").all(topicId, fromVersion, toVersion) as Array<{ product_version: string; document_id: string; document_project_id?: string }>;
+    const readableRows = user.isAdmin ? rows : rows.filter((row) => canReadTopicBinding(store, user.id, row.document_project_id));
+    const ids = new Map(readableRows.map((row) => [row.product_version, row.document_id])); const left = ids.get(fromVersion), right = ids.get(toVersion); if (!left || !right) throw new Error("Topic versions not found");
     const load = (id: string) => store.db.prepare("SELECT sections_json FROM knowledge_product_documents WHERE id=?").get(id) as { sections_json?: string };
     return { content: [{ type: "text", text: summarizeJson({ topicId, fromVersion, toVersion, from: load(left), to: load(right) }) }] };
   });
@@ -260,11 +266,16 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   server.tool("knowledge_release_gates", "Run deterministic security, migration, provider, ACL and visibility release gates.", {}, async () => { if (!user.isAdmin) throw new Error("Administrator access is required"); return { content: [{ type: "text", text: summarizeJson(runReleaseGates(requireKnowledge())) }] }; });
   server.tool("knowledge_weknora_search", "Search published Product Knowledge through Relay's ACL-checked internal WeKnora boundary.", { query: z.string().min(1), workSessionId: z.string().optional(), projectId: z.string().optional(), productVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), language: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }, async ({ query, workSessionId, projectId, productVersion, solution, module, language, limit }) => {
     const scope = retrievalScope({ workSessionId, projectId, productVersion, solution, module, language });
-    if (!scope.knowledgeIds.length) return { content: [{ type: "text", text: summarizeJson({ retrievalRunId: "local-scope-empty", references: [], degraded: { productKnowledge: "no_published_documents" } }) }] };
+    let relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: undefined } as Awaited<ReturnType<typeof loadRelayContextSources>>;
+    try { relaySources = await loadRelayContextSources({ store: requireKnowledge(), userId: user.id, projectId: scope.projectId, query, intent: scope.session?.intent, limit: limit ?? 10 }); } catch { relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: { relayMemory: "unavailable" } }; }
+    if (!scope.knowledgeIds.length) {
+      const contextPack = new ContextPackService({ provider: "weknora" }).build({ intent: scope.session?.intent, authoritativeDocs: [], confirmedKnowledge: relaySources.confirmedKnowledge, candidates: relaySources.candidates, currentFacts: relaySources.currentFacts, degraded: { ...relaySources.degraded, productKnowledge: "no_published_documents" }, acl: { documentIds: [] }, maxItemsPerSection: limit ?? 10 });
+      return { content: [{ type: "text", text: summarizeJson({ retrievalRunId: "local-scope-empty", references: [], degraded: contextPack.degraded, contextPack }) }] };
+    }
     const result = await weknoraClient().search({ query, knowledgeIds: scope.knowledgeIds, limit });
     const visible = new Set(scope.knowledgeIds);
     const references = result.references.filter((reference) => visible.has(reference.documentId));
-    const contextPack = new ContextPackService({ provider: "weknora" }).build({ intent: scope.session?.intent, authoritativeDocs: references, acl: { documentIds: scope.knowledgeIds }, maxItemsPerSection: limit ?? 10 });
+    const contextPack = new ContextPackService({ provider: "weknora" }).build({ intent: scope.session?.intent, authoritativeDocs: references, confirmedKnowledge: relaySources.confirmedKnowledge, candidates: relaySources.candidates, currentFacts: relaySources.currentFacts, degraded: { ...relaySources.degraded, ...(result.degraded ? { productKnowledge: "degraded" } : {}) }, acl: { documentIds: scope.knowledgeIds }, maxItemsPerSection: limit ?? 10 });
     return { content: [{ type: "text", text: summarizeJson({ ...result, references: contextPack.authoritativeDocs, contextPack }) }] };
   });
 

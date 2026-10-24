@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { zipSync, strToU8 } from "fflate";
 import { createKnowledgeStore } from "../src/knowledge/store.ts";
 import { importProductDocuments, productDocumentDiff } from "../src/knowledge/product-docs.ts";
+import { importKnowledgeProducts } from "../src/knowledge/knowledge-products.ts";
 
 test("product document import is idempotent and records ingest status", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-product-docs-"));
@@ -46,4 +47,26 @@ test("product document import expands ZIP batches and rejects traversal", async 
     assert.equal(report.imported, 1);
     assert.equal((store.db.prepare("SELECT samplemanager_version FROM knowledge_documents WHERE kind='product_document'").get() as { samplemanager_version: string }).samplemanager_version, "21.2");
   } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("product knowledge import extracts a real Windows CHM before indexing its HTML", { skip: process.platform !== "win32" || !existsSync("C:\\Windows\\Help\\mui\\0409\\mmc.CHM") }, () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-real-chm-"));
+  const chm = join(root, "mmc.CHM");
+  copyFileSync("C:\\Windows\\Help\\mui\\0409\\mmc.CHM", chm);
+  const previousExtractor = process.env.RELAY_CHM_EXTRACTOR;
+  process.env.RELAY_CHM_EXTRACTOR = "hh.exe";
+  const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });
+  try {
+    const report = importKnowledgeProducts(store, { root: chm, sampleManagerVersion: "chm-format-audit", language: "en", idempotencyKey: "real-chm-1" });
+    assert.equal(report.status, "succeeded");
+    assert.equal(report.failed, 0);
+    assert.ok(report.imported >= 2, `expected extracted HTML pages, got ${report.imported}`);
+    assert.ok(!report.warnings.some((warning) => warning.includes("CHM extraction unavailable")), report.warnings.join("\n"));
+    assert.ok(report.items.some((item) => /\.html?$/i.test(item.path)));
+  } finally {
+    store.close();
+    if (previousExtractor === undefined) delete process.env.RELAY_CHM_EXTRACTOR;
+    else process.env.RELAY_CHM_EXTRACTOR = previousExtractor;
+    rmSync(root, { recursive: true, force: true });
+  }
 });

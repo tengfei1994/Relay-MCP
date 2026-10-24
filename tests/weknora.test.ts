@@ -62,6 +62,10 @@ test("WeKnora normalizes base URLs that already include /api/v1", async () => {
   assert.equal(seenUrl, `${BASE}/api/v1/knowledge-search`);
 });
 
+test("WeKnora rejects base URLs containing URL credentials", () => {
+  assert.throws(() => new WeKnoraClient({ baseUrl: "https://user:password@weknora.example.test" }), /credentials/i);
+});
+
 test("WeKnora classifies timeout, 429, 401, 5xx and invalid JSON deterministically without leaking secrets", async () => {
   const secret = "sk-classify-token";
   const query = "sensitive query text";

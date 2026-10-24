@@ -9,7 +9,6 @@ import { summarizeJson } from "../../shared/output.js";
 import { EvidenceStore } from "../../knowledge/evidence-store.js";
 import { compareSourceBaselines, type SourceManifest } from "../../knowledge/source-baseline.js";
 import { WorkSessionService, validateIntentEnvelope } from "../../knowledge/work-session.js";
-import { ProviderRegistry } from "../../knowledge/provider-registry.js";
 import { MigrationController } from "../../knowledge/migration-control.js";
 import { runReleaseGates } from "../../knowledge/release-gates.js";
 import { WeKnoraClient, WeKnoraError } from "../../knowledge/weknora.js";
@@ -22,7 +21,7 @@ import { CandidateInsightCompiler, type ManagedCandidateInsightProvider } from "
 import { CandidateInsightReviewService } from "../../knowledge/candidate-review.js";
 import { enqueueCandidateInsight } from "../../knowledge/candidate-worker.js";
 import { WikiService, WIKI_PAGE_STATUSES } from "../../knowledge/wiki.js";
-import { EnvironmentSecretResolver } from "../../knowledge/provider-secret.js";
+import { createManagedProviderRegistry } from "../../knowledge/provider-setup.js";
 
 /**
  * P00 extension boundary. Knowledge tools arrive in P01 and must be registered
@@ -35,7 +34,7 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
     : { server: context as McpServer, user: { id: 0, username: "boundary" } };
   const { server, user, knowledge, resolveProjectName } = ctx;
   const requireKnowledge = () => { if (!knowledge) throw new Error("Knowledge Plane is unavailable"); return knowledge; };
-  const managedRegistry = () => new ProviderRegistry(requireKnowledge(), undefined, { secrets: new EnvironmentSecretResolver() });
+  const managedRegistry = () => createManagedProviderRegistry(requireKnowledge());
   const candidateProvider = (providerId?: string): ManagedCandidateInsightProvider => {
     if (!providerId) return { providerId: "unconfigured", modelId: "deterministic-fallback", complete: async () => { throw new Error("Candidate Insight provider is not configured"); } };
     const registry = managedRegistry();

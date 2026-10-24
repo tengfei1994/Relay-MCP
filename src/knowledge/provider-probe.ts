@@ -77,7 +77,7 @@ function tokenUsageOf(body: unknown): ProviderTokenUsage | undefined {
   return result.promptTokens === undefined && result.completionTokens === undefined && result.totalTokens === undefined ? undefined : result;
 }
 
-async function requestJson(options: ManagedHttpOptions, path: string, payload: unknown): Promise<{ status: number; latencyMs: number; body: unknown }> {
+async function requestJson(options: ManagedHttpOptions, path: string, payload?: unknown): Promise<{ status: number; latencyMs: number; body: unknown }> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? (() => Date.now());
   const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json" };
@@ -85,22 +85,55 @@ async function requestJson(options: ManagedHttpOptions, path: string, payload: u
   const started = now();
   let response: Response;
   try {
-    response = await fetchImpl(endpoint(options.baseUrl, path), { method: "POST", headers, body: JSON.stringify(payload), signal: options.signal });
+    response = await fetchImpl(endpoint(options.baseUrl, path), { method: payload === undefined ? "GET" : "POST", headers, body: payload === undefined ? undefined : JSON.stringify(payload), signal: options.signal, redirect: "error" });
   } catch {
     if (options.signal?.aborted) throw new ManagedProviderError("timeout", "Managed provider request timed out");
     throw new ManagedProviderError("unavailable", "Managed provider request failed");
   }
   const latencyMs = Math.max(0, Math.round(now() - started));
-  if (response.status === 401 || response.status === 403) throw new ManagedProviderError("unauthorized", "Managed provider authorization failed", response.status);
-  if (response.status === 429) throw new ManagedProviderError("rate_limited", "Managed provider rate limit exceeded", response.status);
-  if (!response.ok) throw new ManagedProviderError("unavailable", `Managed provider returned HTTP ${response.status}`, response.status);
+  if (!response.ok) {
+    await response.body?.cancel();
+    if (response.status === 401 || response.status === 403) throw new ManagedProviderError("unauthorized", "Managed provider authorization failed; check the token", response.status);
+    if (response.status === 429) throw new ManagedProviderError("rate_limited", "Managed provider rate limit exceeded", response.status);
+    throw new ManagedProviderError("unavailable", `Managed provider returned HTTP ${response.status}`, response.status);
+  }
   let body: unknown;
   try {
-    body = await response.json();
+    const limit = path === "/models" ? 2 * 1024 * 1024 : 16 * 1024 * 1024;
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("empty response");
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > limit) throw new Error("response too large");
+        chunks.push(value);
+      }
+      body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } finally { await reader.cancel(); }
   } catch {
+    if (options.signal?.aborted) throw new ManagedProviderError("timeout", "Managed provider request timed out");
     throw new ManagedProviderError("invalid_response", "Managed provider returned invalid JSON");
   }
   return { status: response.status, latencyMs, body };
+}
+
+export async function listOpenAiModels(options: ManagedHttpOptions): Promise<Array<{ id: string }>> {
+  const { body } = await requestJson(options, "/models");
+  const data = asRecord(body)?.data;
+  if (!Array.isArray(data) || data.length > 10_000) throw new ManagedProviderError("invalid_response", "Provider returned an invalid model list");
+  const ids = new Set<string>();
+  for (const entry of data) {
+    const id = asRecord(entry)?.id;
+    if (typeof id !== "string" || !id.trim() || id.length > 200 || /[\x00-\x1f\x7f]/.test(id) || (options.token && id.includes(options.token))) {
+      throw new ManagedProviderError("invalid_response", "Provider returned an invalid model ID");
+    }
+    ids.add(id);
+  }
+  return [...ids].sort().map((id) => ({ id }));
 }
 
 export async function callOpenAiEmbedding(options: ManagedHttpOptions & { texts: string[]; expectedDimensions?: number }): Promise<EmbeddingCallResult> {

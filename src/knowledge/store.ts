@@ -33,6 +33,7 @@ import { SOURCE_INDEX_MIGRATION } from "./migrations/026-source-index.js";
 import { INGEST_JOBS_MIGRATION } from "./migrations/027-ingest-jobs.js";
 import { PRODUCT_REVISIONS_MIGRATION } from "./migrations/028-product-revisions.js";
 import { PROVIDER_CONFIG_MIGRATION } from "./migrations/030-provider-configs.js";
+import { PROVIDER_SECRETS_MIGRATION } from "./migrations/039-provider-secrets.js";
 import { WEKNORA_DOCUMENT_MIGRATION } from "./migrations/031-weknora-documents.js";
 import { WORK_SESSION_MIGRATION } from "./migrations/029-work-sessions.js";
 import { CANDIDATE_INSIGHT_MIGRATION } from "./migrations/032-candidate-insights.js";
@@ -96,6 +97,7 @@ const KNOWLEDGE_MIGRATIONS = [
     CANDIDATE_INSIGHT_REVIEW_MIGRATION,
     WIKI_MIGRATION,
     INTEGRATION_ROUTING_MIGRATION,
+    PROVIDER_SECRETS_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(

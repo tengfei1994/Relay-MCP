@@ -3,6 +3,7 @@ frontend/node_modules/
 dist/
 frontend/dist/
 data/
+.relay-mcp/
 .env
 logs/
 *.log

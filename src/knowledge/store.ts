@@ -358,11 +358,16 @@ export class KnowledgeStore {
       const family = String(row.document_family_id ?? row.id);
       const topicId = `topic-${hash(family)}`;
       topic.run(topicId, `product:${family}`, String(row.title ?? family), "product_document", "product", now, now);
+      // Resolve the persisted topic id after the canonical-key upsert: an
+      // existing legacy row can own the canonical key under a different id,
+      // and binding to the proposed id would violate the topic foreign key.
+      const persistedTopic = this.db.prepare("SELECT id FROM knowledge_topics WHERE canonical_key = ?").get(`product:${family}`) as { id?: string } | undefined;
+      const bindingTopicId = String(persistedTopic?.id ?? topicId);
       // A legacy database can be repaired while another process is importing.
       // Re-check the parent before binding so migration remains safe under
       // partially recovered data and never aborts the whole worker.
       const parent = this.db.prepare("SELECT 1 FROM knowledge_documents WHERE id=?").get(String(row.id));
-      if (parent) bind.run(`binding-${hash(`${topicId}\0${row.samplemanager_version}\0${row.id}`)}`, topicId, String(row.id), row.project_name_snapshot ?? null, String(row.samplemanager_version ?? ""), String(row.source_path ?? ""), "family_id", 1, "active", now, now);
+      if (parent) bind.run(`binding-${hash(`${bindingTopicId}\0${row.samplemanager_version}\0${row.id}`)}`, bindingTopicId, String(row.id), row.project_name_snapshot ?? null, String(row.samplemanager_version ?? ""), String(row.source_path ?? ""), "family_id", 1, "active", now, now);
     }))();
   }
 

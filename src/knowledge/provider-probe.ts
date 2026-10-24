@@ -3,6 +3,8 @@
  * rerank, chat). Errors are classified into safe categories; messages and
  * audit never carry prompts, request bodies, or response bodies.
  */
+import { providerFailureReasons, readProviderErrorSummary, safeProviderRequestId, type UpstreamErrorSummary } from "./provider-error-summary.js";
+
 export type ManagedProviderErrorCode =
   | "timeout"
   | "rate_limited"
@@ -13,13 +15,12 @@ export type ManagedProviderErrorCode =
   | "unavailable";
 
 const stages = { "/models": "models", "/embeddings": "embedding", "/rerank": "rerank", "/chat/completions": "inference" } as const;
-export interface ManagedProviderDiagnostics {
+export interface ManagedProviderDiagnostics extends UpstreamErrorSummary {
   stage: (typeof stages)[keyof typeof stages];
   method: "GET" | "POST";
   /** Fixed adapter path only: never a user-supplied URL or query string. */
   endpoint: keyof typeof stages;
   upstreamStatus?: number;
-  upstreamRequestId?: string;
   responseFormat?: "json" | "html" | "other";
 }
 
@@ -27,8 +28,11 @@ export class ManagedProviderError extends Error {
   readonly retryable: boolean;
   constructor(readonly code: ManagedProviderErrorCode, message: string, readonly status?: number, readonly diagnostics?: ManagedProviderDiagnostics) {
     const labels = { models: "Model discovery", embedding: "Embedding", rerank: "Rerank", inference: "Inference" };
+    const summary = diagnostics
+      ? `${diagnostics.upstreamErrorCode ? `; upstream code: ${diagnostics.upstreamErrorCode}` : ""}${diagnostics.upstreamReportedStatus ? `; upstream reported HTTP ${diagnostics.upstreamReportedStatus}` : ""}${diagnostics.reason ? `; ${providerFailureReasons[diagnostics.reason]}` : ""}`
+      : "";
     super(diagnostics
-      ? `${labels[diagnostics.stage]} failed (${diagnostics.method} ${diagnostics.endpoint}): ${message}${diagnostics.upstreamRequestId ? `; upstream request ID: ${diagnostics.upstreamRequestId}` : ""}`
+      ? `${labels[diagnostics.stage]} failed (${diagnostics.method} ${diagnostics.endpoint}): ${message}${summary}${diagnostics.upstreamRequestId ? `; upstream request ID: ${diagnostics.upstreamRequestId}` : ""}`
       : message);
     this.name = "ManagedProviderError";
     this.retryable = code === "timeout" || code === "rate_limited" || (code === "unavailable" && (status === undefined || status >= 500));
@@ -91,13 +95,12 @@ function tokenUsageOf(body: unknown): ProviderTokenUsage | undefined {
   return result.promptTokens === undefined && result.completionTokens === undefined && result.totalTokens === undefined ? undefined : result;
 }
 
-function safeUpstreamRequestId(response: Response, token?: string): string | undefined {
+function safeUpstreamRequestId(response: Response, token?: string, requestBody?: string): string | undefined {
   // Never forward response bodies or arbitrary headers. Reject even a syntactically
   // valid ID if the upstream echoed this call's credential (raw or encoded).
-  const secrets = token ? [token, encodeURIComponent(token), Buffer.from(token).toString("base64"), Buffer.from(token).toString("base64url")] : [];
   for (const header of ["x-request-id", "request-id", "cf-ray"]) {
-    const id = response.headers.get(header);
-    if (id && /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/.test(id) && !secrets.some((secret) => id.includes(secret))) return id;
+    const id = safeProviderRequestId(response.headers.get(header), token, requestBody);
+    if (id) return id;
   }
   return undefined;
 }
@@ -108,23 +111,28 @@ async function requestJson(options: ManagedHttpOptions, path: keyof typeof stage
   const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json" };
   if (options.token) headers.authorization = `Bearer ${options.token}`;
   const diagnostics: ManagedProviderDiagnostics = { stage: stages[path], method: payload === undefined ? "GET" : "POST", endpoint: path };
+  const requestBody = payload === undefined ? undefined : JSON.stringify(payload);
   const fail = (code: ManagedProviderErrorCode, message: string) => new ManagedProviderError(code, message, diagnostics.upstreamStatus, diagnostics);
   const started = now();
   let response: Response;
   try {
-    response = await fetchImpl(endpoint(options.baseUrl, path), { method: diagnostics.method, headers, body: payload === undefined ? undefined : JSON.stringify(payload), signal: options.signal, redirect: "error" });
+    response = await fetchImpl(endpoint(options.baseUrl, path), { method: diagnostics.method, headers, body: requestBody, signal: options.signal, redirect: "error" });
   } catch {
     if (options.signal?.aborted) throw fail("timeout", "Managed provider request timed out");
     throw fail("unavailable", "Managed provider request failed before an HTTP response was received");
   }
   diagnostics.upstreamStatus = response.status;
-  const upstreamRequestId = safeUpstreamRequestId(response, options.token);
+  const upstreamRequestId = safeUpstreamRequestId(response, options.token, requestBody);
   if (upstreamRequestId) diagnostics.upstreamRequestId = upstreamRequestId;
   const contentType = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
   diagnostics.responseFormat = contentType === "application/json" || contentType.endsWith("+json") ? "json" : contentType === "text/html" ? "html" : "other";
   const latencyMs = Math.max(0, Math.round(now() - started));
   if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined);
+    if (diagnostics.responseFormat === "json") {
+      const summary = await readProviderErrorSummary(response, options.token, requestBody);
+      Object.assign(diagnostics, summary);
+      if (upstreamRequestId) diagnostics.upstreamRequestId = upstreamRequestId;
+    } else { await response.body?.cancel().catch(() => undefined); }
     if (response.status === 401 || response.status === 403) throw fail("unauthorized", "Managed provider authorization failed; check the token");
     if (response.status === 429) throw fail("rate_limited", "Managed provider rate limit exceeded");
     throw fail("unavailable", `Managed provider returned HTTP ${response.status}`);

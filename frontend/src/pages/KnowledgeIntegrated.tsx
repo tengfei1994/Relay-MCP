@@ -422,7 +422,7 @@ function WeknoraPane({ isAdmin }: { isAdmin: boolean }) {
       .catch((err) => { setData({ documents: [], page: { total: 0 } }); setError(errText(err, "Unable to load WeKnora documents")); });
   };
   useEffect(() => { setOffset(0); load(0); }, [status]);
-  useEffect(() => { api.listProjects().then((result) => { const available = result.projects ?? []; setProjects(available); const stored = Number(localStorage.getItem("knowledge.projectId")); const selected = available.find((project: any) => project.id === stored) ?? available[0]; setProjectScope(selected?.name ?? ""); }).catch((err) => setError(errText(err, "Unable to load projects"))); }, []);
+  useEffect(() => { api.listProjects().then((result) => { const available = result.projects ?? []; setProjects(available); const stored = Number(localStorage.getItem("knowledge.projectId")); const selected = available.find((project: any) => project.id === stored) ?? available[0]; setProjectScope(selected ? String(selected.id) : ""); }).catch((err) => setError(errText(err, "Unable to load projects"))); }, []);
   const run = async (task: () => Promise<any>, ok: string) => { setError(""); setNotice(""); try { await task(); setNotice(ok); load(); } catch (err) { setError(errText(err, "WeKnora operation failed")); } };
   const runSearch = async () => {
     setSearching(true); setError(""); setSearch(undefined);
@@ -481,9 +481,9 @@ function WeknoraPane({ isAdmin }: { isAdmin: boolean }) {
       <h3 className="font-medium text-gray-100">Retrieval test</h3>
       <p className="mt-1 text-xs text-gray-500">Queries the WeKnora side over published documents only; ACL-invisible documents are filtered out.</p>
       <div className="mt-3 grid gap-2 sm:grid-cols-[180px_1fr_140px_140px_140px_90px]">
-        <select aria-label="Search project" className={inputClass} value={projectScope} onChange={(event) => { setProjectScope(event.target.value); const project = projects.find((entry) => entry.name === event.target.value); if (project) localStorage.setItem("knowledge.projectId", String(project.id)); }}>
+        <select aria-label="Search project" className={inputClass} value={projectScope} onChange={(event) => { setProjectScope(event.target.value); const project = projects.find((entry) => String(entry.id) === event.target.value); if (project) localStorage.setItem("knowledge.projectId", String(project.id)); }}>
           {projects.length === 0 && <option value="">No projects</option>}
-          {projects.map((project) => <option key={project.id} value={project.name}>{project.name}</option>)}
+          {projects.map((project) => <option key={project.id} value={String(project.id)}>{project.name}</option>)}
         </select>
         <input className={inputClass} placeholder="Query text" value={query.q} onChange={(event) => setQuery({ ...query, q: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter" && query.q.trim()) runSearch(); }} />
         <input className={inputClass} placeholder="Version" value={query.productVersion} onChange={(event) => setQuery({ ...query, productVersion: event.target.value })} />

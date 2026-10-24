@@ -325,6 +325,27 @@ export function searchKnowledgeProducts(store: KnowledgeStore, request: ProductD
     const firstSection = Array.isArray(sections) ? sections[0] : undefined;
     return {
       ...row,
+      // Keep the stable DTO discriminator explicit so the native UI can
+      // route Product results back to Product Knowledge instead of treating
+      // them as project Cases.
+      kind: "product_document",
+      // Search results cross the SQL/API boundary, so expose the same
+      // camelCase provenance fields used by the Product Knowledge UI while
+      // retaining the raw columns above for compatibility.
+      sampleManagerVersion: row.samplemanager_version,
+      projectNameSnapshot: row.project_name_snapshot,
+      sourceLocator: row.source_locator,
+      sourceCommit: row.source_commit,
+      sourceSha256: row.source_sha256,
+      sourcePath: row.source_path,
+      documentFamilyId: row.document_family_id,
+      documentType: row.document_type,
+      language: row.language,
+      authority: row.authority,
+      version: row.version,
+      diffReviewStatus: row.diff_review_status,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
       summary: String(row.snippet ?? row.title ?? ""),
       sectionPath: firstSection?.path ? String(firstSection.path) : undefined,
       sectionTitle: firstSection?.title ? String(firstSection.title) : undefined,

@@ -24,6 +24,9 @@ test("knowledge product operations preserve old revisions and search globally", 
     const found = searchKnowledgeProducts(store, { query: "command B", sampleManagerVersion: "21.1" });
     assert.equal(found.length, 1);
     assert.equal(found[0].id, second.documents[0]);
+    assert.equal(found[0].kind, "product_document");
+    assert.equal(found[0].sourcePath, "stability-guide.md");
+    assert.equal(found[0].sampleManagerVersion, "21.1");
     const diff = diffKnowledgeProducts(store, oldId, second.documents[0]);
     assert.ok(diff.changes.some((item) => item.status === "modified" && item.textDiff?.some((part) => part.added)));
     const published = updateProductDocumentLifecycle(store, second.documents[0], "approved");

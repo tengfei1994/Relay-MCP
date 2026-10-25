@@ -91,7 +91,7 @@ Earlier failures are retained as evidence: a501/502 checkpoint had one MCP start
 
 Remaining: full5,372-page engine migration, positive Solution scope, gold-set recall/precision/factual Wiki quality, agreed performance thresholds, remote Job/Deployment correlation, Capture/outbox/dead-letter coexistence and full model rotation/reindex/fault coverage remain separate gates. The bulk parser counts and local fault tests cannot substitute for those deployment-scale scenarios.
 
-All #42–#56 were reopened/audited. #48 has completed its scoped Candidate review and actual Wiki/Product navigation acceptance; the final issue comment records closure after the commit/PR is available. The other issues remain open with their individual gaps. This is bounded nonproduction acceptance, not a production release approval.
+All #42–#56 were reopened/audited and received final per-issue evidence comments. [PR #61](https://github.com/tengfei1994/Relay-MCP/pull/61) contains implementation commit156dcbe. [#48](https://github.com/tengfei1994/Relay-MCP/issues/48) was closed after its scoped Candidate review and actual Wiki/Product navigation acceptance; the other14 issues remain open with their individual gaps. This is bounded nonproduction acceptance, not a production release approval.
 
 ## Additional review and performance evidence
 
@@ -113,3 +113,6 @@ Private report files live under the authorized nonproduction runtime directory. 
 |context-scope-final.json|e75df8f8c3ffce6c0d6d0e3b6cb7b16b30dd635fb57c44443e6a24fd5d99f7bd|
 |candidate-async-live-20261025.json|c6c7b2c212ee91e554ae0bc15ce53f66fe0e983a5023e4112359553585a9a1dd|
 |candidate-async-sensitive-scan-3cab605e-672c-4114-9530-7c387abc0e8e.json|f5ff0c9417259ffd52a4d835572811960f6ac507ba7521285606124caba49c7e|
+
+
+Final packaging validation:26/26 runtime/deployment/log-safety tests passed after adding LF attributes for shell scripts and hash-pinned engine inputs. The staged patch and Go regression file hashes still match the lock. Unified patch context whitespace is intentionally preserved; all other staged whitespace checks passed. Private runtime/auth/source/log artifacts are excluded from Git.

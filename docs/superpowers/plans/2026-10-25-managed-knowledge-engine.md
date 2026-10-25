@@ -52,7 +52,7 @@ Files: src/knowledge/product-backend.ts, src/knowledge/engine-wiki.ts, src/serve
 Files: scripts/knowledge-engine-e2e.ts, docs/*, acceptance report
 - [x] Run actual bootstrap/import/index/search/read/Wiki/model/ACL/restart/migration/rollback flow with recorded IDs and numeric metrics.
 - [x] Run full test/build and browser checks against isolated service, inspect failures and fix regressions.
-- [ ] Review branch, create PR, update issues with exact evidence; close only complete criteria. Preserve remaining scale/scenario gaps explicitly.
+- [x] Review branch, create PR, update issues with exact evidence; close only complete criteria. Preserve remaining scale/scenario gaps explicitly.
 
 
 ### Acceptance-driven corrections
@@ -63,4 +63,6 @@ Files: scripts/knowledge-engine-e2e.ts, docs/*, acceptance report
 - [x] Preserve confirmed Relay memory when only Product availability is degraded.
 - [x] Preserve CHM code through normalization, parser-version upgrade and actual stored-source verification.
 - [x] Final deployed async Candidate probe and real outage ContextPack rerun.
-- [ ] Final complete tests/build, PR and per-issue comments/closure decision.
+- [x] Final complete tests/build, PR and per-issue comments/closure decision.
+
+Final handoff: PR#61 (draft), implementation156dcbe;587/587 tests, standard build,100k FTS gate and final real nonproduction probes passed. #48 closed; the remaining14 issues have explicit acceptance gaps. No production deployment or old-index cleanup occurred.

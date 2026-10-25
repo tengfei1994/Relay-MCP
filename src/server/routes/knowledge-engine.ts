@@ -14,11 +14,12 @@ export async function knowledgeEngineRoutes(app:FastifyInstance){
   });
   app.post("/api/knowledge/engine/initialize",{onRequest:[app.authenticate]},async(request,reply)=>{
     if(!request.user.isAdmin)return reply.code(403).send({error:"Administrator access is required"});
-    const body=z.object({embeddingProviderId:z.string().optional(),wikiProviderId:z.string().optional(),rerankProviderId:z.string().optional()}).safeParse(request.body??{});
+    const body=z.object({ingestionProfile:z.enum(["standard","bulk"]).optional(),embeddingProviderId:z.string().optional(),wikiProviderId:z.string().optional(),rerankProviderId:z.string().optional()}).safeParse(request.body??{});
     if(!body.success)return reply.code(400).send({error:"Invalid provider selection"});
+    if(store.db.prepare("SELECT 1 FROM knowledge_ingest_jobs WHERE kind='product_migration' AND status IN ('queued','running') LIMIT 1").get())return reply.code(409).send({error:"engine_migration_active"});
     try{
       const result=await manager.initialize({actorId:request.user.id,...body.data});
-      store.audit({actorId:request.user.id,action:"knowledge.engine.initialize",entityType:"engine",entityId:"managed",details:{phase:result.phase}});
+      store.audit({actorId:request.user.id,action:"knowledge.engine.initialize",entityType:"engine",entityId:"managed",details:{phase:result.phase,ingestionProfile:"ingestionProfile" in result?result.ingestionProfile:"standard"}});
       return result;
     }catch(error){return reply.code(error instanceof EngineError&&error.status<500?error.status:503).send({error:error instanceof EngineError?error.code:"engine_unavailable"});}
   });

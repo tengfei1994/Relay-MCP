@@ -94,6 +94,7 @@ test("document reads paginate actual chunks and never mix another document", asy
   const client = new WeKnoraClient({ baseUrl, fetchImpl: async (url) => {
     const path = new URL(String(url));
     if (path.pathname.endsWith("/knowledge/doc-1")) return json({ success: true, data: { id: "doc-1", title: "Guide", parse_status: "completed" } });
+    if (path.pathname.endsWith("/knowledge/doc-1/download")) return new Response("Complete original source", { headers: { "content-type": "application/octet-stream" } });
     if (path.pathname.endsWith("/chunks/by-id/c1")) return json({ success: true, data: chunk("c1") });
     const page = Number(path.searchParams.get("page"));
     assert.ok(path.pathname.endsWith("/chunks/doc-1"));
@@ -101,7 +102,7 @@ test("document reads paginate actual chunks and never mix another document", asy
   } });
   const read = await client.readDocument("doc-1", { pageSize: 1 });
   assert.equal(read.documentId, "doc-1");
-  assert.equal(read.content, "Body c1\n\nBody c2");
+  assert.equal(read.content, "Complete original source");
   assert.deepEqual(read.chunks.map((c) => c.chunkId), ["c1", "c2"]);
   assert.equal((await client.getChunk("c1")).documentId, "doc-1");
   const foreign = new WeKnoraClient({ baseUrl, fetchImpl: async () => json({ success: true, data: [chunk("bad", 0, "foreign")], total: 1 }) });

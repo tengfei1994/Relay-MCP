@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { KnowledgeStore } from "./store.js";
 import { ProviderUnavailableError } from "./providers.js";
-import { ProviderPolicy, type ProviderConfig, type ProviderHealth, type ProviderPolicyOptions, type ProviderCallOptions } from "./provider-runtime.js";
+import { admitProviderInvocation } from "./provider-admission.js";
+import { ProviderPolicy, ProviderBindingStaleError, ProviderCredentialsChangedError, type ProviderConfig, type ProviderHealth, type ProviderPolicyOptions, type ProviderCallOptions } from "./provider-runtime.js";
 import type { SecretResolver } from "./provider-secret.js";
-import { ManagedProviderError, callOpenAiChat, callOpenAiEmbedding, callOpenAiRerank, type ManagedHttpOptions, type ManagedChatMessage, type ProviderTokenUsage } from "./provider-probe.js";
+import { ManagedProviderError, providerErrorAuditDetails, callOpenAiChat, callOpenAiEmbedding, callOpenAiRerank, type ManagedHttpOptions, type ManagedChatMessage, type ProviderTokenUsage } from "./provider-probe.js";
 
 export type ManagedProviderKind = "embedding" | "rerank" | "wiki_llm" | "candidate_llm";
 export type ManagedProviderStatus = "ready" | "pending_reindex" | "degraded" | "disabled";
@@ -13,6 +14,7 @@ export interface ProviderConfigMetadata { id: string; kind: ManagedProviderKind;
 export type ProviderReindexJobStatus = "pending" | "running" | "completed" | "failed";
 export interface ProviderReindexJob { id: string; providerId: string; indexVersion: number; fromModelId?: string; fromDimensions?: number; toModelId: string; toDimensions?: number; status: ProviderReindexJobStatus; errorCode?: string; createdAt: string; updatedAt: string; completedAt?: string; }
 export interface PendingReindexEntry { job: ProviderReindexJob; provider: ProviderConfigMetadata; }
+export interface ExpectedProviderBinding { kind: ManagedProviderKind; modelId: string; dimensions?: number; indexVersion: number; }
 /** Numeric, credential-free probe outcome; safe for DTOs and audit. */
 export interface ProviderProbeReport { ok: boolean; errorCode?: string; latencyMs?: number; httpStatus?: number; observedDimensions?: number; tokenUsage?: ProviderTokenUsage; }
 export interface ProviderRegistryRuntimeOptions { secrets?: SecretResolver; fetchImpl?: typeof fetch; policy?: ProviderPolicyOptions; }
@@ -108,7 +110,7 @@ export interface ManagedProviderHandle {
 }
 
 // Process-wide, per-database provider budgets survive repeated registry/handle
-// resolution. Cross-process quotas require a separate durable budget service.
+// resolution. Durable admission also enforces quotas across processes/restarts.
 const sharedPolicies=new Map<string,ProviderPolicy>();
 
 export class ProviderRegistry {
@@ -119,7 +121,9 @@ export class ProviderRegistry {
   constructor(private readonly store: KnowledgeStore, private readonly clock: () => Date = () => new Date(), options: ProviderRegistryRuntimeOptions = {}) {
     this.secrets = options.secrets;
     this.fetchImpl = options.fetchImpl;
-    this.policyOptions = options.policy ?? {};
+    // Managed quotas have one durable authority; the process policy handles
+    // timeout, retries, concurrency and circuits without a second quota gate.
+    this.policyOptions = { ...options.policy, quota: undefined };
   }
 
   upsert(input: ProviderConfigInput): ProviderConfigMetadata {
@@ -214,11 +218,11 @@ export class ProviderRegistry {
    * Resolve a live managed provider handle for backend callers (candidate
    * pipeline, retriever). Throws when the provider is missing or disabled.
    */
-  resolveCandidateProvider(id: string): ManagedProviderHandle {
+  resolveCandidateProvider(id: string, expectedBinding?: ExpectedProviderBinding): ManagedProviderHandle {
     const row = this.row(id);
     if (!row) throw new ProviderUnavailableError(`Provider '${id}' is not configured`);
     if (String(row.status) === "disabled") throw new ProviderUnavailableError(`Provider '${id}' is disabled`);
-    return this.handleFromRow(row);
+    return this.handleFromRow(row, expectedBinding);
   }
 
   private row(id: string): Record<string, unknown> | undefined {
@@ -243,11 +247,10 @@ export class ProviderRegistry {
       timeoutMs: Number(row.timeout_ms),
       concurrency: Number(row.concurrency),
       maxRetries: Number(row.max_retries),
-      quota: row.quota_max_calls != null && row.quota_window_ms != null ? { maxCalls: Number(row.quota_max_calls), windowMs: Number(row.quota_window_ms) } : undefined,
     };
   }
 
-  private handleFromRow(initialRow: Record<string, unknown>): ManagedProviderHandle {
+  private handleFromRow(initialRow: Record<string, unknown>, expectedBinding?: ExpectedProviderBinding): ManagedProviderHandle {
     const id = String(initialRow.id);
     const kind = String(initialRow.kind) as ManagedProviderKind;
     const policyKey=JSON.stringify([this.store.db.name,id]);
@@ -258,6 +261,9 @@ export class ProviderRegistry {
       const row = this.row(id);
       if (!row) throw new ProviderUnavailableError(`Provider '${id}' is not configured`);
       if (String(row.status) === "disabled") throw new ProviderUnavailableError(`Provider '${id}' is disabled`);
+      // Gateway aliases carry their own frozen generation. An external process
+      // may update SQLite between the gateway check and handle construction.
+      if (expectedBinding && (String(row.kind) !== expectedBinding.kind || String(row.model_id) !== expectedBinding.modelId || Number(row.index_version ?? 1) !== expectedBinding.indexVersion || (row.dimensions == null ? undefined : Number(row.dimensions)) !== expectedBinding.dimensions)) throw new ProviderBindingStaleError();
       if(String(row.kind)!==kind)throw new ProviderUnavailableError("Provider kind changed; resolve a new handle");
       return row;
     };
@@ -269,11 +275,31 @@ export class ProviderRegistry {
     };
     const invoke = async <T extends { status: number; latencyMs: number; tokenUsage?: ProviderTokenUsage }>(request: string, call: (options: ManagedHttpOptions, row: Record<string, unknown>) => Promise<T>, callOptions?:ProviderCallOptions): Promise<T> => {
       const row = currentRow();
+      // Handles remain live between invocations. One queued/retried invocation
+      // must never cross model spaces, even when their dimensions are equal.
+      const binding = (value: Record<string, unknown>) => JSON.stringify([value.kind, value.provider, value.base_url, value.model_id, value.dimensions, value.index_version]);
+      const expectedBinding = binding(row);
+      const assertBinding = () => {
+        const current = currentRow();
+        if (binding(current) !== expectedBinding) throw new ProviderBindingStaleError();
+        return current;
+      };
       policy.updateConfig(this.policyConfig(row));
       try {
-        return await policy.execute(async (signal) => {const current=currentRow();return call(await httpOptions(current,signal),current);},callOptions);
+        if (callOptions?.signal?.aborted) throw callOptions.signal.reason ?? new Error("Provider operation aborted");
+        let admitted = false;
+        return await policy.execute(async (signal) => {
+          const current = assertBinding();
+          const options = await httpOptions(current,signal);
+          // Secret resolution can yield too. Check again before quota/HTTP.
+          if (assertBinding().secret_ref !== current.secret_ref) throw new ProviderCredentialsChangedError();
+          // Circuit/queue rejection never reaches this callback. Reserve once
+          // before transport; retries share this logical invocation's record.
+          if (!admitted) { admitProviderInvocation(this.store,id,this.clock()); admitted = true; }
+          return call(options,current);
+        },callOptions);
       } catch (error) {
-        this.store.audit({ action: "knowledge.provider.invoke_error", entityType: "provider", entityId: id, details: { request, errorCode: classifyProviderError(error) } });
+        this.store.audit({ action: "knowledge.provider.invoke_error", entityType: "provider", entityId: id, details: { request, errorCode: classifyProviderError(error), ...providerErrorAuditDetails(error) } });
         throw error;
       }
     };

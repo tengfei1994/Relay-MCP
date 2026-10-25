@@ -1,0 +1,55 @@
+diff --git a/internal/types/retrieval_config.go b/internal/types/retrieval_config.go
+--- a/internal/types/retrieval_config.go
++++ b/internal/types/retrieval_config.go
+@@ -31,9 +31,9 @@
+ 	RRFK int `json:"rrf_k,omitempty"`
+ 	// RRFVectorWeight is the weight applied to the vector retriever inside RRF.
+ 	// RRFVectorWeight + RRFKeywordWeight should usually sum to 1.0 but the math
+-	// works for any positive weights. Default: 0.7.
++	// works for any positive weights. Unconfigured pair default: 0.3.
+ 	RRFVectorWeight float64 `json:"rrf_vector_weight,omitempty"`
+-	// RRFKeywordWeight is the keyword counterpart. Default: 0.3.
++	// RRFKeywordWeight is the keyword counterpart. Unconfigured pair default: 0.7.
+ 	RRFKeywordWeight float64 `json:"rrf_keyword_weight,omitempty"`
+ }
+ 
+@@ -98,10 +98,11 @@
+ }
+ 
+ // GetEffectiveRRFWeights returns vector / keyword weights with sensible defaults.
+-// When neither weight is set explicitly, returns 0.7 / 0.3.
++// When neither weight is positive, returns keyword-first defaults 0.3 / 0.7.
++// Partially configured pairs retain their legacy fallbacks for compatibility.
+ func (c *RetrievalConfig) GetEffectiveRRFWeights() (vector, keyword float64) {
+-	if c == nil || (c.RRFVectorWeight == 0 && c.RRFKeywordWeight == 0) {
+-		return 0.7, 0.3
++	if c == nil || (c.RRFVectorWeight <= 0 && c.RRFKeywordWeight <= 0) {
++		return 0.3, 0.7
+ 	}
+ 	v := c.RRFVectorWeight
+ 	k := c.RRFKeywordWeight
+diff --git a/internal/application/service/knowledgebase_search_fusion_test.go b/internal/application/service/knowledgebase_search_fusion_test.go
+--- a/internal/application/service/knowledgebase_search_fusion_test.go
++++ b/internal/application/service/knowledgebase_search_fusion_test.go
+@@ -79,8 +79,8 @@
+ 		require.NotEqual(t, 16.1239, hit.Score)
+ 	}
+ 	// Normalized RRF: rank 1 for one retriever only scores that retriever's
+-	// share of the total weight (defaults 0.7 / 0.3).
+-	require.Equal(t, "vec", got[0].ChunkID)
++	// share of the total weight (defaults vector 0.3 / keyword 0.7).
++	require.Equal(t, "kw", got[0].ChunkID)
+ 	require.InDelta(t, 0.7, got[0].Score, 1e-9)
+ 	require.InDelta(t, 0.3, got[1].Score, 1e-9)
+ }
+@@ -123,8 +123,8 @@
+ 		scores[hit.ChunkID] = hit.Score
+ 	}
+ 	// doc-1 and faq-2 hold rank 1 and 2 of their own lists.
+-	require.InDelta(t, 0.7, scores["doc-1"], 1e-9)
+-	require.InDelta(t, 0.7*61.0/62.0, scores["faq-2"], 1e-9)
++	require.InDelta(t, 0.3, scores["doc-1"], 1e-9)
++	require.InDelta(t, 0.3*61.0/62.0, scores["faq-2"], 1e-9)
+ }
+ 
+ func TestFuseOrDeduplicate_KeywordOnlyScalesEachList(t *testing.T) {

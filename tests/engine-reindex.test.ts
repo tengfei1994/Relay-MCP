@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import Database from 'better-sqlite3';
 import { createKnowledgeStore, type KnowledgeStore } from '../src/knowledge/store.ts';
 import { ProviderRegistry } from '../src/knowledge/provider-registry.ts';
 import { MigrationController, type KnowledgeMigration } from '../src/knowledge/migration-control.ts';
@@ -69,6 +70,24 @@ function remainsPending(f: Fixture) {
 }
 const finish = (f: Fixture) => completeVerifiedEngineReindex(f.store, f.jobId, ACTOR, f.dependencies);
 
+test('reindex reserves its verified snapshot before another connection can change provider state', () => fixture(async f => {
+  await f.publishCurrent();
+  const competing = new Database(f.store.db.name);
+  competing.pragma('busy_timeout = 1');
+  const original = f.dependencies.manager!;
+  let competingWriteBlocked = false;
+  f.dependencies.manager = { control: () => original.control(), status: () => {
+    try { competing.prepare("UPDATE knowledge_provider_configs SET status='disabled' WHERE id='embed'").run(); }
+    catch (error) { assert.match(String((error as {code?: string}).code), /^SQLITE_BUSY/); competingWriteBlocked = true; }
+    return original.status();
+  } };
+  try {
+    assert.equal(finish(f).status, 'completed');
+    assert.equal(competingWriteBlocked, true);
+    assert.equal(f.registry.get('embed')?.status, 'ready');
+  } finally { competing.close(); }
+}));
+
 test('reindex completion requires a ready managed engine and keeps pending state on refusal', () => fixture(async f => {
   await f.publishCurrent();
   f.dependencies.manager = { status: () => ({ phase: 'not_installed' }), control: () => { throw new Error('control must not be read'); } };
@@ -130,7 +149,7 @@ test('full verified replacement after real rollback completes while preserving t
   assert.equal(f.registry.get('embed')?.reindexRequired, false);
   assert.deepEqual(f.store.db.prepare('SELECT * FROM knowledge_weknora_documents ORDER BY id').all(), before);
   const proof = f.store.db.prepare("SELECT details_json FROM knowledge_audit WHERE action='knowledge.engine.reindex_verified'").get() as { details_json: string };
-  assert.deepEqual(JSON.parse(proof.details_json), { jobId: f.jobId, migrationId: current.id, indexVersion: 2, verifiedDocuments: 2, coveredPreviousDocuments: 2 });
+  assert.deepEqual(JSON.parse(proof.details_json), { jobId: f.jobId, migrationId: current.id, migrationIds: [current.id], indexVersion: 2, verifiedDocuments: 2, coveredPreviousDocuments: 2 });
 }));
 
 test('rolling back a never-published staged migration does not invent historical corpus coverage requirements', () => fixture(async f => {
@@ -165,7 +184,7 @@ test('complete verified coverage clears pending state and records proof without 
   assert.equal(f.registry.get('embed')?.status, 'ready');
   assert.deepEqual(f.store.db.prepare('SELECT * FROM knowledge_weknora_documents ORDER BY id').all(), before);
   const proof = f.store.db.prepare("SELECT details_json FROM knowledge_audit WHERE action='knowledge.engine.reindex_verified'").get() as { details_json: string };
-  assert.deepEqual(JSON.parse(proof.details_json), { jobId: f.jobId, migrationId: current.id, indexVersion: 2, verifiedDocuments: 2, coveredPreviousDocuments: 2 });
+  assert.deepEqual(JSON.parse(proof.details_json), { jobId: f.jobId, migrationId: current.id, migrationIds: [current.id], indexVersion: 2, verifiedDocuments: 2, coveredPreviousDocuments: 2 });
 }));
 
 test('current engine binding must match the provider and current job after another model change', () => fixture(async f => {
@@ -181,4 +200,44 @@ test('a source changed after publication cannot be asserted to have a current ve
   f.store.db.prepare("UPDATE knowledge_documents SET body='Changed since publication' WHERE id='local-a'").run();
   assert.throws(() => finish(f), /source_manifest_mismatch/);
   remainsPending(f);
+}));
+
+async function otherEnvironment(f: Fixture, publish = true) {
+  seed(f.store, 'local-other');
+  f.store.db.prepare("UPDATE knowledge_documents SET environment='other-nonprod' WHERE id='local-other'").run();
+  const input = { actorId: ACTOR, parserVersion: 'parser-v1', projectId: 'p1', environment: 'other-nonprod' };
+  const old = await f.controller.createFromLocal({ ...input, idempotencyKey: 'old-other' }, new WeKnoraIngestor(f.store, writer(oldModel), () => new Date(NOW)));
+  f.controller.validateAndPublish(old.id, ACTOR);
+  const replacement = await f.controller.createFromLocal({ ...input, idempotencyKey: 'new-other' }, new WeKnoraIngestor(f.store, writer(newModel), () => new Date(NOW)));
+  if (publish) f.controller.validateAndPublish(replacement.id, ACTOR);
+  return replacement;
+}
+
+test('reindex accepts fully verified published replacements across separate environment migrations', () => fixture(async f => {
+  await otherEnvironment(f);
+  const current = await f.publishCurrent();
+  const before = f.store.db.prepare('SELECT * FROM knowledge_weknora_documents ORDER BY id').all();
+  assert.equal(finish(f).status, 'completed');
+  assert.deepEqual(f.store.db.prepare('SELECT * FROM knowledge_weknora_documents ORDER BY id').all(), before);
+  assert.equal(f.controller.activeProductProvider(), 'weknora');
+  assert.equal((f.store.db.prepare("SELECT migration_id FROM knowledge_integration_settings WHERE key='product_provider'").get() as any).migration_id, current.id);
+  const proof = JSON.parse((f.store.db.prepare("SELECT details_json FROM knowledge_audit WHERE action='knowledge.engine.reindex_verified'").get() as any).details_json);
+  assert.equal(proof.verifiedDocuments, 3); assert.equal(proof.coveredPreviousDocuments, 3);
+}));
+
+test('an unpublished supplemental replacement cannot complete another environment reindex', () => fixture(async f => {
+  await otherEnvironment(f, false); await f.publishCurrent();
+  assert.throws(() => finish(f), /corpus_incomplete/); remainsPending(f);
+}));
+
+test('supplemental published replacements must revalidate their source manifest', () => fixture(async f => {
+  await otherEnvironment(f); await f.publishCurrent();
+  f.store.db.prepare("UPDATE knowledge_documents SET body='changed supplemental source' WHERE id='local-other'").run();
+  assert.throws(() => finish(f), /source_manifest_mismatch/); remainsPending(f);
+}));
+
+test('supplemental replacements cannot cross the historical source environment', () => fixture(async f => {
+  await otherEnvironment(f); await f.publishCurrent();
+  f.store.db.prepare("UPDATE knowledge_weknora_documents SET environment='wrong-scope' WHERE external_knowledge_base_id='kb-current' AND environment='other-nonprod'").run();
+  assert.throws(() => finish(f), /source_manifest_mismatch/); remainsPending(f);
 }));

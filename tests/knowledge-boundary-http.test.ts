@@ -101,6 +101,14 @@ test("HTTP Product Knowledge boundaries enforce project scope and topic ACLs", a
       const list=await app.inject({url:`/api/knowledge/${path}?projectId=p1`});
       assert.equal(list.statusCode,200,list.body);
       assert.ok(!list.body.includes("P2 doc"),"legacy Product must not leak after cutover via "+path);
+      for(const status of ["approved","published","draft","deprecated","staged"]){
+        const filtered=await app.inject({url:`/api/knowledge/${path}?projectId=p1&status=${status}`});
+        assert.equal(filtered.statusCode,200,filtered.body);
+        const expected=["approved","published"].includes(status)?1:0;
+        assert.equal(filtered.json().documents.length,expected,path+":"+status);
+        assert.equal(filtered.json().page.total,expected,path+":"+status+":total");
+        assert.ok(filtered.json().documents.every((doc:any)=>doc.lifecycle==="approved"));
+      }
     }
 
     const template=store.db.prepare("SELECT * FROM knowledge_weknora_documents WHERE id=?").get(p1Document.id) as Record<string,unknown>;

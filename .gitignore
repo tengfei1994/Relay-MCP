@@ -15,3 +15,5 @@ output/playwright/
 runtime/
 *.log
 wire-engine.py
+__pycache__/
+*.py[cod]

@@ -49,6 +49,29 @@ if ! go test -p 2 ./internal/models/api/... >"$TEST_LOG" 2>&1; then
   exit 1
 fi
 printf 'Upstream model protocol/privacy regression tests passed\n'
+CONTENT_TEST_LOG="$BUILD_ROOT/linked-image-tests.log"
+if ! go test -p 2 ./internal/infrastructure/docparser >"$CONTENT_TEST_LOG" 2>&1; then
+  echo "Upstream linked-image/content regression tests failed; inspect private build log: $CONTENT_TEST_LOG" >&2
+  exit 1
+fi
+printf 'Upstream linked-image/content regression tests passed\n'
+RETRY_TEST_LOG="$BUILD_ROOT/document-retry-tests.log"
+RETRY_OPTIONS_PROOF="$BUILD_ROOT/managed-document-retry-options.json"
+if ! RELAY_RETRY_OPTIONS_PROOF="$RETRY_OPTIONS_PROOF" go test -p 2 ./internal/application/service -run 'TestRelayManagedDocument|TestDocumentProcessTaskOptions' -count=1 >"$RETRY_TEST_LOG" 2>&1; then
+  echo "Managed document task-option regression failed; inspect private build log: $RETRY_TEST_LOG" >&2
+  exit 1
+fi
+if ! RELAY_RETRY_OPTIONS_PROOF="$RETRY_OPTIONS_PROOF" go test -p 2 ./internal/router -run 'TestRelayManagedDocumentSingleQueueAttempt' -count=1 >>"$RETRY_TEST_LOG" 2>&1; then
+  echo "Managed single-attempt queue regression failed; inspect private build log: $RETRY_TEST_LOG" >&2
+  exit 1
+fi
+printf 'Managed document single-attempt queue regressions passed\n'
+RRF_TEST_LOG="$BUILD_ROOT/keyword-first-rrf-tests.log"
+if ! go test -p 2 ./internal/application/service -run 'TestRelayKeywordFirstRRF|TestFuseOrDeduplicate|TestBestRanks|TestRescaleUnboundedScores' -count=1 >"$RRF_TEST_LOG" 2>&1; then
+  echo "Keyword-first RRF regressions failed; inspect private build log: $RRF_TEST_LOG" >&2
+  exit 1
+fi
+printf 'Keyword-first RRF defaults and explicit-setting regressions passed\n'
 LDFLAGS="-w -s -X github.com/Tencent/WeKnora/internal/handler.Version=$VERSION -X github.com/Tencent/WeKnora/internal/handler.Edition=lite -X github.com/Tencent/WeKnora/internal/handler.CommitID=$COMMIT -X github.com/Tencent/WeKnora/internal/handler.GoVersion=$GO_VERSION -X google.golang.org/protobuf/reflect/protoregistry.conflictPolicy=warn"
 go build -p 2 -tags sqlite_fts5 -ldflags "$LDFLAGS" -o "$BUILD_ROOT/WeKnora-lite" ./cmd/server
 BUNDLE="$BUILD_ROOT/bundle"
@@ -62,7 +85,7 @@ cp "$SCRIPT_DIR/upstream-lock.json" "$BUNDLE/relay-upstream-lock.json"
 cp "$SCRIPT_DIR/patches/"* "$BUNDLE/relay-patches/"
 bash scripts/copy-licenses.sh "$BUNDLE"
 node "$SCRIPT_DIR/7zip-install.mjs" "$BUNDLE/tools/7zip"
-python3 - "$BUNDLE" "$SCRIPT_DIR/upstream-lock.json" "$TEST_LOG" <<'PY'
+python3 - "$BUNDLE" "$SCRIPT_DIR/upstream-lock.json" "$TEST_LOG" "$CONTENT_TEST_LOG" "$RETRY_TEST_LOG" "$RETRY_OPTIONS_PROOF" "$RRF_TEST_LOG" <<'PY'
 import hashlib,json,pathlib,sys
 root=pathlib.Path(sys.argv[1]); lock=json.loads(pathlib.Path(sys.argv[2]).read_text())
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
@@ -71,6 +94,27 @@ proof={'schemaVersion':1,'status':'passed','securityPolicy':lock['securityPolicy
        'testLogSha256':sha(pathlib.Path(sys.argv[3])),'tests':['TestRelayRequestLogOmitsPrivatePayloads','TestRelayModelErrorsOmitPrivateResponseAndURL'],
        'suite':'go test -p 2 ./internal/models/api/...','relayPatches':patches}
 (root/'relay-log-safety-proof.json').write_text(json.dumps(proof,indent=2)+'\n')
+content_proof={'schemaVersion':1,'status':'passed','policy':'relay-linked-image-hrefs-v1','binarySha256':sha(root/'WeKnora-lite'),
+       'testLogSha256':sha(pathlib.Path(sys.argv[4])),'tests':['TestRelayLinkedImageUploadPipelinePreservesStructure','TestRelayLinkedImageInlineBytesRetainOuterHref','TestRelayLinkedImageDataURIRetainsOuterHref'],
+       'suite':'go test -p 2 ./internal/infrastructure/docparser','relayPatches':patches}
+(root/'relay-content-preservation-proof.json').write_text(json.dumps(content_proof,indent=2)+'\n')
+retry_options=json.loads(pathlib.Path(sys.argv[6]).read_text())
+if not retry_options.get('managedRetryOptions') or retry_options['managedRetryOptions'][-1] != 0:
+ raise RuntimeError('Managed retry-options proof is not zero retries')
+retry_proof={'schemaVersion':1,'status':'passed','policy':'relay-managed-document-no-auto-retry-v1','binarySha256':sha(root/'WeKnora-lite'),
+       'testLogSha256':sha(pathlib.Path(sys.argv[5])),'actualServiceOptionsSha256':sha(pathlib.Path(sys.argv[6])),
+       'tests':['TestRelayManagedDocumentTaskRetryOptions','TestRelayManagedDocumentRetryLeavesOtherPoliciesUnchanged','TestRelayManagedDocumentSingleQueueAttempt'],
+       'managedEnvironment':{'RELAY_MANAGED_DOCUMENT_PROCESS_NO_RETRY':'true'},'queueAttemptsOnRetryableFailure':1,
+       'scope':'documentProcessTaskOptions only; provider retry policy unchanged','relayPatches':patches}
+(root/'relay-document-retry-proof.json').write_text(json.dumps(retry_proof,indent=2)+'\n')
+rrf_proof={'schemaVersion':1,'status':'passed','policy':'relay-keyword-first-rrf-defaults-v1','productContract':'Relay #53 technical keyword priority',
+       'binarySha256':sha(root/'WeKnora-lite'),'testLogSha256':sha(pathlib.Path(sys.argv[7])),
+       'tests':['TestRelayKeywordFirstRRFDefaults','TestRelayKeywordFirstRRFVectorStillContributes','TestRelayKeywordFirstRRFExplicitSettingsPreserved'],
+       'suite':'go test -p 2 ./internal/application/service -run TestRelayKeywordFirstRRF|TestFuseOrDeduplicate|TestBestRanks|TestRescaleUnboundedScores -count=1',
+       'defaultWeights':{'vector':0.3,'keyword':0.7},'explicitPositiveWeightsPreserved':True,
+       'partialExplicitLegacyFallbackPreserved':True,'rrfKUnchanged':True,
+       'fusionMathUnchanged':True,'tenantConfigMutations':0,'modelCalls':0,'relayPatches':patches}
+(root/'relay-keyword-first-rrf-proof.json').write_text(json.dumps(rrf_proof,indent=2)+'\n')
 files={str(p.relative_to(root)).replace('\\','/'):sha(p) for p in sorted(root.rglob('*')) if p.is_file()}
 version=max(int(p.name.split('_')[0]) for p in (root/'migrations/sqlite').glob('*.up.sql'))
 manifest={'schemaVersion':1,'version':lock['version'],'sourceCommit':lock['sourceCommit'],'sourceArchiveSha256':lock['sourceArchiveSha256'],

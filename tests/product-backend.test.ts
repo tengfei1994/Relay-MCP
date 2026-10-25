@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -19,7 +20,7 @@ function local(store: KnowledgeStore, id: string, project?: string, environment?
 }
 function mapped(store: KnowledgeStore, id: string, values: { project?: string; environment?: string; status?: string; kb?: string; verified?: boolean; version?: string } = {}) {
   store.db.prepare("INSERT INTO knowledge_weknora_documents(id,external_document_id,external_knowledge_base_id,external_chunk_ids_json,title,normalized_content_sha256,raw_sha256,parser_version,product_version,source_path,project_id,environment,language,status,idempotency_key,created_at,updated_at,upstream_verified_at,upstream_parse_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-    .run(id, "ext-" + id, values.kb ?? KB, JSON.stringify(["chunk-" + id]), "Verified pump manual", "n".repeat(64), "a".repeat(64), "v2", values.version ?? "21.3", "manual/" + id + ".html#setup", values.project ?? "p1", values.environment ?? "dev", "en", values.status ?? "published", id, NOW, NOW, values.verified === false ? null : NOW, "completed");
+    .run(id, "ext-" + id, values.kb ?? KB, JSON.stringify(["chunk-" + id]), "Verified pump manual", createHash("sha256").update("Actual engine body").digest("hex"), "a".repeat(64), "v2", values.version ?? "21.3", "manual/" + id + ".html#setup", values.project ?? "p1", values.environment ?? "dev", "en", values.status ?? "published", id, NOW, NOW, values.verified === false ? null : NOW, "completed");
 }
 function reference(id: string, override: Partial<KnowledgeReference> = {}): KnowledgeReference {
   return { provider: "weknora", documentId: "ext-" + id, chunkId: "chunk-" + id, title: "Untrusted upstream title", version: "wrong", sourceLocator: "wrong/private/path", snippet: "Actual engine pump excerpt", score: 0.9, retrievalRunId: "run-1", ...override };
@@ -176,7 +177,7 @@ test("deprecating a legacy Product ID also removes its migrated publication",()=
   local(store,"legacy-doc","p1","dev");mapped(store,"good");const migration=select();
   store.db.prepare("INSERT INTO knowledge_migration_documents(migration_id,local_document_id,document_id,idempotency_key,external_document_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)").run(migration,"legacy-doc","good","alias","ext-good","published",NOW,NOW);
   updateProductDocumentLifecycle(store,"legacy-doc","deprecated");
-  assert.equal(store.db.prepare("SELECT status FROM knowledge_weknora_documents WHERE id='good'").get().status,"deprecated");
+  assert.equal((store.db.prepare("SELECT status FROM knowledge_weknora_documents WHERE id='good'").get() as {status:string}).status,"deprecated");
   assert.deepEqual(await searchProductBackend(store,scope,control),[]);
   await assert.rejects(getProductBackend(store,{...scope,documentId:"legacy-doc"},control),/not found|denied/i);
 }));
@@ -197,6 +198,21 @@ test("engine listing counts and pages beyond 500 published documents",()=>fixtur
   assert.equal(page.page.total,501);assert.equal(page.documents.length,1);assert.equal(page.documents[0].id,"doc-0500");
 }));
 
+test("engine catalog status filters never return approved publications for draft or deprecated",()=>fixture(async({store,control,select,reads,searches})=>{
+  mapped(store,"published");mapped(store,"staged",{status:"staged"});mapped(store,"deprecated",{status:"deprecated"});mapped(store,"foreign",{project:"p2"});mapped(store,"old-binding",{kb:"old-kb"});select();
+  for(const status of [undefined,"","approved","published"]){
+    const result=await listEngineProductBackend(store,{...scope,...{status},limit:1,offset:0},control);
+    assert.deepEqual(result.documents.map(row=>row.id),["published"],String(status));
+    assert.equal(result.documents[0].lifecycle,"approved");assert.equal(result.page.total,1);
+  }
+  for(const status of ["draft","deprecated","staged","failed","unknown"]){
+    const result=await listEngineProductBackend(store,{...scope,...{status},limit:50,offset:100},control);
+    assert.deepEqual(result.documents,[],status);assert.deepEqual(result.page,{limit:50,offset:100,total:0});assert.equal(result.provider,"weknora");
+  }
+  await assert.rejects(listEngineProductBackend(store,{...scope,userId:10,...{status:"draft"}},control),/denied/i);
+  assert.equal(reads.length,0);assert.equal(searches.length,0);
+}));
+
 
 test("local rollback keeps same-family Product diff compatible",()=>fixture(async({store,control})=>{
   local(store,"left","p1","dev");local(store,"right","p1","dev");
@@ -211,4 +227,33 @@ test("display metadata and no-op corrections preserve publication; changed sourc
   assert.equal((await getProductBackend(store,{...scope,documentId:"legacy-doc"},control)).authority,"official");
   assert.equal(correctProductMetadata(store,{ids:["legacy-doc"],module:"New module",reason:"source correction"}).engineRepublishRequired,1);
   assert.deepEqual(await searchProductBackend(store,scope,control),[]);
+}));
+
+
+test("Product read passes the immutable normalized source hash and rejects corrupted source text",()=>fixture(async({store,control,select})=>{
+  mapped(store,"good");select();
+  const original=control.client.readDocument;
+  let hash: string | undefined;
+  control.client.readDocument=async(id,options)=>{hash=options?.expectedNormalizedSha256;return original(id,options);};
+  assert.equal((await getProductBackend(store,{...scope,documentId:"good"},control)).body,"Actual engine body");
+  assert.equal(hash,createHash("sha256").update("Actual engine body").digest("hex"));
+  control.client.readDocument=async(id,options)=>({...await original(id,options),content:"Corrupted source text"});
+  await assert.rejects(getProductBackend(store,{...scope,documentId:"good"},control),/hash|integrity|identity/i);
+}));
+
+test("Product read rechecks the normalized hash and ACL after the original-file request",()=>fixture(async({store,control,select})=>{
+  mapped(store,"good");select();
+  const original=control.client.readDocument;
+  control.client.readDocument=async(id,options)=>{
+    const result=await original(id,options);
+    store.db.prepare("UPDATE knowledge_weknora_documents SET normalized_content_sha256=? WHERE id='good'").run("a".repeat(64));
+    return result;
+  };
+  await assert.rejects(getProductBackend(store,{...scope,documentId:"good"},control),/hash|integrity|identity/i);
+  control.client.readDocument=async(id,options)=>{
+    const result=await original(id,options);
+    store.db.prepare("UPDATE knowledge_acl SET can_read=0 WHERE project_id='p1' AND user_id=7").run();
+    return result;
+  };
+  await assert.rejects(getProductBackend(store,{...scope,documentId:"good"},control),/denied/i);
 }));

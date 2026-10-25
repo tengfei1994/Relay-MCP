@@ -6,6 +6,8 @@
  * code blocks, images and links. The output is stable across runs of the
  * same source so normalized hashes stay comparable.
  */
+import {renderProductHtml,protectCanonicalHtmlTables} from "./html-markdown.js";
+
 export interface StructuredMarkdown {
   markdown: string;
   title?: string;
@@ -107,15 +109,21 @@ function removeNonContentMarkup(source: string): string {
     .replace(/<(nav|aside|footer|header)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "");
 }
 
-const CANONICAL_ANCHOR = /<a\s+id="([A-Za-z0-9_.:-]+)"\s*><\/a>/gi;
+const CANONICAL_ANCHOR = /<a\s+id="([^"]*)"\s*><\/a>/gi;
 const HTML_CONTENT_TAG = /<!doctype\s+html\b|<\/?(?:html|head|body|h[1-6]|p|pre|code|div|section|article|table|thead|tbody|tr|td|th|ul|ol|li|blockquote|br|hr|script|style|nav|aside|header|footer|a|img|strong|em|b|i)\b[^>]*>/i;
 
 /** Imported Product bodies are Markdown even if their original path is HTML.
  * Detect markup outside literals; retain HTML cleanup for actual HTML. */
 export function normalizeProductMarkup(source: string): string {
   const literals = protectedMarkdown(source);
-  if (HTML_CONTENT_TAG.test(literals.text.replace(CANONICAL_ANCHOR, ""))) return htmlToStructuredMarkdown(source).markdown;
-  let text = removeNonContentMarkup(literals.text);
+  const structuredHtml = protectCanonicalHtmlTables(literals.text, literals.keep);
+  // Angle-delimited Markdown destinations (including spaces) are not HTML.
+  // Protect only the destination after ](, leaving ordinary raw HTML cleanup
+  // and the immutable legacy replay algorithm unchanged.
+  const structured = structuredHtml.replace(/(?<!\\)(\]\([ \t]*)<([^<>\r\n]*)>(?=[ \t]*(?:\)|["'(]))/g,
+    (_match, prefix: string, destination: string) => prefix + literals.keep(`<${destination}>`));
+  if (HTML_CONTENT_TAG.test(structured.replace(CANONICAL_ANCHOR, ""))) return htmlToStructuredMarkdown(source).markdown;
+  let text = removeNonContentMarkup(structured);
   text = text.replace(CANONICAL_ANCHOR, match => literals.keep(match));
   // Unrecognized raw HTML remains stripped outside literal code. Markdown
   // entities, indentation, blank lines and link syntax retain their meaning.
@@ -123,7 +131,7 @@ export function normalizeProductMarkup(source: string): string {
 }
 
 export function htmlToStructuredMarkdown(source: string): StructuredMarkdown {
-  return convertProductHtml(source, true);
+  return renderProductHtml(source);
 }
 
 /** Compatibility proof only: reproduce the old normalization to recognize an

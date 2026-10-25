@@ -1,3 +1,4 @@
+import { LazyKnowledgeMarkup as KnowledgeMarkup } from "../components/LazyKnowledgeMarkup";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { BookOpen, CheckCircle2, ChevronLeft, ChevronRight, FileText, GitBranch, KeyRound, RefreshCw, ServerCog, ShieldAlert, Workflow } from "lucide-react";
@@ -6,6 +7,7 @@ import { useAuth } from "../App";
 import { Badge, cardClass, formatDate, inputClass, PageShell, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
 import { ProviderSetupForm, type ProviderSetupDefaults } from "../components/ProviderSetupForm";
 import { buildKnowledgeScope, buildWeknoraSearchBody, knowledgeItemScope, knowledgeItemMatchesScope, productEngineDocumentState, withKnowledgeScope } from "../knowledge/integrated-search";
+import {createWikiNavigation} from "../knowledge/wiki-navigation";
 
 const btn = "inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-xs text-white hover:bg-indigo-500 disabled:opacity-50";
 const btnGhost = "inline-flex items-center gap-1.5 rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50";
@@ -312,7 +314,7 @@ function useProjectScope() {
   }, []);
   const setScope = (key: "projectId" | "environment", value: string) => {
     if (key === "projectId" && value) localStorage.setItem("knowledge.projectId", value);
-    setParams((current) => { const next = new URLSearchParams(current); value ? next.set(key, value) : next.delete(key); return next; }, { replace: true });
+    setParams((current) => { const next = new URLSearchParams(current); value ? next.set(key, value) : next.delete(key); next.delete("wikiPage"); next.delete("wikiKey"); return next; }, { replace: true });
   };
   return { scope, projects, scopeError, setScope, environmentValue: params.get("environment") ?? "" };
 }
@@ -331,6 +333,10 @@ function ScopeControls({ selection, allowAllProjects = false, environmentPlaceho
 
 function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   const selection = useProjectScope(); const { scope } = selection;
+  const [params,setParams] = useSearchParams();
+  const selectedPage=params.get("wikiPage"), selectedKey=params.get("wikiKey");
+  const navigation=useRef(createWikiNavigation());
+  const currentNavigation=navigation.current.capture(JSON.stringify([scope.projectId,scope.environment,selectedPage,selectedKey]));
   const listRequest = useRef(0);
   const [sources, setSources] = useState<any[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(false);
@@ -358,7 +364,7 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
       .then((data) => { if (requestId === listRequest.current) setResult({ items: data.items ?? [], total: data.total ?? 0 }); })
       .catch((err) => { if (requestId !== listRequest.current) return; setResult({ items: [], total: 0 }); setError(errText(err, "Unable to load Wiki pages")); });
   };
-  useEffect(() => { setOffset(0); setResult(undefined); setPage(undefined); setRevisions([]); setDiff(""); setSourceRefs([]); setNotice(""); load(0); return () => { listRequest.current++; }; }, [applied, scope.projectId, scope.environment]);
+  useEffect(() => { setOffset(0); setResult(undefined); setSourceRefs([]); setNotice(""); load(0); return () => { listRequest.current++; }; }, [applied, scope.projectId, scope.environment]);
   useEffect(() => {
     if (!showCreate || !scope.projectId) { setSources([]); return; }
     let cancelled = false;
@@ -376,20 +382,37 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
     loadSources().catch((err) => { if (!cancelled) setError(errText(err, "Unable to load published sources")); }).finally(() => { if (!cancelled) setSourcesLoading(false); });
     return () => { cancelled = true; };
   }, [showCreate, scope.projectId, scope.environment, create.productVersion]);
-  const run = async (task: () => Promise<any>, ok: string) => { setError(""); setNotice(""); try { const data = await task(); setNotice(ok); load(); return data; } catch (err) { setError(errText(err, "Wiki operation failed")); } };
-  const openPage = async (item: any) => {
-    const id = item.id; const pageScope = knowledgeItemScope(item, scope);
-    const requestId = listRequest.current;
-    setError(""); setDiff("");
-    try {
-      const [{ page: detail }, revs] = await Promise.all([api.knowledgeWikiPage(id, pageScope), api.knowledgeWikiRevisions(id, pageScope)]);
-      if (requestId !== listRequest.current) return;
-      setPage(detail); setRevisions(revs.revisions ?? []);
-      setEditBody({ title: detail.title, body: detail.body });
-      setDiffRange({ from: String(Math.max(1, detail.currentRevision - 1)), to: String(detail.currentRevision) });
-    } catch (err) { setError(errText(err, "Unable to load Wiki page")); }
+  const run = async (task: () => Promise<any>, ok: string) => {
+    setError("");setNotice("");
+    try {const data=await task();currentNavigation.commit(()=>{setNotice(ok);load();});return data;}
+    catch(err){currentNavigation.commit(()=>setError(errText(err,"Wiki operation failed")));}
   };
-  const refreshPage = async (updated: any) => { setPage(updated); setEditBody({ title: updated.title, body: updated.body }); const revs = await api.knowledgeWikiRevisions(updated.id, knowledgeItemScope(updated, scope)); setRevisions(revs.revisions ?? []); load(); };
+  const openPage = (item: any) => setParams(current => {
+    const next=new URLSearchParams(current); next.set("wikiPage",item.id); next.delete("wikiKey"); return next;
+  });
+  useEffect(() => {
+    let cancelled=false;
+    setPage(undefined); setRevisions([]); setError(""); setDiff("");
+    if (!scope.projectId || (!selectedPage && !selectedKey)) return;
+    const read = async () => {
+      const {page:detail}=selectedKey ? await api.knowledgeWikiResolve(selectedKey,scope) : await api.knowledgeWikiPage(selectedPage!,scope);
+      if (cancelled || !currentNavigation.isCurrent()) return;
+      // Defense in depth; the Relay endpoint authorizes the target independently.
+      if (!knowledgeItemMatchesScope(detail,scope) && (detail.projectId || detail.environment)) throw new Error("Wiki page is outside the selected scope");
+      const revs=await api.knowledgeWikiRevisions(detail.id,scope);
+      if (cancelled || !currentNavigation.isCurrent()) return;
+      setPage(detail); setRevisions(revs.revisions ?? []);
+      setEditBody({title:detail.title,body:detail.body});
+      setDiffRange({from:String(Math.max(1,detail.currentRevision-1)),to:String(detail.currentRevision)});
+    };
+    read().catch(err => {if (!cancelled) currentNavigation.commit(()=>setError(errText(err,"Unable to load Wiki page")));});
+    return () => {cancelled=true;};
+  },[selectedPage,selectedKey,scope.projectId,scope.environment]);
+  const refreshPage = async (updated: any) => {
+    if (!currentNavigation.isCurrent()) return;
+    const revs=await api.knowledgeWikiRevisions(updated.id,scope);
+    currentNavigation.commit(()=>{setPage(updated);setEditBody({title:updated.title,body:updated.body});setRevisions(revs.revisions ?? []);load();});
+  };
   return <div className="space-y-4">
     <section className={cardClass}>
       <ScopeControls selection={selection} />
@@ -418,7 +441,7 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
         <textarea className="min-h-24 w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-200 outline-none focus:border-indigo-500" placeholder="Page body" value={create.body} onChange={(event) => setCreate({ ...create, body: event.target.value })} />
         <div className="flex flex-wrap items-center gap-2">
           <input className={`${inputClass} w-72`} placeholder="Creation reason (required)" value={create.reason} onChange={(event) => setCreate({ ...create, reason: event.target.value })} />
-          <button className={btn} disabled={!scope.projectId || sourcesLoading || !sourceRefs.length || !create.pageKey.trim() || !create.title.trim() || !create.body.trim() || !create.reason.trim()} onClick={() => run(async () => { const { page: created } = await api.knowledgeWikiCreate({ ...scope, sourceRefs, pageKey: create.pageKey.trim(), title: create.title.trim(), body: create.body, productVersion: create.productVersion.trim() || undefined, reason: create.reason.trim() }); setCreate(emptyCreate); setSourceRefs([]); setShowCreate(false); return created; }, "Wiki page created.")}>Create</button>
+          <button className={btn} disabled={!scope.projectId || sourcesLoading || !sourceRefs.length || !create.pageKey.trim() || !create.title.trim() || !create.body.trim() || !create.reason.trim()} onClick={() => run(async () => { const { page: created } = await api.knowledgeWikiCreate({ ...scope, sourceRefs, pageKey: create.pageKey.trim(), title: create.title.trim(), body: create.body, productVersion: create.productVersion.trim() || undefined, reason: create.reason.trim() }); currentNavigation.commit(()=>{setCreate(emptyCreate);setSourceRefs([]);setShowCreate(false);}); return created; }, "Wiki page created.")}>Create</button>
         </div>
       </div>}
       <Err message={error} />
@@ -445,7 +468,7 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
         </div>
         <StatusBadge value={page.status} />
       </div>
-      <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-gray-800 bg-gray-950/60 p-3 text-xs text-gray-300">{page.body}</pre>
+      <div className="mt-3 rounded-md border border-gray-800 bg-gray-950/60 p-4"><KnowledgeMarkup source={page.body} wikiScope={scope} wikiPageKey={page.pageKey} /></div>
       <div className="mt-4 border-t border-gray-800 pt-3">
         <h4 className="text-sm font-medium text-gray-200">Source documents</h4>
         <p className="mt-1 text-xs text-gray-500">Check the cited source before approving a Wiki statement.</p>
@@ -481,7 +504,7 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <input className={`${inputClass} w-24`} value={diffRange.from} onChange={(event) => setDiffRange({ ...diffRange, from: event.target.value })} placeholder="From" />
           <input className={`${inputClass} w-24`} value={diffRange.to} onChange={(event) => setDiffRange({ ...diffRange, to: event.target.value })} placeholder="To" />
-          <button className={btnGhost} onClick={() => run(async () => { const data = await api.knowledgeWikiDiff(page.id, Number(diffRange.from), Number(diffRange.to), knowledgeItemScope(page, scope)); setDiff(data.diff ?? ""); return data; }, "Diff computed.")}><GitBranch size={13} /> Diff revisions</button>
+          <button className={btnGhost} onClick={() => run(async () => { const data = await api.knowledgeWikiDiff(page.id, Number(diffRange.from), Number(diffRange.to), scope); currentNavigation.commit(()=>setDiff(data.diff ?? "")); return data; }, "Diff computed.")}><GitBranch size={13} /> Diff revisions</button>
         </div>
         {diff && <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-gray-800 bg-gray-950/60 p-3 text-xs text-gray-300">{diff}</pre>}
       </div>

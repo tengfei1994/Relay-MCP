@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,6 +11,7 @@ test("Product catalogs honor ACL, environment and current published engine bindi
   Object.assign(process.env, { DB_PATH: join(root, "app.db"), KNOWLEDGE_DB_PATH: join(root, "knowledge.db"), KNOWLEDGE_ENGINE_HOME: join(root, "absent"), WEKNORA_BASE_URL: "http://fixture", WEKNORA_KNOWLEDGE_BASE_ID: "kb" });
   globalThis.fetch = (async (url, init) => {
     const path = String(url); const id = path.includes("/chunks/") ? "ext-good" : path.split("/").pop();
+    if (path.endsWith("/knowledge/ext-good/download")) return new Response("Actual source", { headers: { "content-type": "application/octet-stream" } });
     const chunk = { id: "chunk-good", knowledge_id: "ext-good", content: "Actual source", seq: 0, chunk_type: "text", is_enabled: true, index_status: "ready", source_locators: [{ type: "pdf", page: 42 }] };
     const data = init?.method === "POST" ? [{ id: "summary", knowledge_id: "ext-good", content: "Generated summary", chunk_type: "summary", parent_chunk_id: "chunk-good", score: 0.9 }]
       : path.includes("/chunks/by-id/") ? chunk : path.includes("/chunks/") ? [chunk] : { id, parse_status: "completed" };
@@ -33,7 +35,7 @@ test("Product catalogs honor ACL, environment and current published engine bindi
     store.db.prepare("INSERT INTO knowledge_documents(id,kind,title,body,lifecycle,project_id,environment,source_locator,created_at,updated_at) VALUES (?,'product_document',?,'obsolete local body','approved',?,?,?,?,?)").run(id, id, project, environment, `${id}.pdf`, now, now);
     store.db.prepare("INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,source_path,source_sha256,version,created_at,updated_at) VALUES (?,?,'guide','en',?,'sha',?,?,?)").run(id, `family-${id}`, `${id}.pdf`, id, now, now);
     store.db.prepare("INSERT INTO knowledge_product_document_bindings(id,topic_id,document_id,product_version,source_path,created_at,updated_at) VALUES (?,'mixed',?,?,?,?,?)").run(`binding-${id}`, id, id, `${id}.pdf`, now, now);
-    store.db.prepare("INSERT INTO knowledge_weknora_documents(id,external_document_id,external_knowledge_base_id,external_chunk_ids_json,title,normalized_content_sha256,parser_version,product_version,source_path,project_id,environment,status,idempotency_key,created_at,updated_at,upstream_verified_at,upstream_parse_status) VALUES (?,?,?,?,?,?,'v1',?,?,?,?,?,?,?,?,?,'completed')").run(`engine-${id}`, `ext-${id}`, kb, JSON.stringify([`chunk-${id}`]), id, "a".repeat(64), id, `${id}.pdf`, project, environment, status, id, now, now, now);
+    store.db.prepare("INSERT INTO knowledge_weknora_documents(id,external_document_id,external_knowledge_base_id,external_chunk_ids_json,title,normalized_content_sha256,parser_version,product_version,source_path,project_id,environment,status,idempotency_key,created_at,updated_at,upstream_verified_at,upstream_parse_status) VALUES (?,?,?,?,?,?,'v1',?,?,?,?,?,?,?,?,?,'completed')").run(`engine-${id}`, `ext-${id}`, kb, JSON.stringify([`chunk-${id}`]), id, createHash("sha256").update("Actual source").digest("hex"), id, `${id}.pdf`, project, environment, status, id, now, now, now);
     store.db.prepare("INSERT INTO knowledge_migration_documents(migration_id,local_document_id,document_id,idempotency_key,external_document_id,status,created_at,updated_at) VALUES (?,?,?,?,?,'published',?,?)").run(migration.id, id, `engine-${id}`, id, `ext-${id}`, now, now);
   }
   const app = Fastify(); app.decorate("authenticate", async (req: any) => { req.user = { id: 7, isAdmin: false }; }); await app.register(knowledgeRoutes);
@@ -81,7 +83,7 @@ test("Product catalogs honor ACL, environment and current published engine bindi
         store.db.prepare("INSERT INTO knowledge_documents(id,kind,title,body,lifecycle,project_id,environment,source_locator,created_at,updated_at) VALUES (?,'product_document',?,'body','approved','p1','dev',?,?,?)").run(id, id, `${id}.pdf`, now, now);
         store.db.prepare("INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,source_path,source_sha256,version,created_at,updated_at) VALUES (?,?,'guide','en',?,'sha',?,?,?)").run(id, `family-${id}`, `${id}.pdf`, id, now, now);
         store.db.prepare("INSERT INTO knowledge_product_document_bindings(id,topic_id,document_id,product_version,source_path,created_at,updated_at) VALUES (?,'mixed',?,?,?,?,?)").run(`binding-${id}`, id, id, `${id}.pdf`, now, now);
-        store.db.prepare("INSERT INTO knowledge_weknora_documents(id,external_document_id,external_knowledge_base_id,external_chunk_ids_json,title,normalized_content_sha256,parser_version,product_version,source_path,project_id,environment,status,idempotency_key,created_at,updated_at,upstream_verified_at,upstream_parse_status) VALUES (?,?,'kb',?,?,?,'v1',?,?,'p1','dev','published',?,?,?,?,'completed')").run(`engine-${id}`, `ext-${id}`, JSON.stringify([`chunk-${id}`]), id, "a".repeat(64), id, `${id}.pdf`, id, now, now, now);
+        store.db.prepare("INSERT INTO knowledge_weknora_documents(id,external_document_id,external_knowledge_base_id,external_chunk_ids_json,title,normalized_content_sha256,parser_version,product_version,source_path,project_id,environment,status,idempotency_key,created_at,updated_at,upstream_verified_at,upstream_parse_status) VALUES (?,?,'kb',?,?,?,'v1',?,?,'p1','dev','published',?,?,?,?,'completed')").run(`engine-${id}`, `ext-${id}`, JSON.stringify([`chunk-${id}`]), id, createHash("sha256").update("Actual source").digest("hex"), id, `${id}.pdf`, id, now, now, now);
         store.db.prepare("INSERT INTO knowledge_migration_documents(migration_id,local_document_id,document_id,idempotency_key,external_document_id,status,created_at,updated_at) VALUES (?,?,?,?,?,'published',?,?)").run(migration.id, id, `engine-${id}`, id, `ext-${id}`, now, now);
       }
     })();

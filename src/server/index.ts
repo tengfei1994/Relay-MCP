@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { safeRequestLogSerializers, safeRequestLogHooks, sendSafeNotFound } from "./request-log.js";
 import fastifyJwt from "@fastify/jwt";
 import fastifyCors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
@@ -66,7 +67,7 @@ declare module "fastify" {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: { serializers: safeRequestLogSerializers, hooks: safeRequestLogHooks } });
 const RELAY_VERSION = process.env.RELAY_VERSION ?? "0.6.3";
 const RELAY_BUILD_COMMIT = process.env.RELAY_BUILD_COMMIT ?? "development";
 const RELAY_BUILD_TIME = process.env.RELAY_BUILD_TIME ?? "unknown";
@@ -94,20 +95,18 @@ app.decorate("authenticate", async (req: any, reply: any) => {
 
 // Serve frontend build if it exists
 const frontendDist = join(__dirname, "../../frontend/dist");
-if (existsSync(frontendDist)) {
+const frontendAvailable = existsSync(frontendDist);
+if (frontendAvailable) {
   await app.register(fastifyStatic, {
     root: frontendDist,
     prefix: "/",
   });
-  // SPA fallback
-  app.setNotFoundHandler((req, reply) => {
-    if (!req.url.startsWith("/api")) {
-      reply.sendFile("index.html");
-    } else {
-      reply.status(404).send({ error: "Not found" });
-    }
-  });
 }
+// Use a safe 404 even without frontend assets; the default logs the raw URL.
+app.setNotFoundHandler((req, reply) => {
+  if (frontendAvailable && !req.url.startsWith("/api")) return reply.sendFile("index.html");
+  return sendSafeNotFound(reply);
+});
 
 // Model setup remains the only configuration flow; reconcile internal aliases afterwards.
 app.addHook("onResponse", async (request, reply) => {

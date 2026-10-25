@@ -2,6 +2,8 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { classifyProviderError, type ManagedProviderHandle, type ManagedProviderKind, type ProviderRegistry } from "./provider-registry.js";
 import type { ManagedChatMessage } from "./provider-probe.js";
+import { ProviderAdmissionQuotaError } from "./provider-admission.js";
+import { ProviderBindingStaleError, ProviderCredentialsChangedError } from "./provider-runtime.js";
 
 export interface EngineModelBinding {
   providerId: string; kind: ManagedProviderKind; modelId: string; dimensions?: number;
@@ -43,7 +45,7 @@ export async function registerEngineModelGateway(app: FastifyInstance, options: 
         if (config.kind!==binding.kind || config.modelId!==binding.modelId || config.indexVersion!==binding.indexVersion || config.dimensions!==binding.dimensions) throw new GatewayError(409,"model_binding_stale");
         const stamp=JSON.stringify(config);
         let cached=handles.get(config.id);
-        if (!cached || cached.stamp!==stamp) { cached={stamp,handle:options.registry.resolveCandidateProvider(config.id)}; handles.set(config.id,cached); }
+        if (!cached || cached.stamp!==stamp) { cached={stamp,handle:options.registry.resolveCandidateProvider(config.id,binding)}; handles.set(config.id,cached); }
         if (operation==="embeddings") {
           if (body?.dimensions!==undefined && body.dimensions!==binding.dimensions) throw new GatewayError(409,"dimension_mismatch");
           const result=await cached.handle.embed(strings(body?.input,128));
@@ -68,8 +70,10 @@ export async function registerEngineModelGateway(app: FastifyInstance, options: 
         }
         return {id,object:"chat.completion",created,model,choices:[{index:0,message:{role:"assistant",content:result.text},finish_reason:result.finishReason??"stop"}],usage:usage(result.tokenUsage)};
       } catch(error) {
-        const status=error instanceof GatewayError?error.status:503;
-        return reply.code(status).send({error:{code:error instanceof GatewayError?error.code:classifyProviderError(error),message:"Knowledge engine model request failed"}});
+        const quota=error instanceof ProviderAdmissionQuotaError;
+        const status=error instanceof GatewayError?error.status:error instanceof ProviderBindingStaleError||error instanceof ProviderCredentialsChangedError?409:quota?429:503;
+        if(quota)reply.header("retry-after",String(Math.max(1,Math.ceil((Date.parse(error.retryAt)-Date.now())/1000))));
+        return reply.code(status).send({error:{code:error instanceof GatewayError?error.code:classifyProviderError(error),message:"Knowledge engine model request failed",...(quota?{retry_at:error.retryAt}:{})}});
       }
     });
   }

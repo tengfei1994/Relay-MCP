@@ -194,6 +194,10 @@ function resolveProject(userId: number, raw: unknown) {
   return { project, store, projectId: String(project.id) };
 }
 
+function scopedWorkSessions(store = getKnowledgeStore()): WorkSessionService {
+  return new WorkSessionService(store, undefined, (actorId, projectId) => { resolveProject(actorId, projectId); });
+}
+
 /** Resolve a shared/deduplicated Evidence row without exposing other projects. */
 function resolveEvidenceProject(userId: number, store: ReturnType<typeof getKnowledgeStore>, evidenceId: string): string {
   const row = store.db.prepare("SELECT project_id FROM knowledge_evidence WHERE id = ? AND deleted_at IS NULL").get(evidenceId) as { project_id?: string | null } | undefined;
@@ -431,8 +435,11 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   app.get("/api/knowledge/search", { onRequest: [app.authenticate] }, async (request, reply) => {
     const query = request.query as Record<string, unknown>;
     try {
-      const { store, projectId } = resolveProject(request.user.id, query.projectId);
+      const workSessionId=queryValue(query,"workSessionId");
+      const session=workSessionId?scopedWorkSessions().assertSessionUsable({actorId:request.user.id,sessionId:workSessionId,projectId:queryValue(query,"projectId"),environment:queryValue(query,"environment")}):undefined;
+      const { store, projectId } = resolveProject(request.user.id, query.projectId??session?.projectId);
       const result = await searchKnowledge(store, {
+        workSessionId,
         userId: request.user.id,
         projectId,
         query: String(query.q ?? query.query ?? ""),
@@ -440,12 +447,13 @@ export async function knowledgeRoutes(app: FastifyInstance) {
         sampleManagerVersion: queryValue(query, "sampleManagerVersion"),
         solution: queryValue(query, "solution"),
         module: queryValue(query, "module"),
-        environment: queryValue(query, "environment"),
+        environment: queryValue(query, "environment")??session?.environment,
         scopeType: queryValue(query, "scopeType"),
         scopeKey: queryValue(query, "scopeKey"),
         kinds: parseKinds(query.kinds),
         includeDeprecated: parseBoolean(query.includeDeprecated) ?? false,
       });
+      if(session)scopedWorkSessions(store).get({actorId:request.user.id,sessionId:session.id});
       return reply.send(result);
     } catch (error) { return sendError(reply, error, error instanceof Error && error.message === "Project not found" ? 404 : 400); }
   });
@@ -839,7 +847,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
 
   app.get("/api/knowledge/product-docs", { onRequest: [app.authenticate] }, async (request, reply) => {
     const query=request.query as Record<string,unknown>,store=getKnowledgeStore(),value=(key:string)=>queryValue(query,key);
-    const input={userId:request.user.id,isAdmin:request.user.isAdmin,projectId:value("projectId"),environment:value("environment"),sampleManagerVersion:value("sampleManagerVersion"),product:value("product"),solution:value("solution"),module:value("module"),documentType:value("documentType"),language:value("language"),authority:value("authority"),limit:parseBoundedInt(query.limit,100,1,500),offset:parseBoundedInt(query.offset,0,0,1_000_000)};
+    const input={userId:request.user.id,isAdmin:request.user.isAdmin,projectId:value("projectId"),environment:value("environment"),sampleManagerVersion:value("sampleManagerVersion"),product:value("product"),solution:value("solution"),module:value("module"),documentType:value("documentType"),language:value("language"),authority:value("authority"),status:value("status"),limit:parseBoundedInt(query.limit,100,1,500),offset:parseBoundedInt(query.offset,0,0,1_000_000)};
     try {return reply.send(new MigrationController(store).activeProductProvider()==="weknora"?await listEngineProductBackend(store,input):{documents:await searchProductBackend(store,input)});}
     catch(error){return sendError(reply,error,error instanceof WeKnoraError?503:403);}
   });
@@ -1038,7 +1046,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     if(new MigrationController(store).activeProductProvider()==="weknora") {
       const value=(key:string)=>queryValue(query,key),limit=parseBoundedInt(query.limit,100,1,500),offset=parseBoundedInt(query.offset,0,0,1_000_000);
-      return reply.send(await listEngineProductBackend(store,{userId:request.user.id,isAdmin:request.user.isAdmin,projectId:value("projectId"),environment:value("environment"),sampleManagerVersion:value("sampleManagerVersion"),product:value("product"),solution:value("solution"),module:value("module"),documentType:value("documentType"),language:value("language"),authority:value("authority"),limit,offset}));
+      return reply.send(await listEngineProductBackend(store,{userId:request.user.id,isAdmin:request.user.isAdmin,projectId:value("projectId"),environment:value("environment"),sampleManagerVersion:value("sampleManagerVersion"),product:value("product"),solution:value("solution"),module:value("module"),documentType:value("documentType"),language:value("language"),authority:value("authority"),status:value("status"),limit,offset}));
     }
     const limit = parseBoundedInt(query.limit, 100, 1, 500); const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000); const params: unknown[] = []; const where = ["d.kind='product_document'"];
     const filters: Array<[string, string]> = [["d.project_name_snapshot", "product"], ["d.samplemanager_version", "sampleManagerVersion"], ["d.solution", "solution"], ["d.module", "module"], ["p.document_type", "documentType"], ["p.language", "language"], ["p.authority", "authority"], ["p.document_family_id", "documentFamilyId"]];
@@ -1292,15 +1300,26 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   app.post("/api/knowledge/sessions", { onRequest: [app.authenticate] }, async (request, reply) => {
     const body = z.object({ idempotencyKey: z.string().trim().min(1).max(300), intent: z.unknown(), summary: z.string().max(8_000).optional() }).safeParse(request.body ?? {});
     if (!body.success) return reply.status(400).send({ error: "Invalid Work Session request", details: body.error.issues });
-    try { const store = getKnowledgeStore(); const intent = validateIntentEnvelope({ ...(body.data.intent as Record<string, unknown>), actorId: request.user.id }); const session = new WorkSessionService(store).open({ actorId: request.user.id, idempotencyKey: body.data.idempotencyKey, intent, summary: body.data.summary }); return reply.status(201).send({ session }); } catch (error) { return sendError(reply, error, 403); }
+    try {
+      const intent = validateIntentEnvelope({ ...(body.data.intent as Record<string, unknown>), actorId: request.user.id });
+      const { store, projectId } = resolveProject(request.user.id, intent.projectId);
+      const session = scopedWorkSessions(store).open({ actorId: request.user.id, idempotencyKey: body.data.idempotencyKey, intent: { ...intent, projectId }, summary: body.data.summary });
+      // Replays must still belong to a project the caller currently owns.
+      if (session.projectId !== projectId) resolveProject(request.user.id, session.projectId);
+      return reply.status(201).send({ session });
+    } catch (error) { return sendError(reply, error, 403); }
   });
   app.get("/api/knowledge/sessions", { onRequest: [app.authenticate] }, async (request, reply) => {
-    const limit = parseBoundedInt((request.query as Record<string, unknown>).limit, 50, 1, 200); const sessions = new WorkSessionService(getKnowledgeStore()).list({ actorId: request.user.id, limit }); return reply.send({ sessions });
+    const limit = parseBoundedInt((request.query as Record<string, unknown>).limit, 50, 1, 200); const sessions = scopedWorkSessions().list({ actorId: request.user.id, limit }); return reply.send({ sessions });
   });
-  app.get("/api/knowledge/sessions/:id", { onRequest: [app.authenticate] }, async (request, reply) => { try { const session = new WorkSessionService(getKnowledgeStore()).get({ actorId: request.user.id, sessionId: String((request.params as { id: string }).id) }); return reply.send({ session }); } catch (error) { return sendError(reply, error, 404); } });
-  app.patch("/api/knowledge/sessions/:id", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ idempotencyKey: z.string().trim().max(300).optional(), patch: z.record(z.unknown()) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Work Session update", details: body.error.issues }); try { const session = new WorkSessionService(getKnowledgeStore()).update({ actorId: request.user.id, sessionId: String((request.params as { id: string }).id), idempotencyKey: body.data.idempotencyKey, patch: body.data.patch as never }); return reply.send({ session }); } catch (error) { return sendError(reply, error, 403); } });
-  app.post("/api/knowledge/sessions/:id/close", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ idempotencyKey: z.string().trim().max(300).optional(), result: z.object({ summary: z.string().max(8_000).optional(), unknowns: z.array(z.string().max(2_000)).max(100).optional(), acceptanceResults: z.record(z.union([z.boolean(), z.string().max(500)])).optional() }).optional() }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Work Session close", details: body.error.issues }); try { const session = new WorkSessionService(getKnowledgeStore()).close({ actorId: request.user.id, sessionId: String((request.params as { id: string }).id), idempotencyKey: body.data.idempotencyKey, result: body.data.result }); return reply.send({ session }); } catch (error) { return sendError(reply, error, 403); } });
-  app.get("/api/knowledge/sessions/:id/events", { onRequest: [app.authenticate] }, async (request, reply) => { try { const events = new WorkSessionService(getKnowledgeStore()).listEvents({ actorId: request.user.id, sessionId: String((request.params as { id: string }).id) }); return reply.send({ events }); } catch (error) { return sendError(reply, error, 404); } });
+  app.get("/api/knowledge/sessions/:id", { onRequest: [app.authenticate] }, async (request, reply) => { try { const session = scopedWorkSessions().get({ actorId: request.user.id, sessionId: String((request.params as { id: string }).id) }); return reply.send({ session }); } catch (error) { return sendError(reply, error, 404); } });
+  app.patch("/api/knowledge/sessions/:id", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ idempotencyKey: z.string().trim().max(300).optional(), patch: z.record(z.unknown()) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Work Session update", details: body.error.issues }); try { const session = scopedWorkSessions().update({ actorId: request.user.id, sessionId: String((request.params as { id: string }).id), idempotencyKey: body.data.idempotencyKey, patch: body.data.patch as never }); return reply.send({ session }); } catch (error) { return sendError(reply, error, 403); } });
+  app.post("/api/knowledge/sessions/:id/close", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ idempotencyKey: z.string().trim().max(300).optional(), result: z.object({ summary: z.string().max(8_000).optional(), unknowns: z.array(z.string().max(2_000)).max(100).optional(), acceptanceResults: z.record(z.union([z.boolean(), z.string().max(500)])).optional() }).optional() }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Work Session close", details: body.error.issues }); try { const session = scopedWorkSessions().close({ actorId: request.user.id, sessionId: String((request.params as { id: string }).id), idempotencyKey: body.data.idempotencyKey, result: body.data.result }); return reply.send({ session }); } catch (error) { return sendError(reply, error, 403); } });
+  app.get("/api/knowledge/sessions/:id/summary", { onRequest: [app.authenticate] }, async (request, reply) => {
+    try { const query=request.query as Record<string,unknown>; return reply.send(scopedWorkSessions().summarize({actorId:request.user.id,sessionId:String((request.params as {id:string}).id),limit:parseBoundedInt(query.limit,50,1,200),offset:parseBoundedInt(query.offset,0,0,1000000)})); }
+    catch(error){return sendError(reply,error,404);}
+  });
+  app.get("/api/knowledge/sessions/:id/events", { onRequest: [app.authenticate] }, async (request, reply) => { try { const query=request.query as Record<string,unknown>; const summary=scopedWorkSessions().summarize({ actorId: request.user.id, sessionId: String((request.params as { id: string }).id),limit:parseBoundedInt(query.limit,50,1,200),offset:parseBoundedInt(query.offset,0,0,1000000) }); return reply.send({ events:summary.events,pagination:summary.pagination.events }); } catch (error) { return sendError(reply, error, 404); } });
 
   app.get("/api/knowledge/providers/managed", { onRequest: [app.authenticate] }, async (_request, reply) => reply.send({ providers: managedProviderRegistry().list() }));
   const providerTokenSchema = z.string().trim().min(1).max(8192).refine((value) => !/[\r\n\0]/.test(value));
@@ -1370,13 +1389,14 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     if (!body.success) return reply.status(400).send({ error: "Invalid Candidate Insight compile request", details: body.error.issues });
     const store = getKnowledgeStore();
     try {
+      scopedWorkSessions(store).get({ actorId: request.user.id, sessionId: body.data.sessionId });
       if (body.data.async) return reply.status(202).send(enqueueCandidateInsight(store, { actorId: request.user.id, sessionId: body.data.sessionId, evidenceRefs: body.data.evidenceRefs, context: body.data.context, providerId:body.data.providerId,retry:body.data.retry }));
       const provider = createCandidateInsightProvider(store,body.data.providerId);
       const insight = await new CandidateInsightCompiler(store, provider).compile({ actorId: request.user.id, sessionId: body.data.sessionId, evidenceRefs: body.data.evidenceRefs, context: body.data.context });
       return reply.status(insight.persisted ? 201 : 200).send({ insight });
     } catch (error) { return sendError(reply, error, 400); }
   });
-  app.get("/api/knowledge/candidate-insight-jobs/:id", { onRequest: [app.authenticate] }, async (request, reply) => { try { return reply.send({job:getCandidateInsightJob(getKnowledgeStore(),{actorId:request.user.id,id:String((request.params as {id:string}).id)})}); } catch(error) {return sendError(reply,error,404);} });
+  app.get("/api/knowledge/candidate-insight-jobs/:id", { onRequest: [app.authenticate] }, async (request, reply) => { try { const job=getCandidateInsightJob(getKnowledgeStore(),{actorId:request.user.id,id:String((request.params as {id:string}).id)});scopedWorkSessions().get({actorId:request.user.id,sessionId:job.workSessionId});return reply.send({job}); } catch(error) {return sendError(reply,error,404);} });
   app.get("/api/knowledge/candidate-insights/:id", { onRequest: [app.authenticate] }, async (request, reply) => { try { return reply.send({ insight: new CandidateInsightReviewService(getKnowledgeStore()).get({ actorId: request.user.id, id: String((request.params as { id: string }).id) }) }); } catch (error) { return sendError(reply, error, 404); } });
   app.get("/api/knowledge/candidate-insights/:id/history", { onRequest: [app.authenticate] }, async (request, reply) => { try { return reply.send({ history: new CandidateInsightReviewService(getKnowledgeStore()).reviewHistory({ actorId: request.user.id, id: String((request.params as { id: string }).id) }) }); } catch (error) { return sendError(reply, error, 404); } });
   for (const action of ["confirm", "reject"] as const) {
@@ -1398,7 +1418,34 @@ export async function knowledgeRoutes(app: FastifyInstance) {
 
   app.get("/api/knowledge/wiki", { onRequest: [app.authenticate] }, async (request, reply) => { const query = request.query as Record<string, unknown>; const status = typeof query.status === "string" && WIKI_PAGE_STATUSES.includes(query.status as never) ? query.status as never : undefined; try { return reply.send(await activeWikiService(getKnowledgeStore()).list({ actorId: request.user.id, projectId: query.projectId ? String(query.projectId) : undefined, environment: query.environment ? String(query.environment) : undefined, status, productVersion: query.productVersion ? String(query.productVersion) : undefined, topicId: query.topicId ? String(query.topicId) : undefined, solution: query.solution ? String(query.solution) : undefined, module: query.module ? String(query.module) : undefined, search: query.search ? String(query.search) : undefined, limit: parseBoundedInt(query.limit, 50, 1, 200), offset: parseBoundedInt(query.offset, 0, 0, 1_000_000) })); } catch (error) { return sendError(reply, error, 403); } });
   app.post("/api/knowledge/wiki", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ environment: z.string().optional(), pageKey: z.string().min(1).max(300), title: z.string().min(1).max(500), body: z.string().min(1), projectId: z.string().optional(), productVersion: z.string().optional(), topicId: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), sourceRefs: z.array(z.string()).max(100).optional(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Wiki page" }); try { return reply.status(201).send({ page: await activeWikiService(getKnowledgeStore()).create({ actorId: request.user.id, ...body.data }) }); } catch (error) { return sendError(reply, error, 403); } });
-  app.get("/api/knowledge/wiki/:id", { onRequest: [app.authenticate] }, async (request, reply) => { try { return reply.send({ page: await activeWikiService(getKnowledgeStore()).get({ actorId: request.user.id, id: String((request.params as { id: string }).id), environment: queryValue(request.query as Record<string,unknown>, "environment") }) }); } catch (error) { return sendError(reply, error, 404); } });
+  // Resolve only an existing Relay binding. Never discover upstream content from
+  // an untrusted link or use the visible list as an authorization decision.
+  const assertWikiNavigationScope = (actorId: number, column: "id" | "page_key", identity: string, projectId?: string, environment?: string) => {
+    const store=getKnowledgeStore();
+    const row=store.db.prepare(`SELECT project_id,environment FROM knowledge_wiki_pages WHERE ${column}=?`).get(identity) as {project_id?:string|null;environment?:string|null}|undefined;
+    const global=!!row && !row.project_id && !row.environment;
+    if (!row || (projectId && (!store.canRead(actorId,projectId) || (!global && (row.project_id !== projectId || (row.environment || undefined) !== environment))))) throw new Error("Wiki page not found in the selected scope");
+  };
+  app.get("/api/knowledge/wiki/resolve", {onRequest:[app.authenticate]}, async (request,reply) => {
+    const query=z.object({pageKey:z.string().min(1).max(300).regex(/^(?:engine-wiki:[a-f0-9]{16}:)?[\p{L}\p{N}_-]+(?:\/[\p{L}\p{N}_-]+)*$/u),projectId:z.string().trim().min(1),environment:z.string().trim().min(1).optional()}).safeParse(request.query);
+    if (!query.success) return reply.status(400).send({error:"A valid Wiki key and current project scope are required"});
+    try {
+      const input={actorId:request.user.id,...query.data};
+      assertWikiNavigationScope(input.actorId,"page_key",input.pageKey,input.projectId,input.environment);
+      const page=await activeWikiService(getKnowledgeStore()).getByKey(input);
+      assertWikiNavigationScope(input.actorId,"page_key",input.pageKey,input.projectId,input.environment);
+      return reply.send({page});
+    } catch(error) {return sendError(reply,error,404);}
+  });
+  app.get("/api/knowledge/wiki/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query=request.query as Record<string,unknown>,id=String((request.params as {id:string}).id),projectId=queryValue(query,"projectId"),environment=queryValue(query,"environment");
+    try {
+      assertWikiNavigationScope(request.user.id,"id",id,projectId,environment);
+      const page=await activeWikiService(getKnowledgeStore()).get({actorId:request.user.id,id,projectId,environment});
+      assertWikiNavigationScope(request.user.id,"id",id,projectId,environment);
+      return reply.send({page});
+    } catch(error) {return sendError(reply,error,404);}
+  });
   app.patch("/api/knowledge/wiki/:id", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ environment: z.string().optional(), title: z.string().min(1).max(500).optional(), body: z.string().min(1).optional(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Wiki edit" }); try { return reply.send({ page: await activeWikiService(getKnowledgeStore()).edit({ actorId: request.user.id, id: String((request.params as { id: string }).id), ...body.data }) }); } catch (error) { return sendError(reply, error, 403); } });
   for (const action of ["publish", "deprecate"] as const) {
     app.post(`/api/knowledge/wiki/:id/${action}`, { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ environment: z.string().optional(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "A reason is required" }); const service = activeWikiService(getKnowledgeStore()); try { const id = String((request.params as { id: string }).id); return reply.send({ page: action === "publish" ? await service.publish({ actorId: request.user.id, id, reason: body.data.reason, environment: body.data.environment }) : await service.deprecate({ actorId: request.user.id, id, reason: body.data.reason, environment: body.data.environment }) }); } catch (error) { return sendError(reply, error, 403); } });
@@ -1431,7 +1478,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     if (!body.success) return reply.status(400).send({ error: "Invalid Product Knowledge search" });
     const store = getKnowledgeStore();
     try {
-      const sessions = new WorkSessionService(store);
+      const sessions = scopedWorkSessions(store);
       const session = body.data.workSessionId ? sessions.assertSessionUsable({ actorId: request.user.id, sessionId: body.data.workSessionId, projectId: body.data.projectId, environment: body.data.environment }) : undefined;
       const projectId = resolveRetrievalProjectId({ projectId: body.data.projectId, sessionProjectId: session?.projectId });
       if (!store.canRead(request.user.id, projectId)) throw new Error("Knowledge access denied");
@@ -1440,12 +1487,14 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       const effectiveIntent={objective:"",actions:[] as string[],...session?.intent,projectId,environment,sampleManagerVersion:body.data.productVersion??session?.intent.sampleManagerVersion,solution:body.data.solution??session?.intent.solution,module:body.data.module??session?.intent.module};
       const knowledgeIds = ingestor.retrievalKnowledgeIds({ projectId, environment, productVersion: body.data.productVersion ?? session?.intent.sampleManagerVersion, solution: body.data.solution ?? session?.intent.solution, module: body.data.module ?? session?.intent.module, language: body.data.language });
       let relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: undefined } as Awaited<ReturnType<typeof loadRelayContextSources>>;
-      try { relaySources = await loadRelayContextSources({ store, userId: request.user.id, projectId, query: body.data.query, intent: effectiveIntent, limit: body.data.limit ?? 10 }); } catch { relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: { relayMemory: "unavailable" } }; }
+      try { relaySources = await loadRelayContextSources({ store, userId: request.user.id, workSessionId:session?.id, projectId, query: body.data.query, intent: effectiveIntent, limit: body.data.limit ?? 10 }); } catch { relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: { relayMemory: "unavailable" } }; }
+      if (session) sessions.get({actorId:request.user.id,sessionId:session.id});
       if (!knowledgeIds.length) {
         const contextPack = new ContextPackService({ provider: "weknora" }).build({ intent: effectiveIntent, authoritativeDocs: [], confirmedKnowledge: relaySources.confirmedKnowledge, candidates: relaySources.candidates, currentFacts: relaySources.currentFacts, degraded: { ...relaySources.degraded, productKnowledge: "no_published_documents" }, acl: { documentIds: [] }, maxItemsPerSection: body.data.limit ?? 10 });
         return reply.send({ retrievalRunId: "local-scope-empty", references: [], degraded: contextPack.degraded, contextPack });
       }
       const result = await searchEngineProductReferences(store,{userId:request.user.id,projectId,environment,query:body.data.query,sampleManagerVersion:body.data.productVersion??session?.intent.sampleManagerVersion,solution:body.data.solution??session?.intent.solution,module:body.data.module??session?.intent.module,language:body.data.language,limit:body.data.limit});
+      if (session) sessions.recordRetrieval({actorId:request.user.id,sessionId:session.id,projectId,environment,query:body.data.query,sourceRunId:result.retrievalRunId,resultCount:result.references.length,degraded:Boolean(result.degraded)});
       const visible = new Set(knowledgeIds);
       const references = result.references.filter((reference) => visible.has(reference.documentId));
       const pack = new ContextPackService({ provider: "weknora" }).build({ intent: effectiveIntent, authoritativeDocs: references, confirmedKnowledge: relaySources.confirmedKnowledge, candidates: relaySources.candidates, currentFacts: relaySources.currentFacts, degraded: { ...relaySources.degraded, ...result.degraded }, acl: { documentIds: knowledgeIds }, maxItemsPerSection: body.data.limit ?? 10 });

@@ -73,3 +73,38 @@ verified patched bundle: the final startup check rejects an older unpatched
 release. Previously written logs are retained for investigation, protected with
 mode 0600; lowering log verbosity does not erase earlier prompt records. Capture
 a byte offset after restart and scan only new log data when validating the fix.
+
+The second pinned patch preserves the outer hyperlink around Markdown images
+through inline, data-URI and remote-image resolution. Image storage still rewrites
+only the inner image URL. The build runs the upstream docparser suite and records
+`relay-content-preservation-proof.json` alongside the existing model-log proof.
+This avoids deleting original-image destinations from normalized Product content
+between chunk preview and upload indexing. Rebuild into a fresh bundle; installing
+it does not reparse previously indexed documents or authorize model calls.
+
+The separate third patch recognizes
+`RELAY_MANAGED_DOCUMENT_PROCESS_NO_RETRY=true`. Relay's launcher always sets it.
+Only `documentProcessTaskOptions` is affected: the managed zero-retry option is
+appended after caller options, so file uploads and explicit reparses execute one
+queue attempt. A failure requires another explicit operation. Upstream processes
+without this flag keep their original retry policy; postprocess/Wiki tasks and
+Relay Provider retry settings are unchanged. The build feeds the service's actual
+option sequence into the real Lite executor and records the single-attempt proof
+in `relay-document-retry-proof.json`.
+
+Durable provider admissions count logical invocations that reach the transport
+boundary, including failures. Every upstream queue/SDK re-invocation admitted
+through the gateway receives a new durable admission. Retries inside one Relay
+Provider invocation share its admission (the acceptance configuration permits one
+Provider retry). Circuit/queue rejections before transport are not admissions.
+Consequently the ledger is not a count of physical HTTP attempts or billed tokens.
+
+The fourth pinned patch aligns unset RRF weights with Relay #53's technical
+keyword priority: vector 0.3 / keyword 0.7 when neither weight is positive.
+Any explicit positive tenant weight retains the legacy fallback for a missing
+counterpart, preserving partial configurations' effective ratios. The RRF
+smoothing constant and all other retrieval settings remain intact.
+Fusion math and source aggregation are unchanged. The build runs behavioral
+fusion regressions and records `relay-keyword-first-rrf-proof.json`; the five-case
+causal probe is diagnostic evidence, not a pass of the frozen 55-case evaluation.
+This patch does not write tenant configuration or re-embed existing documents.

@@ -137,7 +137,7 @@ export const candidateInsightOutputSchema = z.object({
 export type CandidateInsightModelOutput = z.infer<typeof candidateInsightOutputSchema>;
 
 const SENSITIVE_KEY = /(token|secret|password|passwd|credential|authorization|api[-_]?key|private[-_]?key|ssh[-_]?key|connection[-_]?string|cookie|bearer)/i;
-const HIDDEN_REASONING_KEY = /^(?:thought|thinking|reasoning|chain[-_ ]?of[-_ ]?thought|cot|scratchpad|reflection|internal[-_ ]?monologue|deliberation)$/i;
+const HIDDEN_REASONING_KEY = /^(?:hidden[-_ ]?reasoning|thought|thinking|reasoning|chain[-_ ]?of[-_ ]?thought|cot|scratchpad|reflection|internal[-_ ]?monologue|deliberation)$/i;
 const SENSITIVE_VALUE = /(bearer\s+[a-z0-9._~+/=-]+|(?:password|passwd|pwd|token|secret|api[-_ ]?key|access[-_ ]?key|connection[-_ ]?string)\s*[:=]\s*\S+|[a-z][a-z0-9+.-]*:\/\/[^\s/@:]+:[^\s/@]+@)/i;
 const URI_CREDENTIAL = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/@:]+:)([^\s/@]+)(@)/gi;
 const SENSITIVE_ASSIGNMENT = /((?:bearer\s+|(?:password|passwd|pwd|token|secret|api[-_ ]?key|access[-_ ]?key|private[-_ ]?key|connection[-_ ]?string)\s*[:=]\s*["']?))([^\s"'&,;\]}]+)/gi;
@@ -153,6 +153,8 @@ export function redactCandidateInput(value: unknown, depth = 0): unknown {
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
       .slice(0, 100)
+      // Omit private reasoning before queue persistence, idempotency hashing and provider input.
+      .filter(([key]) => !HIDDEN_REASONING_KEY.test(key))
       .map(([key, item]) => [key, SENSITIVE_KEY.test(key) ? "[REDACTED]" : redactCandidateInput(item, depth + 1)]),
   );
 }

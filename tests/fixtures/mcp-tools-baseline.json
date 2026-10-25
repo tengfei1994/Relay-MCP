@@ -842,6 +842,9 @@
           },
           "project": {
             "type": "string"
+          },
+          "workSessionId": {
+            "type": "string"
           }
         },
         "required": [
@@ -1151,6 +1154,9 @@
             "type": "string"
           },
           "scopeKey": {
+            "type": "string"
+          },
+          "workSessionId": {
             "type": "string"
           }
         },
@@ -1644,6 +1650,11 @@
           },
           "sessionId": {
             "type": "string"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000
           }
         },
         "additionalProperties": false,

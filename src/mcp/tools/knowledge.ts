@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { getProductBackend, searchEngineProductReferences, productCatalogVisibility } from "../../knowledge/product-backend.js";
 import { managedControlPlane, activeWikiService } from "../../knowledge/engine-service.js";
 import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -29,18 +30,19 @@ import { createManagedProviderRegistry } from "../../knowledge/provider-setup.js
  * P00 extension boundary. Knowledge tools arrive in P01 and must be registered
  * here, never from the HTTP composition root.
  */
-export interface KnowledgeToolsContext { server: McpServer; user: McpUser; knowledge?: KnowledgeStore; knowledgeAvailable?: () => boolean; resolveProjectName?: (project?: string) => string; }
+export interface KnowledgeToolsContext { server: McpServer; user: McpUser; knowledge?: KnowledgeStore; knowledgeAvailable?: () => boolean; resolveProjectName?: (project?: string) => string; resolveProjectId?: (projectId: string) => string; resolveProjectNameToId?: (name: string) => string; }
 export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContext): void {
   const ctx: KnowledgeToolsContext = ('user' in context && 'server' in context)
     ? context
     : { server: context as McpServer, user: { id: 0, username: "boundary" } };
-  const { server, user, knowledge, resolveProjectName } = ctx;
+  const { server, user, knowledge, resolveProjectName, resolveProjectId, resolveProjectNameToId } = ctx;
   const requireKnowledge = () => { if (!knowledge) throw new Error("Knowledge Plane is unavailable"); return knowledge; };
+  const workSessions = () => new WorkSessionService(requireKnowledge(), undefined, resolveProjectId ? (_actorId, projectId) => { resolveProjectId(projectId); } : undefined);
   const managedRegistry = () => createManagedProviderRegistry(requireKnowledge());
   const candidateProvider = (providerId?: string) => createCandidateInsightProvider(requireKnowledge(),providerId);
   const retrievalScope = (input: { workSessionId?: string; projectId?: string; productVersion?: string; solution?: string; module?: string; language?: string }) => {
     const store = requireKnowledge();
-    const session = input.workSessionId ? new WorkSessionService(store).assertSessionUsable({ actorId: user.id, sessionId: input.workSessionId, projectId: input.projectId, environment: user.defaultEnvironment }) : undefined;
+    const session = input.workSessionId ? workSessions().assertSessionUsable({ actorId: user.id, sessionId: input.workSessionId, projectId: input.projectId, environment: user.defaultEnvironment }) : undefined;
     const projectId = resolveRetrievalProjectId({ projectId: input.projectId, sessionProjectId: session?.projectId, fallbackProjectId: user.defaultProjectId ? String(user.defaultProjectId) : undefined, fallbackProjectName: user.defaultProject });
     if (!store.canRead(user.id, projectId)) throw new Error("Knowledge access denied");
     const ingestor = new WeKnoraIngestor(store, { upsertDocument: async () => ({ externalDocumentId: "unused" }) });
@@ -84,24 +86,53 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
       return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
     } catch { return []; }
   };
-  server.tool("knowledge_search", "Search ACL- and Scope-filtered Case, Pattern, Playbook, and Candidate knowledge.", { project: z.string().optional(), query: z.string().min(1), limit: z.number().int().min(1).max(100).optional(), sampleManagerVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), environment: z.string().optional(), scopeType: z.string().optional(), scopeKey: z.string().optional() }, async ({ project: projectName, query, limit, sampleManagerVersion, solution, module, environment, scopeType, scopeKey }) => {
+  server.tool("knowledge_search", "Search ACL- and Scope-filtered Case, Pattern, Playbook, and Candidate knowledge.", { workSessionId:z.string().optional(), project: z.string().optional(), query: z.string().min(1), limit: z.number().int().min(1).max(100).optional(), sampleManagerVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), environment: z.string().optional(), scopeType: z.string().optional(), scopeKey: z.string().optional() }, async ({ project: projectName, query, limit, sampleManagerVersion, solution, module, environment, scopeType, scopeKey, workSessionId }) => {
     const store = requireKnowledge();
-    const projectNameResolved = project(projectName);
+    const session=workSessionId?workSessions().assertSessionUsable({actorId:user.id,sessionId:workSessionId,environment}):undefined;
+    const projectNameResolved = session&&!projectName?session.projectId:project(projectName);
     if (!projectNameResolved) throw new Error("No project selected");
     const projectId = user.defaultProjectId && projectNameResolved === user.defaultProject ? String(user.defaultProjectId) : projectNameResolved;
+    if(session && session.projectId!==projectId) throw new Error("Work Session project does not match caller");
     store.grantAcl(projectId, user.id, false);
-    return { content: [{ type: "text", text: serializeKnowledgeResult(await searchKnowledge(store, { userId: user.id, projectId, query, limit, sampleManagerVersion, solution, module, environment, scopeType, scopeKey })) }] };
+    const result=await searchKnowledge(store, { userId: user.id, projectId, workSessionId, query, limit, sampleManagerVersion, solution, module, environment:environment??session?.environment, scopeType, scopeKey });
+    if(session)workSessions().get({actorId:user.id,sessionId:session.id});
+    return { content: [{ type: "text", text: serializeKnowledgeResult(result) }] };
   });
-  server.tool("knowledge_get", "Read a complete Knowledge document by id after project/scope ACL enforcement.", { documentId: z.string(), project: z.string().optional() }, async ({ documentId, project: projectName }) => {
+  server.tool("knowledge_get", "Read a complete Knowledge document by id after project/scope ACL enforcement.", { documentId: z.string(), project: z.string().optional(), workSessionId: z.string().optional() }, async ({ documentId, project: projectName, workSessionId }) => {
     const store = requireKnowledge();
-    const row = store.db.prepare("SELECT * FROM knowledge_documents WHERE id = ?").get(documentId) as Record<string, unknown> | undefined;
-    const name = project(projectName); const projectId = user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name;
-    if(row?.kind==="product_document" || store.db.prepare("SELECT 1 FROM knowledge_weknora_documents WHERE id=? OR external_document_id=?").get(documentId,documentId)) {
-      return {content:[{type:"text",text:serializeKnowledgeResult(await getProductBackend(store,{documentId,userId:user.id,isAdmin:user.isAdmin,projectId,environment:user.defaultEnvironment}))}]};
+    if (workSessionId && resolveProjectId) {
+      const stored = store.db.prepare("SELECT actor_id,project_id FROM knowledge_work_sessions WHERE id=?").get(workSessionId) as {actor_id:number;project_id:string}|undefined;
+      // Mirror a missing cold ACL only after current control-plane authorization.
+      // An existing denied ACL or reviewer grant must remain unchanged.
+      if (stored?.actor_id === user.id) {
+        resolveProjectId(stored.project_id);
+        if (!store.db.prepare("SELECT 1 FROM knowledge_acl WHERE project_id=? AND user_id=?").get(stored.project_id,user.id)) store.grantAcl(stored.project_id,user.id,false);
+      }
     }
-    if (!row || !canReadDocument(store, row, projectId)) throw new Error("Knowledge access denied");
-    const source = provenance(store, row);
-    return { content: [{ type: "text", text: serializeKnowledgeResult({ id: row.id, kind: row.kind, title: row.title, body: row.body, lifecycle: row.lifecycle, projectId: row.project_id, eventId: source?.event_id, jobId: source?.job_id, deploymentId: source?.deployment_id, sourceCandidateId: source?.source_candidate_id, evidenceRefs: evidenceRefs(source), scope: store.getScopeBinding(documentId), card: String(row.kind) === "candidate" ? store.getCandidateCard(documentId) : undefined, sourceLocator: row.source_locator, sourceSha256: row.source_sha256, updatedAt: row.updated_at }) }] };
+    const session = workSessionId ? workSessions().assertSessionUsable({actorId:user.id,sessionId:workSessionId,environment:user.defaultEnvironment}) : undefined;
+    const environment = user.defaultEnvironment ?? session?.environment;
+    if (session && (session.environment ?? "") !== (environment ?? "")) throw new Error("Work Session environment does not match caller");
+    const name = session && !projectName ? undefined : project(projectName);
+    const projectId = session && !projectName ? session.projectId : session && name && resolveProjectNameToId ? resolveProjectNameToId(name) : user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name;
+    if (session && session.projectId !== projectId) throw new Error("Work Session project does not match caller");
+    const row = store.db.prepare("SELECT * FROM knowledge_documents WHERE id = ?").get(documentId) as Record<string, unknown> | undefined;
+    let result: Record<string,unknown>;
+    if(row?.kind==="product_document" || store.db.prepare("SELECT 1 FROM knowledge_weknora_documents WHERE id=? OR external_document_id=?").get(documentId,documentId)) {
+      result = await getProductBackend(store,{documentId,userId:user.id,isAdmin:user.isAdmin,projectId,environment});
+    } else {
+      if (!row || !canReadDocument(store, row, projectId)) throw new Error("Knowledge access denied");
+      if (session && row.environment && row.environment !== environment) throw new Error("Knowledge document environment does not match Work Session");
+      const source = provenance(store, row);
+      result = { id: row.id, kind: row.kind, title: row.title, body: row.body, lifecycle: row.lifecycle, projectId: row.project_id, eventId: source?.event_id, jobId: source?.job_id, deploymentId: source?.deployment_id, sourceCandidateId: source?.source_candidate_id, evidenceRefs: evidenceRefs(source), scope: store.getScopeBinding(documentId), card: String(row.kind) === "candidate" ? store.getCandidateCard(documentId) : undefined, sourceLocator: row.source_locator, sourceSha256: row.source_sha256, updatedAt: row.updated_at };
+    }
+    if (session) {
+      const service = workSessions();
+      service.assertSessionUsable({actorId:user.id,sessionId:session.id,projectId,environment});
+      const hash = (value:string) => createHash("sha256").update(value).digest("hex");
+      const revision = {documentId:result.externalDocumentId??result.id,sourceSha256:result.sourceSha256,version:result.version,parserVersion:result.parserVersion,bodySha256:hash(String(result.body??""))};
+      service.recordRetrieval({actorId:user.id,sessionId:session.id,projectId:session.projectId,environment,query:"",sourceRunId:"document-read:"+hash(JSON.stringify(revision)),resultCount:1,degraded:false,operation:"document_read"});
+    }
+    return { content: [{ type: "text", text: serializeKnowledgeResult(result) }] };
   });
   server.tool("knowledge_playbook_get", "Read a draft, approved, or deprecated Playbook with its steps and proposed Skill diff.", { playbookId: z.string(), project: z.string().optional() }, async ({ playbookId, project: projectName }) => {
     const store = requireKnowledge();
@@ -204,24 +235,35 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   });
 
   server.tool("knowledge_work_session_open", "Open an ACL-scoped Work Session with an IntentEnvelope for a multi-step task.", { idempotencyKey: z.string().min(1).max(300), intent: z.record(z.unknown()), summary: z.string().max(8000).optional() }, async ({ idempotencyKey, intent, summary }) => {
-    const store = requireKnowledge(); const validated = validateIntentEnvelope({ ...intent, actorId: user.id }); const session = new WorkSessionService(store).open({ actorId: user.id, idempotencyKey, intent: validated, summary }); return { content: [{ type: "text", text: serializeKnowledgeResult({ session }) }] };
+    const store = requireKnowledge();
+    const validated = validateIntentEnvelope({ ...intent, actorId: user.id });
+    if (resolveProjectId) {
+      // Recheck the current token scope even when a prior request mirrored an ACL.
+      validated.projectId = resolveProjectId(validated.projectId);
+      store.grantAcl(validated.projectId, user.id, false);
+    }
+    const session = workSessions().open({ actorId: user.id, idempotencyKey, intent: validated, summary });
+    // An idempotency key can resolve to an older session on a different project.
+    if (session.projectId !== validated.projectId) resolveProjectId?.(session.projectId);
+    return { content: [{ type: "text", text: serializeKnowledgeResult({ session }) }] };
   });
-  server.tool("knowledge_work_session_update", "Update a Work Session phase or user-visible IntentEnvelope fields.", { sessionId: z.string(), patch: z.record(z.unknown()), idempotencyKey: z.string().max(300).optional() }, async ({ sessionId, patch, idempotencyKey }) => { const session = new WorkSessionService(requireKnowledge()).update({ actorId: user.id, sessionId, patch: patch as never, idempotencyKey }); return { content: [{ type: "text", text: serializeKnowledgeResult({ session }) }] }; });
-  server.tool("knowledge_work_session_close", "Close a Work Session with acceptance results and unknowns.", { sessionId: z.string(), result: z.object({ summary: z.string().max(8000).optional(), unknowns: z.array(z.string().max(2000)).max(100).optional(), acceptanceResults: z.record(z.union([z.boolean(), z.string().max(500)])).optional() }).optional(), idempotencyKey: z.string().max(300).optional() }, async ({ sessionId, result, idempotencyKey }) => { const session = new WorkSessionService(requireKnowledge()).close({ actorId: user.id, sessionId, result, idempotencyKey }); return { content: [{ type: "text", text: serializeKnowledgeResult({ session }) }] }; });
-  server.tool("knowledge_work_session_get", "Read a Work Session and its correlated event metadata after ACL enforcement.", { sessionId: z.string() }, async ({ sessionId }) => { const service = new WorkSessionService(requireKnowledge()); return { content: [{ type: "text", text: serializeKnowledgeResult({ session: service.get({ actorId: user.id, sessionId }), events: service.listEvents({ actorId: user.id, sessionId }) }) }] }; });
-  server.tool("knowledge_work_session_list", "List the caller's Work Sessions on projects they can still read, with time-ordered event aggregation.", { limit: z.number().int().min(1).max(200).optional(), sessionId: z.string().optional() }, async ({ limit, sessionId }) => {
-    const service = new WorkSessionService(requireKnowledge());
-    if (sessionId) return { content: [{ type: "text", text: serializeKnowledgeResult(service.summarize({ actorId: user.id, sessionId })) }] };
+  server.tool("knowledge_work_session_update", "Update a Work Session phase or user-visible IntentEnvelope fields.", { sessionId: z.string(), patch: z.record(z.unknown()), idempotencyKey: z.string().max(300).optional() }, async ({ sessionId, patch, idempotencyKey }) => { const session = workSessions().update({ actorId: user.id, sessionId, patch: patch as never, idempotencyKey }); return { content: [{ type: "text", text: serializeKnowledgeResult({ session }) }] }; });
+  server.tool("knowledge_work_session_close", "Close a Work Session with acceptance results and unknowns.", { sessionId: z.string(), result: z.object({ summary: z.string().max(8000).optional(), unknowns: z.array(z.string().max(2000)).max(100).optional(), acceptanceResults: z.record(z.union([z.boolean(), z.string().max(500)])).optional() }).optional(), idempotencyKey: z.string().max(300).optional() }, async ({ sessionId, result, idempotencyKey }) => { const session = workSessions().close({ actorId: user.id, sessionId, result, idempotencyKey }); return { content: [{ type: "text", text: serializeKnowledgeResult({ session }) }] }; });
+  server.tool("knowledge_work_session_get", "Read a Work Session and its correlated event metadata after ACL enforcement.", { sessionId: z.string() }, async ({ sessionId }) => { const summary=workSessions().summarize({actorId:user.id,sessionId}); return { content: [{ type: "text", text: serializeKnowledgeResult({session:summary.session,events:summary.events,pagination:summary.pagination.events}) }] }; });
+  server.tool("knowledge_work_session_list", "List the caller's Work Sessions on projects they can still read, with time-ordered event aggregation.", { limit: z.number().int().min(1).max(200).optional(), offset: z.number().int().min(0).max(1000000).optional(), sessionId: z.string().optional() }, async ({ limit, offset, sessionId }) => {
+    const service = workSessions();
+    if (sessionId) return { content: [{ type: "text", text: serializeKnowledgeResult(service.summarize({ actorId: user.id, sessionId, limit, offset })) }] };
     return { content: [{ type: "text", text: serializeKnowledgeResult({ sessions: service.list({ actorId: user.id, limit }) }) }] };
   });
   server.tool("knowledge_provider_config_list", "List safe Relay provider metadata without returning secrets.", {}, async () => { return { content: [{ type: "text", text: serializeKnowledgeResult({ providers: managedRegistry().list(), pendingReindex: managedRegistry().pendingReindex() }) }] }; });
   server.tool("knowledge_candidate_insight_compile", "Compile an Evidence-backed Candidate Insight for a Work Session, with deterministic fallback and no auto-approval.", { sessionId: z.string(), evidenceRefs: z.array(z.string().min(1)).max(100), context: z.record(z.unknown()).optional(), providerId: z.string().optional(), async: z.boolean().optional(), retry:z.boolean().optional() }, async ({ sessionId, evidenceRefs, context, providerId, async: enqueue,retry }) => {
     const store = requireKnowledge();
+    workSessions().get({ actorId: user.id, sessionId });
     if (enqueue) return { content: [{ type: "text", text: serializeKnowledgeResult(enqueueCandidateInsight(store, { actorId: user.id, sessionId, evidenceRefs, context: context ?? {},providerId,retry })) }] };
     const insight = await new CandidateInsightCompiler(store, candidateProvider(providerId)).compile({ actorId: user.id, sessionId, evidenceRefs, context: context ?? {} });
     return { content: [{ type: "text", text: serializeKnowledgeResult({ insight }) }] };
   });
-  server.tool("knowledge_candidate_insight_job_get", "Read an asynchronous Candidate compilation job after Session ACL enforcement.", {id:z.string()}, async ({id})=>({content:[{type:"text",text:serializeKnowledgeResult({job:getCandidateInsightJob(requireKnowledge(),{actorId:user.id,id})})}]}));
+  server.tool("knowledge_candidate_insight_job_get", "Read an asynchronous Candidate compilation job after Session ACL enforcement.", {id:z.string()}, async ({id})=>{const job=getCandidateInsightJob(requireKnowledge(),{actorId:user.id,id});workSessions().get({actorId:user.id,sessionId:job.workSessionId});return {content:[{type:"text",text:serializeKnowledgeResult({job})}]};});
   server.tool("knowledge_candidate_insight_list", "List ACL-scoped Candidate Insights pending or completed through human review.", { projectId: z.string(), status: z.enum(["draft", "accepted", "edited", "rejected"]).optional(), limit: z.number().int().min(1).max(200).optional(), offset: z.number().int().min(0).optional() }, async (input) => {
     const insights = new CandidateInsightReviewService(requireKnowledge()).list({ actorId: user.id, ...input });
     return { content: [{ type: "text", text: serializeKnowledgeResult({ insights }) }] };
@@ -268,12 +310,14 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
     const scope = retrievalScope({ workSessionId, projectId, productVersion, solution, module, language });
     const effectiveIntent={objective:"",actions:[] as string[],...scope.session?.intent,projectId:scope.projectId,environment:scope.session?.environment??user.defaultEnvironment,sampleManagerVersion:productVersion??scope.session?.intent.sampleManagerVersion,solution:solution??scope.session?.intent.solution,module:module??scope.session?.intent.module};
     let relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: undefined } as Awaited<ReturnType<typeof loadRelayContextSources>>;
-    try { relaySources = await loadRelayContextSources({ store: requireKnowledge(), userId: user.id, projectId: scope.projectId, query, intent: effectiveIntent, limit: limit ?? 10 }); } catch { relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: { relayMemory: "unavailable" } }; }
+    try { relaySources = await loadRelayContextSources({ store: requireKnowledge(), userId: user.id, workSessionId:scope.session?.id, projectId: scope.projectId, query, intent: effectiveIntent, limit: limit ?? 10 }); } catch { relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: { relayMemory: "unavailable" } }; }
+    if (scope.session) workSessions().get({actorId:user.id,sessionId:scope.session.id});
     if (!scope.knowledgeIds.length) {
       const contextPack = new ContextPackService({ provider: "weknora" }).build({ intent: effectiveIntent, authoritativeDocs: [], confirmedKnowledge: relaySources.confirmedKnowledge, candidates: relaySources.candidates, currentFacts: relaySources.currentFacts, degraded: { ...relaySources.degraded, productKnowledge: "no_published_documents" }, acl: { documentIds: [] }, maxItemsPerSection: limit ?? 10 });
       return { content: [{ type: "text", text: serializeKnowledgeResult({ retrievalRunId: "local-scope-empty", references: [], degraded: contextPack.degraded, contextPack }) }] };
     }
     const result = await searchEngineProductReferences(requireKnowledge(),{userId:user.id,projectId:scope.projectId,environment:scope.session?.environment??user.defaultEnvironment,query,sampleManagerVersion:productVersion??scope.session?.intent.sampleManagerVersion,solution:solution??scope.session?.intent.solution,module:module??scope.session?.intent.module,language,limit});
+    if (scope.session) workSessions().recordRetrieval({actorId:user.id,sessionId:scope.session.id,projectId:scope.projectId,environment:effectiveIntent.environment,query,sourceRunId:result.retrievalRunId,resultCount:result.references.length,degraded:Boolean(result.degraded)});
     const visible = new Set(scope.knowledgeIds);
     const references = result.references.filter((reference) => visible.has(reference.documentId));
     const contextPack = new ContextPackService({ provider: "weknora" }).build({ intent: effectiveIntent, authoritativeDocs: references, confirmedKnowledge: relaySources.confirmedKnowledge, candidates: relaySources.candidates, currentFacts: relaySources.currentFacts, degraded: { ...relaySources.degraded, ...result.degraded }, acl: { documentIds: scope.knowledgeIds }, maxItemsPerSection: limit ?? 10 });

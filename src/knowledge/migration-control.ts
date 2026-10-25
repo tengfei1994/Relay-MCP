@@ -16,6 +16,14 @@ export interface SourceManifestDocument { localDocumentId: string; title: string
 
 export interface CreateFromLocalInput { actorId: number; idempotencyKey: string; kind?: string; productVersion?: string; solution?: string; module?: string; projectId?: string; environment?: string; limit?: number; parserVersion: string; /** Re-attempt documents currently recorded as failed. */ retry?: boolean; }
 
+export interface ExecutionOptions {
+  maxDocumentsPerPass?: number;
+  maxDurationMs?: number;
+  beforeDocument?: (document: SourceManifestDocument & { body: string }) => Promise<{ deferUntil: string; reason: string } | undefined>;
+  /** Runs after the failed mapping/checkpoint is durable, before another upload. */
+  afterDocumentFailure?: () => Promise<void>;
+}
+
 export interface MigrationCleanupReport {
   dryRun: true;
   generatedAt: string;
@@ -80,7 +88,11 @@ create(input: { actorId: number; kind?: string; idempotencyKey: string; sourceMa
    * idempotency key never re-calls the ingestor for already-mapped documents;
    * failed documents are only re-attempted with `retry: true`.
    */
-  async createFromLocal(input: CreateFromLocalInput, ingestor: WeKnoraIngestor, onProgress?: (progress: Record<string, unknown>) => void): Promise<KnowledgeMigration> {
+  async createFromLocal(input: CreateFromLocalInput, ingestor: WeKnoraIngestor, onProgress?: (progress: Record<string, unknown>) => void, options: ExecutionOptions = {}): Promise<KnowledgeMigration> {
+    const startedAt = this.clock().getTime();
+    for (const value of [options.maxDocumentsPerPass, options.maxDurationMs]) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) throw new Error("Migration execution limits must be positive integers");
+    }
     const key = input.idempotencyKey.trim();
     if (!key) throw new Error("idempotencyKey is required");
     const parserVersion = input.parserVersion.trim();
@@ -91,7 +103,7 @@ create(input: { actorId: number; kind?: string; idempotencyKey: string; sourceMa
     let rows = this.queryLocalProductDocuments(input);
     const priorManifest = existing ? parse(existing.source_manifest_json) : {};
     if (priorManifest.asyncRequest && !onProgress) throw new Error("This migration belongs to a background job; query its status or retry it asynchronously");
-    if (priorManifest.asyncRequest && Array.isArray(priorManifest.documents)) {
+    if ((priorManifest.asyncRequest || (existing && parse(existing.report_json).yielded)) && Array.isArray(priorManifest.documents)) {
       const frozen = priorManifest.documents as SourceManifestDocument[];
       const current = new Map(rows.map(document => [document.localDocumentId, document]));
       rows = frozen.map(document => {
@@ -126,20 +138,47 @@ create(input: { actorId: number; kind?: string; idempotencyKey: string; sourceMa
     const findStagedByKey = this.store.db.prepare("SELECT id,external_document_id,status FROM knowledge_weknora_documents WHERE idempotency_key=?");
     const findStagedById = this.store.db.prepare("SELECT id,external_document_id,status FROM knowledge_weknora_documents WHERE id=?");
     const now = () => this.clock().toISOString();
-    const checkpoint = () => {
+    const previousReport = existing ? parse(existing.report_json) : {};
+    // An explicit retry authorizes one more attempt per failed source. Keep the
+    // unattempted retry set across yields, without automatically retrying a new
+    // failure on every continuation.
+    const retryPending = new Set<string>(input.retry
+      ? previousReport.yielded && Array.isArray(previousReport.retryPendingLocalDocumentIds)
+        ? previousReport.retryPendingLocalDocumentIds.map(String)
+        : [...mapped].filter(([, row]) => row.status === "failed").map(([id]) => id)
+      : []);
+    const eligible = (document: SourceManifestDocument) => {
+      const prior = mapped.get(document.localDocumentId);
+      return !prior || (prior.status === "failed" && retryPending.has(document.localDocumentId));
+    };
+    const pending = () => rows.filter(eligible).length;
+    const checkpoint = (extra: Record<string, unknown> = {}) => {
       const counts = this.store.db.prepare("SELECT COUNT(CASE WHEN status IN ('staged','published') THEN 1 END) AS mapped, COUNT(CASE WHEN status='failed' THEN 1 END) AS failed, COUNT(CASE WHEN status='withdrawn' THEN 1 END) AS withdrawn FROM knowledge_migration_documents WHERE migration_id=?").get(migrationId) as { mapped: number; failed: number; withdrawn: number };
-      const report = { total: rows.length, ...counts, processed: counts.mapped + counts.failed + counts.withdrawn, parserVersion, lastRunAt: now() };
+      const report = { total: rows.length, ...counts, processed: counts.mapped + counts.failed + counts.withdrawn, pending: pending(), yielded: false, retryPendingLocalDocumentIds: [...retryPending], parserVersion, lastRunAt: now(), ...extra };
       this.store.db.prepare("UPDATE knowledge_migrations SET status='created',report_json=?,updated_at=? WHERE id=? AND status IN ('created','staged')").run(JSON.stringify(report), now(), migrationId);
       onProgress?.(report);
     };
+    const yieldPass = (reason: string, deferUntil = new Date(this.clock().getTime() + 1000).toISOString()) => {
+      checkpoint({ yielded: true, deferredUntil: deferUntil, reason });
+      return this.get(migrationId)!;
+    };
     checkpoint();
+    let attempted = 0;
 
     for (const document of rows) {
       const prior = mapped.get(document.localDocumentId);
       // Already mapped documents are never re-staged; failed ones wait for an
       // explicit retry so a re-run cannot hammer a failing upstream.
-      if (prior && ["staged", "published", "withdrawn"].includes(String(prior.status))) continue;
-      if (prior && String(prior.status) === "failed" && !input.retry) continue;
+      if (!eligible(document)) continue;
+      if (attempted >= (options.maxDocumentsPerPass ?? Infinity)) return yieldPass("max_documents");
+      if (this.clock().getTime() - startedAt >= (options.maxDurationMs ?? Infinity)) return yieldPass("max_duration");
+      const deferral = await options.beforeDocument?.(document);
+      if (deferral) {
+        const timestamp = Date.parse(deferral.deferUntil);
+        if (!Number.isFinite(timestamp) || timestamp <= this.clock().getTime() || !/^[a-z][a-z0-9_.-]{0,99}$/.test(deferral.reason)) throw new Error("Migration capacity returned an invalid deferral");
+        return yieldPass(deferral.reason, new Date(timestamp).toISOString());
+      }
+      if (this.clock().getTime() - startedAt >= (options.maxDurationMs ?? Infinity)) return yieldPass("max_duration");
       const documentKey = `${key}:${document.localDocumentId}`;
       const weknoraInput: WeKnoraDocumentInput = {
         idempotencyKey: documentKey,
@@ -157,6 +196,8 @@ create(input: { actorId: number; kind?: string; idempotencyKey: string; sourceMa
         rawSha256: document.sourceSha256,
       };
       const batch = await ingestor.stageBatch([weknoraInput], { retry: Boolean(prior) });
+      attempted++;
+      retryPending.delete(document.localDocumentId);
       const item = batch.items[0];
       // Identity dedupe may return an existing control-plane row whose
       // idempotency key belongs to an earlier migration. Resolve that row by
@@ -166,8 +207,10 @@ create(input: { actorId: number; kind?: string; idempotencyKey: string; sourceMa
       const stagedRow = stagedRowById ?? stagedRowByKey;
       const status = item?.status === "failed" || String(stagedRow?.status ?? "") === "failed" ? "failed" : "staged";
       upsertMapping.run(migrationId, document.localDocumentId, item?.documentId ?? (stagedRow ? String(stagedRow.id) : null), documentKey, stagedRow ? String(stagedRow.external_document_id) : null, status, item?.failureCode ?? null, item?.error ?? null, document.bodySha256, parserVersion, now(), now());
+      mapped.set(document.localDocumentId, this.store.db.prepare("SELECT status FROM knowledge_migration_documents WHERE migration_id=? AND local_document_id=?").get(migrationId, document.localDocumentId) as Record<string, unknown>);
       this.store.audit({ actorId: input.actorId, action: "knowledge.migration.stage_document", entityType: "migration", entityId: migrationId, details: { localDocumentId: document.localDocumentId, status, externalDocumentId: stagedRow?.external_document_id ?? null } });
       checkpoint();
+      if(status==="failed")await options.afterDocumentFailure?.();
     }
 
     const linkage = this.store.db.prepare("SELECT * FROM knowledge_migration_documents WHERE migration_id=? ORDER BY local_document_id").all(migrationId) as Array<Record<string, unknown>>;
@@ -191,6 +234,8 @@ create(input: { actorId: number; kind?: string; idempotencyKey: string; sourceMa
       failed: failedDocuments.length,
       withdrawn,
       skipped: rows.length - mappedCount - failedDocuments.length - withdrawn,
+      pending: 0,
+      yielded: false,
       manifestCount: manifest.documents.length,
       parserVersion,
       failedDocuments,

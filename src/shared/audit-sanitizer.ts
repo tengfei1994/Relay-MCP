@@ -11,6 +11,9 @@ function keyMetadata(value: unknown): { keys: string[]; count: number; valuesRed
 const SENSITIVE_KEY = /(token|secret|password|passwd|credential|authorization|api[-_]?key|private[-_]?key|ssh[-_]?key|connection[-_]?string|cookie|bearer)/i;
 const SENSITIVE_VALUE = /(?:bearer\s+|--?(?:password|token|secret|api[-_]?key)\s*=|(?:password|token|secret|api[-_]?key|connectionstring)\s*=)/i;
 const EXACT_SENSITIVE_KEY = /^(script|content|base64|token|password|sql|parameters)$/i;
+// Exact private-reasoning field names, including model response variants.
+// Ordinary unknown business fields (for example reasoningSummary) stay intact.
+const HIDDEN_REASONING_KEY = /^(?:hidden[-_ ]?reasoning|reasoning(?:[-_ ]?content)?|chain[-_ ]?of[-_ ]?thought|thoughts?|thinking|cot|scratchpad|reflection|internal[-_ ]?monologue|deliberation)$/i;
 const BUILD_SETTINGS_KEY = /^(environmentVariables|msbuildProperties)$/i;
 
 function redactionLength(item: unknown): number {
@@ -36,7 +39,7 @@ export function sanitizeAuditArguments(value: unknown, seen: Set<object> = new S
     if (Array.isArray(value)) return value.map((item) => sanitizeAuditArguments(item, seen));
     return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => {
       if (BUILD_SETTINGS_KEY.test(key)) return [key, keyMetadata(item)];
-      if (EXACT_SENSITIVE_KEY.test(key) || SENSITIVE_KEY.test(key)) {
+      if (EXACT_SENSITIVE_KEY.test(key) || SENSITIVE_KEY.test(key) || HIDDEN_REASONING_KEY.test(key)) {
         return [key, { redacted: true, length: redactionLength(item) }];
       }
       return [key, sanitizeAuditArguments(item, seen)];

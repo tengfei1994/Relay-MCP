@@ -9,12 +9,17 @@ export interface ExternalDocumentResult { externalDocumentId: string; externalCh
 export type WeKnoraDocumentStatus = "staged" | "published" | "deprecated" | "failed";
 export interface StagedWeKnoraDocument { id: string; externalDocumentId: string; externalChunkIds: string[]; knowledgeBaseId?: string; title: string; normalizedContentSha256: string; identityHash?: string; rawSha256?: string; parserVersion: string; productVersion?: string; solution?: string; module?: string; topicId?: string; sourcePath?: string; language?: string; projectId?: string; environment?: string; upstreamParseStatus?: string; upstreamVerifiedAt?: string; modelProvenance?: WeKnoraModelProvenance; status: WeKnoraDocumentStatus; failureCode?: string; failureMessage?: string; attemptCount: number; createdAt: string; updatedAt: string; publishedAt?: string; }
 export interface WeKnoraDocumentWriter {
-  upsertDocument(input: WeKnoraDocumentInput & { normalizedContent: string; normalizedContentSha256: string }): Promise<ExternalDocumentResult>;
+  upsertDocument(input: NormalizedWeKnoraInput, options?: WeKnoraWriteOptions): Promise<ExternalDocumentResult>;
+  resumeDocument?(externalDocumentId: string, input: NormalizedWeKnoraInput, options?: WeKnoraWriteOptions): Promise<ExternalDocumentResult>;
   getModelProvenance?(): Promise<WeKnoraModelProvenance | undefined>;
 }
+export type NormalizedWeKnoraInput = WeKnoraDocumentInput & { normalizedContent: string; normalizedContentSha256: string };
+export interface WeKnoraWriteOptions { onAccepted?: (document: ExternalDocumentResult) => void | Promise<void>; }
 export interface WeKnoraClientDocumentWriterOptions {
   readiness?: WeKnoraReadinessOptions;
   modelProvenance?: WeKnoraModelProvenance | (() => WeKnoraModelProvenance | undefined | Promise<WeKnoraModelProvenance | undefined>);
+  deferSynthesis?: boolean;
+  assertCurrentConfiguration?: () => void | Promise<void>;
 }
 export interface WeKnoraRetrievalFilter { productVersion?: string; solution?: string; module?: string; topicId?: string; projectId?: string; environment?: string; language?: string; }
 export interface WeKnoraIngestBatchItem { idempotencyKey: string; documentId?: string; status: "staged" | "skipped" | "failed"; failureCode?: string; error?: string; }
@@ -108,17 +113,25 @@ export class WeKnoraClientDocumentWriter implements WeKnoraDocumentWriter {
   async getModelProvenance(): Promise<WeKnoraModelProvenance | undefined> {
     return validateProvenance(typeof this.options.modelProvenance === "function" ? await this.options.modelProvenance() : this.options.modelProvenance);
   }
-  async upsertDocument(input: WeKnoraDocumentInput & { normalizedContent: string; normalizedContentSha256: string }): Promise<ExternalDocumentResult> {
+  private async assertConfiguration(expected?: WeKnoraModelProvenance): Promise<void> {
+    try {
+      await this.options.assertCurrentConfiguration?.();
+      if (JSON.stringify(await this.getModelProvenance()) !== JSON.stringify(expected)) throw new Error("Model binding changed");
+    } catch { throw new WeKnoraIngestError("ingestion_configuration_changed", "Knowledge engine ingestion configuration changed; restore the frozen migration configuration before resuming"); }
+  }
+  async upsertDocument(input: NormalizedWeKnoraInput, options?: WeKnoraWriteOptions): Promise<ExternalDocumentResult> {
     const configured = await this.getModelProvenance();
     const provenance = configured ?? validateProvenance(input.modelProvenance);
     if (provenance && (provenance.knowledgeBaseId !== this.knowledgeBaseId || (configured && input.modelProvenance && JSON.stringify(configured) !== JSON.stringify(validateProvenance(input.modelProvenance))))) {
       throw new WeKnoraIngestError("model_provenance_mismatch", "Embedding model binding changed before document upload");
     }
+    await this.assertConfiguration(configured);
     // Match Relay's immutable mapping identity, not the import-run key. The
     // v0.8.3 datasource compatibility fields isolate same-byte versions/scopes
     // without injecting hashes into Markdown or claiming a GitLab data source.
     const sourceIdentity = { dataSourceId: "relay-mcp-product-v1", externalId: canonicalIdentity({ ...input, modelProvenance: provenance }, input.normalizedContentSha256) };
     const ref = await this.client.upsertDocument({ knowledgeBaseId: this.knowledgeBaseId, title: input.title, content: input.normalizedContent, sourcePath: input.sourcePath, sourceIdentity,
+      ...(this.options.deferSynthesis ? { processConfig: { summary_enabled: false, question_generation_config: { enabled: false } } } : {}),
       metadata: {
         relay_ingestion_source: "relay_product_knowledge", relay_source_identity_contract: "weknora-v0.8.3-file-v2",
         relay_document_key: input.idempotencyKey, parser_version: input.parserVersion, normalized_content_sha256: input.normalizedContentSha256,
@@ -127,13 +140,36 @@ export class WeKnoraClientDocumentWriter implements WeKnoraDocumentWriter {
         ...(input.sourcePath ? { sourcePath: input.sourcePath } : {}), ...(input.language ? { language: input.language } : {}),
         ...(input.projectId ? { projectId: input.projectId } : {}), ...(input.environment ? { environment: input.environment } : {}),
       } });
-    await this.client.waitForDocumentReady(ref.documentId, this.options.readiness);
-    const chunks = await this.client.listDocumentChunks(ref.documentId);
+    await options?.onAccepted?.({externalDocumentId:ref.documentId,knowledgeBaseId:this.knowledgeBaseId,parseStatus:ref.parseStatus??"pending",modelProvenance:provenance});
+    return this.finishDocument(ref.documentId,provenance,configured,options);
+  }
+  async resumeDocument(externalDocumentId: string, input: NormalizedWeKnoraInput, options?: WeKnoraWriteOptions): Promise<ExternalDocumentResult> {
+    const configured=await this.getModelProvenance(),provenance=configured??validateProvenance(input.modelProvenance);
+    if (provenance && (provenance.knowledgeBaseId!==this.knowledgeBaseId || (configured && input.modelProvenance && JSON.stringify(configured)!==JSON.stringify(validateProvenance(input.modelProvenance))))) throw new WeKnoraIngestError("model_provenance_mismatch","Embedding model binding changed before resuming the accepted upload");
+    await this.assertConfiguration(configured);
+    return this.finishDocument(externalDocumentId,provenance,configured,options);
+  }
+  private async finishDocument(id: string, provenance: WeKnoraModelProvenance|undefined, configured: WeKnoraModelProvenance|undefined, options?: WeKnoraWriteOptions): Promise<ExternalDocumentResult> {
+    const current=await this.client.getDocument(id);
+    await options?.onAccepted?.({externalDocumentId:id,knowledgeBaseId:this.knowledgeBaseId,parseStatus:current.parseStatus??"pending",modelProvenance:provenance});
+    if (["failed","cancelled","deleting"].includes(current.parseStatus??"")) throw new WeKnoraError("parse_failed",`WeKnora document processing ended with status ${current.parseStatus}`);
+    if (current.parseStatus!=="completed") {
+      try { await this.client.waitForDocumentReady(id, this.options.readiness); }
+      catch (error) {
+        if (error instanceof WeKnoraError && error.code === "parse_failed") {
+          const terminal = await this.client.getDocument(id);
+          await options?.onAccepted?.({externalDocumentId:id,knowledgeBaseId:this.knowledgeBaseId,parseStatus:terminal.parseStatus??"pending",modelProvenance:provenance});
+        }
+        throw error;
+      }
+    }
+    const chunks = await this.client.listDocumentChunks(id);
     const textChunks = chunks.filter((chunk) => (!chunk.chunkType || chunk.chunkType === "text") && chunk.isEnabled !== false && chunk.content.trim());
     if (!textChunks.length || textChunks.some((chunk) => chunk.indexStatus !== "ready")) {
       throw new WeKnoraIngestError("upstream_not_ready", "WeKnora parse completed without ready indexed text chunks");
     }
-    return verifiedExternal({ externalDocumentId: ref.documentId, knowledgeBaseId: this.knowledgeBaseId, parseStatus: "completed", externalChunkIds: chunks.filter((chunk) => chunk.isEnabled !== false && chunk.indexStatus === "ready").map((chunk) => chunk.chunkId), modelProvenance: provenance }, provenance);
+    await this.assertConfiguration(configured);
+    return verifiedExternal({ externalDocumentId: id, knowledgeBaseId: this.knowledgeBaseId, parseStatus: "completed", externalChunkIds: chunks.filter((chunk) => chunk.isEnabled !== false && chunk.indexStatus === "ready").map((chunk) => chunk.chunkId), modelProvenance: provenance }, provenance);
   }
 }
 
@@ -209,7 +245,7 @@ export class WeKnoraIngestor {
     const existing = this.store.db.prepare("SELECT * FROM knowledge_weknora_documents WHERE idempotency_key=?").get(key) as Record<string, unknown> | undefined;
     if (existing) {
       if (!matchesStoredIdentity(existing, input, normalizedContentSha256, identityHash)) throw new WeKnoraIngestError("idempotency_conflict", "Idempotency key belongs to a different document identity");
-      if (existing.status !== "failed" || !options?.retry) return { document: weKnoraDocumentFromRow(existing), deduplicated: true };
+      if (["published", "deprecated"].includes(String(existing.status)) || (existing.status === "staged" && isVerifiedWeKnoraDocument(weKnoraDocumentFromRow(existing))) || (existing.status === "failed" && !options?.retry)) return { document: weKnoraDocumentFromRow(existing), deduplicated: true };
       if (existing.normalized_content_sha256 !== normalizedContentSha256) throw new WeKnoraIngestError("parser_upgrade_required", "Changed normalization requires a new parser version and operation key");
       return { document: await this.retryFailed(existing, input, normalizedContent, normalizedContentSha256, identityHash), deduplicated: false };
     }
@@ -217,21 +253,16 @@ export class WeKnoraIngestor {
     // source proof; explicit parser upgrades always create a new mapping.
     const sameContent = this.store.db.prepare("SELECT * FROM knowledge_weknora_documents WHERE identity_hash IN (?,?,?) AND parser_version=? AND raw_sha256 IS ? AND status NOT IN ('deprecated','failed') ORDER BY CASE WHEN identity_hash=? THEN 0 ELSE 1 END LIMIT 1").get(identityHash, legacyCanonicalIdentity(input, normalizedContentSha256), legacyCanonicalIdentity(input, hash(legacyProductMarkupForReplay(input.content))), input.parserVersion, input.rawSha256 ?? null, identityHash) as Record<string, unknown> | undefined;
     if (sameContent && matchesStoredIdentity(sameContent, input, normalizedContentSha256, identityHash) && isVerifiedWeKnoraDocument(weKnoraDocumentFromRow(sameContent))) return { document: weKnoraDocumentFromRow(sameContent), deduplicated: true };
-    const id = `weknora-${randomUUID()}`; const now = this.clock().toISOString();
-    let external: ExternalDocumentResult;
-    try {
-      external = verifiedExternal(await this.writer.upsertDocument({ ...input, normalizedContent, normalizedContentSha256 }), input.modelProvenance);
-      const collision = this.assertExternalIdentity(external.externalDocumentId, identityHash);
-      if (collision) return { document: weKnoraDocumentFromRow(collision), deduplicated: true };
-    } catch (error) {
-      const code = failureCode(error); const message = sanitizeFailureMessage(error);
-      this.insertMapping(id, input, normalizedContentSha256, identityHash, { externalDocumentId: `pending:${id}` }, "failed", now, code, message);
-      this.store.audit({ projectId: input.projectId, action: "knowledge.weknora.stage", entityType: "weknora_document", entityId: id, details: { status: "failed", failureCode: code, normalizedContentSha256 } });
-      throw new WeKnoraIngestError(code, `WeKnora ingest failed (${code}): ${message}`);
+    if (sameContent && matchesStoredIdentity(sameContent, input, normalizedContentSha256, identityHash)) {
+      if (sameContent.normalized_content_sha256 !== normalizedContentSha256) throw new WeKnoraIngestError("parser_upgrade_required", "Changed normalization requires a new parser version and operation key");
+      return { document: await this.retryFailed(sameContent, input, normalizedContent, normalizedContentSha256, identityHash), deduplicated: false };
     }
-    this.insertMapping(id, input, normalizedContentSha256, identityHash, external, "staged", now);
-    this.store.audit({ projectId: input.projectId, action: "knowledge.weknora.stage", entityType: "weknora_document", entityId: id, details: { externalDocumentId: external.externalDocumentId, normalizedContentSha256, identityHash, parserVersion: input.parserVersion, status: "staged" } });
-    return { document: this.get(id)!, deduplicated: false };
+    const id = `weknora-${randomUUID()}`; const now = this.clock().toISOString();
+    // Reserve the immutable identity before any remote side effect. An unknown
+    // acceptance window can only reconcile using this same canonical identity.
+    this.insertMapping(id, input, normalizedContentSha256, identityHash, { externalDocumentId: `pending:${id}`, parseStatus: "pending" }, "staged", now);
+    const row = this.store.db.prepare("SELECT * FROM knowledge_weknora_documents WHERE id=?").get(id) as Record<string, unknown>;
+    return { document: await this.retryFailed(row, input, normalizedContent, normalizedContentSha256, identityHash, true), deduplicated: false };
   }
   private insertMapping(id: string, input: WeKnoraDocumentInput, normalizedContentSha256: string, identityHash: string, external: ExternalDocumentResult, status: "staged" | "failed", now: string, code?: string, message?: string): void {
     const row = {
@@ -240,26 +271,48 @@ export class WeKnoraIngestor {
       identity_hash: identityHash, raw_sha256: input.rawSha256 ?? null, parser_version: input.parserVersion, product_version: input.productVersion ?? null,
       solution: input.solution ?? null, module: input.module ?? null, topic_id: input.topicId ?? null, source_path: input.sourcePath ?? null,
       language: input.language ?? null, project_id: input.projectId ?? null, environment: input.environment ?? null,
-      upstream_parse_status: external.parseStatus ?? null, upstream_verified_at: status === "staged" ? now : null,
+      upstream_parse_status: external.parseStatus ?? null, upstream_verified_at: null,
       model_provenance_json: JSON.stringify(external.modelProvenance ?? input.modelProvenance ?? {}), status,
       failure_code: code ?? null, failure_message: message ?? null, attempt_count: 1, idempotency_key: input.idempotencyKey, created_at: now, updated_at: now,
     };
     this.store.db.prepare(`INSERT INTO knowledge_weknora_documents(${Object.keys(row).join(",")}) VALUES (${Object.keys(row).map(() => "?").join(",")})`).run(...Object.values(row));
   }
-  private async retryFailed(row: Record<string, unknown>, input: WeKnoraDocumentInput, normalizedContent: string, normalizedContentSha256: string, identityHash: string): Promise<StagedWeKnoraDocument> {
-    const id = String(row.id); const attempts = Number(row.attempt_count ?? 0) + 1;
+  private async retryFailed(row: Record<string, unknown>, input: WeKnoraDocumentInput, normalizedContent: string, normalizedContentSha256: string, identityHash: string, initial = false): Promise<StagedWeKnoraDocument> {
+    const id = String(row.id); const attempts = Number(row.attempt_count ?? 0) + (initial ? 0 : 1);
+    const onAccepted = (external: ExternalDocumentResult) => this.store.db.transaction(() => {
+      const current = this.get(id);
+      if (!current || !["staged", "failed"].includes(current.status)) throw new WeKnoraIngestError("ingest_state_conflict", "Document state changed while processing the upload");
+      if (!external.externalDocumentId?.trim() || external.externalDocumentId.startsWith("pending:")) throw new WeKnoraIngestError("upstream_not_ready", "Upstream did not return an accepted document id");
+      if (!current.externalDocumentId.startsWith("pending:") && current.externalDocumentId !== external.externalDocumentId) throw new WeKnoraIngestError("external_identity_conflict", "Accepted document id changed during recovery");
+      const provenance = validateProvenance(external.modelProvenance ?? input.modelProvenance);
+      if (provenance && (provenance.knowledgeBaseId !== external.knowledgeBaseId || (input.modelProvenance && JSON.stringify(provenance) !== JSON.stringify(input.modelProvenance)))) throw new WeKnoraIngestError("model_provenance_mismatch", "Accepted upload does not match the frozen model binding");
+      const collision = this.assertExternalIdentity(external.externalDocumentId, identityHash, id);
+      if (collision && collision.id !== id) throw new WeKnoraIngestError("external_identity_conflict", "Accepted upload belongs to another mapping");
+      this.store.db.prepare("UPDATE knowledge_weknora_documents SET external_document_id=?,external_knowledge_base_id=?,upstream_parse_status=?,model_provenance_json=?,upstream_verified_at=NULL,external_chunk_ids_json='[]',status='staged',failure_code=NULL,failure_message=NULL,attempt_count=?,updated_at=? WHERE id=?")
+        .run(external.externalDocumentId, external.knowledgeBaseId ?? null, external.parseStatus ?? "pending", JSON.stringify(provenance ?? {}), attempts, this.clock().toISOString(), id);
+    }).immediate();
     try {
-      const external = verifiedExternal(await this.writer.upsertDocument({ ...input, normalizedContent, normalizedContentSha256 }), input.modelProvenance);
+      const normalized = { ...input, normalizedContent, normalizedContentSha256 };
+      let result: ExternalDocumentResult;
+      if (!String(row.external_document_id).startsWith("pending:")) {
+        if (!this.writer.resumeDocument) throw new WeKnoraIngestError("resume_not_supported", "Accepted upload requires a writer that supports polling recovery");
+        result = await this.writer.resumeDocument(String(row.external_document_id), normalized, { onAccepted });
+      } else result = await this.writer.upsertDocument(normalized, { onAccepted });
+      // Legacy/fake writers may not call the optional acceptance callback.
+      onAccepted(result);
+      const external = verifiedExternal(result, input.modelProvenance);
       const collision = this.assertExternalIdentity(external.externalDocumentId, identityHash, id);
       if (collision && collision.id !== id) throw new WeKnoraIngestError("external_identity_conflict", "Retry returned another document identity");
       const now = this.clock().toISOString();
-      this.store.db.prepare("UPDATE knowledge_weknora_documents SET external_document_id=?,external_knowledge_base_id=?,external_chunk_ids_json=?,upstream_parse_status='completed',upstream_verified_at=?,model_provenance_json=?,status='staged',failure_code=NULL,failure_message=NULL,attempt_count=?,updated_at=? WHERE id=?")
-        .run(external.externalDocumentId, external.knowledgeBaseId ?? null, JSON.stringify(external.externalChunkIds), now, JSON.stringify(external.modelProvenance ?? {}), attempts, now, id);
+      const updated = this.store.db.prepare("UPDATE knowledge_weknora_documents SET external_document_id=?,external_knowledge_base_id=?,external_chunk_ids_json=?,upstream_parse_status='completed',upstream_verified_at=?,model_provenance_json=?,status='staged',failure_code=NULL,failure_message=NULL,attempt_count=?,updated_at=? WHERE id=? AND status='staged' AND external_document_id=?")
+        .run(external.externalDocumentId, external.knowledgeBaseId ?? null, JSON.stringify(external.externalChunkIds), now, JSON.stringify(external.modelProvenance ?? {}), attempts, now, id, external.externalDocumentId);
+      if (updated.changes !== 1) throw new WeKnoraIngestError("ingest_state_conflict", "Document state changed before readiness was recorded");
       this.store.audit({ projectId: input.projectId, action: "knowledge.weknora.stage", entityType: "weknora_document", entityId: id, details: { externalDocumentId: external.externalDocumentId, normalizedContentSha256, identityHash, status: "staged", retry: true, attemptCount: attempts } });
       return this.get(id)!;
     } catch (error) {
       const code = failureCode(error); const message = sanitizeFailureMessage(error);
-      this.store.db.prepare("UPDATE knowledge_weknora_documents SET status='failed',failure_code=?,failure_message=?,upstream_verified_at=NULL,attempt_count=?,updated_at=? WHERE id=?").run(code, message, attempts, this.clock().toISOString(), id);
+      const failed = this.store.db.prepare("UPDATE knowledge_weknora_documents SET status='failed',failure_code=?,failure_message=?,upstream_verified_at=NULL,attempt_count=?,updated_at=? WHERE id=? AND status IN ('staged','failed')").run(code, message, attempts, this.clock().toISOString(), id);
+      if (failed.changes) this.store.audit({ projectId: input.projectId, action: "knowledge.weknora.stage", entityType: "weknora_document", entityId: id, details: { status: "failed", failureCode: code, normalizedContentSha256, attemptCount: attempts } });
       throw new WeKnoraIngestError(code, `WeKnora ingest failed (${code}): ${message}`);
     }
   }

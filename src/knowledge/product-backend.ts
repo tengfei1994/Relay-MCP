@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { diffLines } from "diff";
 import type { KnowledgeStore } from "./store.js";
 import { MigrationController } from "./migration-control.js";
@@ -183,7 +183,9 @@ export async function getProductBackend(store: KnowledgeStore, input: ProductBac
     if (row) row = { ...row, legacy: { ...(row.legacy as Row), localDocumentId: input.documentId } };
   }
   if (!row) throw new Error("Published Product document not found or access denied; a published migration is required for legacy IDs");
-  const remote = await engine(() => control.client.readDocument(String(row!.external_document_id)));
+  const expectedHash = text(row.normalized_content_sha256);
+  if (!expectedHash || !/^[a-f0-9]{64}$/.test(expectedHash)) throw new WeKnoraError("invalid_response", "Product normalized source hash is invalid");
+  const remote = await engine(() => control.client.readDocument(String(row!.external_document_id), { expectedNormalizedSha256: expectedHash }));
   assertScope(store, input);
   const refreshed = publishedRows(store, input, control.knowledgeBaseId).find(item => item.id === row!.id);
   if (!refreshed) throw new Error("Product publication changed or access denied during the read");
@@ -193,6 +195,10 @@ export async function getProductBackend(store: KnowledgeStore, input: ProductBac
   const allowedChunks = new Set(chunkIds(row));
   if (!remote.chunks.length || remote.chunks.some(chunk => chunk.documentId !== row!.external_document_id || !allowedChunks.has(chunk.chunkId) || chunk.isEnabled === false))
     throw new WeKnoraError("invalid_response", "Product Knowledge returned an unverified or mismatched chunk reference");
+  // Recheck after the network await against the current publication as well as
+  // the identity captured before the read. Injected clients cannot bypass this.
+  if (row.normalized_content_sha256 !== expectedHash || createHash("sha256").update(remote.content, "utf8").digest("hex") !== expectedHash)
+    throw new WeKnoraError("invalid_response", "Product normalized source hash does not match the published identity");
   return { ...dto(row), body: remote.content, summary: remote.content.slice(0, 500),
     citations: remote.chunks.map(chunk => citation(row!, chunk.chunkId, chunk.sourceLocators)),
     sections: remote.chunks.map(chunk => ({ key: chunk.chunkId, path: text(row!.source_path), title: text(chunk.sourceLocators?.[0]?.title) ?? String(row!.title),
@@ -225,10 +231,15 @@ export async function searchEngineProductReferences(store:KnowledgeStore,input:P
 }
 
 
-export async function listEngineProductBackend(store: KnowledgeStore, input: ProductBackendSearchInput & { offset?: number }, injected?: ProductBackendControlPlane) {
-  assertScope(store,input); const control=await controlPlane(store,injected); assertScope(store,input);
-  const rows=publishedRows(store,input,control.knowledgeBaseId);
+export async function listEngineProductBackend(store: KnowledgeStore, input: ProductBackendSearchInput & { offset?: number; status?: string }, injected?: ProductBackendControlPlane) {
+  assertScope(store,input);
   const limit=Math.max(1,Math.min(500,Math.trunc(input.limit??100))),offset=Math.max(0,Math.trunc(input.offset??0));
+  // The public Product catalog contains only current verified publications.
+  // UI lifecycle "approved" and engine "published" name that same state.
+  const status=text(input.status);
+  if(status&&!['approved','published'].includes(status))return {documents:[],page:{limit,offset,total:0},provider:"weknora"};
+  const control=await controlPlane(store,injected); assertScope(store,input);
+  const rows=publishedRows(store,input,control.knowledgeBaseId);
   return {documents:rows.slice(offset,offset+limit).map(row=>dto(row)),page:{limit,offset,total:rows.length},provider:"weknora"};
 }
 

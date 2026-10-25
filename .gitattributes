@@ -2,4 +2,6 @@
 *.sh text eol=lf
 scripts/knowledge-engine/** text eol=lf
 # A unified patch needs its leading context space, including before Go tabs and on blank lines.
-scripts/knowledge-engine/patches/*.patch whitespace=-blank-at-eol,-space-before-tab
+scripts/knowledge-engine/patches/*.patch whitespace=-blank-at-eol,-space-before-tab,-blank-at-eof
+# These Go fixtures are checksum-pinned bytes, including their existing line endings.
+scripts/knowledge-engine/patches/*.go -text whitespace=cr-at-eol

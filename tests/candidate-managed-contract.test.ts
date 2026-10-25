@@ -19,6 +19,7 @@ test('HTTP and MCP Candidate adapters preserve typed JSON and real model provena
   }) as typeof fetch;
   const { default: Fastify } = await import('fastify');
   const { db, runMigrations } = await import('../src/server/db/index.js');
+  const { users, projects } = await import('../src/server/db/schema.js');
   const { knowledgeRoutes } = await import('../src/server/routes/knowledge.js');
   const { getKnowledgeStore } = await import('../src/server/knowledge-context.js');
   const { ProviderRegistry } = await import('../src/knowledge/provider-registry.js');
@@ -26,7 +27,11 @@ test('HTTP and MCP Candidate adapters preserve typed JSON and real model provena
   const { EvidenceStore } = await import('../src/knowledge/evidence-store.js');
   const { registerKnowledgeTools } = await import('../src/mcp/tools/knowledge.js');
   const { startCandidateInsightDispatcher } = await import('../src/knowledge/candidate-dispatch.js');
-  runMigrations(); const store = getKnowledgeStore(); store.grantAcl('1', 7, true);
+  runMigrations();
+  // Session-backed HTTP adapters verify the actual control-plane project owner.
+  db.insert(users).values([{ id: 7, username: 'candidate-fixture', passwordHash: 'unused' }, { id: 8, username: 'other-actor', passwordHash: 'unused' }]).run();
+  db.insert(projects).values({ id: 1, userId: 7, name: 'Candidate fixture', workspacePath: root }).run();
+  const store = getKnowledgeStore(); store.grantAcl('1', 7, true);
   new ProviderRegistry(store).upsert({ id: 'candidate-fixture', kind: 'candidate_llm', provider: 'openai-compatible', baseUrl: 'https://gateway.test/v1', modelId: 'qwen-plus', actorId: 7 });
   evidenceId = new EvidenceStore(store, env.KNOWLEDGE_EVIDENCE_ROOT).put({ content: Buffer.from('Isolated sentinel.'), mimeType: 'text/plain', sourceKind: 'log', projectId: '1', locator: 'fixture://sentinel' }).id;
   const sessions = new WorkSessionService(store);
@@ -38,7 +43,7 @@ test('HTTP and MCP Candidate adapters preserve typed JSON and real model provena
   try {
     await t.test('HTTP uses the configured model identity and JSON response mode', async () => {
       const response = await app.inject({ method: 'POST', url: '/api/knowledge/candidate-insights/compile', payload: input('http') });
-      assert.equal(response.statusCode, 201);
+      assert.equal(response.statusCode, 201, response.body);
       assert.equal(response.json().insight.generatedBy, 'managed-candidate-llm:candidate-fixture/qwen-plus');
       assert.equal(response.json().insight.fallbackReason, undefined);
       assert.deepEqual(calls.at(-1).response_format, { type: 'json_object' });
@@ -51,7 +56,8 @@ test('HTTP and MCP Candidate adapters preserve typed JSON and real model provena
       assert.deepEqual(calls.at(-1).response_format, { type: 'json_object' });
     });
     await t.test('compiler prompt states the exact field types and omits unknown optional fields', async () => {
-      await app.inject({ method: 'POST', url: '/api/knowledge/candidate-insights/compile', payload: input('typed-prompt') });
+      const response = await app.inject({ method: 'POST', url: '/api/knowledge/candidate-insights/compile', payload: input('typed-prompt') });
+      assert.equal(response.statusCode, 201, response.body);
       const prompt = JSON.parse(calls.at(-1).messages.at(-1).content);
       assert.equal(prompt.outputSchema.type, 'object');
       assert.equal(prompt.outputSchema.additionalProperties, false);
@@ -67,6 +73,7 @@ test('HTTP and MCP Candidate adapters preserve typed JSON and real model provena
     await t.test('HTTP scope review requires the displayed Session revision and a project reviewer', async () => {
       const request = input('scope-review');
       const compiled = await app.inject({ method: 'POST', url: '/api/knowledge/candidate-insights/compile', payload: request });
+      assert.equal(compiled.statusCode, 201, compiled.body);
       const id = compiled.json().insight.id;
       store.db.prepare('UPDATE knowledge_candidate_insights SET scope_snapshot_json=NULL WHERE id=?').run(id);
       const url = `/api/knowledge/candidate-insights/${id}/review-scope`;
@@ -88,7 +95,7 @@ test('HTTP and MCP Candidate adapters preserve typed JSON and real model provena
     await t.test('HTTP and MCP async queues are consumed by deployed dispatcher composition with one provider call per job', async () => {
       const requests = [input('http-async'),input('mcp-async')], before=calls.length;
       const first=await app.inject({method:'POST',url:'/api/knowledge/candidate-insights/compile',payload:{...requests[0],async:true}});
-      assert.equal(first.statusCode,202);assert.equal(first.json().job.providerId,'candidate-fixture');
+      assert.equal(first.statusCode,202,first.body);assert.equal(first.json().job.providerId,'candidate-fixture');
       const replay=await app.inject({method:'POST',url:'/api/knowledge/candidate-insights/compile',payload:{...requests[0],async:true}});
       assert.equal(replay.json().job.id,first.json().job.id);assert.equal(replay.json().enqueued,false);
       const second=JSON.parse((await callbacks.get('knowledge_candidate_insight_compile')!({...requests[1],async:true})).content[0].text);
@@ -120,6 +127,7 @@ test('HTTP and MCP Candidate adapters preserve typed JSON and real model provena
     await t.test('valid JSON with the observed wrong field types still falls back without coercion', async () => {
       invalidTypes = true;
       const response = await app.inject({ method: 'POST', url: '/api/knowledge/candidate-insights/compile', payload: input('invalid-types') });
+      assert.equal(response.statusCode, 201, response.body);
       const insight = response.json().insight;
       assert.equal(insight.generatedBy, 'deterministic-fallback-v1');
       assert.equal(insight.fallbackReason, 'invalid_output');

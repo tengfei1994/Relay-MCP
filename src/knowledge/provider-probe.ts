@@ -3,7 +3,7 @@
  * rerank, chat). Errors are classified into safe categories; messages and
  * audit never carry prompts, request bodies, or response bodies.
  */
-import { providerFailureReasons, readProviderErrorSummary, safeProviderRequestId, type UpstreamErrorSummary } from "./provider-error-summary.js";
+import { isProviderErrorCode, providerFailureReasons, readProviderErrorSummary, safeProviderRequestId, type UpstreamErrorSummary } from "./provider-error-summary.js";
 
 export type ManagedProviderErrorCode =
   | "timeout"
@@ -37,6 +37,19 @@ export class ManagedProviderError extends Error {
     this.name = "ManagedProviderError";
     this.retryable = code === "timeout" || code === "rate_limited" || (code === "unavailable" && (status === undefined || status >= 500));
   }
+}
+
+/** Persist only fixed diagnostics; messages, request IDs and response bodies stay out of audit. */
+export function providerErrorAuditDetails(error: unknown): {
+  httpStatus?: number; upstreamErrorCode?: UpstreamErrorSummary["upstreamErrorCode"]; reason?: UpstreamErrorSummary["reason"];
+} {
+  if (!(error instanceof ManagedProviderError)) return {};
+  const result: ReturnType<typeof providerErrorAuditDetails> = {};
+  if (Number.isInteger(error.status) && error.status! >= 100 && error.status! <= 599) result.httpStatus = error.status;
+  const code = error.diagnostics?.upstreamErrorCode, reason = error.diagnostics?.reason;
+  if (isProviderErrorCode(code)) result.upstreamErrorCode = code;
+  if (typeof reason === "string" && Object.hasOwn(providerFailureReasons, reason)) result.reason = reason;
+  return result;
 }
 
 export interface ProviderTokenUsage {

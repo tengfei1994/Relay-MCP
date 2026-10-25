@@ -37,6 +37,9 @@ import { MANAGED_ENGINE_MIGRATION } from "./migrations/040-managed-engine.js";
 import { CANDIDATE_SCOPE_MIGRATION } from "./migrations/041-candidate-scope.js";
 import { CANDIDATE_WORKER_LEASE_MIGRATION } from "./migrations/042-candidate-worker-lease.js";
 import { MIGRATION_WITHDRAWAL_MIGRATION } from "./migrations/043-migration-withdrawal.js";
+import { PROVIDER_ADMISSION_MIGRATION } from "./migrations/044-provider-admission.js";
+import { INGEST_OWNERSHIP_MIGRATION } from "./migrations/045-ingest-ownership.js";
+import { PRODUCT_REVISION_PARSER_IDENTITY_MIGRATION, PARSER_SCOPED_PRODUCT_REVISIONS_SCHEMA } from "./migrations/046-product-revision-parser-identity.js";
 import { PROVIDER_SECRETS_MIGRATION } from "./migrations/039-provider-secrets.js";
 import { WEKNORA_DOCUMENT_MIGRATION } from "./migrations/031-weknora-documents.js";
 import { WORK_SESSION_MIGRATION } from "./migrations/029-work-sessions.js";
@@ -61,7 +64,7 @@ function canonicalJson(value: unknown): string {
   return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
 }
 
-const KNOWLEDGE_MIGRATIONS = [
+const KNOWLEDGE_MIGRATIONS: Array<{ version: string; sql: string; requiresForeignKeysOff?: boolean }> = [
   { version: "001-initial", sql: INITIAL_KNOWLEDGE_SCHEMA },
   KNOWLEDGE_DOMAIN_MIGRATION,
   EVENT_PROJECT_IDENTITY_MIGRATION,
@@ -106,6 +109,9 @@ const KNOWLEDGE_MIGRATIONS = [
     CANDIDATE_SCOPE_MIGRATION,
     CANDIDATE_WORKER_LEASE_MIGRATION,
     MIGRATION_WITHDRAWAL_MIGRATION,
+    PROVIDER_ADMISSION_MIGRATION,
+    INGEST_OWNERSHIP_MIGRATION,
+    PRODUCT_REVISION_PARSER_IDENTITY_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(
@@ -211,6 +217,11 @@ export class KnowledgeStore {
     this.db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)");
     const applied = this.db.prepare("SELECT version FROM schema_migrations WHERE version = ?");
     const insert = this.db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)");
+    const rebuildsReferencedTable = KNOWLEDGE_MIGRATIONS.some((migration) => migration.requiresForeignKeysOff && !applied.get(migration.version));
+    // SQLite ignores foreign_keys changes inside a transaction. A referenced
+    // parent-table rebuild must run at top level, with validation before commit.
+    if (rebuildsReferencedTable && this.db.inTransaction) throw new Error("Knowledge parent-table migrations require a top-level transaction");
+    const foreignKeysEnabled = this.db.pragma("foreign_keys", { simple: true }) === 1;
     const run = this.db.transaction(() => {
       for (const migration of KNOWLEDGE_MIGRATIONS) {
         if (applied.get(migration.version)) continue;
@@ -262,8 +273,22 @@ export class KnowledgeStore {
         }
         insert.run(migration.version, this.now().toISOString());
       }
+      if (rebuildsReferencedTable) {
+        const violations = this.db.pragma("foreign_key_check") as unknown[];
+        if (violations.length) throw new Error(`Knowledge migration foreign key validation failed (${violations.length} violations)`);
+      }
     });
-    run();
+    try {
+      if (rebuildsReferencedTable) {
+        this.db.pragma("foreign_keys = OFF");
+        if (this.db.pragma("foreign_keys", { simple: true }) !== 0) throw new Error("Knowledge migration could not suspend foreign key enforcement");
+      }
+      // Acquire the writer lock before inspecting migration markers so two
+      // startup processes cannot both attempt the same parent-table rebuild.
+      run.immediate();
+    } finally {
+      if (rebuildsReferencedTable && foreignKeysEnabled) this.db.pragma("foreign_keys = ON");
+    }
     // Databases created by the early P01 preview may already carry the
     // 002-domain marker but not the type projections introduced later. Make
     // this additive repair safe and idempotent without rewriting user data.
@@ -298,11 +323,7 @@ export class KnowledgeStore {
       evidence_refs_json TEXT NOT NULL DEFAULT '[]', source_locator TEXT NOT NULL, source_sha256 TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     ); CREATE INDEX IF NOT EXISTS idx_knowledge_observations_project ON knowledge_observations(project_id, created_at);`);
-    this.db.exec(`CREATE TABLE IF NOT EXISTS knowledge_product_revisions (
-      id TEXT PRIMARY KEY, normalized_content_sha256 TEXT NOT NULL UNIQUE, raw_sha256 TEXT,
-      title TEXT NOT NULL, body TEXT NOT NULL, sections_json TEXT NOT NULL DEFAULT '[]', parser_version TEXT NOT NULL,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-    );`);
+    this.db.exec(PARSER_SCOPED_PRODUCT_REVISIONS_SCHEMA);
     this.db.exec(`CREATE TABLE IF NOT EXISTS knowledge_candidate_insight_reviews (
       id TEXT PRIMARY KEY, insight_id TEXT NOT NULL REFERENCES knowledge_candidate_insights(id) ON DELETE CASCADE,
       reviewer_id INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL,
@@ -360,7 +381,7 @@ export class KnowledgeStore {
       WHERE d.kind='product_document'
         AND NOT EXISTS (SELECT 1 FROM knowledge_product_document_bindings b WHERE b.document_id=d.id)`).all() as Array<Record<string, unknown>>;
     const topic = this.db.prepare(`INSERT INTO knowledge_topics(id,canonical_key,canonical_title,kind,domain,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?) ON CONFLICT(canonical_key) DO UPDATE SET canonical_title=excluded.canonical_title,updated_at=excluded.updated_at`);
+      VALUES (?,?,?,?,?,?,?) ON CONFLICT(canonical_key) DO NOTHING`);
     const bind = this.db.prepare(`INSERT OR IGNORE INTO knowledge_product_document_bindings
       (id,topic_id,document_id,product,product_version,source_path,match_method,match_confidence,status,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)`);

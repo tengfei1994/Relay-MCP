@@ -98,6 +98,47 @@
           "afterSha256": "d1adb6caffd8ec68fde980d56ece995f149d7fd245a9b9c82fb219093760f0a2"
         }
       ]
+    },
+    {
+      "id": "0002-preserve-linked-image-hrefs",
+      "file": "patches/0002-preserve-linked-image-hrefs.patch",
+      "sha256": "aa4c53f9825ecc7a1d713cd1e7f034863e2ac2ebbf6bd670cd0203ebcf12af69",
+      "targets": [
+        {
+          "path": "internal/infrastructure/docparser/image_resolver.go",
+          "beforeSha256": "b5f25bddd3dfa7997e7d50226cac43bc128ca35915c5343229fd7c24de5dfb42",
+          "afterSha256": "3935d7efa51d9a627eac82d2c46b5e6a709e2281e8047844e71df8487ccafae2"
+        }
+      ]
+    },
+    {
+      "id": "0003-managed-document-no-auto-retry",
+      "file": "patches/0003-managed-document-no-auto-retry.patch",
+      "sha256": "e82f0186383e1cc7fb30728937f3e29c10e19b5a6cb2a71f56f96e2c03fe4aaa",
+      "targets": [
+        {
+          "path": "internal/application/service/knowledge_task_options.go",
+          "beforeSha256": "e11119f33a77d8373e33a680995398ad65c6e2cf54b55131baf853ce7407ff00",
+          "afterSha256": "b1ccaecbf7f4e6aef1768e1a82426a9e054a584b93fa7a722199203c92ba97a6"
+        }
+      ]
+    },
+    {
+      "id": "0004-keyword-first-rrf-defaults",
+      "file": "patches/0004-keyword-first-rrf-defaults.patch",
+      "sha256": "5cadf1d80b2555b3effdbad10619d650b89522e8f26693a2e0a75238e26dcaf2",
+      "targets": [
+        {
+          "path": "internal/types/retrieval_config.go",
+          "beforeSha256": "0b6e9dd4bfeb242cd5630948aa11e29bf992db88e63f466178153de00e1b976c",
+          "afterSha256": "a5b709f2b409588cde8e41e3f21dc03e4e947e224b38f13e992b8ec842f7fa63"
+        },
+        {
+          "path": "internal/application/service/knowledgebase_search_fusion_test.go",
+          "beforeSha256": "42f07e80ee9317e9563872b226e69abc3c773a1f93015953ad70cbce5fe5d52d",
+          "afterSha256": "5952b83e8e9ce18ea7e7228d1da017086149d4729c43cd4d9f398f6ae3b6b755"
+        }
+      ]
     }
   ],
   "regressionTests": [
@@ -105,6 +146,26 @@
       "file": "patches/relay_log_safety_test.go",
       "target": "internal/models/api/relay_log_safety_test.go",
       "sha256": "f184a2f17e62167199f0c203c91093f024bebb105ed838e264b0318369fa13b3"
+    },
+    {
+      "file": "patches/relay_linked_image_preservation_test.go",
+      "target": "internal/infrastructure/docparser/relay_linked_image_preservation_test.go",
+      "sha256": "89aa1c15c0363fd5d2f0a0ae622c6a6e049a6cbcb7bd9c8c1705854ca08ba700"
+    },
+    {
+      "file": "patches/relay_document_retry_options_test.go",
+      "target": "internal/application/service/relay_document_retry_options_test.go",
+      "sha256": "a38021374781d68e68bec2890d35220aa81267914040fff3170a8de70fae8ff7"
+    },
+    {
+      "file": "patches/relay_document_retry_queue_test.go",
+      "target": "internal/router/relay_document_retry_queue_test.go",
+      "sha256": "71ca1601c286f6b4bc88380b273c90cf0d08bd06c61e9ae4e92c99d9abaf95df"
+    },
+    {
+      "file": "patches/relay_keyword_first_rrf_test.go",
+      "target": "internal/application/service/relay_keyword_first_rrf_test.go",
+      "sha256": "ae92ed4335d919a791f048c66174f5619beb65ffc224ec1d33af7ba5d4bf214e"
     }
   ]
 }

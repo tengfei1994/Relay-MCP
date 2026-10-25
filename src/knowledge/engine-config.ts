@@ -8,6 +8,7 @@ export interface EngineRuntimeConfig {
 }
 export interface EngineControlState {
   phase?:"initializing"|"ready"|"failed";
+  ingestionProfile?:"standard"|"bulk";
   schemaVersion:1;apiKey?:string;tenantId?:string|number;knowledgeBaseId?:string;
   bindings:EngineModelBinding[];updatedAt?:string;
 }

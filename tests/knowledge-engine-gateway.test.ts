@@ -28,6 +28,18 @@ async function fixture(fn: (f: any) => Promise<void>) {
   try {await fn({app,registry,calls,bindings,store,setFinishReason:(value:string)=>{finishReason=value;}});} finally {await app.close();store.close();rmSync(dir,{recursive:true,force:true});}
 }
 const headers = {authorization:"Bearer internal-engine-token"};
+test("durable quota denial is HTTP 429 with safe retry metadata and no provider call",()=>fixture(async({app,registry,calls})=>{
+  registry.upsert({id:"embedding",kind:"embedding",provider:"test",baseUrl:"https://provider.test/v1",modelId:"real-embedding",dimensions:2,secretRef:"test:token",actorId:1,quota:{maxCalls:1,windowMs:60_000}});
+  const request={method:"POST",url:"/internal/knowledge-engine/v1/embeddings",headers,payload:{model:"relay-embedding-v1",input:["private test body"]}} as const;
+  assert.equal((await app.inject(request)).statusCode,200);
+  const limited=await app.inject(request);
+  assert.equal(limited.statusCode,429);
+  assert.equal(limited.json().error.code,"provider_quota_exceeded");
+  assert.ok(Number(limited.headers["retry-after"])>0);
+  assert.ok(Number.isFinite(Date.parse(limited.json().error.retry_at)));
+  assert.equal(calls.length,1);
+  assert.doesNotMatch(limited.body,/private test body|private-provider-token|https:/);
+}));
 test("gateway rejects missing auth and unknown aliases without invoking a provider",()=>fixture(async({app,calls})=>{
   assert.equal((await app.inject({method:"POST",url:"/internal/knowledge-engine/v1/embeddings",payload:{model:"relay-embedding-v1",input:["text"]}})).statusCode,401);
   assert.equal((await app.inject({method:"POST",url:"/internal/knowledge-engine/v1/embeddings",headers,payload:{model:"unknown",input:["text"]}})).statusCode,403);
@@ -57,4 +69,14 @@ test("gateway preserves provider truncation so Wiki can continue incomplete synt
   setFinishReason("length");
   const result=await app.inject({method:"POST",url:"/internal/knowledge-engine/v1/chat/completions",headers,payload:{model:"relay-chat-v1",messages:[{role:"user",content:"write"}]}});
   assert.equal(result.statusCode,200);assert.equal(result.json().choices[0].finish_reason,"length");
+}));
+
+
+for(const kind of ["wiki_llm","rerank"] as const)for(const disabled of [true,false])test(`optional ${kind} ${disabled?"disabled":"stale"} alias remains blocked while embedding works`,()=>fixture(async({app,registry,calls,bindings})=>{
+ const id=kind==="wiki_llm"?"chat":"rank",modelId=kind==="wiki_llm"?"real-chat":"real-rank",alias=kind==="wiki_llm"?"relay-chat-v1":"relay-rank-v1";
+ if(kind==="rerank"){registry.upsert({id,kind,provider:"test",baseUrl:"https://provider.test/v1",modelId,secretRef:"test:token",actorId:1});bindings.push({providerId:id,kind,modelId,indexVersion:1,alias});}
+ if(disabled)registry.disable(id,1);else registry.upsert({id,kind,provider:"test",baseUrl:"https://provider.test/v1",modelId:"changed",secretRef:"test:token",actorId:1});
+ const denied=await app.inject({method:"POST",url:"/internal/knowledge-engine/v1/"+(kind==="wiki_llm"?"chat/completions":"rerank"),headers,payload:kind==="wiki_llm"?{model:alias,messages:[{role:"user",content:"test"}]}:{model:alias,query:"test",documents:["test"]}});
+ assert.equal(denied.statusCode,disabled?503:409);assert.equal(calls.length,0);
+ assert.equal((await app.inject({method:"POST",url:"/internal/knowledge-engine/v1/embeddings",headers,payload:{model:"relay-embedding-v1",input:["test"]}})).statusCode,200);assert.equal(calls.length,1);assert.ok(calls[0].url.endsWith("/embeddings"));
 }));

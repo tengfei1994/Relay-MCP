@@ -5,7 +5,7 @@ import {EngineError,engineHome,readEngineRuntime,readEngineControl,writeEngineCo
 import type {EngineModelBinding} from "./engine-model-gateway.js";
 import type {ManagedProviderKind,ProviderConfigMetadata,ProviderRegistry} from "./provider-registry.js";
 interface Options {home?:string;registry:ProviderRegistry;fetchImpl?:typeof fetch;}
-type Selection={actorId:number;embeddingProviderId?:string;wikiProviderId?:string;rerankProviderId?:string};
+type Selection={ingestionProfile?:"standard"|"bulk";actorId:number;embeddingProviderId?:string;wikiProviderId?:string;rerankProviderId?:string};
 function signature(c:ProviderConfigMetadata):string {return createHash("sha256").update(JSON.stringify([c.id,c.kind,c.modelId,c.dimensions,c.indexVersion])).digest("hex").slice(0,16);}
 function compatible(b:EngineModelBinding,c:ProviderConfigMetadata|undefined):boolean{return !!c&&c.status!=="disabled"&&c.kind===b.kind&&c.modelId===b.modelId&&c.dimensions===b.dimensions&&c.indexVersion===b.indexVersion;}
 function rows(value:any):any[]{return Array.isArray(value?.data)?value.data:Array.isArray(value?.data?.items)?value.data.items:[];}
@@ -20,9 +20,13 @@ export class KnowledgeEngineManager {
   bindings():EngineModelBinding[]{return this.control().bindings;}
   status(){
     const runtime=this.runtime();if(!runtime)return {phase:"not_installed",wikiReady:false,embeddingProviderId:undefined,version:undefined};
-    const state=this.control(),stale=state.bindings.some(b=>!compatible(b,this.registry.get(b.providerId)));
-    return {phase:state.phase==="initializing"||state.phase==="failed"?state.phase:stale?"stale":state.knowledgeBaseId?"ready":"not_initialized",version:runtime.version,
-      wikiReady:!stale&&state.phase!=="initializing"&&state.phase!=="failed"&&!!state.knowledgeBaseId&&state.bindings.some(b=>b.kind==="wiki_llm"),
+    const state=this.control(),embeddings=state.bindings.filter(b=>b.kind==="embedding"),wiki=state.bindings.filter(b=>b.kind==="wiki_llm");
+    // Product reads and bulk indexing require the frozen embedding space only.
+    // Optional model availability is enforced independently at its call boundary.
+    const stale=embeddings.length===1?!compatible(embeddings[0],this.registry.get(embeddings[0].providerId)):!!state.knowledgeBaseId||embeddings.length>1;
+    const phase=state.phase==="initializing"||state.phase==="failed"?state.phase:stale?"stale":state.knowledgeBaseId?"ready":"not_initialized";
+    return {phase,version:runtime.version,
+      ingestionProfile:state.ingestionProfile??"standard",wikiReady:state.ingestionProfile!=="bulk"&&phase==="ready"&&wiki.length===1&&compatible(wiki[0],this.registry.get(wiki[0].providerId)),
       embeddingProviderId:state.bindings.find(b=>b.kind==="embedding")?.providerId,
       wikiProviderId:state.bindings.find(b=>b.kind==="wiki_llm")?.providerId,
       rerankProviderId:state.bindings.find(b=>b.kind==="rerank")?.providerId,
@@ -65,7 +69,9 @@ export class KnowledgeEngineManager {
   }
   private async provision(selection:Selection){
     const runtime=this.runtime();if(!runtime)throw new EngineError("engine_not_installed");
-    const previous=this.control().bindings;
+    const saved=this.control(),previous=saved.bindings;
+    const ingestionProfile=selection.ingestionProfile??saved.ingestionProfile??"standard";
+    if(!["standard","bulk"].includes(ingestionProfile))throw new EngineError("invalid_ingestion_profile",400);
     const embedding=this.select("embedding",selection.embeddingProviderId??previous.find(b=>b.kind==="embedding")?.providerId)!;
     if(!embedding.dimensions)throw new EngineError("embedding_dimension_required",400);
     const chat=this.select("wiki_llm",selection.wikiProviderId??previous.find(b=>b.kind==="wiki_llm")?.providerId,true),rerank=this.select("rerank",selection.rerankProviderId??previous.find(b=>b.kind==="rerank")?.providerId,true);
@@ -104,7 +110,7 @@ export class KnowledgeEngineManager {
       const providers=[embedding,...(chat?[chat]:[]),...(rerank?[rerank]:[])];
       const bindings=providers.map(c=>({providerId:c.id,kind:c.kind,modelId:c.modelId,dimensions:c.dimensions,indexVersion:c.indexVersion,alias:"relay-"+c.kind+"-"+signature(c)} as EngineModelBinding));
       // Saving the new bindings before model registration allows upstream model validation to call this gateway.
-      state={...state,phase:"initializing",bindings};writeEngineControl(this.home,state);
+      state={...state,phase:"initializing",bindings,ingestionProfile};writeEngineControl(this.home,state);
       const existing=rows(await this.raw("GET","/api/v1/models"));
       for(const binding of bindings){
         const candidates=existing.filter(m=>m.name===binding.alias);
@@ -142,17 +148,17 @@ export class KnowledgeEngineManager {
       const bases=rows(await this.raw("GET","/api/v1/knowledge-bases"));
       const found=bases.find(k=>k.name===kbName);
       const body={name:kbName,type:"document",embedding_model_id:emb.engineModelId,summary_model_id:wiki?.engineModelId,
-        indexing_strategy:{vector_enabled:true,keyword_enabled:true,wiki_enabled:!!wiki,graph_enabled:false},
+        indexing_strategy:{vector_enabled:true,keyword_enabled:true,wiki_enabled:!!wiki&&ingestionProfile!=="bulk",graph_enabled:false},
         ...(wiki?{wiki_config:{synthesis_model_id:wiki.engineModelId,ingest_batch_size:1,ingest_map_parallel:1,ingest_reduce_parallel:1}}:{})};
       if(found){
         state.knowledgeBaseId=String(found.id);
         const current=(await this.raw("GET","/api/v1/knowledge-bases/"+encodeURIComponent(state.knowledgeBaseId))).data;
         if(current?.embedding_model_id!==emb.engineModelId)throw new EngineError("engine_embedding_binding_mismatch");
-        await this.raw("PUT","/api/v1/knowledge-bases/"+encodeURIComponent(state.knowledgeBaseId),{name:kbName,description:current.description??"",config:{chunking_config:current.chunking_config??{chunk_size:512,chunk_overlap:100,separators:["\n\n","\n"]},indexing_strategy:body.indexing_strategy,...(wiki?{wiki_config:body.wiki_config}:{wiki_config:current.wiki_config})}});
+        await this.raw("PUT","/api/v1/knowledge-bases/"+encodeURIComponent(state.knowledgeBaseId),{name:kbName,description:current.description??"",config:{chunking_config:current.chunking_config??{chunk_size:512,chunk_overlap:100,separators:["\n\n","\n"]},indexing_strategy:body.indexing_strategy,...(wiki?{wiki_config:{...current.wiki_config,...body.wiki_config}}:{wiki_config:current.wiki_config})}});
       }
       else{const result=await this.raw("POST","/api/v1/knowledge-bases",body);if(!result.data?.id)throw new EngineError("engine_kb_invalid");state.knowledgeBaseId=String(result.data.id);}
       const verified=(await this.raw("GET","/api/v1/knowledge-bases/"+encodeURIComponent(state.knowledgeBaseId!))).data;
-      if(verified?.embedding_model_id!==emb.engineModelId || Boolean(verified?.indexing_strategy?.wiki_enabled)!==Boolean(wiki) || (wiki&&verified?.wiki_config?.synthesis_model_id!==wiki.engineModelId))throw new EngineError("engine_binding_verification_failed");
+      if(verified?.embedding_model_id!==emb.engineModelId || Boolean(verified?.indexing_strategy?.wiki_enabled)!==Boolean(wiki&&ingestionProfile!=="bulk") || (wiki&&verified?.wiki_config?.synthesis_model_id!==wiki.engineModelId))throw new EngineError("engine_binding_verification_failed");
       state.phase="ready";
       writeEngineControl(this.home,state);
       return this.status();

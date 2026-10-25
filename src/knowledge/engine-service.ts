@@ -34,7 +34,18 @@ export function managedControlPlane(store:KnowledgeStore){
   const binding=control.bindings.find(b=>b.kind==="embedding")!;
   const client=new WeKnoraClient({baseUrl:runtime.baseUrl,secretResolver:async()=>manager.control().apiKey,authMode:"api_key"});
   const modelProvenance={knowledgeBaseId,providerId:binding.providerId,modelId:binding.modelId,dimensions:binding.dimensions!,indexVersion:binding.indexVersion};
-  return {manager,client,knowledgeBaseId,ingestor:new WeKnoraIngestor(store,new WeKnoraClientDocumentWriter(client,knowledgeBaseId,{modelProvenance,readiness:{timeoutMs:engineReadinessTimeout()}}))};
+  const profile=control.ingestionProfile??"standard",bindingSnapshot=JSON.stringify(binding);
+  const synthesisBinding=control.bindings.find(b=>b.kind==="wiki_llm"),synthesisSnapshot=JSON.stringify(synthesisBinding);
+  const assertCurrentConfiguration=()=>{
+    const current=manager.control(),status=manager.status();
+    // Provider edits are persisted in SQLite before initialize updates control.
+    // Recheck their live compatibility as well as the captured engine binding.
+    if(status.phase!=="ready"||current.phase!=="ready"||current.knowledgeBaseId!==knowledgeBaseId||(current.ingestionProfile??"standard")!==profile||JSON.stringify(current.bindings.find(b=>b.kind==="embedding"))!==bindingSnapshot)throw new EngineError("engine_migration_binding_changed",409);
+    // A configured standard-profile synthesis step needs its own frozen model.
+    // Keep this write guard out of Product reads and embedding-only bulk work.
+    if(profile==="standard"&&(JSON.stringify(current.bindings.find(b=>b.kind==="wiki_llm"))!==synthesisSnapshot||(synthesisBinding&&!status.wikiReady)))throw new EngineError("engine_synthesis_not_ready",409);
+  };
+  return {manager,client,knowledgeBaseId,ingestor:new WeKnoraIngestor(store,new WeKnoraClientDocumentWriter(client,knowledgeBaseId,{modelProvenance,deferSynthesis:profile==="bulk",assertCurrentConfiguration,readiness:{timeoutMs:engineReadinessTimeout(),...(profile==="bulk"?{pollIntervalMs:250}:{})}}))};
 }
 export function activeWikiService(store:KnowledgeStore):WikiService|EngineWikiService{
   if(new MigrationController(store).activeProductProvider()==="relay_local")return new WikiService(store);

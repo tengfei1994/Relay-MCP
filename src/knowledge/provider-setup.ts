@@ -3,6 +3,7 @@ import { ProviderRegistry, type ProviderConfigInput, type ProviderProbeReport } 
 import { ProviderCredentialStore } from "./provider-credential-store.js";
 import { chainSecretResolvers, EnvironmentSecretResolver } from "./provider-secret.js";
 import { callOpenAiChat, callOpenAiEmbedding, callOpenAiRerank, listOpenAiModels, type ManagedHttpOptions } from "./provider-probe.js";
+import { admitProviderConfigurationProbe } from "./provider-admission.js";
 
 export function createManagedProviderRegistry(store: KnowledgeStore): ProviderRegistry {
   return new ProviderRegistry(store, undefined, {
@@ -37,7 +38,12 @@ export class ProviderSetupService {
     return { baseUrl, models };
   }
 
-  private async probe(input: Pick<ProviderSetupInput, "kind" | "modelId" | "token" | "baseUrl">, dimensions?: number): Promise<ProviderProbeReport> {
+  private async probe(input: Pick<ProviderSetupInput, "kind" | "modelId" | "token" | "baseUrl">, dimensions?: number, providerId?: string): Promise<ProviderProbeReport> {
+    // Configuration and token validation use candidate credentials, so they
+    // cannot resolve the existing handle. They still consume its durable
+    // allowance before transport, including failures and disabled-provider validation. An initial, unsaved
+    // provider has no configured quota; listing model metadata is not a call.
+    if (providerId && this.registry.get(providerId)) admitProviderConfigurationProbe(this.store, providerId);
     const options: ManagedHttpOptions = { ...input, signal: AbortSignal.timeout(30_000) };
     if (input.kind === "embedding") {
       const result = await callOpenAiEmbedding({ ...options, texts: ["relay provider connectivity probe"], expectedDimensions: dimensions });
@@ -65,7 +71,7 @@ export class ProviderSetupService {
     const snapshot = this.snapshot(input.id);
     const { baseUrl, models } = await this.models(input);
     if (!models.some((model) => model.id === input.modelId)) throw new Error("Select a model returned by this provider");
-    const report = await this.probe({ ...input, baseUrl });
+    const report = await this.probe({ ...input, baseUrl }, undefined, input.id);
     return this.store.db.transaction(() => {
       this.assertUnchanged(input.id, snapshot);
       const previous = this.registry.get(input.id);
@@ -89,7 +95,7 @@ export class ProviderSetupService {
     // Validate a replacement before changing anything; never send an old token to a new endpoint.
     if (token !== null) {
       if (!provider.baseUrl) throw new Error("Provider has no Base URL");
-      await this.probe({ ...provider, baseUrl: normalizeProviderEndpoint(provider.baseUrl), token }, provider.dimensions);
+      await this.probe({ ...provider, baseUrl: normalizeProviderEndpoint(provider.baseUrl), token }, provider.dimensions, id);
     }
     return this.store.db.transaction(() => {
       this.assertUnchanged(id, snapshot);

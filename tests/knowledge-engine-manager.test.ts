@@ -119,7 +119,7 @@ async function reconciliationFixture(fn:(f:any)=>Promise<void>){
     throw new Error("Unexpected contract fixture request");
   }) as typeof fetch;
   const manager=new KnowledgeEngineManager({home,registry,fetchImpl});
-  try{await manager.initialize({actorId:1});await fn({manager,runtime,saveRuntime,models,bases,calls,setReadback:(value:Record<string,unknown>)=>{corruptReadback=value;},denyCredentials:()=>{credentialConfigured=false;}});}
+  try{await manager.initialize({actorId:1});await fn({manager,registry,home,fetchImpl,runtime,saveRuntime,models,bases,calls,setReadback:(value:Record<string,unknown>)=>{corruptReadback=value;},denyCredentials:()=>{credentialConfigured=false;}});}
   finally{store.close();rmSync(home,{recursive:true,force:true});}
 }
 
@@ -163,3 +163,47 @@ test("model readback and credential confirmation must succeed before engine beco
     assert.equal(manager.status().phase,"failed");
   });
 });
+
+
+test("bulk ingestion profile persists across initialization without deleting Wiki models or configuration",()=>reconciliationFixture(async({manager,registry,home,fetchImpl,bases,models})=>{
+  registry.upsert({id:"wiki",kind:"wiki_llm",provider:"test",modelId:"wiki-model",actorId:1});
+  await manager.initialize({actorId:1});
+  const kbId=manager.control().knowledgeBaseId,modelIds=models.map((m:any)=>m.id);
+  const wikiConfig=structuredClone(bases[0].wiki_config);
+  const bulk=await manager.initialize({actorId:1,ingestionProfile:"bulk"});
+  assert.equal(bulk.ingestionProfile,"bulk");
+  assert.equal(bulk.wikiReady,false);
+  assert.equal(bases[0].indexing_strategy.wiki_enabled,false);
+  assert.equal(bases[0].indexing_strategy.vector_enabled,true);
+  assert.equal(bases[0].indexing_strategy.keyword_enabled,true);
+  assert.deepEqual(bases[0].wiki_config,wikiConfig);
+  assert.equal(manager.control().knowledgeBaseId,kbId);
+  assert.deepEqual(models.map((m:any)=>m.id),modelIds);
+  const restarted=new KnowledgeEngineManager({home,registry,fetchImpl});
+  assert.equal((restarted.status() as any).ingestionProfile,"bulk");
+  await restarted.initialize({actorId:1});
+  assert.equal(bases[0].indexing_strategy.wiki_enabled,false);
+  const restored=await restarted.initialize({actorId:1,ingestionProfile:"standard"} as any);
+  assert.equal(restored.wikiReady,true);
+  assert.equal(bases[0].indexing_strategy.wiki_enabled,true);
+  assert.equal(restarted.control().knowledgeBaseId,kbId);
+  assert.deepEqual(models.map((m:any)=>m.id),modelIds);
+}));
+
+
+for(const kind of ["wiki_llm","rerank"] as const)for(const change of ["disabled","model_changed"] as const){
+ test(`optional ${kind} ${change} cannot make compatible Product embedding stale`,()=>reconciliationFixture(async({manager,registry,calls,models,bases})=>{
+  registry.upsert({id:"wiki",kind:"wiki_llm",provider:"test",modelId:"wiki-model",actorId:1});
+  registry.upsert({id:"rerank",kind:"rerank",provider:"test",modelId:"rank-model",actorId:1});
+  await manager.initialize({actorId:1});const original=JSON.stringify(manager.control());calls.length=0;
+  const id=kind==="wiki_llm"?"wiki":"rerank";
+  if(change==="disabled")registry.disable(id,1);else registry.upsert({id,kind,provider:"test",modelId:"changed-model",actorId:1});
+  assert.equal(manager.status().phase,"ready");assert.equal(manager.status().wikiReady,kind!=="wiki_llm");
+  await manager.request("GET","/api/v1/knowledge-bases/"+manager.control().knowledgeBaseId);
+  assert.deepEqual(calls.map((c:any)=>c.method),["GET"]);assert.equal(JSON.stringify(manager.control()),original);assert.equal(models.length,3);assert.equal(bases.length,1);
+ }));
+}
+test("missing or duplicate required embedding cannot report a ready knowledge base",()=>reconciliationFixture(async({manager,home})=>{
+ const {writeEngineControl}=await import("../src/knowledge/engine-config.ts");const state=manager.control();
+ for(const bindings of [[],[state.bindings[0],{...state.bindings[0],alias:"duplicate"}]]){writeEngineControl(home,{...state,bindings});assert.equal(manager.status().phase,"stale");await assert.rejects(manager.request("GET","/api/v1/knowledge-bases/"+state.knowledgeBaseId),/engine_not_ready/);}
+}));

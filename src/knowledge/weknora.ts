@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 export type WeKnoraErrorCode = "timeout" | "rate_limited" | "unauthorized" | "invalid_response" | "unavailable" | "not_found" | "conflict" | "parse_failed";
 
@@ -115,6 +115,8 @@ export interface WeKnoraDocumentUpsertInput {
   sourcePath?: string;
   metadata?: Record<string, string | number | boolean>;
   sourceIdentity?: WeKnoraSourceIdentity;
+  /** Bulk indexing defers optional synthesis while retaining actual embeddings. */
+  processConfig?: { summary_enabled?: boolean; question_generation_config?: { enabled: boolean } };
 }
 
 export interface WeKnoraChunk {
@@ -136,6 +138,10 @@ export interface WeKnoraDocumentRead extends WeKnoraDocumentRef {
 
 export interface WeKnoraReadinessOptions { timeoutMs?: number; pollIntervalMs?: number; }
 export interface WeKnoraChunkListOptions { pageSize?: number; maxPages?: number; }
+export interface WeKnoraDocumentReadOptions extends WeKnoraChunkListOptions {
+  /** SHA-256 of the exact normalized UTF-8 Markdown uploaded by Relay. */
+  expectedNormalizedSha256?: string;
+}
 
 const MAX_SNIPPET = 500;
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -368,6 +374,7 @@ export class WeKnoraClient {
     form.append("file", new Blob([input.content], { type: "text/markdown" }), fileName.split("/").pop() ?? "document.md");
     form.append("fileName", fileName);
     if (metadata) form.append("metadata", JSON.stringify(Object.fromEntries(Object.entries(metadata).map(([k, v]) => [k, String(v)]))));
+    if (input.processConfig) form.append("process_config", JSON.stringify(input.processConfig));
     const response = await this.request("knowledge-upsert", "POST", path, form, { allowDuplicate: true });
     const payload = await this.parseBody(response, response.status === 409);
     if (identity) {
@@ -435,11 +442,27 @@ export class WeKnoraClient {
     return chunk;
   }
 
-  async readDocument(documentId: string, options?: WeKnoraChunkListOptions): Promise<WeKnoraDocumentRead> {
-    const document = await this.getDocument(documentId);
-    const chunks = await this.listDocumentChunks(documentId, options);
-    const textChunks = chunks.filter((chunk) => !chunk.chunkType || chunk.chunkType === "text");
-    return { ...document, chunks, content: textChunks.map((chunk) => chunk.content).join("\n\n") };
+  async readDocument(documentId: string, options?: WeKnoraDocumentReadOptions): Promise<WeKnoraDocumentRead> {
+    const id = this.requireId(documentId, "document");
+    const expectedHash = options?.expectedNormalizedSha256;
+    if (expectedHash !== undefined && !/^[a-f0-9]{64}$/.test(expectedHash)) {
+      throw new WeKnoraError("invalid_response", "Product normalized source hash is invalid");
+    }
+    const document = await this.getDocument(id);
+    const chunks = await this.listDocumentChunks(id, options);
+    // Chunks overlap and may split tables/code. Only the authenticated original
+    // upload can supply a full source body; metadata URLs and filenames are unused.
+    const response = await this.request("knowledge-source-download", "GET", `/api/v1/knowledge/${encodeURIComponent(id)}/download`, undefined,
+      { accept: "application/octet-stream", redirect: "manual" });
+    if (response.status !== 200) throw new WeKnoraError("invalid_response", "WeKnora did not return a complete source file", response.status);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (expectedHash !== undefined && createHash("sha256").update(bytes).digest("hex") !== expectedHash) {
+      throw new WeKnoraError("invalid_response", "Product normalized source hash does not match the published identity");
+    }
+    let content: string;
+    try { content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
+    catch { throw new WeKnoraError("invalid_response", "WeKnora source file is not valid UTF-8"); }
+    return { ...document, chunks, content };
   }
 
   async deleteDocument(documentId: string): Promise<{ documentId: string; accepted: boolean }> {
@@ -462,7 +485,7 @@ export class WeKnoraClient {
     return id;
   }
 
-  private async request(operation: string, method: string, path: string, body?: unknown, requestOptions?: { timeoutMs?: number; allowDuplicate?: boolean }): Promise<Response> {
+  private async request(operation: string, method: string, path: string, body?: unknown, requestOptions?: { timeoutMs?: number; allowDuplicate?: boolean; accept?: string; redirect?: "manual" }): Promise<Response> {
     const controller = new AbortController();
     const timeout = Math.max(1, Math.min(requestOptions?.timeoutMs ?? this.options.timeoutMs ?? 30_000, 120_000));
     const started = Date.now();
@@ -475,9 +498,10 @@ export class WeKnoraClient {
       return await Promise.race([expired, (async () => {
         const token = await this.options.secretResolver?.();
         if (controller.signal.aborted) throw new WeKnoraError("timeout", "WeKnora request timed out");
-        const headers: Record<string, string> = { accept: "application/json" };
+        const headers: Record<string, string> = { accept: requestOptions?.accept ?? "application/json" };
         if (token) headers[this.options.authMode === "jwt" ? "Authorization" : "X-API-Key"] = this.options.authMode === "jwt" ? `Bearer ${token}` : token;
         const init: RequestInit = { method, headers, signal: controller.signal };
+        if (requestOptions?.redirect) init.redirect = requestOptions.redirect;
         if (body instanceof FormData) init.body = body;
         else if (body !== undefined) { headers["content-type"] = "application/json"; init.body = JSON.stringify(body); }
         const response = await this.fetchImpl(`${this.baseUrl}${path}`, init);

@@ -13,7 +13,7 @@ import { WorkSessionService } from "../knowledge/work-session.js";
 import { startCandidateInsightDispatcher } from "../knowledge/candidate-dispatch.js";
 import { captureKnowledgeCandidates, ProjectResolutionUnavailableError } from "../knowledge/capture-worker.js";
 import { drainRelayEventSpool, relayEventSpoolHealth } from "../knowledge/event-sink.js";
-import { sanitizeAuditArguments } from "../shared/audit-sanitizer.js";
+import { sanitizeToolAuditArguments } from "../shared/retrieval-audit.js";
 import { TOOL_CATALOG_BY_NAME } from "../shared/tool-catalog.js";
 import { extractMcpToken, queryTokenAuthEnabled } from "./auth.js";
 import { requireJwtSecret } from "../shared/auth-secret.js";
@@ -246,7 +246,7 @@ app.all("/mcp", async (req, res) => {
     }
     if (body?.method === "tools/call" && typeof body.params?.name === "string") {
       const metadata = TOOL_CATALOG_BY_NAME.get(body.params.name);
-      writeAudit({ event: "tool_called", userId: user.id, username: user.username, tool: body.params.name, category: metadata?.category ?? "unclassified", description: metadata?.description, arguments: sanitizeAuditArguments(body.params.arguments) });
+      writeAudit({ event: "tool_called", userId: user.id, username: user.username, tool: body.params.name, category: metadata?.category ?? "unclassified", description: metadata?.description, arguments: sanitizeToolAuditArguments(body.params.name, body.params.arguments) });
     }
     server = registerToolsForUser(user, { knowledge });
     transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });

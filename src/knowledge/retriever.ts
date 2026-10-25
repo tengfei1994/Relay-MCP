@@ -1,3 +1,4 @@
+import { WorkSessionService } from "./work-session.js";
 import { MigrationController } from "./migration-control.js";
 import { CANDIDATE_CASE_SCOPE_GUARD_SQL } from "./candidate-scope.js";
 import { searchProductBackend } from "./product-backend.js";
@@ -7,6 +8,7 @@ import { defaultKnowledgeProviders, tokenize, type KnowledgeProviders } from "./
 
 export interface KnowledgeSearchRequest {
   userId: number;
+  workSessionId?: string;
   projectId: string;
   query: string;
   limit?: number;
@@ -149,6 +151,8 @@ function readFactRows(store: KnowledgeStore, request: KnowledgeSearchRequest): A
 
 export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeSearchRequest): Promise<KnowledgeSearchResult> {
   if (!store.canRead(request.userId, request.projectId)) throw new Error("Knowledge access denied for project");
+  if (request.workSessionId) new WorkSessionService(store).assertSessionUsable({actorId:request.userId,sessionId:request.workSessionId,projectId:request.projectId,environment:request.environment});
+  const startedAt = Date.now();
   const retrievalRunId = `retrieval-${randomUUID()}`;
   const providers = { ...defaultKnowledgeProviders(), ...(request.providers ?? {}) };
   const engineProduct = new MigrationController(store).activeProductProvider() === "weknora";
@@ -232,10 +236,38 @@ export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeS
     quotaCounts.set(result.kind, used + 1); return true;
   });
   const finalResults = quotaResults.slice(0, Math.max(1, Math.min(request.limit ?? 20, 100)));
+  const queryHash = createHash("sha256").update(request.query, "utf8").digest("hex");
+  const metadata = {
+    schemaVersion: 1, queryHash, queryLength: [...request.query].length,
+    queryBytes: Buffer.byteLength(request.query, "utf8"), resultCount: finalResults.length,
+    latencyMs: Math.max(0, Date.now() - startedAt), degraded,
+    ...(degradedReasons ? { degradedReasons } : {}),
+    productProvider: engineProduct ? "weknora" : "relay_local",
+    embeddingModelId, rerankModelId: providers.rerank?.capabilities.modelId,
+  };
+  // Explicit telemetry allowlist, separate from the content-bearing response.
+  // Titles, snippets and provider match reasons can echo private requests.
+  const resultMetadata = finalResults.map((result, index) => {
+    const reference = result as KnowledgeSearchResult["results"][number] & Record<string, unknown>;
+    return {
+      id: result.id, kind: result.kind, rank: index + 1, score: result.score,
+      lifecycle: result.lifecycle, versionMatch: result.versionMatch,
+      applicability: { sampleManagerVersion: result.applicability.sampleManagerVersion, solution: result.applicability.solution, module: result.applicability.module, environment: result.applicability.environment },
+      scope: { scopeType: result.scope.scopeType, scopeKey: result.scope.scopeKey, visibility: result.scope.visibility, sourceProjectId: result.scope.sourceProjectId, redactionStatus: result.scope.redactionStatus, specificity: result.scope.specificity },
+      evidenceRefs: result.evidenceRefs,
+      ...(typeof reference.externalDocumentId === "string" ? { externalDocumentId: reference.externalDocumentId } : {}),
+      ...(typeof reference.chunkId === "string" ? { chunkId: reference.chunkId } : {}),
+      ...(typeof reference.retrievalRunId === "string" ? { upstreamRetrievalRunId: reference.retrievalRunId } : {}),
+      ...(typeof reference.sourceSha256 === "string" && /^[a-f0-9]{64}$/i.test(reference.sourceSha256) ? { sourceSha256: reference.sourceSha256 } : {}),
+    };
+  });
   try {
-    store.db.prepare("INSERT OR REPLACE INTO knowledge_retrieval_runs(id,project_id,query,provider_model_id,degraded,results_json,created_at) VALUES (?,?,?,?,?,?,?)").run(retrievalRunId, request.projectId, request.query, embeddingModelId ?? null, degraded ? 1 : 0, JSON.stringify(finalResults), new Date().toISOString());
+    // New rows use a tagged digest in the legacy NOT NULL query column.
+    // Historical content is untouched; cleanup requires an explicit operation.
+    store.db.prepare("INSERT OR REPLACE INTO knowledge_retrieval_runs(id,project_id,query,provider_model_id,degraded,results_json,created_at) VALUES (?,?,?,?,?,?,?)").run(retrievalRunId, request.projectId, `sha256:${queryHash}`, embeddingModelId ?? null, degraded ? 1 : 0, JSON.stringify({ ...metadata, results: resultMetadata }), new Date().toISOString());
   } catch { /* older stores may not have the optional replay table */ }
-  store.audit({ actorId: request.userId, projectId: request.projectId, action: "knowledge.search", entityType: "retrieval", entityId: retrievalRunId, details: { queryTokens: [...queryTokens], resultCount: finalResults.length, degraded, embeddingModelId } });
+  if (request.workSessionId) new WorkSessionService(store).recordRetrieval({actorId:request.userId,sessionId:request.workSessionId,projectId:request.projectId,environment:request.environment,query:request.query,sourceRunId:retrievalRunId,resultCount:finalResults.length,degraded});
+  store.audit({ actorId: request.userId, projectId: request.projectId, action: "knowledge.search", entityType: "retrieval", entityId: retrievalRunId, details: metadata });
   return { retrievalRunId, query: request.query, degraded, ...(degradedReasons?{degradedReasons}:{}), results: finalResults };
 }
 

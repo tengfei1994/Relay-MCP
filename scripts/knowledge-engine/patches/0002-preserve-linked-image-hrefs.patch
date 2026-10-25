@@ -1,0 +1,30 @@
+--- a/internal/infrastructure/docparser/image_resolver.go
++++ b/internal/infrastructure/docparser/image_resolver.go
+@@ -87,7 +87,8 @@
+ 	fileSvc interfaces.FileService,
+ 	tenantID uint64,
+ ) (updatedMarkdown string, images []StoredImage, err error) {
+-	markdown := UnwrapLinkedImages(result.MarkdownContent)
++	// Preserve the outer href; image scanners already locate the nested image target.
++	markdown := result.MarkdownContent
+ 	md2, imgDataURIs, _ := r.ResolveDataURIImages(ctx, markdown, fileSvc, tenantID)
+ 	markdown = md2
+ 	images = append(images, imgDataURIs...)
+@@ -710,7 +711,7 @@
+ 	fileSvc interfaces.FileService,
+ 	tenantID uint64,
+ ) (updatedMarkdown string, images []StoredImage, err error) {
+-	markdown = UnwrapLinkedImages(markdown)
++	// Replace only the inner image URL, preserving any outer hyperlink destination.
+ 	matches := imgMarkdownDataURI.FindAllStringSubmatchIndex(markdown, -1)
+ 	if len(matches) == 0 {
+ 		return markdown, nil, nil
+@@ -986,7 +987,7 @@
+ 	fileSvc interfaces.FileService,
+ 	tenantID uint64,
+ ) (updatedMarkdown string, images []StoredImage, err error) {
+-	markdown = UnwrapLinkedImages(markdown)
++	// Replace only the inner image URL, preserving any outer hyperlink destination.
+ 
+ 	// The client owns a dedicated transport, so it is built only once a scan
+ 	// actually has something to fetch.

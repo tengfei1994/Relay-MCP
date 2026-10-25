@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { KnowledgeStore } from "./store.js";
-import type { WeKnoraDocumentInput, WeKnoraIngestor } from "./weknora-ingest.js";
+import { isVerifiedWeKnoraDocument, normalizeProductContent, weKnoraDocumentFromRow, type WeKnoraDocumentInput, type WeKnoraIngestor } from "./weknora-ingest.js";
 import { INTEGRATION_ROUTING_MIGRATION } from "./migrations/038-integration-routing.js";
 export type MigrationStatus = "created" | "staged" | "published" | "rolled_back" | "failed";
-export interface KnowledgeMigration { id: string; kind: string; status: MigrationStatus; idempotencyKey: string; sourceManifest: Record<string, unknown>; report: Record<string, unknown>; rollbackManifest: Record<string, unknown>; rollbackReason?: string; actorId?: number; createdAt: string; updatedAt: string; publishedAt?: string; rolledBackAt?: string; }
+export type MigrationDocumentStatus = "staged" | "published" | "failed" | "withdrawn";
+export interface KnowledgeMigration { id: string; kind: string; status: MigrationStatus; idempotencyKey: string; sourceManifest: Record<string, unknown>; report: Record<string, unknown>; mappingCounts: Record<MigrationDocumentStatus | "total", number>; rollbackManifest: Record<string, unknown>; rollbackReason?: string; actorId?: number; createdAt: string; updatedAt: string; publishedAt?: string; rolledBackAt?: string; }
 
 /** Product Knowledge retrieval routing: local Relay index or the WeKnora side. */
 export type ProductProvider = "relay_local" | "weknora";
@@ -11,9 +12,9 @@ export const PRODUCT_PROVIDER_SETTING_KEY = "product_provider";
 const PRODUCT_PROVIDERS: readonly ProductProvider[] = ["relay_local", "weknora"];
 
 /** Per-document manifest metadata only: never the body, never secrets. */
-export interface SourceManifestDocument { localDocumentId: string; title: string; sourcePath: string; sourceSha256?: string; bodySha256: string; productVersion?: string; solution?: string; module?: string; language?: string; topicId?: string; projectId?: string; }
+export interface SourceManifestDocument { localDocumentId: string; title: string; sourcePath: string; sourceSha256?: string; bodySha256: string; productVersion?: string; solution?: string; module?: string; language?: string; topicId?: string; projectId?: string; environment?: string; }
 
-export interface CreateFromLocalInput { actorId: number; idempotencyKey: string; kind?: string; productVersion?: string; solution?: string; module?: string; projectId?: string; limit?: number; parserVersion: string; /** Re-attempt documents currently recorded as failed. */ retry?: boolean; }
+export interface CreateFromLocalInput { actorId: number; idempotencyKey: string; kind?: string; productVersion?: string; solution?: string; module?: string; projectId?: string; environment?: string; limit?: number; parserVersion: string; /** Re-attempt documents currently recorded as failed. */ retry?: boolean; }
 
 export interface MigrationCleanupReport {
   dryRun: true;
@@ -29,17 +30,21 @@ export interface MigrationCleanupReport {
 }
 
 function parse(value: unknown): Record<string, unknown> { try { const v = JSON.parse(String(value ?? "{}")); return v && typeof v === "object" ? v as Record<string, unknown> : {}; } catch { return {}; } }
-function fromRow(row: Record<string, unknown>): KnowledgeMigration { return { id: String(row.id), kind: String(row.kind), status: String(row.status) as MigrationStatus, idempotencyKey: String(row.idempotency_key), sourceManifest: parse(row.source_manifest_json), report: parse(row.report_json), rollbackManifest: parse(row.rollback_manifest_json), rollbackReason: row.rollback_reason ? String(row.rollback_reason) : undefined, actorId: row.actor_id == null ? undefined : Number(row.actor_id), createdAt: String(row.created_at), updatedAt: String(row.updated_at), publishedAt: row.published_at ? String(row.published_at) : undefined, rolledBackAt: row.rolled_back_at ? String(row.rolled_back_at) : undefined }; }
+function fromRow(row: Record<string, unknown>, store: KnowledgeStore): KnowledgeMigration {
+  const mappingCounts: KnowledgeMigration["mappingCounts"] = {total:0,staged:0,published:0,failed:0,withdrawn:0};
+  for (const count of store.db.prepare("SELECT status,COUNT(*) AS n FROM knowledge_migration_documents WHERE migration_id=? GROUP BY status").all(String(row.id)) as Array<{status:MigrationDocumentStatus;n:number}>) { mappingCounts[count.status]=count.n; mappingCounts.total+=count.n; }
+  return { id: String(row.id), kind: String(row.kind), status: String(row.status) as MigrationStatus, idempotencyKey: String(row.idempotency_key), sourceManifest: parse(row.source_manifest_json), report: parse(row.report_json), mappingCounts, rollbackManifest: parse(row.rollback_manifest_json), rollbackReason: row.rollback_reason ? String(row.rollback_reason) : undefined, actorId: row.actor_id == null ? undefined : Number(row.actor_id), createdAt: String(row.created_at), updatedAt: String(row.updated_at), publishedAt: row.published_at ? String(row.published_at) : undefined, rolledBackAt: row.rolled_back_at ? String(row.rolled_back_at) : undefined };
+}
 export class MigrationController {
   constructor(private readonly store: KnowledgeStore, private readonly clock: () => Date = () => new Date()) {
     // The 038 schema may not be registered in the store yet; every statement is
     // idempotent so applying it here converges fresh and recovered databases.
     this.store.db.exec(INTEGRATION_ROUTING_MIGRATION.sql);
   }
-  create(input: { actorId: number; kind?: string; idempotencyKey: string; sourceManifest: Record<string, unknown> }): KnowledgeMigration { const existing = this.store.db.prepare("SELECT * FROM knowledge_migrations WHERE idempotency_key=?").get(input.idempotencyKey) as Record<string, unknown> | undefined; if (existing) return fromRow(existing); const now = this.clock().toISOString(); const id = `migration-${randomUUID()}`; this.store.db.prepare("INSERT INTO knowledge_migrations(id,kind,status,idempotency_key,source_manifest_json,report_json,rollback_manifest_json,actor_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(id, input.kind ?? "product_knowledge", "created", input.idempotencyKey, JSON.stringify(input.sourceManifest), "{}", "{}", input.actorId, now, now); this.store.audit({ actorId: input.actorId, action: "knowledge.migration.create", entityType: "migration", entityId: id, details: { kind: input.kind ?? "product_knowledge" } }); return this.get(id)!; }
-  get(id: string): KnowledgeMigration | undefined { const row = this.store.db.prepare("SELECT * FROM knowledge_migrations WHERE id=?").get(id) as Record<string, unknown> | undefined; return row ? fromRow(row) : undefined; }
+create(input: { actorId: number; kind?: string; idempotencyKey: string; sourceManifest: Record<string, unknown> }): KnowledgeMigration { const existing = this.store.db.prepare("SELECT * FROM knowledge_migrations WHERE idempotency_key=?").get(input.idempotencyKey) as Record<string, unknown> | undefined; if (existing) return fromRow(existing, this.store); const now = this.clock().toISOString(); const id = `migration-${randomUUID()}`; this.store.db.prepare("INSERT INTO knowledge_migrations(id,kind,status,idempotency_key,source_manifest_json,report_json,rollback_manifest_json,actor_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(id, input.kind ?? "product_knowledge", "created", input.idempotencyKey, JSON.stringify(input.sourceManifest), "{}", "{}", input.actorId, now, now); this.store.audit({ actorId: input.actorId, action: "knowledge.migration.create", entityType: "migration", entityId: id, details: { kind: input.kind ?? "product_knowledge" } }); return this.get(id)!; }
+  get(id: string): KnowledgeMigration | undefined { const row = this.store.db.prepare("SELECT * FROM knowledge_migrations WHERE id=?").get(id) as Record<string, unknown> | undefined; return row ? fromRow(row, this.store) : undefined; }
   markStaged(id: string, report: Record<string, unknown>, actorId: number): KnowledgeMigration { return this.transition(id, "staged", report, actorId); }
-  publish(id: string, actorId: number): KnowledgeMigration { const now = this.clock().toISOString(); const result = this.store.db.prepare("UPDATE knowledge_migrations SET status='published',published_at=?,updated_at=? WHERE id=? AND status='staged'").run(now, now, id); if (!result.changes) throw new Error("Migration must be staged before publish"); this.store.audit({ actorId, action: "knowledge.migration.publish", entityType: "migration", entityId: id, details: { status: "published" } }); return this.get(id)!; }
+  publish(id: string, actorId: number): KnowledgeMigration { if (this.get(id)?.kind === "product_knowledge") return this.validateAndPublish(id, actorId); const now = this.clock().toISOString(); const result = this.store.db.prepare("UPDATE knowledge_migrations SET status='published',published_at=?,updated_at=? WHERE id=? AND status='staged'").run(now, now, id); if (!result.changes) throw new Error("Migration must be staged before publish"); this.store.audit({ actorId, action: "knowledge.migration.publish", entityType: "migration", entityId: id, details: { status: "published" } }); return this.get(id)!; }
 
   /** Retrieval routing defaults to the local Relay index until an explicit publish switches it. */
   activeProductProvider(): ProductProvider {
@@ -54,17 +59,18 @@ export class MigrationController {
    */
   setProductProvider(provider: ProductProvider, actorId: number, options: { migrationId?: string } = {}): { provider: ProductProvider; previousProvider: ProductProvider } {
     if (!PRODUCT_PROVIDERS.includes(provider)) throw new Error(`Unknown product provider: ${String(provider)}`);
-    if (provider === "weknora") {
-      const migration = options.migrationId ? this.get(options.migrationId) : undefined;
-      if (!migration || migration.status !== "published") throw new Error("Switching to WeKnora requires a published migration");
-    }
     const now = this.clock().toISOString();
     let previousProvider: ProductProvider = "relay_local";
     this.store.db.transaction(() => {
+      if (provider === "weknora") {
+        const migration = options.migrationId ? this.get(options.migrationId) : undefined;
+        if (!migration || migration.kind !== "product_knowledge" || migration.status !== "published") throw new Error("Switching to WeKnora requires a published migration");
+        this.validateMappings(migration);
+      }
       previousProvider = this.activeProductProvider();
       this.writeProviderSetting(provider, actorId, options.migrationId, previousProvider, now);
       this.store.audit({ actorId, action: "knowledge.integration.set_product_provider", entityType: "integration_setting", entityId: PRODUCT_PROVIDER_SETTING_KEY, details: { provider, previousProvider, migrationId: options.migrationId ?? null } });
-    })();
+    }).immediate();
     return { provider, previousProvider };
   }
 
@@ -74,20 +80,33 @@ export class MigrationController {
    * idempotency key never re-calls the ingestor for already-mapped documents;
    * failed documents are only re-attempted with `retry: true`.
    */
-  async createFromLocal(input: CreateFromLocalInput, ingestor: WeKnoraIngestor): Promise<KnowledgeMigration> {
+  async createFromLocal(input: CreateFromLocalInput, ingestor: WeKnoraIngestor, onProgress?: (progress: Record<string, unknown>) => void): Promise<KnowledgeMigration> {
     const key = input.idempotencyKey.trim();
     if (!key) throw new Error("idempotencyKey is required");
     const parserVersion = input.parserVersion.trim();
     if (!parserVersion) throw new Error("parserVersion is required");
     const existing = this.store.db.prepare("SELECT * FROM knowledge_migrations WHERE idempotency_key=?").get(key) as Record<string, unknown> | undefined;
-    if (existing && ["published", "rolled_back"].includes(String(existing.status))) return fromRow(existing);
+    if (existing && ["published", "rolled_back"].includes(String(existing.status))) return fromRow(existing, this.store);
 
-    const rows = this.queryLocalProductDocuments(input);
+    let rows = this.queryLocalProductDocuments(input);
+    const priorManifest = existing ? parse(existing.source_manifest_json) : {};
+    if (priorManifest.asyncRequest && !onProgress) throw new Error("This migration belongs to a background job; query its status or retry it asynchronously");
+    if (priorManifest.asyncRequest && Array.isArray(priorManifest.documents)) {
+      const frozen = priorManifest.documents as SourceManifestDocument[];
+      const current = new Map(rows.map(document => [document.localDocumentId, document]));
+      rows = frozen.map(document => {
+        const row = current.get(document.localDocumentId);
+        if (!row || row.bodySha256 !== document.bodySha256) throw new Error("Migration source changed; start a new operation");
+        for (const field of ["sourceSha256", "productVersion", "solution", "module", "language", "topicId", "projectId", "environment", "sourcePath"] as const) if (row[field] !== document[field]) throw new Error("Migration source metadata changed; start a new operation");
+        return row;
+      });
+    }
     const manifest = {
       source: "relay_local",
+      ...(priorManifest.asyncRequest ? { asyncRequest: priorManifest.asyncRequest } : {}),
       generatedAt: this.clock().toISOString(),
       parserVersion,
-      filters: { productVersion: input.productVersion ?? null, solution: input.solution ?? null, module: input.module ?? null, projectId: input.projectId ?? null },
+      filters: { productVersion: input.productVersion ?? null, solution: input.solution ?? null, module: input.module ?? null, projectId: input.projectId ?? null, environment: input.environment ?? null },
       documents: rows.map(({ body: _body, ...metadata }) => metadata),
     };
 
@@ -107,12 +126,19 @@ export class MigrationController {
     const findStagedByKey = this.store.db.prepare("SELECT id,external_document_id,status FROM knowledge_weknora_documents WHERE idempotency_key=?");
     const findStagedById = this.store.db.prepare("SELECT id,external_document_id,status FROM knowledge_weknora_documents WHERE id=?");
     const now = () => this.clock().toISOString();
+    const checkpoint = () => {
+      const counts = this.store.db.prepare("SELECT COUNT(CASE WHEN status IN ('staged','published') THEN 1 END) AS mapped, COUNT(CASE WHEN status='failed' THEN 1 END) AS failed, COUNT(CASE WHEN status='withdrawn' THEN 1 END) AS withdrawn FROM knowledge_migration_documents WHERE migration_id=?").get(migrationId) as { mapped: number; failed: number; withdrawn: number };
+      const report = { total: rows.length, ...counts, processed: counts.mapped + counts.failed + counts.withdrawn, parserVersion, lastRunAt: now() };
+      this.store.db.prepare("UPDATE knowledge_migrations SET status='created',report_json=?,updated_at=? WHERE id=? AND status IN ('created','staged')").run(JSON.stringify(report), now(), migrationId);
+      onProgress?.(report);
+    };
+    checkpoint();
 
     for (const document of rows) {
       const prior = mapped.get(document.localDocumentId);
       // Already mapped documents are never re-staged; failed ones wait for an
       // explicit retry so a re-run cannot hammer a failing upstream.
-      if (prior && ["staged", "published"].includes(String(prior.status))) continue;
+      if (prior && ["staged", "published", "withdrawn"].includes(String(prior.status))) continue;
       if (prior && String(prior.status) === "failed" && !input.retry) continue;
       const documentKey = `${key}:${document.localDocumentId}`;
       const weknoraInput: WeKnoraDocumentInput = {
@@ -126,6 +152,7 @@ export class MigrationController {
         sourcePath: document.sourcePath,
         language: document.language,
         projectId: input.projectId ?? document.projectId,
+        environment: document.environment,
         parserVersion,
         rawSha256: document.sourceSha256,
       };
@@ -140,6 +167,7 @@ export class MigrationController {
       const status = item?.status === "failed" || String(stagedRow?.status ?? "") === "failed" ? "failed" : "staged";
       upsertMapping.run(migrationId, document.localDocumentId, item?.documentId ?? (stagedRow ? String(stagedRow.id) : null), documentKey, stagedRow ? String(stagedRow.external_document_id) : null, status, item?.failureCode ?? null, item?.error ?? null, document.bodySha256, parserVersion, now(), now());
       this.store.audit({ actorId: input.actorId, action: "knowledge.migration.stage_document", entityType: "migration", entityId: migrationId, details: { localDocumentId: document.localDocumentId, status, externalDocumentId: stagedRow?.external_document_id ?? null } });
+      checkpoint();
     }
 
     const linkage = this.store.db.prepare("SELECT * FROM knowledge_migration_documents WHERE migration_id=? ORDER BY local_document_id").all(migrationId) as Array<Record<string, unknown>>;
@@ -155,12 +183,14 @@ export class MigrationController {
       parserVersion: row.parser_version ? String(row.parser_version) : null,
     }));
     const failedDocuments = documents.filter((document) => document.status === "failed").map((document) => ({ localDocumentId: document.localDocumentId, idempotencyKey: document.idempotencyKey, failureCode: document.failureCode, error: document.failureMessage }));
-    const mappedCount = documents.filter((document) => document.status !== "failed").length;
+    const mappedCount = documents.filter((document) => ["staged", "published"].includes(document.status)).length;
+    const withdrawn = documents.filter(document => document.status === "withdrawn").length;
     const report = {
       total: rows.length,
       mapped: mappedCount,
       failed: failedDocuments.length,
-      skipped: rows.length - mappedCount - failedDocuments.length,
+      withdrawn,
+      skipped: rows.length - mappedCount - failedDocuments.length - withdrawn,
       manifestCount: manifest.documents.length,
       parserVersion,
       failedDocuments,
@@ -175,43 +205,67 @@ export class MigrationController {
    * routing to WeKnora in one atomic transaction; the rollback manifest records
    * the previous provider and the published document ids.
    */
-  validateAndPublish(id: string, actorId: number, options: { sampleSize?: number } = {}): KnowledgeMigration {
-    const migration = this.get(id);
-    if (!migration) throw new Error("Migration not found");
-    if (migration.status !== "staged") throw new Error("Migration must be staged before publish");
-    const manifestDocuments = Array.isArray(migration.sourceManifest.documents) ? migration.sourceManifest.documents as Array<Record<string, unknown>> : [];
-    if (manifestDocuments.length === 0) throw new Error("Migration source manifest has no documents");
-    const failedDocuments = Array.isArray(migration.report.failedDocuments) ? migration.report.failedDocuments : [];
-    if (Number(migration.report.failed ?? 0) > 0 || failedDocuments.length > 0) throw new Error("Migration has failed documents; retry them before publish");
-    const linkage = this.store.db.prepare("SELECT * FROM knowledge_migration_documents WHERE migration_id=?").all(id) as Array<Record<string, unknown>>;
-    const mapped = linkage.filter((row) => ["staged", "published"].includes(String(row.status)));
-    if (mapped.length !== manifestDocuments.length || Number(migration.report.mapped ?? -1) !== manifestDocuments.length) throw new Error("Mapped document count does not match the source manifest");
-    const missingExternal = mapped.filter((row) => { const external = String(row.external_document_id ?? ""); return !external || external.startsWith("pending:"); });
-    if (missingExternal.length > 0) throw new Error("Mapped documents are missing external document ids");
-    // Spot-check a bounded sample against the live control-plane rows.
-    const sample = mapped.slice(0, Math.max(1, Math.min(options.sampleSize ?? 5, mapped.length)));
-    for (const row of sample) {
-      const document = this.store.db.prepare("SELECT status FROM knowledge_weknora_documents WHERE id=?").get(String(row.document_id)) as { status?: string } | undefined;
-      if (!document || !["staged", "published"].includes(String(document.status))) throw new Error("Linked WeKnora document is not staged");
-    }
-
-    const now = this.clock().toISOString();
-    const documentIds = mapped.map((row) => String(row.document_id));
-    this.store.db.transaction(() => {
+  validateAndPublish(id: string, actorId: number, _options: { sampleSize?: number } = {}): KnowledgeMigration {
+    return this.store.db.transaction(() => {
+      const migration = this.get(id);
+      if (!migration) throw new Error("Migration not found");
+      if (migration.status !== "staged") throw new Error("Migration must be staged before publish");
+      const mapped = this.validateMappings(migration);
+      const documentIds = mapped.map((row) => String(row.document_id));
+      const now = this.clock().toISOString();
       const publishDocument = this.store.db.prepare("UPDATE knowledge_weknora_documents SET status='published',published_at=?,updated_at=?,deprecated_at=NULL WHERE id=? AND status IN ('staged','published')");
-      for (const documentId of documentIds) publishDocument.run(now, now, documentId);
+      for (const documentId of documentIds) {
+        if (!publishDocument.run(now, now, documentId).changes) throw new Error("Linked WeKnora document is not staged");
+      }
       this.store.db.prepare("UPDATE knowledge_migration_documents SET status='published',updated_at=? WHERE migration_id=? AND status='staged'").run(now, id);
       const previousProvider = this.activeProductProvider();
       const rollbackManifest = { migrationId: id, previousProvider, restoreProvider: "relay_local", documentIds, publishedDocumentCount: documentIds.length, generatedAt: now };
       const result = this.store.db.prepare("UPDATE knowledge_migrations SET status='published',published_at=?,updated_at=?,rollback_manifest_json=? WHERE id=? AND status='staged'").run(now, now, JSON.stringify(rollbackManifest), id);
       if (!result.changes) throw new Error("Migration must be staged before publish");
       this.writeProviderSetting("weknora", actorId, id, previousProvider, now);
-      this.store.audit({ actorId, action: "knowledge.migration.publish", entityType: "migration", entityId: id, details: { status: "published", documentCount: documentIds.length, validatedSample: sample.length } });
+      this.store.audit({ actorId, action: "knowledge.migration.publish", entityType: "migration", entityId: id, details: { status: "published", documentCount: documentIds.length, validatedDocuments: mapped.length } });
       this.store.audit({ actorId, action: "knowledge.integration.set_product_provider", entityType: "integration_setting", entityId: PRODUCT_PROVIDER_SETTING_KEY, details: { provider: "weknora", previousProvider, migrationId: id } });
-    })();
-    return this.get(id)!;
+      return this.get(id)!;
+    }).immediate();
   }
 
+  /** Every linked document must still match the manifest and its verified upstream index. */
+  private validateMappings(migration: KnowledgeMigration): Array<Record<string, unknown>> {
+    if (migration.kind !== "product_knowledge") throw new Error("Only a Product Knowledge migration can route retrieval");
+    const manifestDocuments = Array.isArray(migration.sourceManifest.documents) ? migration.sourceManifest.documents as Array<Record<string, unknown>> : [];
+    if (!manifestDocuments.length) throw new Error("Migration source manifest has no documents");
+    const manifests = new Map(manifestDocuments.map((document) => [String(document.localDocumentId ?? ""), document]));
+    if (manifests.has("") || manifests.size !== manifestDocuments.length) throw new Error("Migration source manifest has invalid document identities");
+    const failedDocuments = Array.isArray(migration.report.failedDocuments) ? migration.report.failedDocuments : [];
+    if (Number(migration.report.failed ?? 0) > 0 || failedDocuments.length) throw new Error("Migration has failed documents; retry them before publish");
+    const linkage = this.store.db.prepare("SELECT * FROM knowledge_migration_documents WHERE migration_id=?").all(migration.id) as Array<Record<string, unknown>>;
+    if (linkage.some(row => row.status === "withdrawn")) throw new Error("Migration has withdrawn documents; stage replacement sources in a new migration");
+    const mapped = linkage.filter((row) => ["staged", "published"].includes(String(row.status)));
+    if (mapped.length !== manifestDocuments.length || linkage.length !== mapped.length || Number(migration.report.mapped ?? -1) !== manifestDocuments.length) throw new Error("Mapped document count does not match the source manifest");
+    if (mapped.some((row) => !row.external_document_id || String(row.external_document_id).startsWith("pending:"))) throw new Error("Mapped documents are missing external document ids");
+    const generations = new Set<string>(); const documentIds = new Set<string>();
+    for (const row of mapped) {
+      const manifest = manifests.get(String(row.local_document_id));
+      if (!manifest) throw new Error("Linked document identity does not match the source manifest");
+      const record = this.store.db.prepare("SELECT * FROM knowledge_weknora_documents WHERE id=?").get(String(row.document_id)) as Record<string, unknown> | undefined;
+      if (!record || !["staged", "published"].includes(String(record.status))) throw new Error("Linked WeKnora document is not staged");
+      const document = weKnoraDocumentFromRow(record);
+      if (!isVerifiedWeKnoraDocument(document)) throw new Error("Linked document requires verified completed parsing and nonempty chunks");
+      if (document.externalDocumentId !== row.external_document_id || documentIds.has(document.id)) throw new Error("Linked external document identity does not match the manifest");
+      documentIds.add(document.id);
+      if (row.content_sha256 !== manifest.bodySha256 || document.rawSha256 !== (manifest.sourceSha256 ?? undefined) ||
+          row.parser_version !== migration.sourceManifest.parserVersion || document.parserVersion !== row.parser_version) throw new Error("Linked document source hash or parser does not match the manifest");
+      const local = this.store.db.prepare("SELECT body FROM knowledge_documents WHERE id=? AND kind='product_document'").get(String(row.local_document_id)) as { body: string } | undefined;
+      if (!local || createHash("sha256").update(local.body, "utf8").digest("hex") !== manifest.bodySha256 ||
+          createHash("sha256").update(normalizeProductContent(local.body), "utf8").digest("hex") !== document.normalizedContentSha256) throw new Error("Linked document content hash does not match the source manifest");
+      for (const key of ["projectId", "environment", "productVersion", "solution", "module", "topicId", "sourcePath", "language"] as const) {
+        if (document[key] !== (manifest[key] ?? undefined)) throw new Error(`Linked document ${key} does not match the source manifest`);
+      }
+      generations.add(JSON.stringify(document.modelProvenance ?? null));
+    }
+    if (generations.size !== 1) throw new Error("Linked documents use inconsistent embedding model index generations");
+    return mapped;
+  }
   /**
    * Restore relay_local routing and move the migration's published documents
    * back to staged. Nothing is deleted: WeKnora documents, Relay local
@@ -285,8 +339,9 @@ export class MigrationController {
     if (input.solution) { conditions.push("d.solution = ?"); params.push(input.solution); }
     if (input.module) { conditions.push("d.module = ?"); params.push(input.module); }
     if (input.projectId) { conditions.push("d.project_id = ?"); params.push(input.projectId); }
+    if (input.environment) { conditions.push("d.environment = ?"); params.push(input.environment); }
     const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 1000), 10000));
-    const rows = this.store.db.prepare(`SELECT d.id, d.title, d.body, d.project_id, d.samplemanager_version, d.solution, d.module, d.source_locator, d.source_sha256, p.source_path, p.language, b.topic_id
+    const rows = this.store.db.prepare(`SELECT d.id, d.title, d.body, d.project_id, d.environment, d.samplemanager_version, d.solution, d.module, d.source_locator, d.source_sha256, p.source_path, p.language, b.topic_id
       FROM knowledge_documents d
       LEFT JOIN knowledge_product_documents p ON p.id = d.id
       LEFT JOIN knowledge_product_document_bindings b ON b.document_id = d.id
@@ -298,6 +353,7 @@ export class MigrationController {
         title: String(row.title ?? row.id),
         body,
         projectId: row.project_id ? String(row.project_id) : undefined,
+        environment: row.environment ? String(row.environment) : undefined,
         productVersion: row.samplemanager_version ? String(row.samplemanager_version) : undefined,
         solution: row.solution ? String(row.solution) : undefined,
         module: row.module ? String(row.module) : undefined,

@@ -40,6 +40,16 @@ export interface ProviderPolicyOptions {
   now?: () => number;
   sleep?: (delayMs: number) => Promise<void>;
 }
+export interface ProviderCallOptions { signal?: AbortSignal; timeoutMs?: number; }
+
+function withAbort<T>(promise:Promise<T>,signal?:AbortSignal):Promise<T> {
+  if(!signal)return promise;
+  if(signal.aborted)return Promise.reject(abortError(signal));
+  return new Promise<T>((resolve,reject)=>{
+    const abort=()=>reject(abortError(signal));signal.addEventListener("abort",abort,{once:true});
+    promise.then(resolve,reject).finally(()=>signal.removeEventListener("abort",abort));
+  });
+}
 
 export interface ProviderHealth {
   providerId: string;
@@ -128,15 +138,16 @@ function abortError(signal: AbortSignal): Error {
 export class ProviderPolicy {
   private readonly now: () => number;
   private readonly sleep: (delayMs: number) => Promise<void>;
-  private readonly config: ProviderConfig;
-  private readonly options: ReturnType<typeof normalizePolicy>;
+  private config: ProviderConfig;
+  private options: ReturnType<typeof normalizePolicy>;
   private state: ProviderHealth;
   private quotaCalls: number[] = [];
   private halfOpenProbe = false;
   private running = 0;
   private readonly queue: Array<() => void> = [];
 
-  constructor(config: ProviderConfig, options: ProviderPolicyOptions = {}) {
+  constructor(config: ProviderConfig, private readonly baseOptions: ProviderPolicyOptions = {}) {
+    const options=baseOptions;
     assertProviderConfig(config);
     this.config = { ...config };
     this.options = normalizePolicy(config, options);
@@ -153,6 +164,8 @@ export class ProviderPolicy {
     };
   }
 
+  updateConfig(config:ProviderConfig):void {assertProviderConfig(config);this.config={...config};this.options=normalizePolicy(config,this.baseOptions);}
+
   health(): ProviderHealth {
     const now = this.now();
     this.quotaCalls = this.quotaCalls.filter((calledAt) => !this.options.quota || calledAt > now - this.options.quota.windowMs);
@@ -162,7 +175,16 @@ export class ProviderPolicy {
     return { ...this.state };
   }
 
-  async execute<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  async execute<T>(operation: (signal: AbortSignal) => Promise<T>, call:ProviderCallOptions={}): Promise<T> {
+    const budget=new AbortController();
+    const budgetMs=call.timeoutMs===undefined?undefined:bounded(call.timeoutMs,this.options.timeoutMs,1,600_000);
+    const budgetTimer=budgetMs===undefined?undefined:setTimeout(()=>budget.abort(new ProviderTimeoutError(this.config.providerId,budgetMs)),budgetMs);
+    const signal=call.signal?AbortSignal.any([budget.signal,call.signal]):budget.signal;
+    try{return await this.executeWithinBudget(operation,signal);}finally{if(budgetTimer)clearTimeout(budgetTimer);}
+  }
+
+  private async executeWithinBudget<T>(operation:(signal:AbortSignal)=>Promise<T>,signal:AbortSignal):Promise<T> {
+    if(signal.aborted)throw abortError(signal);
     const health = this.health();
     if (health.state === "open") throw new ProviderCircuitOpenError(this.config.providerId, health.nextRetryAt ?? this.now() + this.options.circuitCooldownMs);
     if (health.state === "half-open") {
@@ -174,17 +196,16 @@ export class ProviderPolicy {
     this.quotaCalls.push(this.now());
     this.state.totalCalls += 1;
 
-    await this.acquire();
+    try {await this.acquire(signal);}catch(error){this.halfOpenProbe=false;throw error;}
     try {
       let lastError: unknown;
       for (let attempt = 0; attempt <= this.options.maxRetries; attempt++) {
         const controller = new AbortController();
+        const combined=AbortSignal.any([controller.signal,signal]);
         const timer = setTimeout(() => controller.abort(new ProviderTimeoutError(this.config.providerId, this.options.timeoutMs)), this.options.timeoutMs);
         try {
-          const result = await Promise.race([
-            operation(controller.signal),
-            new Promise<never>((_, reject) => controller.signal.addEventListener("abort", () => reject(abortError(controller.signal)), { once: true })),
-          ]);
+          if(signal.aborted)throw abortError(signal);
+          const result = await withAbort(operation(combined),combined);
           clearTimeout(timer);
           this.state.consecutiveFailures = 0;
           this.state.state = "closed";
@@ -194,8 +215,8 @@ export class ProviderPolicy {
         } catch (error) {
           clearTimeout(timer);
           lastError = error;
-          if (attempt >= this.options.maxRetries || !retryable(error)) break;
-          await this.sleep(Math.min(60_000, this.options.retryBaseMs * 2 ** attempt));
+          if (signal.aborted || attempt >= this.options.maxRetries || !retryable(error)) break;
+          await withAbort(this.sleep(Math.min(60_000, this.options.retryBaseMs * 2 ** attempt)),signal);
         }
       }
       this.state.totalFailures += 1;
@@ -212,20 +233,25 @@ export class ProviderPolicy {
     }
   }
 
-  private async acquire(): Promise<void> {
+  private async acquire(signal:AbortSignal): Promise<void> {
+    if(signal.aborted)throw abortError(signal);
     const limit = this.options.concurrency;
     if (limit === undefined || this.running < limit) {
       this.running += 1;
       return;
     }
-    await new Promise<void>((resolve) => this.queue.push(resolve));
-    this.running += 1;
+    await new Promise<void>((resolve,reject) => {
+      const wake=()=>{signal.removeEventListener("abort",abort);resolve();};
+      const abort=()=>{const index=this.queue.indexOf(wake);if(index>=0)this.queue.splice(index,1);reject(abortError(signal));};
+      this.queue.push(wake);signal.addEventListener("abort",abort,{once:true});
+    });
   }
 
   private release(): void {
-    this.running -= 1;
-    const next = this.queue.shift();
-    next?.();
+    this.running-=1;
+    if(this.options.concurrency===undefined||this.running<this.options.concurrency){
+      const next=this.queue.shift();if(next){this.running++;next();}
+    }
   }
 }
 

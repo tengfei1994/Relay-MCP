@@ -19,6 +19,10 @@ import { agentRoutes } from "./routes/agents.js";
 import { agentTokenRoutes } from "./routes/agent-tokens.js";
 import { instanceRoutes } from "./routes/instances.js";
 import { toolRoutes } from "./routes/tools.js";
+import { knowledgeEngineRoutes } from "./routes/knowledge-engine.js";
+import { getEngineManager } from "../knowledge/engine-service.js";
+import { createEngineStartupReconciler } from "./knowledge-engine-startup.js";
+import { startCandidateInsightDispatcher } from "../knowledge/candidate-dispatch.js";
 import { knowledgeRoutes } from "./routes/knowledge.js";
 import { requireJwtSecret } from "../shared/auth-secret.js";
 import { getKnowledgeStore } from "./knowledge-context.js";
@@ -105,6 +109,14 @@ if (existsSync(frontendDist)) {
   });
 }
 
+// Model setup remains the only configuration flow; reconcile internal aliases afterwards.
+app.addHook("onResponse", async (request, reply) => {
+  if (["POST","PUT"].includes(request.method) && request.url.startsWith("/api/knowledge/providers/managed/") && reply.statusCode < 300) {
+    const manager = getEngineManager(getKnowledgeStore());
+    if (manager.runtime()) void manager.initialize({actorId:request.user?.id??0}).catch(() => app.log.warn("Knowledge engine model reconciliation pending"));
+  }
+});
+
 // Routes
 await app.register(authRoutes);
 await app.register(projectRoutes);
@@ -119,6 +131,7 @@ await app.register(agentTokenRoutes);
 await app.register(instanceRoutes);
 await app.register(toolRoutes);
 await app.register(knowledgeRoutes);
+await app.register(knowledgeEngineRoutes);
 // Resume durable document imports after a process restart. The worker claims
 // only queued rows and keeps the HTTP server responsive while large packages
 // are parsed.
@@ -138,8 +151,22 @@ app.get("/api/health", async () => ({
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? "0.0.0.0";
 
+const engineManager = getEngineManager(getKnowledgeStore());
+const engineStartup = createEngineStartupReconciler({
+  installed: () => Boolean(engineManager.runtime()),
+  initialize: () => engineManager.initialize({ actorId: 0 }),
+  report: event => app.log.warn(event, event.state === "exhausted"
+    ? "Knowledge engine startup reconciliation exhausted; inspect Relay provider configuration"
+    : "Knowledge engine startup reconciliation will retry"),
+});
+const candidateDispatcher = startCandidateInsightDispatcher(() => getKnowledgeStore(), {onError:()=>app.log.warn("Candidate worker cycle failed; queued work remains durable")});
+app.addHook("onClose", async () => { await candidateDispatcher.stop(); await engineStartup.stop(); });
 await app.listen({ port, host });
+void engineStartup.start();
+let shuttingDown = false;
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => {
-  void stopIngestJobs().then(() => app.close()).finally(() => process.exit(0));
+  if (shuttingDown) return;
+  shuttingDown = true;
+  void candidateDispatcher.stop().then(() => engineStartup.stop()).then(() => stopIngestJobs()).then(() => app.close()).finally(() => process.exit(0));
 });
 console.log(`Web server running on http://${host}:${port}`);

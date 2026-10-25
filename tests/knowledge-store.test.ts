@@ -342,7 +342,7 @@ test("migrations tolerate a partially applied event_key column", async (t) => {
         "016-product-document-governance",
       "017-product-document-operations",
       "018-evidence-metadata",
-      "019-human-display-projection", "020-observation-candidate", "021-observation-review", "022-chunk-fts-ownership", "023-business-context", "024-product-topics", "025-artifact-baselines", "026-source-index", "027-ingest-jobs", "028-product-revisions", "029-work-sessions", "030-provider-configs", "031-weknora-documents", "032-candidate-insights", "033-work-session-ops", "034-provider-runtime", "035-weknora-ingest-identity", "036-candidate-insight-review", "037-wiki", "038-integration-routing", "039-provider-secrets",
+      "019-human-display-projection", "020-observation-candidate", "021-observation-review", "022-chunk-fts-ownership", "023-business-context", "024-product-topics", "025-artifact-baselines", "026-source-index", "027-ingest-jobs", "028-product-revisions", "029-work-sessions", "030-provider-configs", "031-weknora-documents", "032-candidate-insights", "033-work-session-ops", "034-provider-runtime", "035-weknora-ingest-identity", "036-candidate-insight-review", "037-wiki", "038-integration-routing", "039-provider-secrets", "040-managed-engine", "041-candidate-scope", "042-candidate-worker-lease", "043-migration-withdrawal",
     ]);
       store.append({ id: "event-partial", type: "job.finished", eventKey: "job:partial:finished", ...eventDefaults });
       assert.equal(store.claim("capture").length, 1);

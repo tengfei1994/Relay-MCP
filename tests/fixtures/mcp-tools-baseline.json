@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "generatedFrom": "McpServer tools/list",
   "sourceVersion": {
-    "gitCommit": "c0c79b1e2a61bbb33053a8c1bf39b4c858e20a8a",
-    "mcpSdkVersion": "1.29.0",
+    "gitCommit": "b25ee02cfc0b82cfb54b044a035390c097e8781e",
+    "mcpSdkVersion": "1.32.2",
     "generationCommand": "npm run generate:mcp-baseline",
-    "generatedAt": "2026-10-23T13:30:54.032Z",
+    "generatedAt": "2026-10-25T10:33:51.249Z",
     "worktreeDirty": true
   },
   "tools": [
@@ -653,11 +653,35 @@
           },
           "async": {
             "type": "boolean"
+          },
+          "retry": {
+            "type": "boolean"
           }
         },
         "required": [
           "sessionId",
           "evidenceRefs"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_candidate_insight_job_get",
+      "description": "Read an asynchronous Candidate compilation job after Session ACL enforcement.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
         ],
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
@@ -5869,6 +5893,10 @@
     },
     {
       "name": "knowledge_candidate_insight_compile",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_candidate_insight_job_get",
       "category": "context"
     },
     {

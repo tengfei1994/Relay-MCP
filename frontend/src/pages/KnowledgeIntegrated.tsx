@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { BookOpen, CheckCircle2, ChevronLeft, ChevronRight, FileText, GitBranch, KeyRound, RefreshCw, ServerCog, ShieldAlert, Workflow } from "lucide-react";
 import { api } from "../api/client";
 import { useAuth } from "../App";
 import { Badge, cardClass, formatDate, inputClass, PageShell, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
 import { ProviderSetupForm, type ProviderSetupDefaults } from "../components/ProviderSetupForm";
-import { buildWeknoraSearchBody } from "../knowledge/integrated-search";
+import { buildKnowledgeScope, buildWeknoraSearchBody, knowledgeItemScope, knowledgeItemMatchesScope, productEngineDocumentState, withKnowledgeScope } from "../knowledge/integrated-search";
 
 const btn = "inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-xs text-white hover:bg-indigo-500 disabled:opacity-50";
 const btnGhost = "inline-flex items-center gap-1.5 rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50";
@@ -88,6 +88,10 @@ function ProvidersPane({ isAdmin }: { isAdmin: boolean }) {
   const [providers, setProviders] = useState<any[]>();
   const [jobs, setJobs] = useState<any[]>([]);
   const [error, setError] = useState("");
+  const [engine, setEngine] = useState<any>();
+  const [engineError, setEngineError] = useState("");
+  const [engineBusy, setEngineBusy] = useState(false);
+  const [engineSelection, setEngineSelection] = useState<Record<string,string>>({});
   const [notice, setNotice] = useState("");
   const [editing, setEditing] = useState<ProviderSetupDefaults>();
   const [formVersion, setFormVersion] = useState(0);
@@ -97,6 +101,7 @@ function ProvidersPane({ isAdmin }: { isAdmin: boolean }) {
   const [rotateRef, setRotateRef] = useState("");
   const load = () => {
     setError("");
+    if (isAdmin) api.knowledgeEngine().then((value) => { setEngine(value); setEngineError(""); }).catch((err) => setEngineError(errText(err, "Unable to load engine status")));
     Promise.all([api.knowledgeManagedProviders(), api.knowledgeManagedProvidersReindex()])
       .then(([p, r]) => { setProviders(p.providers ?? []); setJobs(r.jobs ?? []); })
       .catch((err) => setError(errText(err, "Unable to load managed providers")));
@@ -107,6 +112,17 @@ function ProvidersPane({ isAdmin }: { isAdmin: boolean }) {
   if (error && !providers) return <StatePanel state="error" message={error} onRetry={load} />;
   if (!providers) return <StatePanel state="loading" message="Loading managed providers…" />;
   return <div className="space-y-4">
+    {isAdmin && <section className={cardClass} aria-label="Knowledge engine">
+      <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-medium text-gray-100">Knowledge engine</h3><StatusBadge value={engine?.phase ?? "loading"} /></div>
+      <p className="mt-2 text-sm text-gray-400">Installed and started with Relay. Embeddings and Wiki generation use the managed providers below.</p>
+      {engine && <p className="mt-2 text-xs text-gray-400">Version {engine.version ?? "not installed"} · Embedding {engine.embeddingProviderId ?? "not selected"} · Wiki {engine.wikiReady ? engine.wikiProviderId : "text model required"}</p>}
+      <div className="mt-3 flex flex-wrap items-end gap-3">
+        {([["embedding","embeddingProviderId","Embedding"],["wiki_llm","wikiProviderId","Wiki generation"],["rerank","rerankProviderId","Rerank"]] as const).map(([kind,key,label]) => <label key={key} className="space-y-1 text-xs text-gray-400"><span className="block">{label}</span><select className={inputClass} value={engineSelection[key] ?? ""} onChange={(event) => setEngineSelection((value) => ({...value,[key]:event.target.value}))}><option value="">Use current or sole provider</option>{providers.filter((p) => p.kind===kind && p.status!=="disabled").map((p) => <option key={p.id} value={p.id}>{p.id} · {p.modelId}</option>)}</select></label>)}
+        <button disabled={engineBusy || engine?.phase==="not_installed"} className={btnGhost} onClick={async () => {setEngineBusy(true);setEngineError("");try{setEngine(await api.knowledgeEngineInitialize(Object.fromEntries(Object.entries(engineSelection).filter(([,value]) => value))));}catch(err){setEngineError(errText(err,"Engine connection failed"));}finally{setEngineBusy(false);}}}>{engineBusy ? "Connecting…" : "Apply model connections"}</button>
+      </div>
+      {engine?.phase==="not_installed" && <p className="mt-3 text-sm text-amber-300">The Relay deployment has not installed the knowledge engine yet.</p>}
+      <Err message={engineError} />
+    </section>}
     <section className={cardClass}>
       <div className="flex items-center gap-2"><ServerCog size={16} className="text-indigo-300" /><h3 className="font-medium text-gray-100">Managed providers</h3></div>
       <p className="mt-1 text-xs text-gray-500">Tokens are encrypted on the server. Use the connection form below to select a model.</p>
@@ -189,11 +205,12 @@ function CandidatesPane({ isAdmin }: { isAdmin: boolean }) {
     setError("");
     try {
       const [{ insight }, detail] = await Promise.all([api.knowledgeCandidateInsight(id), api.knowledgeCandidateInsightHistory(id)]);
-      setSelected(insight); setHistory(detail.history ?? []);
+      const { session } = await api.knowledgeSession(insight.workSessionId);
+      setSelected({ ...insight, sourceEnvironment: insight.sourceScope?.environment ?? session.environment, sessionUpdatedAt: session.updatedAt, currentSessionScope: { projectId: session.projectId, environment: session.environment, sampleManagerVersion: session.intent?.sampleManagerVersion, solution: session.intent?.solution, module: session.intent?.module } }); setHistory(detail.history ?? []);
       setEdit({ statement: insight.statement ?? "", kind: insight.kind ?? INSIGHT_KINDS[0] });
     } catch (err) { setError(errText(err, "Unable to load Candidate Insight")); }
   };
-  const refresh = async (insight: any) => { setSelected(insight); const detail = await api.knowledgeCandidateInsightHistory(insight.id); setHistory(detail.history ?? []); load(); };
+  const refresh = async (insight: any) => { setSelected({ ...insight, sourceEnvironment: insight.sourceScope?.environment ?? selected?.sourceEnvironment, sessionUpdatedAt: selected?.sessionUpdatedAt, currentSessionScope: selected?.currentSessionScope }); const detail = await api.knowledgeCandidateInsightHistory(insight.id); setHistory(detail.history ?? []); load(); };
   return <div className="space-y-4">
     <section className={cardClass}>
       <div className="flex flex-wrap items-center gap-3">
@@ -230,9 +247,17 @@ function CandidatesPane({ isAdmin }: { isAdmin: boolean }) {
           <p className="mt-1 text-sm leading-6 text-gray-300">{selected.statement}</p>
           {selected.whyProposed && <p className="mt-1 text-xs text-gray-500">Why proposed: {selected.whyProposed}</p>}
           <p className="mt-2 text-xs text-gray-500">generated by {selected.generatedBy}{selected.fallbackReason ? ` · fallback: ${selected.fallbackReason}` : ""} · evidence refs: {(selected.evidenceRefs ?? []).length}</p>
+          <div className="mt-3 flex flex-wrap gap-2">{(selected.evidenceRefs ?? []).map((id: string, index: number) => <Link key={id} className={btnGhost} to={withKnowledgeScope(`/knowledge/evidence?document=${encodeURIComponent(id)}`, { projectId: String(selected.projectId), environment: selected.sourceEnvironment })}>View evidence {index + 1}</Link>)}</div>
+          {selected.promotion && <p className="mt-3 text-sm text-emerald-300">Promoted to {selected.promotion.target}{selected.promotion.targetId && <> · <Link className="underline" to={withKnowledgeScope(`/knowledge/cases?document=${encodeURIComponent(selected.promotion.targetId)}`, { projectId: String(selected.projectId), environment: selected.sourceEnvironment })}>Open Case</Link></>}</p>}
         </div>
         <StatusBadge value={selected.status} />
       </div>
+      {selected.scopeReviewRequired && <div className="mt-4 rounded-md border border-amber-900 bg-amber-950/20 p-3 text-sm text-amber-200">
+        <p>This record needs a source scope review before it can be promoted or reused by default.</p>
+        <p className="mt-2 text-xs">Current Session: Project {selected.currentSessionScope?.projectId} · Environment {selected.currentSessionScope?.environment ?? "unspecified"} · Version {selected.currentSessionScope?.sampleManagerVersion ?? "unspecified"} · Solution {selected.currentSessionScope?.solution ?? "unspecified"} · Module {selected.currentSessionScope?.module ?? "unspecified"}</p>
+        {isAdmin && selected.status !== "rejected" && <div className="mt-3 flex flex-wrap gap-2"><ReasonAction label="Review current Session scope" onRun={async (reason) => { await refresh((await api.knowledgeCandidateInsightReviewScope(selected.id, reason, selected.sessionUpdatedAt)).insight); }} /><button className={btnGhost} onClick={() => openDetail(selected.id)}>Reload scope</button></div>}
+        <p className="mt-2 text-xs">{selected.status === "rejected" ? "This Candidate was rejected. Compile and review a new Candidate to reuse the evidence." : "Reviewing restores any existing Case to this scope for retrieval. Its content, evidence and lifecycle remain unchanged."}</p>
+      </div>}
       {isAdmin && <div className="mt-4 space-y-3 border-t border-gray-800 pt-3">
         {(selected.status === "draft" || selected.status === "edited") && <>
           <div className="grid gap-2 sm:grid-cols-[1fr_180px]">
@@ -245,10 +270,10 @@ function CandidatesPane({ isAdmin }: { isAdmin: boolean }) {
             <ReasonAction label="Reject" tone="danger" onRun={async (reason) => refresh((await api.knowledgeCandidateInsightReject(selected.id, reason)).insight)} />
           </div>
         </>}
-        {selected.status === "accepted" && <div className="flex flex-wrap items-center gap-2">
+        {selected.status === "accepted" && !selected.promotion && !selected.scopeReviewRequired && <div className="flex flex-wrap items-center gap-2">
           <select className={inputClass} value={promoteTarget} onChange={(event) => setPromoteTarget(event.target.value as "case" | "decision")}><option value="case">case</option><option value="decision">decision</option></select>
           <input className={`${inputClass} w-56`} placeholder="Promotion title (optional)" value={promoteTitle} onChange={(event) => setPromoteTitle(event.target.value)} />
-          <ReasonAction label="Promote" onRun={async (reason) => { const result = await api.knowledgeCandidateInsightPromote(selected.id, { target: promoteTarget, reason, title: promoteTitle.trim() || undefined }); setSelected({ ...selected, promotion: result.promotion }); }} />
+          <ReasonAction label="Promote" onRun={async (reason) => { const result = await api.knowledgeCandidateInsightPromote(selected.id, { target: promoteTarget, reason, title: promoteTitle.trim() || undefined }); await refresh({ ...selected, promotion: result.promotion }); }} />
         </div>}
       </div>}
       <div className="mt-4 border-t border-gray-800 pt-3">
@@ -264,7 +289,52 @@ function CandidatesPane({ isAdmin }: { isAdmin: boolean }) {
 
 const WIKI_STATUSES = ["draft", "published", "deprecated"] as const;
 
+function useProjectScope() {
+  const [params, setParams] = useSearchParams();
+  const [projects, setProjects] = useState<any[]>([]);
+  const [scopeError, setScopeError] = useState("");
+  const scope = buildKnowledgeScope({ projectId: params.get("projectId") ?? undefined, environment: params.get("environment") ?? undefined });
+  useEffect(() => {
+    let cancelled = false;
+    api.listProjects().then((result) => {
+      if (cancelled) return;
+      const available = result.projects ?? [];
+      setProjects(available);
+      setParams((current) => {
+        if (current.get("projectId")) return current;
+        const stored = localStorage.getItem("knowledge.projectId");
+        const selected = available.find((project: any) => String(project.id) === stored) ?? available[0];
+        if (!selected) return current;
+        const next = new URLSearchParams(current); next.set("projectId", String(selected.id)); return next;
+      }, { replace: true });
+    }).catch((err) => { if (!cancelled) setScopeError(errText(err, "Unable to load projects")); });
+    return () => { cancelled = true; };
+  }, []);
+  const setScope = (key: "projectId" | "environment", value: string) => {
+    if (key === "projectId" && value) localStorage.setItem("knowledge.projectId", value);
+    setParams((current) => { const next = new URLSearchParams(current); value ? next.set(key, value) : next.delete(key); return next; }, { replace: true });
+  };
+  return { scope, projects, scopeError, setScope, environmentValue: params.get("environment") ?? "" };
+}
+
+function ScopeControls({ selection, allowAllProjects = false, environmentPlaceholder = "Default environment" }: { selection: ReturnType<typeof useProjectScope>; allowAllProjects?: boolean; environmentPlaceholder?: string }) {
+  return <div className="mb-3 flex flex-wrap items-end gap-3">
+    <label className="space-y-1 text-xs text-gray-400"><span className="block">Project</span><select className={inputClass} value={selection.scope.projectId ?? ""} onChange={(event) => selection.setScope("projectId", event.target.value)}>
+      {allowAllProjects ? <option value="">All projects</option> : !selection.scope.projectId && <option value="">Select a project</option>}
+      {selection.scope.projectId && !selection.projects.some((project) => String(project.id) === selection.scope.projectId) && <option value={selection.scope.projectId}>{selection.scope.projectId}</option>}
+      {selection.projects.map((project) => <option key={project.id} value={String(project.id)}>{project.name}</option>)}
+    </select></label>
+    <label className="space-y-1 text-xs text-gray-400"><span className="block">Environment</span><input className={inputClass} placeholder={environmentPlaceholder} value={selection.environmentValue} onChange={(event) => selection.setScope("environment", event.target.value)} /></label>
+    {selection.scopeError && <p className="text-xs text-rose-300">{selection.scopeError}</p>}
+  </div>;
+}
+
 function WikiPane({ isAdmin }: { isAdmin: boolean }) {
+  const selection = useProjectScope(); const { scope } = selection;
+  const listRequest = useRef(0);
+  const [sources, setSources] = useState<any[]>([]);
+  const [sourcesLoading, setSourcesLoading] = useState(false);
+  const [sourceRefs, setSourceRefs] = useState<string[]>([]);
   const emptyCreate = { pageKey: "", title: "", body: "", productVersion: "", reason: "" };
   const [filters, setFilters] = useState({ search: "", status: "" });
   const [applied, setApplied] = useState(filters);
@@ -281,25 +351,48 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   const [editBody, setEditBody] = useState<{ title: string; body: string }>({ title: "", body: "" });
   const [rollbackRev, setRollbackRev] = useState("");
   const load = (nextOffset = offset) => {
+    const requestId = ++listRequest.current;
+    if (!scope.projectId) { setResult({ items: [], total: 0 }); return; }
     setError("");
-    api.knowledgeWikiPages({ search: applied.search || undefined, status: applied.status || undefined, limit: PAGE_LIMIT, offset: nextOffset })
-      .then((data) => setResult({ items: data.items ?? [], total: data.total ?? 0 }))
-      .catch((err) => { setResult({ items: [], total: 0 }); setError(errText(err, "Unable to load Wiki pages")); });
+    api.knowledgeWikiPages({ ...scope, search: applied.search || undefined, status: applied.status || undefined, limit: PAGE_LIMIT, offset: nextOffset })
+      .then((data) => { if (requestId === listRequest.current) setResult({ items: data.items ?? [], total: data.total ?? 0 }); })
+      .catch((err) => { if (requestId !== listRequest.current) return; setResult({ items: [], total: 0 }); setError(errText(err, "Unable to load Wiki pages")); });
   };
-  useEffect(() => { setOffset(0); load(0); }, [applied]);
+  useEffect(() => { setOffset(0); setResult(undefined); setPage(undefined); setRevisions([]); setDiff(""); setSourceRefs([]); setNotice(""); load(0); return () => { listRequest.current++; }; }, [applied, scope.projectId, scope.environment]);
+  useEffect(() => {
+    if (!showCreate || !scope.projectId) { setSources([]); return; }
+    let cancelled = false;
+    setSourcesLoading(true); setSources([]); setSourceRefs([]);
+    const loadSources = async () => {
+      const available: any[] = []; let offset = 0;
+      while (!cancelled) {
+        const result = await api.knowledgeWeknoraDocuments({ ...scope, status: "published", limit: 100, offset });
+        const rows = result.documents ?? []; available.push(...rows);
+        offset += rows.length;
+        if (!rows.length || offset >= (result.page?.total ?? offset)) break;
+      }
+      if (!cancelled) setSources(available.filter((document) => knowledgeItemMatchesScope(document, scope) && productEngineDocumentState(document).verified && (!create.productVersion.trim() || String(document.product_version ?? document.productVersion ?? "") === create.productVersion.trim())));
+    };
+    loadSources().catch((err) => { if (!cancelled) setError(errText(err, "Unable to load published sources")); }).finally(() => { if (!cancelled) setSourcesLoading(false); });
+    return () => { cancelled = true; };
+  }, [showCreate, scope.projectId, scope.environment, create.productVersion]);
   const run = async (task: () => Promise<any>, ok: string) => { setError(""); setNotice(""); try { const data = await task(); setNotice(ok); load(); return data; } catch (err) { setError(errText(err, "Wiki operation failed")); } };
-  const openPage = async (id: string) => {
+  const openPage = async (item: any) => {
+    const id = item.id; const pageScope = knowledgeItemScope(item, scope);
+    const requestId = listRequest.current;
     setError(""); setDiff("");
     try {
-      const [{ page: detail }, revs] = await Promise.all([api.knowledgeWikiPage(id), api.knowledgeWikiRevisions(id)]);
+      const [{ page: detail }, revs] = await Promise.all([api.knowledgeWikiPage(id, pageScope), api.knowledgeWikiRevisions(id, pageScope)]);
+      if (requestId !== listRequest.current) return;
       setPage(detail); setRevisions(revs.revisions ?? []);
       setEditBody({ title: detail.title, body: detail.body });
       setDiffRange({ from: String(Math.max(1, detail.currentRevision - 1)), to: String(detail.currentRevision) });
     } catch (err) { setError(errText(err, "Unable to load Wiki page")); }
   };
-  const refreshPage = async (updated: any) => { setPage(updated); setEditBody({ title: updated.title, body: updated.body }); const revs = await api.knowledgeWikiRevisions(updated.id); setRevisions(revs.revisions ?? []); load(); };
+  const refreshPage = async (updated: any) => { setPage(updated); setEditBody({ title: updated.title, body: updated.body }); const revs = await api.knowledgeWikiRevisions(updated.id, knowledgeItemScope(updated, scope)); setRevisions(revs.revisions ?? []); load(); };
   return <div className="space-y-4">
     <section className={cardClass}>
+      <ScopeControls selection={selection} />
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="font-medium text-gray-100">Wiki pages</h3>
         <input className={`${inputClass} w-64`} placeholder="Search title or body…" value={filters.search} onChange={(event) => setFilters({ ...filters, search: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter") setApplied(filters); }} />
@@ -316,10 +409,16 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
           <input className={inputClass} placeholder="Title" value={create.title} onChange={(event) => setCreate({ ...create, title: event.target.value })} />
           <input className={inputClass} placeholder="Product version (optional)" value={create.productVersion} onChange={(event) => setCreate({ ...create, productVersion: event.target.value })} />
         </div>
+        <label className="block space-y-1 text-xs text-gray-400"><span>Published source documents (select one or more)</span>
+          <select multiple size={4} className={`${inputClass} h-auto w-full`} value={sourceRefs} disabled={sourcesLoading} onChange={(event) => setSourceRefs(Array.from(event.target.selectedOptions, (option) => option.value))}>
+            {sources.map((source) => <option key={source.id} value={source.id}>{source.title}{source.product_version ?? source.productVersion ? ` · v${source.product_version ?? source.productVersion}` : ""}{source.environment ? ` · ${source.environment}` : ""}</option>)}
+          </select>
+          <span>{sourcesLoading ? "Loading verified published sources…" : sources.length ? "Hold Ctrl or Command to select multiple sources." : "No verified published documents in this scope. Publish a parsed Product document first."}</span>
+        </label>
         <textarea className="min-h-24 w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-200 outline-none focus:border-indigo-500" placeholder="Page body" value={create.body} onChange={(event) => setCreate({ ...create, body: event.target.value })} />
         <div className="flex flex-wrap items-center gap-2">
           <input className={`${inputClass} w-72`} placeholder="Creation reason (required)" value={create.reason} onChange={(event) => setCreate({ ...create, reason: event.target.value })} />
-          <button className={btn} disabled={!create.pageKey.trim() || !create.title.trim() || !create.body.trim() || !create.reason.trim()} onClick={() => run(async () => { const { page: created } = await api.knowledgeWikiCreate({ pageKey: create.pageKey.trim(), title: create.title.trim(), body: create.body, productVersion: create.productVersion.trim() || undefined, reason: create.reason.trim() }); setCreate(emptyCreate); setShowCreate(false); return created; }, "Wiki page created.")}>Create</button>
+          <button className={btn} disabled={!scope.projectId || sourcesLoading || !sourceRefs.length || !create.pageKey.trim() || !create.title.trim() || !create.body.trim() || !create.reason.trim()} onClick={() => run(async () => { const { page: created } = await api.knowledgeWikiCreate({ ...scope, sourceRefs, pageKey: create.pageKey.trim(), title: create.title.trim(), body: create.body, productVersion: create.productVersion.trim() || undefined, reason: create.reason.trim() }); setCreate(emptyCreate); setSourceRefs([]); setShowCreate(false); return created; }, "Wiki page created.")}>Create</button>
         </div>
       </div>}
       <Err message={error} />
@@ -327,7 +426,7 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
       {!result ? <StatePanel state="loading" message="Loading Wiki pages…" /> : <>
         <div className="mt-3 divide-y divide-gray-800">
           {result.items.length === 0 && <p className="py-3 text-sm text-gray-500">No Wiki pages match.</p>}
-          {result.items.map((item) => <button key={item.id} onClick={() => openPage(item.id)} className="flex w-full flex-wrap items-center justify-between gap-3 py-2.5 text-left">
+          {result.items.map((item) => <button key={item.id} onClick={() => openPage(item)} className="flex w-full flex-wrap items-center justify-between gap-3 py-2.5 text-left">
             <div className="min-w-0">
               <p className="truncate text-sm text-gray-200">{item.title}</p>
               <p className="text-xs text-gray-500">{item.pageKey} · rev {item.currentRevision}{item.productVersion ? ` · ${item.productVersion}` : ""} · {formatDate(item.updatedAt)}</p>
@@ -347,18 +446,30 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
         <StatusBadge value={page.status} />
       </div>
       <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-gray-800 bg-gray-950/60 p-3 text-xs text-gray-300">{page.body}</pre>
-      {isAdmin && <div className="mt-4 space-y-3 border-t border-gray-800 pt-3">
+      <div className="mt-4 border-t border-gray-800 pt-3">
+        <h4 className="text-sm font-medium text-gray-200">Source documents</h4>
+        <p className="mt-1 text-xs text-gray-500">Check the cited source before approving a Wiki statement.</p>
+        {(page.citations ?? []).length === 0 && <p className="mt-2 text-xs text-amber-300">No verified Product source is linked.</p>}
+        <ul className="mt-2 space-y-2">{(page.citations ?? []).map((citation: any) => <li key={citation.documentId} className="rounded-md border border-gray-800 p-3 text-xs text-gray-400">
+          <Link className="font-medium text-indigo-300 underline" to={withKnowledgeScope(`/knowledge/product-docs?document=${encodeURIComponent(citation.documentId)}`, knowledgeItemScope(page, scope))}>{citation.title || "Open source document"}</Link>
+          <p className="mt-1">Version {citation.productVersion ?? "unspecified"} · {(citation.chunkIds ?? []).length} source chunks</p>
+          <p className="mt-1 break-all">{citation.sourceLocator}</p>
+          <details className="mt-2"><summary className="cursor-pointer text-gray-500">Source verification</summary><p className="mt-1 break-all">SHA-256: {citation.sourceSha256 ?? "unavailable"}</p><p className="mt-1 break-all">Chunks: {(citation.chunkIds ?? []).join(", ")}</p></details>
+        </li>)}</ul>
+      </div>
+      {page.status === "deprecated" && <p className="mt-4 text-sm text-amber-300">This Wiki page is deprecated. Its revisions and sources remain available.</p>}
+      {isAdmin && page.status !== "deprecated" && <div className="mt-4 space-y-3 border-t border-gray-800 pt-3">
         <div className="grid gap-2 sm:grid-cols-[1fr] ">
           <input className={inputClass} value={editBody.title} onChange={(event) => setEditBody({ ...editBody, title: event.target.value })} placeholder="Title" />
           <textarea className="min-h-20 rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-200 outline-none focus:border-indigo-500" value={editBody.body} onChange={(event) => setEditBody({ ...editBody, body: event.target.value })} placeholder="Body" />
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <ReasonAction label="Save edit" onRun={async (reason) => refreshPage((await api.knowledgeWikiEdit(page.id, { title: editBody.title, body: editBody.body, reason })).page)} />
-          {page.status !== "published" && <ReasonAction label="Publish" onRun={async (reason) => refreshPage((await api.knowledgeWikiPublish(page.id, reason)).page)} />}
-          {page.status === "published" && <ReasonAction label="Deprecate" tone="danger" onRun={async (reason) => refreshPage((await api.knowledgeWikiDeprecate(page.id, reason)).page)} />}
+          <ReasonAction label="Save edit" onRun={async (reason) => refreshPage((await api.knowledgeWikiEdit(page.id, { title: editBody.title, body: editBody.body, reason }, knowledgeItemScope(page, scope))).page)} />
+          {page.status !== "published" && <ReasonAction label="Publish" onRun={async (reason) => refreshPage((await api.knowledgeWikiPublish(page.id, reason, knowledgeItemScope(page, scope))).page)} />}
+          {page.status === "published" && <ReasonAction label="Deprecate" tone="danger" onRun={async (reason) => refreshPage((await api.knowledgeWikiDeprecate(page.id, reason, knowledgeItemScope(page, scope))).page)} />}
           <span className="inline-flex items-center gap-1.5">
             <input className={`${inputClass} w-24`} placeholder="Rev #" value={rollbackRev} onChange={(event) => setRollbackRev(event.target.value)} />
-            <ReasonAction label="Rollback" tone="danger" onRun={async (reason) => { const revision = Number(rollbackRev); if (!Number.isInteger(revision) || revision < 1) throw new Error("Enter a valid revision number"); return refreshPage((await api.knowledgeWikiRollback(page.id, revision, reason)).page); }} />
+            <ReasonAction label="Rollback" tone="danger" onRun={async (reason) => { const revision = Number(rollbackRev); if (!Number.isInteger(revision) || revision < 1) throw new Error("Enter a valid revision number"); return refreshPage((await api.knowledgeWikiRollback(page.id, revision, reason, knowledgeItemScope(page, scope))).page); }} />
           </span>
         </div>
       </div>}
@@ -370,7 +481,7 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <input className={`${inputClass} w-24`} value={diffRange.from} onChange={(event) => setDiffRange({ ...diffRange, from: event.target.value })} placeholder="From" />
           <input className={`${inputClass} w-24`} value={diffRange.to} onChange={(event) => setDiffRange({ ...diffRange, to: event.target.value })} placeholder="To" />
-          <button className={btnGhost} onClick={() => run(async () => { const data = await api.knowledgeWikiDiff(page.id, Number(diffRange.from), Number(diffRange.to)); setDiff(data.diff ?? ""); return data; }, "Diff computed.")}><GitBranch size={13} /> Diff revisions</button>
+          <button className={btnGhost} onClick={() => run(async () => { const data = await api.knowledgeWikiDiff(page.id, Number(diffRange.from), Number(diffRange.to), knowledgeItemScope(page, scope)); setDiff(data.diff ?? ""); return data; }, "Diff computed.")}><GitBranch size={13} /> Diff revisions</button>
         </div>
         {diff && <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-gray-800 bg-gray-950/60 p-3 text-xs text-gray-300">{diff}</pre>}
       </div>
@@ -381,6 +492,8 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
 const WEKNORA_STATUSES = ["staged", "published", "deprecated", "failed"] as const;
 
 function WeknoraPane({ isAdmin }: { isAdmin: boolean }) {
+  const selection = useProjectScope(); const { scope } = selection;
+  const listRequest = useRef(0);
   const emptyStage = { title: "", content: "", productVersion: "", solution: "", module: "", language: "" };
   const [status, setStatus] = useState("");
   const [offset, setOffset] = useState(0);
@@ -392,28 +505,30 @@ function WeknoraPane({ isAdmin }: { isAdmin: boolean }) {
   const [searching, setSearching] = useState(false);
   const [stage, setStage] = useState(emptyStage);
   const [showStage, setShowStage] = useState(false);
-  const [projects, setProjects] = useState<any[]>([]);
-  const [projectScope, setProjectScope] = useState("");
   const load = (nextOffset = offset) => {
+    const requestId = ++listRequest.current;
+    if (!scope.projectId) { setData({ documents: [], page: { total: 0 } }); return; }
     setError("");
-    api.knowledgeWeknoraDocuments({ status: status || undefined, limit: PAGE_LIMIT, offset: nextOffset })
-      .then((result) => setData({ documents: result.documents ?? [], page: result.page ?? { total: 0 } }))
-      .catch((err) => { setData({ documents: [], page: { total: 0 } }); setError(errText(err, "Unable to load WeKnora documents")); });
+    api.knowledgeWeknoraDocuments({ ...scope, status: status || undefined, limit: PAGE_LIMIT, offset: nextOffset })
+      .then((result) => { if (requestId === listRequest.current) setData({ documents: result.documents ?? [], page: result.page ?? { total: 0 } }); })
+      .catch((err) => { if (requestId !== listRequest.current) return; setData({ documents: [], page: { total: 0 } }); setError(errText(err, "Unable to load Product engine documents")); });
   };
-  useEffect(() => { setOffset(0); load(0); }, [status]);
-  useEffect(() => { api.listProjects().then((result) => { const available = result.projects ?? []; setProjects(available); const stored = Number(localStorage.getItem("knowledge.projectId")); const selected = available.find((project: any) => project.id === stored) ?? available[0]; setProjectScope(selected?.name ?? ""); }).catch((err) => setError(errText(err, "Unable to load projects"))); }, []);
-  const run = async (task: () => Promise<any>, ok: string) => { setError(""); setNotice(""); try { await task(); setNotice(ok); load(); } catch (err) { setError(errText(err, "WeKnora operation failed")); } };
+  useEffect(() => { setOffset(0); setData(undefined); setSearch(undefined); setNotice(""); load(0); return () => { listRequest.current++; }; }, [status, scope.projectId, scope.environment]);
+  const run = async (task: () => Promise<any>, ok: string) => { setError(""); setNotice(""); try { await task(); setNotice(ok); load(); } catch (err) { setError(errText(err, "Product engine operation failed")); } };
   const runSearch = async () => {
+    const requestId = listRequest.current;
     setSearching(true); setError(""); setSearch(undefined);
     try {
-      if (!projectScope) throw new Error("Select a project before searching WeKnora");
-      setSearch(await api.knowledgeWeknoraSearch(buildWeknoraSearchBody(query, projectScope)));
-    } catch (err) { setError(errText(err, "WeKnora search failed")); } finally { setSearching(false); }
+      if (!scope.projectId) throw new Error("Select a project before searching Product engine");
+      const result = await api.knowledgeWeknoraSearch(buildWeknoraSearchBody(query, scope.projectId, scope.environment));
+      if (requestId === listRequest.current) setSearch(result);
+    } catch (err) { setError(errText(err, "Product engine search failed")); } finally { setSearching(false); }
   };
   return <div className="space-y-4">
     <section className={cardClass}>
+      <ScopeControls selection={selection} />
       <div className="flex flex-wrap items-center gap-3">
-        <h3 className="font-medium text-gray-100">WeKnora documents</h3>
+        <h3 className="font-medium text-gray-100">Product engine documents</h3>
         <select className={inputClass} value={status} onChange={(event) => setStatus(event.target.value)}>
           <option value="">All statuses</option>
           {WEKNORA_STATUSES.map((value) => <option key={value} value={value}>{value}</option>)}
@@ -429,55 +544,56 @@ function WeknoraPane({ isAdmin }: { isAdmin: boolean }) {
           <input className={inputClass} placeholder="Module" value={stage.module} onChange={(event) => setStage({ ...stage, module: event.target.value })} />
         </div>
         <textarea className="min-h-20 w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-200 outline-none focus:border-indigo-500" placeholder="Document content" value={stage.content} onChange={(event) => setStage({ ...stage, content: event.target.value })} />
-        <button className={btn} disabled={!stage.title.trim() || !stage.content.trim()} onClick={() => run(async () => {
-          const body: Record<string, unknown> = { idempotencyKey: `weknora-stage:${Date.now()}:${stage.title.trim()}`, title: stage.title.trim(), content: stage.content };
+        <button className={btn} disabled={!scope.projectId || !stage.title.trim() || !stage.content.trim()} onClick={() => run(async () => {
+          const body: Record<string, unknown> = { ...scope, idempotencyKey: `weknora-stage:${Date.now()}:${stage.title.trim()}`, title: stage.title.trim(), content: stage.content };
           for (const key of ["productVersion", "solution", "module", "language"] as const) if (stage[key].trim()) body[key] = stage[key].trim();
-          await api.knowledgeWeknoraDocumentStage(body); setStage(emptyStage); setShowStage(false);
-        }, "Document staged (deduplicated on identical content).")}>Stage</button>
+          const result = await api.knowledgeWeknoraDocumentStage(body);
+          const document = result.document?.document ?? result.document;
+          if (!document || !productEngineDocumentState(document).verified) throw new Error("The document has not completed parsing and chunk verification.");
+          setStage(emptyStage); setShowStage(false);
+        }, "Document content verified.")}>Stage</button>
       </div>}
       <Err message={error} />
       {notice && <p className="mt-3 rounded-md border border-emerald-900 bg-emerald-950/30 p-3 text-sm text-emerald-300">{notice}</p>}
-      {!data ? <StatePanel state="loading" message="Loading WeKnora documents…" /> : <>
+      {!data ? <StatePanel state="loading" message="Loading Product engine documents…" /> : <>
         <div className="mt-3 divide-y divide-gray-800">
-          {data.documents.length === 0 && <p className="py-3 text-sm text-gray-500">No WeKnora documents in this filter.</p>}
-          {data.documents.map((doc) => <div key={doc.id} className="flex flex-wrap items-center justify-between gap-3 py-2.5">
+          {data.documents.length === 0 && <p className="py-3 text-sm text-gray-500">No Product engine documents in this filter.</p>}
+          {data.documents.map((doc) => { const readiness = productEngineDocumentState(doc); return <div key={doc.id} className="flex flex-wrap items-center justify-between gap-3 py-2.5">
             <div className="min-w-0">
               <p className="truncate text-sm text-gray-200">{doc.title}</p>
               <p className="text-xs text-gray-500">{doc.id} · {doc.product_version ?? "any version"}{doc.solution ? ` · ${doc.solution}` : ""}{doc.module ? ` · ${doc.module}` : ""} · attempts {doc.attempt_count}{doc.failure_code ? ` · ${doc.failure_code}` : ""} · {formatDate(doc.updated_at)}</p>
+              <p className="mt-1 text-xs text-gray-500">Parse: {readiness.parseStatus ?? "unverified"} · {readiness.chunkCount} chunks{readiness.verified ? ` · verified ${formatDate(readiness.verifiedAt)}` : " · not ready for publication"}</p>
+              {readiness.modelProvenance && <p className="text-xs text-gray-500">Embedding: {readiness.modelProvenance.providerId} / {readiness.modelProvenance.modelId} · {readiness.modelProvenance.dimensions} dimensions · index v{readiness.modelProvenance.indexVersion}</p>}
               {doc.failure_message && <p className="text-xs text-rose-300">{doc.failure_message}</p>}
             </div>
             <div className="flex items-center gap-2">
               <StatusBadge value={doc.status} />
-              {isAdmin && (doc.status === "staged" || doc.status === "failed") && <button className={btnGhost} onClick={() => run(() => api.knowledgeWeknoraDocumentPublish(doc.id), "Document published.")}>Publish</button>}
+              {isAdmin && readiness.canPublish && <button className={btnGhost} onClick={() => run(() => api.knowledgeWeknoraDocumentPublish(doc.id), "Document published.")}>Publish</button>}
               {isAdmin && doc.status === "published" && <button className={btnDanger} onClick={() => { if (window.confirm("Deprecate this document? It leaves retrieval scope immediately.")) run(() => api.knowledgeWeknoraDocumentDeprecate(doc.id), "Document deprecated."); }}>Deprecate</button>}
             </div>
-          </div>)}
+          </div>; })}
         </div>
         <Pager offset={offset} limit={PAGE_LIMIT} total={data.page.total} count={data.documents.length} onPage={(next) => { setOffset(next); load(next); }} />
       </>}
     </section>
     <section className={cardClass}>
       <h3 className="font-medium text-gray-100">Retrieval test</h3>
-      <p className="mt-1 text-xs text-gray-500">Queries the WeKnora side over published documents only; ACL-invisible documents are filtered out.</p>
-      <div className="mt-3 grid gap-2 sm:grid-cols-[180px_1fr_140px_140px_140px_90px]">
-        <select aria-label="Search project" className={inputClass} value={projectScope} onChange={(event) => { setProjectScope(event.target.value); const project = projects.find((entry) => entry.name === event.target.value); if (project) localStorage.setItem("knowledge.projectId", String(project.id)); }}>
-          {projects.length === 0 && <option value="">No projects</option>}
-          {projects.map((project) => <option key={project.id} value={project.name}>{project.name}</option>)}
-        </select>
+      <p className="mt-1 text-xs text-gray-500">Searches published Product documents in the selected project and environment; ACL-invisible documents are filtered out.</p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_140px_140px_140px_90px]">
         <input className={inputClass} placeholder="Query text" value={query.q} onChange={(event) => setQuery({ ...query, q: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter" && query.q.trim()) runSearch(); }} />
         <input className={inputClass} placeholder="Version" value={query.productVersion} onChange={(event) => setQuery({ ...query, productVersion: event.target.value })} />
         <input className={inputClass} placeholder="Solution" value={query.solution} onChange={(event) => setQuery({ ...query, solution: event.target.value })} />
         <input className={inputClass} placeholder="Module" value={query.module} onChange={(event) => setQuery({ ...query, module: event.target.value })} />
         <input className={inputClass} placeholder="Limit" value={query.limit} onChange={(event) => setQuery({ ...query, limit: event.target.value })} />
       </div>
-      <button className={`${btn} mt-2`} disabled={searching || !query.q.trim()} onClick={runSearch}>{searching ? <RefreshCw size={12} className="animate-spin" /> : null} Run search</button>
+      <button className={`${btn} mt-2`} disabled={searching || !scope.projectId || !query.q.trim()} onClick={runSearch}>{searching ? <RefreshCw size={12} className="animate-spin" /> : null} Run search</button>
       {search && <div className="mt-3">
         <p className="text-xs text-gray-500">retrieval run {search.retrievalRunId}{search.degraded ? ` · degraded: ${typeof search.degraded === "object" ? JSON.stringify(search.degraded) : "yes"}` : ""}</p>
         <div className="mt-2 space-y-2">
           {(search.references ?? []).length === 0 && <p className="text-sm text-gray-500">No references returned.</p>}
           {(search.references ?? []).map((reference: any, index: number) => <div key={`${reference.documentId ?? index}-${index}`} className="rounded-md border border-gray-800 p-2.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs text-gray-300">{reference.title ?? reference.documentId ?? `reference ${index + 1}`}</span>
+              <Link className="text-xs text-gray-300 hover:text-indigo-300" to={withKnowledgeScope(`/knowledge/product-docs?document=${encodeURIComponent(reference.documentId ?? "")}`, knowledgeItemScope(reference, scope))}>{reference.title ?? `Reference ${index + 1}`}</Link>
               {reference.score !== undefined && <Badge tone="blue">score {Number(reference.score).toFixed(3)}</Badge>}
             </div>
             {reference.snippet && <p className="mt-1 text-xs text-gray-500">{reference.snippet}</p>}
@@ -489,6 +605,13 @@ function WeknoraPane({ isAdmin }: { isAdmin: boolean }) {
 }
 
 function MigrationPane({ isAdmin }: { isAdmin: boolean }) {
+  const selection = useProjectScope();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const jobId = searchParams.get("migrationJob") ?? "";
+  const [job, setJob] = useState<any>();
+  const [submitting, setSubmitting] = useState(false);
+  const [pollVersion, setPollVersion] = useState(0);
+  const [operationKey, setOperationKey] = useState(() => `migration-from-local:${crypto.randomUUID()}`);
   const emptyLocal = { parserVersion: "relay-normalizer-v1", productVersion: "", solution: "", module: "", limit: "", retry: false };
   const [provider, setProvider] = useState<string>();
   const [target, setTarget] = useState<"relay_local" | "weknora">("weknora");
@@ -498,6 +621,36 @@ function MigrationPane({ isAdmin }: { isAdmin: boolean }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [local, setLocal] = useState(emptyLocal);
+  const selectJob = (id: string) => setSearchParams(previous => { const next = new URLSearchParams(previous); if (id) next.set("migrationJob", id); else next.delete("migrationJob"); return next; });
+  useEffect(() => {
+    if (!isAdmin || !jobId) return;
+    let cancelled = false; let loaded = false; let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const data = await api.knowledgeIngestJob(jobId);
+        if (cancelled) return;
+        if (data.job.kind !== "product_migration") throw new Error("This task is not a product migration");
+        setError("");
+        setJob(data.job);
+        const id = data.job.result?.migrationId;
+        if (id && (!loaded || !["queued", "running"].includes(data.job.status))) {
+          setMigrationId(id);
+          const detail = await api.knowledgeMigrations(id);
+          if (cancelled) return;
+          setMigration(detail.migration);
+          setOperationKey(detail.migration.idempotencyKey);
+          loaded = true;
+        }
+        if (["queued", "running"].includes(data.job.status)) timer = setTimeout(poll, 2000);
+        else if (data.job.status === "failed") setError(data.job.error || "Migration failed. Retry explicitly after checking the report.");
+        else setNotice("Migration staging completed. Review the report before publishing.");
+      } catch (err) {
+        if (!cancelled) { setError(errText(err, "Unable to read migration progress; retrying status query")); timer = setTimeout(poll, 5000); }
+      }
+    };
+    void poll();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [jobId, isAdmin, pollVersion]);
   useEffect(() => { api.knowledgeProductProvider().then((result) => setProvider(result.provider)).catch((err) => setError(errText(err, "Unable to load product provider routing"))); }, []);
   const run = async (task: () => Promise<any>, ok: string) => { setError(""); setNotice(""); try { const data = await task(); setNotice(ok); return data; } catch (err) { setError(errText(err, "Migration operation failed")); } };
   const loadMigration = async (id: string) => { setCleanup(undefined); const data = await run(() => api.knowledgeMigrations(id.trim()), "Migration loaded."); if (data?.migration) setMigration(data.migration); };
@@ -510,11 +663,11 @@ function MigrationPane({ isAdmin }: { isAdmin: boolean }) {
         {provider === undefined ? <span className="text-gray-500">loading…</span> : <StatusBadge value={provider} />}
       </div>
       {isAdmin && <div className="mt-3 flex flex-wrap items-center gap-2">
-        <select className={inputClass} value={target} onChange={(event) => setTarget(event.target.value as "relay_local" | "weknora")}><option value="relay_local">relay_local</option><option value="weknora">weknora</option></select>
+        <select className={inputClass} value={target} onChange={(event) => setTarget(event.target.value as "relay_local" | "weknora")}><option value="relay_local">relay_local</option><option value="weknora">Product engine</option></select>
         {target === "weknora" && <input className={`${inputClass} w-72`} placeholder="Published migration id (required)" value={migrationId} onChange={(event) => setMigrationId(event.target.value)} />}
         <button className={btn} disabled={target === "weknora" && !migrationId.trim()} onClick={async () => { await run(async () => { const result = await api.knowledgeSetProductProvider(target, target === "weknora" ? migrationId.trim() : undefined); setProvider(result.provider); return result; }, "Routing updated."); refreshRouting(); }}>Apply routing</button>
       </div>}
-      <p className="mt-2 text-xs text-gray-500">Switching to WeKnora requires a published migration; switching back to relay_local is always allowed.</p>
+      <p className="mt-2 text-xs text-gray-500">Switching to the Product engine requires a published migration; switching back to relay_local is always allowed.</p>
     </section>
     <section className={cardClass}>
       <h3 className="font-medium text-gray-100">Migration lookup</h3>
@@ -530,7 +683,7 @@ function MigrationPane({ isAdmin }: { isAdmin: boolean }) {
         <p className="mt-1 text-xs text-gray-500">created {formatDate(migration.createdAt)}{migration.publishedAt ? ` · published ${formatDate(migration.publishedAt)}` : ""}{migration.rolledBackAt ? ` · rolled back ${formatDate(migration.rolledBackAt)}` : ""}{migration.rollbackReason ? ` · reason: ${migration.rollbackReason}` : ""}</p>
         {Object.keys(migration.report ?? {}).length > 0 && <details className="mt-2"><summary className="cursor-pointer text-xs text-gray-500">Report</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-gray-800 bg-gray-950/60 p-3 text-xs text-gray-300">{JSON.stringify(migration.report, null, 2)}</pre></details>}
         {isAdmin && <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button className={btn} disabled={migration.status !== "staged"} onClick={() => run(async () => { const data = await api.knowledgeMigrationPublish(migration.id); setMigration(data.migration); }, "Migration validated and published.")}>Validate & publish</button>
+          <button className={btn} disabled={migration.status !== "staged" || ["queued", "running"].includes(job?.status)} onClick={() => run(async () => { const data = await api.knowledgeMigrationPublish(migration.id); setMigration(data.migration); }, "Migration validated and published.")}>Validate & publish</button>
           <ReasonAction label="Rollback" tone="danger" onRun={async (reason) => { const data = await api.knowledgeMigrationRollback(migration.id, reason); setMigration(data.migration); }} />
           <button className={btnGhost} onClick={() => run(async () => { setCleanup(await api.knowledgeMigrationCleanup(migration.id)); }, "Cleanup dry-run computed.")}>Cleanup dry-run</button>
         </div>}
@@ -542,7 +695,17 @@ function MigrationPane({ isAdmin }: { isAdmin: boolean }) {
       </div>}
     </section>
     {isAdmin && <section className={cardClass}>
-      <h3 className="font-medium text-gray-100">Migrate local product documents (admin)</h3>
+      <h3 className="mb-3 font-medium text-gray-100">Migrate local product documents (admin)</h3>
+      <ScopeControls selection={selection} allowAllProjects environmentPlaceholder="All environments" />
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <input aria-label="Migration operation key" className={`${inputClass} w-96`} value={operationKey} onChange={event => setOperationKey(event.target.value)} />
+        <button className={btnGhost} disabled={submitting || ["queued", "running"].includes(job?.status)} onClick={() => { selectJob(""); setJob(undefined); setOperationKey(`migration-from-local:${crypto.randomUUID()}`); setError(""); setNotice(""); }}>New operation</button>
+      </div>
+      {jobId && <div className="mt-2 text-xs text-gray-400">
+        <p>{jobId} · {job?.status ?? "loading"}</p>
+        <p>Processed {job?.result?.processed ?? 0} / {job?.result?.total ?? 0} · mapped {job?.result?.mapped ?? 0} · failed {job?.result?.failed ?? 0}</p>
+        <p>This page URL restores task progress after reload. Publication is a separate action.</p>
+      </div>}
       <div className="mt-3 grid gap-2 sm:grid-cols-5">
         <input className={inputClass} placeholder="Parser version" value={local.parserVersion} onChange={(event) => setLocal({ ...local, parserVersion: event.target.value })} />
         <input className={inputClass} placeholder="Product version" value={local.productVersion} onChange={(event) => setLocal({ ...local, productVersion: event.target.value })} />
@@ -551,14 +714,24 @@ function MigrationPane({ isAdmin }: { isAdmin: boolean }) {
         <input className={inputClass} placeholder="Limit" value={local.limit} onChange={(event) => setLocal({ ...local, limit: event.target.value })} />
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-3">
-        <label className="flex items-center gap-2 text-xs text-gray-400"><input type="checkbox" checked={local.retry} onChange={(event) => setLocal({ ...local, retry: event.target.checked })} /> Retry failed documents</label>
-        <button className={btn} disabled={!local.parserVersion.trim()} onClick={() => run(async () => {
-          const body: Record<string, unknown> = { idempotencyKey: `migration-from-local:${Date.now()}`, parserVersion: local.parserVersion.trim(), retry: local.retry };
+        {job?.status === "failed" && migration?.sourceManifest?.asyncRequest && <button className={btn} disabled={submitting} onClick={() => run(async () => {
+          setSubmitting(true);
+          try {
+            const data = await api.knowledgeMigrationFromLocal({ ...migration.sourceManifest.asyncRequest, asynchronous: true, retry: true });
+            setJob(data.job); setMigration(data.migration);
+            selectJob(data.job!.id); setPollVersion(value => value + 1);
+          } finally { setSubmitting(false); }
+        }, "Migration retry queued.")}>Retry failed migration</button>}
+        <button className={btn} disabled={submitting || !!jobId || !operationKey.trim() || !local.parserVersion.trim()} onClick={() => run(async () => {
+          const body: Record<string, unknown> = { ...selection.scope, idempotencyKey: operationKey.trim(), parserVersion: local.parserVersion.trim(), asynchronous: true };
           for (const key of ["productVersion", "solution", "module"] as const) if (local[key].trim()) body[key] = local[key].trim();
           if (local.limit.trim()) body.limit = Number(local.limit);
-          const data = await api.knowledgeMigrationFromLocal(body);
-          setMigration(data.migration); setMigrationId(data.migration.id);
-        }, "Migration created from local documents.")}>Create migration</button>
+          setSubmitting(true);
+          try {
+            const data = await api.knowledgeMigrationFromLocal(body);
+            setMigration(data.migration); setMigrationId(data.migration.id); setJob(data.job); selectJob(data.job!.id);
+          } finally { setSubmitting(false); }
+        }, "Migration queued. Progress is saved after each document.")}>Create migration</button>
       </div>
     </section>}
     <Err message={error} />
@@ -601,7 +774,7 @@ const TABS = [
   ["providers", "Providers", ServerCog],
   ["candidates", "Candidates", FileText],
   ["wiki", "Wiki", BookOpen],
-  ["weknora", "WeKnora", GitBranch],
+  ["weknora", "Product engine", GitBranch],
   ["migration", "Migration", GitBranch],
   ["gates", "Release gates", CheckCircle2],
 ] as const;
@@ -611,8 +784,8 @@ export default function KnowledgeIntegrated() {
   const isAdmin = Boolean(user?.isAdmin);
   const [params, setParams] = useSearchParams();
   const tab = params.get("tab") ?? "sessions";
-  const setTab = (value: string) => setParams({ tab: value });
-  return <PageShell title="Integrated Knowledge" description="Relay owns sessions, ACL, review and publication while WeKnora supplies Product Knowledge retrieval. Provider credentials are encrypted and managed on the server." breadcrumbs={[{ label: "Knowledge", to: "/knowledge" }, { label: "Integrated" }]}>
+  const setTab = (value: string) => setParams((current) => { const next = new URLSearchParams(current); next.set("tab", value); return next; });
+  return <PageShell title="Integrated Knowledge" description="Relay owns sessions, ACL, review and publication while the Knowledge engine supplies Product retrieval and Wiki content. Provider credentials are encrypted and managed on the server." breadcrumbs={[{ label: "Knowledge", to: "/knowledge" }, { label: "Integrated" }]}>
     <div className="mb-5 flex flex-wrap gap-2">
       {TABS.map(([key, label, Icon]) => <button key={key} onClick={() => setTab(key)} className={`inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-xs ${tab === key ? "bg-indigo-600 text-white" : "border border-gray-700 text-gray-300 hover:bg-gray-800"}`}><Icon size={13} /> {label}</button>)}
     </div>

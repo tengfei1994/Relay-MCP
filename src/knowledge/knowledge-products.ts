@@ -6,7 +6,9 @@ import { Unzip, UnzipInflate } from "fflate";
 import { parse as parseYaml } from "yaml";
 import { diffLines } from "diff";
 import type { KnowledgeStore } from "./store.js";
-import { parseHelpHtml, parseToc } from "./parsers.js";
+import type { KnowledgeDocument } from "./domain.js";
+import { parseHelpHtml, parseToc, parsePdfBytes } from "./parsers.js";
+import { resolveChmExtractor, chmExtractionArguments } from "./chm-extractor.js";
 
 const SUPPORTED = new Set([".md", ".markdown", ".html", ".htm", ".pdf", ".chm"]);
 
@@ -35,6 +37,7 @@ export interface ProductDocumentImportReport {
   unchanged: number;
   deprecated: number;
   failed: number;
+  parsing?: { pdfFiles: number; chmArchives: number; chmHtmlFiles: number; zipArchives: number };
   warnings: string[];
   errors: Array<{ path: string; error: string }>;
   documents: string[];
@@ -195,22 +198,55 @@ function expandNestedZips(root: string, expanded: string[], depth = 0, budget = 
     const path = join(root, entry.name);
     if (entry.isDirectory() && !entry.name.includes(".expanded-")) expandNestedZips(path, expanded, depth, budget);
     else if (entry.isFile() && extname(path).toLowerCase() === ".zip") {
-      const output = expandZip(path, budget); expanded.push(output);
+      const output = `${path}.expanded-${sha256(path).slice(0, 12)}`; expanded.push(output); expandZip(path, budget);
       expandNestedZips(output, expanded, depth + 1, budget);
     }
   }
 }
 function expandChm(path: string): string | undefined {
   const output = `${path}.expanded-${sha256(path).slice(0, 12)}`; mkdirSync(output, { recursive: true });
-  const extractor = process.env.RELAY_CHM_EXTRACTOR ?? (process.platform === "win32" ? "hh.exe" : "hh");
-  try { execFileSync(extractor, ["-decompile", output, path], { timeout: 120_000, stdio: "ignore", windowsHide: true }); return files(output).some((file) => /\.html?$/i.test(file)) ? output : undefined; }
+  const extractor = resolveChmExtractor();
+  const args = chmExtractionArguments(extractor, output, path);
+  try { execFileSync(extractor, args, { timeout: 120_000, stdio: "ignore", windowsHide: true }); return files(output).some((file) => /\.html?$/i.test(file)) ? output : undefined; }
   catch { rmSync(output, { recursive: true, force: true }); return undefined; }
 }
 
-export function importKnowledgeProducts(store: KnowledgeStore, options: ProductDocumentImportOptions): ProductDocumentImportReport {
+interface PreparedProductSource { root: string; inputFiles: string[]; }
+
+/** Expand the actual archive entry point before PDF parsing, then reuse the same persisted source identities. */
+export async function importKnowledgeProductsAsync(store: KnowledgeStore, options: ProductDocumentImportOptions): Promise<ProductDocumentImportReport> {
   let root = resolve(options.root);
+  const expanded: string[] = [];
+  try {
+    if (statSync(root).isFile() && extname(root).toLowerCase() === ".zip") {
+      const destination = `${root}.expanded-${sha256(root).slice(0, 12)}`;
+      expanded.push(destination); root = expandZip(root);
+    }
+    expandNestedZips(root, expanded);
+    const parsing = { pdfFiles: 0, chmArchives: 0, chmHtmlFiles: 0, zipArchives: expanded.length };
+    const inputFiles = files(root);
+    for (const path of inputFiles.filter(path => extname(path).toLowerCase() === ".chm")) {
+      const extracted = expandChm(path);
+      if (!extracted) throw new Error("CHM extraction failed; configure RELAY_CHM_EXTRACTOR with 7zz or the native Windows help extractor");
+      expanded.push(extracted); const extractedFiles = files(extracted); inputFiles.push(...extractedFiles);
+      parsing.chmArchives++; parsing.chmHtmlFiles += extractedFiles.filter(file => /\.html?$/i.test(file)).length;
+    }
+    const pdfText: Record<string, string> = {};
+    for (const path of inputFiles.filter(path => extname(path).toLowerCase() === ".pdf")) {
+      const text = await parsePdfBytes(readFileSync(path));
+      if (!text.trim()) throw new Error("PDF contains no extractable text; OCR is required before import");
+      pdfText[path] = text; parsing.pdfFiles++;
+    }
+    return { ...importKnowledgeProducts(store, { ...options, pdfText }, { root, inputFiles }), parsing };
+  } finally {
+    for (const path of expanded.reverse()) rmSync(path, { recursive: true, force: true });
+  }
+}
+
+export function importKnowledgeProducts(store: KnowledgeStore, options: ProductDocumentImportOptions, prepared?: PreparedProductSource): ProductDocumentImportReport {
+  let root = prepared?.root ?? resolve(options.root);
   let expanded: string | undefined;
-  if (statSync(root).isFile() && extname(root).toLowerCase() === ".zip") { expanded = expandZip(root); root = expanded; }
+  if (!prepared && statSync(root).isFile() && extname(root).toLowerCase() === ".zip") { expanded = expandZip(root); root = expanded; }
   const loaded = loadManifest(root, options.manifestPath ? resolve(root, options.manifestPath) : undefined);
   const base = { ...loaded.defaults, ...options };
   if (!options.sampleManagerVersion) base.sampleManagerVersion = loaded.defaults.sampleManagerVersion ?? "";
@@ -228,9 +264,9 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
   const sourceHashes: string[] = []; const expandedChm: string[] = []; let nestedZipPaths: string[] = [];
   try {
     if (!base.sampleManagerVersion) throw new Error("sampleManagerVersion is required (or provide it in manifest.yaml)");
-    expandNestedZips(root, nestedZipPaths);
+    if (!prepared) expandNestedZips(root, nestedZipPaths);
     global.gc?.();
-    const inputFiles = files(root); for (const chm of inputFiles.filter((path) => extname(path).toLowerCase() === ".chm")) { const expandedPath = expandChm(chm); if (expandedPath) { expandedChm.push(expandedPath); inputFiles.push(...files(expandedPath)); } else report.warnings.push(`${chm}: CHM extraction unavailable; metadata-only placeholder retained`); }
+    const inputFiles = prepared?.inputFiles ?? files(root); for (const chm of (prepared ? [] : inputFiles).filter((path) => extname(path).toLowerCase() === ".chm")) { const expandedPath = expandChm(chm); if (expandedPath) { expandedChm.push(expandedPath); inputFiles.push(...files(expandedPath)); } else report.warnings.push(`${chm}: CHM extraction unavailable; metadata-only placeholder retained`); }
     store.db.exec("CREATE INDEX IF NOT EXISTS idx_knowledge_topics_lower_title ON knowledge_topics(lower(canonical_title))");
     let processed = 0;
     const progress = (currentFile?: string) => {
@@ -260,11 +296,35 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
       store.db.prepare(`INSERT INTO knowledge_product_revisions(id,normalized_content_sha256,raw_sha256,title,body,sections_json,parser_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(normalized_content_sha256) DO UPDATE SET updated_at=excluded.updated_at`).run(revisionId, normalizedContentSha256, sourceHash, parsed.title, parsed.body, JSON.stringify(parsed.sections), HTML_PARSER_VERSION, now, now);
       const id = `product-document-${sha256(`${familyId}\0${version}\0${relativePath}\0${sourceHash}`).slice(0, 32)}`;
       const existing = store.db.prepare("SELECT source_sha256 FROM knowledge_product_documents WHERE id = ?").get(id) as { source_sha256?: string } | undefined;
-      if (existing) { report.unchanged++; report.documents.push(id); report.items.push({ path: relativePath, id, status: "unchanged" }); return; }
+      if (existing) {
+        // Re-run native extraction for legacy PDF rows without changing their
+        // source identity, review state or access scope. Only replace output
+        // that is still exactly the old fallback; preserve authored corrections.
+        if (ext === ".pdf" && options.pdfText?.[path] !== undefined) {
+          const current = store.db.prepare("SELECT d.*,p.metadata_json FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE d.id=?").get(id) as Record<string, unknown>;
+          const oldMetadata = safeJson(current.metadata_json, {}) as Record<string, unknown>;
+          if (oldMetadata.pdfExtraction !== "pdf-parse" && current.body !== body && current.body === pdfToText(raw)) {
+            const scope = store.db.prepare("SELECT * FROM knowledge_scope_bindings WHERE document_id=? ORDER BY id LIMIT 1").get(id) as Record<string, unknown> | undefined;
+            const optional = (value: unknown) => value == null ? undefined : String(value);
+            store.upsertDocument({
+              id, kind: "product_document", title: String(current.title), body, lifecycle: current.lifecycle as KnowledgeDocument["lifecycle"],
+              projectId: optional(current.project_id), projectNameSnapshot: optional(current.project_name_snapshot), sampleManagerVersion: optional(current.samplemanager_version), solution: optional(current.solution), module: optional(current.module), environment: optional(current.environment),
+              locator: String(current.source_locator), commit: optional(current.source_commit), sha256: optional(current.source_sha256), createdAt: String(current.created_at), updatedAt: now,
+              ...(scope ? { scopeType: scope.scope_type as KnowledgeDocument["scopeType"], scopeKey: String(scope.scope_key), visibility: scope.visibility as KnowledgeDocument["visibility"], sourceProjectId: optional(scope.source_project_id), sourceCaseId: optional(scope.source_case_id), sourceDeploymentId: optional(scope.source_deployment_id), redactionStatus: scope.redaction_status as KnowledgeDocument["redactionStatus"] } : {}),
+            });
+            const metadata = { ...oldMetadata, normalizedContentSha256, parserVersion: HTML_PARSER_VERSION, pdfExtraction: "pdf-parse" };
+            store.db.prepare("UPDATE knowledge_product_documents SET revision_id=?,sections_json=?,metadata_json=?,updated_at=? WHERE id=?").run(revisionId, JSON.stringify(parsed.sections), JSON.stringify(metadata), now, id);
+            report.updated++; report.documents.push(id); report.items.push({ path: relativePath, id, status: "updated" });
+            if (hasBatchTables) store.db.prepare("INSERT OR REPLACE INTO knowledge_product_document_items(id,run_id,relative_path,document_id,status,source_sha256,metadata_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").run(`${runId}:${relativePath}`, runId, relativePath, id, "updated", sourceHash, JSON.stringify(metadata), now, now);
+            return;
+          }
+        }
+        report.unchanged++; report.documents.push(id); report.items.push({ path: relativePath, id, status: "unchanged" }); return;
+      }
       const prior = store.db.prepare("SELECT d.id,d.lifecycle FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE p.document_family_id=? AND p.version=? AND p.source_path=? AND d.id<>?").get(familyId, version, relativePath, id) as { id?: string; lifecycle?: string } | undefined;
       const createdAt = now;
       store.upsertDocument({ id, kind: "product_document", title: parsed.title, body, lifecycle: "approved", projectNameSnapshot: local.product, sampleManagerVersion: version, solution: local.solution, module: parsed.module, visibility: "global", scopeType: "version", scopeKey: version, locator: `product-doc:${relativePath}`, commit: options.sourceCommit, sha256: sourceHash, createdAt, updatedAt: createdAt });
-      const metadata = { confidence: parsed.confidence, reasons: parsed.reasons, module: parsed.module, sourceFormat: htmlParsed?.sourceFormat ?? (tocEntries.length ? "toc" : parsed.sourceFormat), sourcePath: relativePath, sourceHash, normalizedContentSha256, parserVersion: HTML_PARSER_VERSION, stableIdentifiers: parsed.stableIdentifiers, links: htmlParsed?.links ?? [], images: htmlParsed?.images ?? [], tocEntries, manifestRule: rule };
+      const metadata = { confidence: parsed.confidence, reasons: parsed.reasons, module: parsed.module, sourceFormat: htmlParsed?.sourceFormat ?? (tocEntries.length ? "toc" : parsed.sourceFormat), sourcePath: relativePath, sourceHash, normalizedContentSha256, parserVersion: HTML_PARSER_VERSION, ...(ext === ".pdf" && options.pdfText?.[path] !== undefined ? { pdfExtraction: "pdf-parse" } : {}), stableIdentifiers: parsed.stableIdentifiers, links: htmlParsed?.links ?? [], images: htmlParsed?.images ?? [], tocEntries, manifestRule: rule };
       store.db.prepare("UPDATE knowledge_product_documents SET revision_id=? WHERE id=?").run(revisionId, id);
       store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,sections_json,metadata_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`).run(id, familyId, parsed.documentType, local.language ?? "en", local.authority ?? "official", relativePath, sourceHash, version, JSON.stringify(parsed.sections), JSON.stringify(metadata), createdAt, createdAt);
       // A document family is the compatibility identity used by the first
@@ -325,6 +385,27 @@ export function searchKnowledgeProducts(store: KnowledgeStore, request: ProductD
     const firstSection = Array.isArray(sections) ? sections[0] : undefined;
     return {
       ...row,
+      // Keep the stable DTO discriminator explicit so the native UI can
+      // route Product results back to Product Knowledge instead of treating
+      // them as project Cases.
+      kind: "product_document",
+      // Search results cross the SQL/API boundary, so expose the same
+      // camelCase provenance fields used by the Product Knowledge UI while
+      // retaining the raw columns above for compatibility.
+      sampleManagerVersion: row.samplemanager_version,
+      projectNameSnapshot: row.project_name_snapshot,
+      sourceLocator: row.source_locator,
+      sourceCommit: row.source_commit,
+      sourceSha256: row.source_sha256,
+      sourcePath: row.source_path,
+      documentFamilyId: row.document_family_id,
+      documentType: row.document_type,
+      language: row.language,
+      authority: row.authority,
+      version: row.version,
+      diffReviewStatus: row.diff_review_status,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
       summary: String(row.snippet ?? row.title ?? ""),
       sectionPath: firstSection?.path ? String(firstSection.path) : undefined,
       sectionTitle: firstSection?.title ? String(firstSection.title) : undefined,
@@ -353,8 +434,33 @@ export function diffKnowledgeProducts(store: KnowledgeStore, leftId: string, rig
 export function updateProductDocumentLifecycle(store: KnowledgeStore, id: string, lifecycle: "approved" | "deprecated", now = new Date().toISOString()): Record<string, unknown> {
   const row = store.db.prepare("SELECT lifecycle FROM knowledge_documents WHERE id=? AND kind='product_document'").get(id) as { lifecycle?: string } | undefined;
   if (!row) throw new Error("Product document not found");
+  if (lifecycle === "deprecated") invalidateEngineProductMappings(store,[id],now);
   if (row.lifecycle === lifecycle) return { id, lifecycle, changed: false, updatedAt: now };
   if (lifecycle === "approved" && row.lifecycle !== "draft" && row.lifecycle !== "verified" && row.lifecycle !== "reproduced") throw new Error(`Cannot publish product document from ${row.lifecycle}`);
   store.db.prepare("UPDATE knowledge_documents SET lifecycle=?,updated_at=? WHERE id=?").run(lifecycle, now, id);
   return { id, lifecycle, changed: true, updatedAt: now };
+}
+
+
+/** A corrected/retired local source must be revalidated before its engine mapping can be published again. */
+export function invalidateEngineProductMappings(store:KnowledgeStore,ids:string[],now=new Date().toISOString()):number {
+  const update=store.db.prepare("UPDATE knowledge_weknora_documents SET status='deprecated',deprecated_at=?,updated_at=? WHERE status!='deprecated' AND id IN (SELECT document_id FROM knowledge_migration_documents WHERE local_document_id=?)");
+  return store.db.transaction(()=>ids.reduce((count,id)=>count+Number(update.run(now,now,id).changes),0))();
+}
+
+
+export function correctProductMetadata(store:KnowledgeStore,input:{ids:string[];module?:string|null;documentType?:string|null;language?:string|null;authority?:string|null;reason:string},now=new Date().toISOString()) {
+  return store.db.transaction(()=>{
+    let updated=0,engineRepublishRequired=0;
+    for(const id of input.ids){
+      const row=store.db.prepare("SELECT p.document_type,p.language,p.authority,d.module FROM knowledge_product_documents p JOIN knowledge_documents d ON d.id=p.id WHERE p.id=?").get(id) as Record<string,unknown>|undefined;
+      if(!row)continue;
+      const module=input.module===undefined?row.module:input.module,language=input.language===undefined?row.language:input.language;
+      updated+=Number(store.db.prepare("UPDATE knowledge_product_documents SET document_type=?,language=?,authority=?,metadata_json=json_set(COALESCE(metadata_json,'{}'),'$.corrected',json('true'),'$.correctionReason',?),updated_at=? WHERE id=?").run(input.documentType===undefined?row.document_type:input.documentType,language,input.authority===undefined?row.authority:input.authority,input.reason,now,id).changes);
+      if(input.module!==undefined)store.db.prepare("UPDATE knowledge_documents SET module=?,updated_at=? WHERE id=?").run(module,now,id);
+      // Type/authority are read live from Relay; only an actual source-identity correction requires a new migration.
+      if(module!==row.module||language!==row.language)engineRepublishRequired+=invalidateEngineProductMappings(store,[id],now);
+    }
+    return {ok:true,updated,correctedAt:now,engineRepublishRequired};
+  })();
 }

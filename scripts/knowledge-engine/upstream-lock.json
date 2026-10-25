@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "version": "v0.8.3",
+  "sourceCommit": "3e22822c1d2397be730c458c7539d0eb8c113a24",
+  "sourceArchiveSha256": "91e13c59134db179ca305dfb1dce2ee6fed752e1334ff0ab662255474e012568",
+  "goVersion": "go1.26.10",
+  "goArchiveSha256": "ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5",
+  "securityPolicy": "relay-model-metadata-only-v1",
+  "patches": [
+    {
+      "id": "0001-model-log-metadata-only",
+      "file": "patches/0001-model-log-metadata-only.patch",
+      "sha256": "03fc298647d86e901581d926b6afe712140a7be443619d7b0694679a2a83c2e5",
+      "targets": [
+        {
+          "path": "internal/models/api/endpoint.go",
+          "beforeSha256": "9ed5b1b94aa710980a7fd64953aef15902e8b04b95fcd601e1a6c397006f6b61",
+          "afterSha256": "77c8accb40254a6b71d35164bf9308938f4e1f8bba6f82337287529c5ae90f19"
+        },
+        {
+          "path": "internal/models/api/openaicompletions/client.go",
+          "beforeSha256": "97621fbb63ca5b18249fa8b03f1c6530eb7cc9b6654e70c2a64e7e2d5d043b10",
+          "afterSha256": "ce8c53efab5a60e696628becd10d9293f337212ee506f214f8de7dd2d7f0e2cf"
+        },
+        {
+          "path": "internal/models/api/anthropicmessages/client.go",
+          "beforeSha256": "5aa27bfd1c011c9d51210f3f0c50cc4ad7c247b0584f164404090bb341805b7a",
+          "afterSha256": "22cb7365c8b97ada2c22ceb693c84c5f50fb1b26a46349ad10dedc767642bfb0"
+        },
+        {
+          "path": "internal/models/api/googlegenai/client.go",
+          "beforeSha256": "7cf0767eb7b33abcbdd56206ec8104ebbcb7de01cc2ffe6d73c658caf1d7af01",
+          "afterSha256": "2a3ce4022b490171fa443001ca71e48f47013ba2ab698a1e1dd632cd4d8a8c88"
+        },
+        {
+          "path": "internal/models/api/openairesponses/client.go",
+          "beforeSha256": "dbdb20e566707729469c5b119b12fc908a4931b4279da6c696e1e43758260850",
+          "afterSha256": "e800af0285975790392b6228dff7a7704a2997d54bf4ade0289333485eab0920"
+        },
+        {
+          "path": "internal/models/api/openaicompletions/golden_test.go",
+          "beforeSha256": "7bad71fc673aea265c7048e31d2331bc0a942597ad3a8f37e6b45c7234e37c29",
+          "afterSha256": "0033f298f46b5fce84fbf808a5362e722ebe5458da3a891c33efa8528ced3a62"
+        },
+        {
+          "path": "internal/models/api/anthropicmessages/anthropicmessages_test.go",
+          "beforeSha256": "9e2178a3dd642511c19994385fa9cd797049dfb4d3cd0380af22d5a6b210fe76",
+          "afterSha256": "9f343fda9bb69be2bdd9858ac57658f960ef9a92e38389e7f58dfa04c19cf307"
+        },
+        {
+          "path": "internal/models/api/openairesponses/openairesponses_test.go",
+          "beforeSha256": "1fcd885f1263990bb8a1ef238d22926988b4eea0d14fe5c00854194239108437",
+          "afterSha256": "69412daaba16f72c0f1272c62c9e76449afd85f1f5ef80a974926c67eca876d5"
+        },
+        {
+          "path": "internal/models/api/googlegenai/googlegenai_test.go",
+          "beforeSha256": "4c59514303236b28a9319ecbcbd63755ed42a6c120fd3d079c9924f06df39801",
+          "afterSha256": "da03a0a4120850b5ee6f9c6288e4edb358722f7c41872a965305e9180e07fc46"
+        },
+        {
+          "path": "internal/models/api/images.go",
+          "beforeSha256": "9e84737e9dd419774a41c208738d1696fe6e529a00dbb41bc02a67e49caf26be",
+          "afterSha256": "8a623c03d4c74a5b7420a08ca51fc5c93adfddf219f87bcf0540dc1097baa86f"
+        },
+        {
+          "path": "internal/models/api/retry_test.go",
+          "beforeSha256": "f3bfb943c7f9043e30b0313339fbf001c26a3e9115aa7695c4cfcc582df17764",
+          "afterSha256": "07d5f9c7c9d941055fccdd0fdbd8306c15987b65c5db0bd2cd0136b8e9653a77"
+        },
+        {
+          "path": "internal/models/api/cohererank/golden_test.go",
+          "beforeSha256": "ac256ebc43c38b48100591af46b95802be353fe10faa5bc44f1f0ae5b3cf5687",
+          "afterSha256": "067cb223e59d916e4f554038e1b806f1fd13c475dc6e12a67d52f7be7a20fd03"
+        },
+        {
+          "path": "internal/models/api/nimrerank/golden_test.go",
+          "beforeSha256": "aee48d77a016da7396f717c2590f25b23b4ef80a167979d97950698cbd5ac6e3",
+          "afterSha256": "a6443bf817207be6c2c33b20f88b47d17637fd2a09e93d7ed2ea76ffd6dd726a"
+        },
+        {
+          "path": "internal/models/api/openaiembeddings/golden_test.go",
+          "beforeSha256": "69d7ebdddb57a6e9ae3883323653fbeae48ae2728f00469acd9d6d3cae5fa087",
+          "afterSha256": "542b94171e39786ffdf338bd6b538f447553eba11951593ed8509600bd2c43bc"
+        },
+        {
+          "path": "internal/models/api/openaitranscriptions/golden_test.go",
+          "beforeSha256": "66ad2d9081754981198e49ddb9e3d139457c6ab4891b325e580a2deb043f9f23",
+          "afterSha256": "25b38a85e2767ae17619dcec2d0d44a719053052846d126db264882b258f5d73"
+        },
+        {
+          "path": "internal/models/api/pineconerank/golden_test.go",
+          "beforeSha256": "101659c39517ff4e00e2a2512b80f6637c938bdd546ce8c280ff1c95d5aa86de",
+          "afterSha256": "c9eaf3f85f3cbb54eaf8fe0ec4fdbd4b2cb5734aed40a5b3960a977f160654a8"
+        },
+        {
+          "path": "internal/models/api/teirank/golden_test.go",
+          "beforeSha256": "fcb84a86ddc9fc09e96a42ce621a580e877e01f5ea1cba3e4e9ffb8d73e99e6b",
+          "afterSha256": "d1adb6caffd8ec68fde980d56ece995f149d7fd245a9b9c82fb219093760f0a2"
+        }
+      ]
+    }
+  ],
+  "regressionTests": [
+    {
+      "file": "patches/relay_log_safety_test.go",
+      "target": "internal/models/api/relay_log_safety_test.go",
+      "sha256": "f184a2f17e62167199f0c203c91093f024bebb105ed838e264b0318369fa13b3"
+    }
+  ]
+}

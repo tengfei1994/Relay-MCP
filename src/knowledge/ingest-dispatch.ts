@@ -17,7 +17,8 @@ export async function stopIngestJobs(): Promise<void> {
 }
 function fail(store: KnowledgeStore, id: string, error: string): void {
   const now = new Date().toISOString();
-  const row = store.db.prepare("SELECT result_json FROM knowledge_ingest_jobs WHERE id=?").get(id) as { result_json?: string } | undefined;
+  const row = store.db.prepare("SELECT kind,result_json FROM knowledge_ingest_jobs WHERE id=?").get(id) as { kind?: string; result_json?: string } | undefined;
+  if (row?.kind === "product_migration") error = "Migration worker interrupted or failed; progress is preserved, retry explicitly";
   const progress = JSON.parse(row?.result_json ?? "{}");
   if (progress.runId) store.db.prepare("UPDATE knowledge_ingest_runs SET status='failed',failed=failed+1,finished_at=?,error=? WHERE id=? AND status='running'").run(now, JSON.stringify([{ error }]), progress.runId);
   store.db.prepare("UPDATE knowledge_ingest_jobs SET status='failed',error=?,finished_at=?,updated_at=? WHERE id=? AND status IN ('queued','running')").run(error, now, now, id);

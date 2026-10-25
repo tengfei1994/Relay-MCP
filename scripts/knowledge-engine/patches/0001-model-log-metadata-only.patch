@@ -1,0 +1,383 @@
+--- a/internal/models/api/endpoint.go
++++ b/internal/models/api/endpoint.go
+@@ -196,7 +196,7 @@
+ 	Err error
+ }
+ 
+-func (e *TransportError) Error() string { return e.Op + ": " + e.Err.Error() }
++func (e *TransportError) Error() string { return "model transport request failed" }
+ func (e *TransportError) Unwrap() error { return e.Err }
+ 
+ // HTTPError is a non-2xx vendor reply.
+@@ -209,7 +209,7 @@
+ }
+ 
+ func (e *HTTPError) Error() string {
+-	return fmt.Sprintf("API request failed with status %d: %s", e.StatusCode, e.Body)
++	return fmt.Sprintf("API request failed with status %d (response_bytes=%d; body omitted)", e.StatusCode, len(e.Body))
+ }
+ 
+ // RetryAfter is how long the vendor asked the caller to wait before trying
+@@ -242,14 +242,28 @@
+ 	return 0
+ }
+ 
+-// LogRequest emits the standard request log line with image payloads
+-// compacted so data URIs do not flood the log.
+-func LogRequest(ctx context.Context, url, model string, body []byte, stream bool) {
+-	pretty := body
+-	var buf bytes.Buffer
+-	if err := json.Indent(&buf, body, "", "  "); err == nil {
+-		pretty = buf.Bytes()
+-	}
+-	logger.Infof(ctx, "[LLM Request] endpoint=%s, model=%s, stream=%v, request:\n%s",
+-		url, model, stream, secutils.CompactImageDataURLForLog(string(pretty)))
+-}
++// LogRequest records only fixed fields and numeric statistics in the Relay
++// managed build. URL, model, prompts and responses can contain private values.
++func LogRequest(ctx context.Context, _, _ string, body []byte, stream bool) {
++	var envelope struct {
++		Messages []json.RawMessage `json:"messages"`
++	}
++	_ = json.Unmarshal(body, &envelope)
++	logger.Infof(ctx, "[LLM Request] stream=%v, body_bytes=%d, message_count=%d, body_logged=false",
++		stream, len(body), len(envelope.Messages))
++}
++
++// ModelResponseError prevents a provider from echoing prompt/credential data
++// into task errors, spans or logs while preserving the failure boundary.
++type ModelResponseFailure struct {
++	Body string
++	Stream bool
++}
++
++func (e *ModelResponseFailure) Error() string {
++	return fmt.Sprintf("model response error (body omitted; stream=%t)", e.Stream)
++}
++
++func ModelResponseError(message string, stream bool) error {
++	return &ModelResponseFailure{Body: message, Stream: stream}
++}
+--- a/internal/models/api/openaicompletions/client.go
++++ b/internal/models/api/openaicompletions/client.go
+@@ -246,7 +246,7 @@
+ 		return nil, fmt.Errorf("decode response: %w", err)
+ 	}
+ 	if env.Error != nil && env.Error.Message != "" {
+-		return nil, fmt.Errorf("API error: %s", env.Error.Message)
++		return nil, api.ModelResponseError(env.Error.Message, false)
+ 	}
+ 	if len(env.Choices) == 0 {
+ 		return nil, fmt.Errorf("no response from API")
+@@ -355,7 +355,7 @@
+ 			return
+ 		}
+ 		if env.Error != nil && env.Error.Message != "" {
+-			assembler.Fail(ch, fmt.Errorf("API stream error: %s", env.Error.Message))
++			assembler.Fail(ch, api.ModelResponseError(env.Error.Message, true))
+ 			return
+ 		}
+ 		if env.Usage != nil {
+--- a/internal/models/api/anthropicmessages/client.go
++++ b/internal/models/api/anthropicmessages/client.go
+@@ -242,7 +242,7 @@
+ 		return nil, fmt.Errorf("decode response: %w", err)
+ 	}
+ 	if resp.Error != nil && resp.Error.Message != "" {
+-		return nil, fmt.Errorf("API error: %s", resp.Error.Message)
++		return nil, api.ModelResponseError(resp.Error.Message, false)
+ 	}
+ 	result := &types.ChatResponse{Usage: c.usageFrom(resp.Usage)}
+ 	var text, thinking []string
+@@ -544,7 +544,7 @@
+ 			return
+ 		}
+ 		if ev.Error != nil && ev.Error.Message != "" {
+-			assembler.Fail(ch, fmt.Errorf("API stream error: %s", ev.Error.Message))
++			assembler.Fail(ch, api.ModelResponseError(ev.Error.Message, true))
+ 			return
+ 		}
+ 		delta := c.consume(state, ev)
+--- a/internal/models/api/googlegenai/client.go
++++ b/internal/models/api/googlegenai/client.go
+@@ -289,7 +289,7 @@
+ 		return nil, fmt.Errorf("decode response: %w", err)
+ 	}
+ 	if env.Error != nil && env.Error.Message != "" {
+-		return nil, fmt.Errorf("API error: %s", env.Error.Message)
++		return nil, api.ModelResponseError(env.Error.Message, false)
+ 	}
+ 	if len(env.Candidates) == 0 {
+ 		if env.PromptFeedback != nil && env.PromptFeedback.BlockReason != "" {
+@@ -375,7 +375,7 @@
+ 			return
+ 		}
+ 		if env.Error != nil && env.Error.Message != "" {
+-			assembler.Fail(ch, fmt.Errorf("API stream error: %s", env.Error.Message))
++			assembler.Fail(ch, api.ModelResponseError(env.Error.Message, true))
+ 			return
+ 		}
+ 		if env.UsageMetadata != nil {
+--- a/internal/models/api/openairesponses/client.go
++++ b/internal/models/api/openairesponses/client.go
+@@ -280,7 +280,7 @@
+ 		return nil, fmt.Errorf("decode response: %w", err)
+ 	}
+ 	if env.Error != nil && env.Error.Message != "" {
+-		return nil, fmt.Errorf("API error: %s", env.Error.Message)
++		return nil, api.ModelResponseError(env.Error.Message, false)
+ 	}
+ 	if env.Status == "failed" {
+ 		return nil, fmt.Errorf("API error: response failed")
+@@ -490,14 +490,14 @@
+ 			c.completeStream(ch, assembler, st, ev.Response, ev.Type == "response.incomplete")
+ 			return
+ 		case "response.failed":
+-			msg := "response failed"
+-			if ev.Response != nil && ev.Response.Error != nil && ev.Response.Error.Message != "" {
+-				msg = ev.Response.Error.Message
+-			}
+-			assembler.Fail(ch, fmt.Errorf("API stream error: %s", msg))
++			message := ""
++			if ev.Response != nil && ev.Response.Error != nil {
++				message = ev.Response.Error.Message
++			}
++			assembler.Fail(ch, api.ModelResponseError(message, true))
+ 			return
+ 		case "error":
+-			assembler.Fail(ch, fmt.Errorf("API stream error: %s", orDefault(ev.Message, "unknown error")))
++			assembler.Fail(ch, api.ModelResponseError(ev.Message, true))
+ 			return
+ 		}
+ 	}
+--- a/internal/models/api/openaicompletions/golden_test.go
++++ b/internal/models/api/openaicompletions/golden_test.go
+@@ -463,7 +463,7 @@
+ 	assert.Equal(t, 10, resp.Usage.CacheMissTokens)
+ }
+ 
+-func TestChat_HTTPErrorSurfacesBody(t *testing.T) {
++func TestChat_HTTPErrorOmitsBody(t *testing.T) {
+ 	t.Setenv("SSRF_WHITELIST", "127.0.0.1")
+ 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+ 		w.WriteHeader(http.StatusBadRequest)
+@@ -476,7 +476,7 @@
+ 	_, err := c.Chat(context.Background(), []api.Message{{Role: "user", Content: "hi"}}, nil)
+ 	require.Error(t, err)
+ 	assert.Contains(t, err.Error(), "status 400")
+-	assert.Contains(t, err.Error(), "max_tokens is not supported")
++	assert.NotContains(t, err.Error(), "max_tokens is not supported")
+ }
+ 
+ const streamFixture = `data: {"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"thi"}}]}
+--- a/internal/models/api/anthropicmessages/anthropicmessages_test.go
++++ b/internal/models/api/anthropicmessages/anthropicmessages_test.go
+@@ -206,7 +206,7 @@
+ 	_, err := c.Chat(context.Background(), []api.Message{{Role: "user", Content: "Hi"}}, nil)
+ 	require.Error(t, err)
+ 	assert.Contains(t, err.Error(), "400")
+-	assert.Contains(t, err.Error(), "bad")
++	assert.NotContains(t, err.Error(), "bad")
+ }
+ 
+ const streamFixture = `event: message_start
+--- a/internal/models/api/openairesponses/openairesponses_test.go
++++ b/internal/models/api/openairesponses/openairesponses_test.go
+@@ -346,7 +346,7 @@
+ 
+ 	payload = `{"error":{"type":"invalid_request_error","message":"bad model"}}`
+ 	_, err = c.Chat(context.Background(), []api.Message{{Role: "user", Content: "hi"}}, nil)
+-	if err == nil || !strings.Contains(err.Error(), "bad model") {
++	if err == nil || !strings.Contains(err.Error(), "model response error") || strings.Contains(err.Error(), "bad model") {
+ 		t.Fatalf("expected API error, got %v", err)
+ 	}
+ }
+@@ -495,7 +495,7 @@
+ 	for ev := range ch {
+ 		last = ev
+ 	}
+-	if last.ResponseType != types.ResponseTypeError || !strings.Contains(last.Content, "boom") ||
++	if last.ResponseType != types.ResponseTypeError || !strings.Contains(last.Content, "model response error") || strings.Contains(last.Content, "boom") ||
+ 		last.FinishReason != types.FinishReasonIncomplete {
+ 		t.Fatalf("last event = %+v", last)
+ 	}
+--- a/internal/models/api/googlegenai/googlegenai_test.go
++++ b/internal/models/api/googlegenai/googlegenai_test.go
+@@ -474,7 +474,7 @@
+ 	}{
+ 		{
+ 			"error payload", `{"error": {"code": 400, "message": "bad request", "status": "INVALID_ARGUMENT"}}`,
+-			"API error: bad request",
++			"model response error (body omitted; stream=false)",
+ 		},
+ 		{"blocked prompt", `{"promptFeedback": {"blockReason": "SAFETY"}}`, "blocked: SAFETY"},
+ 	}
+@@ -619,7 +619,7 @@
+ 	for ev := range ch {
+ 		last = ev
+ 	}
+-	if last.ResponseType != types.ResponseTypeError || last.Content != "API stream error: quota exceeded" {
++	if last.ResponseType != types.ResponseTypeError || last.Content != "model response error (body omitted; stream=true)" {
+ 		t.Fatalf("last event = %+v", last)
+ 	}
+ }
+--- a/internal/models/api/images.go
++++ b/internal/models/api/images.go
+@@ -98,7 +98,16 @@
+ 	if err == nil {
+ 		return false
+ 	}
++	// Typed private response data is used only for capability classification;
++	// the public Error() string intentionally omits provider bodies.
+ 	msg := strings.ToLower(err.Error())
++	var httpErr *HTTPError
++	var responseErr *ModelResponseFailure
++	if errors.As(err, &httpErr) {
++		msg = strings.ToLower(httpErr.Body)
++	} else if errors.As(err, &responseErr) {
++		msg = strings.ToLower(responseErr.Body)
++	}
+ 	mentionsImages := strings.Contains(msg, "multimodal") ||
+ 		strings.Contains(msg, "image") ||
+ 		strings.Contains(msg, "vision")
+@@ -110,7 +119,6 @@
+ 	}
+ 	// No explicit wording: only a genuine 400 (the status vendors use to reject
+ 	// an input their model cannot read) is worth a stripped retry.
+-	var httpErr *HTTPError
+ 	return errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusBadRequest
+ }
+ 
+--- a/internal/models/api/retry_test.go
++++ b/internal/models/api/retry_test.go
+@@ -74,7 +74,8 @@
+ 		context.Background(), server.URL, map[string]any{}, nil, fastPolicy(), "test",
+ 	)
+ 	require.Error(t, err)
+-	assert.Contains(t, err.Error(), "input too long")
++	assert.NotContains(t, err.Error(), "input too long")
++	assert.Contains(t, err.Error(), "status 400")
+ 	assert.Equal(t, 1, attempts, "a rejection must not be repeated")
+ }
+ 
+--- a/internal/models/api/cohererank/golden_test.go
++++ b/internal/models/api/cohererank/golden_test.go
+@@ -199,7 +199,7 @@
+ 	assert.Contains(t, err.Error(), "out of range")
+ }
+ 
+-func TestSurfacesTheVendorErrorBody(t *testing.T) {
++func TestOmitsTheVendorErrorBody(t *testing.T) {
+ 	t.Setenv("SSRF_WHITELIST", "127.0.0.1")
+ 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+ 		w.WriteHeader(http.StatusUnprocessableEntity)
+@@ -210,7 +210,8 @@
+ 	c := newClient(t, server.URL, api.RerankSettings{})
+ 	_, err := c.Rerank(context.Background(), "q", []string{"d"})
+ 	require.Error(t, err)
+-	assert.Contains(t, err.Error(), "documents exceeds the limit")
++	assert.NotContains(t, err.Error(), "documents exceeds the limit")
++	assert.Contains(t, err.Error(), "status ")
+ }
+ 
+ // truncate_prompt_tokens is a vLLM extension that appears in no managed
+--- a/internal/models/api/nimrerank/golden_test.go
++++ b/internal/models/api/nimrerank/golden_test.go
+@@ -94,7 +94,7 @@
+ 	assert.Contains(t, err.Error(), "out of range")
+ }
+ 
+-func TestSurfacesTheVendorErrorBody(t *testing.T) {
++func TestOmitsTheVendorErrorBody(t *testing.T) {
+ 	t.Setenv("SSRF_WHITELIST", "127.0.0.1")
+ 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+ 		w.WriteHeader(http.StatusBadRequest)
+@@ -105,7 +105,8 @@
+ 	c := newClient(t, server.URL, api.RerankSettings{})
+ 	_, err := c.Rerank(context.Background(), "q", []string{"d0"})
+ 	require.Error(t, err)
+-	assert.Contains(t, err.Error(), "input too long")
++	assert.NotContains(t, err.Error(), "input too long")
++	assert.Contains(t, err.Error(), "status ")
+ }
+ 
+ func TestRequestReachesTheConfiguredURL(t *testing.T) {
+--- a/internal/models/api/openaiembeddings/golden_test.go
++++ b/internal/models/api/openaiembeddings/golden_test.go
+@@ -362,7 +362,7 @@
+ 	assert.Equal(t, "/openai/v1/embeddings", *path)
+ }
+ 
+-func TestSurfacesTheVendorErrorBody(t *testing.T) {
++func TestOmitsTheVendorErrorBody(t *testing.T) {
+ 	t.Setenv("SSRF_WHITELIST", "127.0.0.1")
+ 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+ 		w.WriteHeader(http.StatusBadRequest)
+@@ -373,5 +373,6 @@
+ 	_, err := newClient(server.URL, api.EmbeddingsSettings{}, 0).
+ 		Embed(context.Background(), []string{"a"}, api.EmbedDocument)
+ 	require.Error(t, err)
+-	assert.Contains(t, err.Error(), "input exceeds 4096 characters")
+-}
++	assert.NotContains(t, err.Error(), "input exceeds 4096 characters")
++	assert.Contains(t, err.Error(), "status ")
++}
+--- a/internal/models/api/openaitranscriptions/golden_test.go
++++ b/internal/models/api/openaitranscriptions/golden_test.go
+@@ -200,13 +200,14 @@
+ 	assert.Contains(t, err.Error(), "Failed to transcribe audio")
+ }
+ 
+-func TestSurfacesTheVendorErrorBody(t *testing.T) {
++func TestOmitsTheVendorErrorBody(t *testing.T) {
+ 	// A stand-in rejection in OpenAI's error envelope.
+ 	server, _ := serve(t, http.StatusBadRequest, `{"error":{"message":"stand-in rejection"}}`)
+ 	_, err := newClient(server.URL, "gpt-4o-transcribe", api.TranscriptionsSettings{}).
+ 		Transcribe(context.Background(), api.TranscriptionRequest{Audio: []byte("x"), FileName: "a.wav"})
+ 	require.Error(t, err)
+-	assert.Contains(t, err.Error(), "stand-in rejection")
++	assert.NotContains(t, err.Error(), "stand-in rejection")
++	assert.Contains(t, err.Error(), "status ")
+ }
+ 
+ func TestDoesNotDoubleThePath(t *testing.T) {
+--- a/internal/models/api/pineconerank/golden_test.go
++++ b/internal/models/api/pineconerank/golden_test.go
+@@ -130,7 +130,7 @@
+ 	}
+ }
+ 
+-func TestSurfacesVendorError(t *testing.T) {
++func TestOmitsVendorError(t *testing.T) {
+ 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+ 		w.WriteHeader(http.StatusBadRequest)
+ 		_, _ = w.Write([]byte(`{"error":"invalid model"}`))
+@@ -139,5 +139,6 @@
+ 	c := newClient(t, server.URL, api.RerankSettings{})
+ 	_, err := c.Rerank(context.Background(), "q", []string{"d"})
+ 	require.Error(t, err)
+-	assert.Contains(t, err.Error(), "invalid model")
++	assert.NotContains(t, err.Error(), "invalid model")
++	assert.Contains(t, err.Error(), "status ")
+ }
+--- a/internal/models/api/teirank/golden_test.go
++++ b/internal/models/api/teirank/golden_test.go
+@@ -88,7 +88,7 @@
+ 	}
+ }
+ 
+-func TestSurfacesTEIError(t *testing.T) {
++func TestOmitsTEIErrorBody(t *testing.T) {
+ 	t.Setenv("SSRF_WHITELIST", "127.0.0.1")
+ 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+ 		w.WriteHeader(http.StatusUnprocessableEntity)
+@@ -97,7 +97,8 @@
+ 	defer server.Close()
+ 	c := New(Config{Endpoint: api.Endpoint{BaseURL: server.URL}})
+ 	_, err := c.Rerank(context.Background(), "q", []string{"d"})
+-	require.ErrorContains(t, err, "Tokenization error")
++	require.ErrorContains(t, err, "status 422")
++	require.NotContains(t, err.Error(), "Tokenization error")
+ }
+ 
+ // compat.extra_body reaches TEI like every other HTTP rerank protocol, but it

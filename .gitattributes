@@ -1,0 +1,5 @@
+# Preserve executable scripts and checksum-pinned engine inputs across Windows checkouts.
+*.sh text eol=lf
+scripts/knowledge-engine/** text eol=lf
+# A unified patch needs its leading context space, including before Go tabs and on blank lines.
+scripts/knowledge-engine/patches/*.patch whitespace=-blank-at-eol,-space-before-tab

@@ -1,0 +1,104 @@
+# Relay-managed Product Knowledge engine
+
+Relay runs the pinned WeKnora Lite engine as a private child service in the existing deployment. Users configure models, import and publish documents, retrieve sources, and review Wiki pages in Relay. There is no separate WeKnora UI, public port, operator login, Docker stack, or second model credential store to maintain.
+
+## Storage and trust boundaries
+
+- Relay `knowledge.db` owns Project/Environment ACLs, version/topic/source bindings, publication and migration history, Work Sessions, Memory, Evidence, Candidate review and audit.
+- The private engine owns Product document bodies/chunks, hybrid search and Wiki bodies/revisions. After explicit migration publication, standard Product HTTP and MCP readers use this engine. An outage produces an explicit degraded result; it does not silently read the retained local Product index. Relay Memory remains usable.
+- HTML/CHM normalization and source manifests remain in Relay. Original local Product content is retained as migration input and for explicit rollback. Source/code baselines stay Relay-owned.
+- Model credentials remain encrypted by Relay's existing Provider Registry. The engine uses purpose-bound model aliases and an internal gateway token, not the Bailian/OpenAI token. Live registry resolution makes token rotation effective on subsequent calls; model/dimension/index changes require a new verified migration.
+- The engine binds to `127.0.0.1`. Its runtime directories are mode 0700 and configuration/key files mode 0600. Never publish `engine.json`, `control.json`, the provider encryption key, `.env`, backups or test auth files.
+
+## Build and normal deployment
+
+The engine is pinned to Tencent/WeKnora v0.8.3, commit `3e22822c1d2397be730c458c7539d0eb8c113a24`. Build the immutable Linux amd64 bundle on a compatible Linux build worker with GCC/G++, SQLite development headers, Python, Node and network access:
+
+```sh
+bash scripts/knowledge-engine/build.sh /absolute/dedicated/build-root
+```
+
+The script verifies the source and Go archive hashes, applies the hash-locked Relay model-log safety patch, runs the upstream model API regression suite, and builds Lite. The bundle includes SQLite migrations, configuration, prompts, licenses, Jieba dictionaries and a verified 7-Zip executable. `bundle/manifest.json` records every file hash; `relay-upstream-lock.json` and `relay-log-safety-proof.json` bind the source, patch and test evidence to the compiled binary. Installation and startup reject a bundle missing this security proof. The deployment host only consumes the verified bundle; it does not need Go or a compiler. Match the worker's libc/ABI to the deployment host.
+
+CHM extraction in a managed deployment uses `tools/7zip/7zz` from the active engine release. The installer pins 7-Zip 26.05 Linux amd64 by both archive and executable SHA-256, includes its license files, and preserves executable permissions. Relay validates that the release is inside the managed home and verifies the executable hash before use. A missing or invalid managed tool fails explicitly; `PATH` lookup is only available when no managed runtime is configured. `7zip-install.mjs --archive` supports a predownloaded archive with the same pinned hash; it does not bypass verification.
+
+Use the existing `deploy.sh` with `KNOWLEDGE_ENGINE_BUNDLE` set to that bundle path. `ecosystem.config.cjs` manages the engine alongside `remote-ops-web` and `remote-ops-mcp`. Subsequent deployments can retain an already installed engine. Set `KNOWLEDGE_ENGINE_ENABLED=false` only when intentionally running without this backend. `npm run build` remains the standard application build and does not download or compile Go.
+
+Runtime state defaults to `runtime/knowledge-engine`, or the absolute directory in `KNOWLEDGE_ENGINE_HOME`. Nonstandard Web ports require the installer `--gateway-url http://127.0.0.1:<port>/internal/knowledge-engine/v1`; `--port` sets the private engine port. The browser and MCP clients still connect only to Relay.
+
+## Configure and use
+
+1. In Relay **Knowledge → Integrated control plane → Providers**, configure an embedding provider and optionally Wiki/Rerank providers. Existing **Index & Providers** manages the same encrypted registry.
+2. Test the remote model. Embeddings must return the configured dimension. Select the providers for the Product engine and initialize/reconcile. Web startup also retries bounded initialization when the private engine starts more slowly.
+3. Normalize/import Product source data using Relay's import workflow. Stage a migration from local source documents. Inspect each file's parse status, chunk references, source hashes and actual embedding model/index generation.
+4. Publish only after all linked sources verify. The explicit publication switches standard Product retrieval. Select Project/Environment when browsing private sources; explicitly global Product sources remain visible to authorized contexts.
+5. Wiki generated by the engine is discovered as a draft with verified Product citations. Review before publishing. Wiki edit/diff/revert uses actual upstream revisions; local SQLite stores control metadata, not a shadow Wiki body.
+
+`KNOWLEDGE_ENGINE_READINESS_TIMEOUT_MS` defaults to 600000 ms and accepts 1000–7200000 ms. Upstream `finalizing` includes summary/Wiki synthesis and can take several minutes even after embeddings succeed. It is not treated as a verified completed document. A timeout leaves a failed mapping that can be explicitly retried; it never permits publication of incomplete chunks.
+
+Candidate HTTP, MCP and worker calls share the managed adapter and the same provider policy within one Node process. Cancellation and the compiler request deadline cover queue waiting and retries as well as the active request. Provider quota counts admitted logical calls; retries are not charged as separate quota entries, while a call that times out after entering the queue still consumes its entry. The counters are not shared between Web, MCP and other processes and reset on process restart. Treat configured limits as local operational controls, not a global HTTP-call or monetary spending cap.
+
+Normalized local Product bodies may already be Markdown even when their original source path ends in `.html`. The engine ingest normalizer now preserves fenced/inline code and canonical anchors, and still cleans actual HTML outside literal code. For sources affected by the earlier second HTML pass, use a new migration operation key and parser version (the nonproduction CHM repair uses `relay-chm-markdown-preserve-v2`), then validate and publish the new mappings. Parser version and raw source hash are part of the new upstream identity, so an explicit parser upgrade creates a new mapping even when body bytes happen to be unchanged. Exact same-parser legacy replay preserves the old record; it does not repair its content or relabel its proof. A failed legacy row whose normalization changed refuses a same-parser retry. Verify normalized source-file and fenced-code hashes against the actual upstream stored file before retiring the older mappings.
+
+Display metadata changes (authority/document type) are read live. An actual module/language identity correction withdraws the old engine mapping and returns `engineRepublishRequired`; stage and validate a new migration before republishing it. Deprecating a legacy Product ID withdraws its mapped engine sources too.
+
+## Model logs and retained historical logs
+
+The pinned upstream v0.8.3 `LogRequest` originally wrote complete chat messages at INFO. Turning off `LLM_DEBUG_LOG` alone did not disable that path. Relay's patch replaces it with fixed numeric/boolean request statistics (`body_bytes`, `message_count`, `stream`, `body_logged=false`) and removes provider response bodies and transport details from model error strings. Private response bodies remain available in memory for capability detection; they must not be formatted into logs or reports. This patch is part of the managed bundle, not a manual edit on the deployment host.
+
+The launcher also forces `LOG_LEVEL=warn`, `LLM_DEBUG_LOG=false` and `WEKNORA_LLM_STREAM_RAW_DUMP=false`. It uses an environment allowlist rather than inheriting provider tokens or raw-dump settings, and restricts `engine.log` to mode 0600. Keep these settings in place when investigating a failure. Do not enable prompt/completion dumps; use request IDs, status, latency, usage and fixed error categories for diagnostics. Changes to the pinned source require renewed patch review, regression tests and a real call with an incremental log scan.
+
+The 2026-10-25 nonproduction audit found original messages in the old engine log, although the approved provider token values were absent from the scanned files and database fields. Those original log records were preserved, with access restricted to mode 0600. Installing the patch does not sanitize old logs or backups. Keep them out of Git, support bundles, shared search and public reports; preserve private forensic copies under the deployment's retention policy. Redaction, rotation or deletion of historical records is a separate authorized operation. This verification performed none of those operations and made no production changes.
+
+The [log-safety acceptance report](verification/model-log-safety-acceptance.md) distinguishes the actual patched-binary call at WARN from the upstream regression tests at INFO. A zero-match snapshot is bounded evidence: it does not certify every future model response, every application logger, Candidate queue isolation, or unscanned storage. Model output and audit scans must be repeated for the actual feature acceptance run.
+
+## Recovery and backup
+
+```sh
+node scripts/knowledge-engine.mjs status
+node scripts/knowledge-engine.mjs wait
+```
+
+PM2 owns normal lifecycle. Stop its engine process before using manual `stop`, `backup`, `restore` or `install`; do not run a second launcher alongside PM2. The launcher verifies PID, executable and start identity before signaling processes.
+
+For a consistent release backup, stop writes and all Relay/engine processes, create SQLite backups of Relay's application and Knowledge databases, preserve Evidence files and the provider encryption key, then run `node scripts/knowledge-engine.mjs backup`. The engine backup includes source files, SQLite state and private engine/control configuration. Keep these components from the same checkpoint. Backups contain secrets and private documents and require private storage.
+
+`restore <backup-directory>` requires an empty installed runtime data directory and a matching pinned engine version; it refuses to overwrite existing data. Restore the corresponding Relay databases, Evidence and keys as part of the same recovery. Recheck health, publication routing, source citations, Memory and Evidence before reopening traffic.
+
+A migration rollback switches routing to `relay_local` and stages affected engine mappings; it preserves both stores. Engine reindex completion requires a ready current binding, an actually published migration, verified chunks/source manifests and coverage of all previously published sources, including migrations subsequently rolled back. Cleanup remains a dry run; no local Product index is removed by this integration.
+
+## Acceptance limits
+
+See the verification report for measured results. Provider probes, synthetic protocol tests, or five normalized samples do not prove raw CHM/ZIP ingestion, a 5372-page migration, full-corpus recall, or release load/recovery requirements. Issues stay open until their own acceptance criteria have evidence. Real test artifacts contain IDs, hashes, status, latency and counts; exclude raw prompts, document text, credentials and hidden model reasoning.
+
+## Candidate scope upgrade and review
+
+Migration041 stores a trusted scope snapshot for newly compiled Candidates. It does not infer scopes for old records. An old or mismatched Candidate-derived Case remains stored, with its original text, Evidence and lifecycle, but cannot participate in default confirmed-memory retrieval until a reviewer opens the Candidate, checks the displayed current Session scope and submits **Review current Session scope** with an audit reason. The request includes the displayed Session timestamp; reload if it changed. Rejected Candidates remain terminal and require a new Candidate.
+
+A newly promoted Case is a draft. Open its Case link, review the Evidence, then use **Mark reproduced** and **Mark verified** only when those checks actually occurred in the displayed scope. Verification enables scoped reuse; it does not authorize cross-project reuse. Existing global bindings cannot widen a Candidate-derived Case beyond its trusted project.
+
+## MCP compatibility and fault behavior
+
+The public catalog contains121 tools, including `knowledge_candidate_insight_job_get`. Existing Knowledge tool names and legacy Product document IDs remain available. Knowledge read/search responses retain complete structured JSON/citations with a16MiB bound; oversized payloads fail explicitly instead of becoming a non-JSON preview.
+
+`knowledge_weknora_search` and the corresponding HTTP search combine Product citations with Relay confirmed memory. On Product availability/timeout/rate-limit/upstream-authentication failure, `references` and authoritativeDocs are empty and `contextPack.degraded.productKnowledge` identifies the category; authorized Relay Memory remains available. A Relay ACL violation or malformed/unverified source reference still fails closed. Product-only reads fail explicitly during an outage and never silently use stale local content.
+
+
+## Durable Candidate jobs
+
+Both Web and MCP start the Candidate dispatcher against the existing Knowledge store. Enqueue with the managed Candidate providerId, then inspect the returned job through the HTTP status route or `knowledge_candidate_insight_job_get`. A successful model result remains a draft and requires the existing Evidence/review/promotion flow. Repeating the same enqueue operation returns the existing job rather than compiling again.
+
+A worker claims a bounded lease and heartbeats it; model calls run outside SQLite write transactions. A persisted result can recover without another model call. If a process disappears after a remote call but before persistence, an expired uncertain job is failed for explicit reviewer retry. It cannot guarantee exactly-once model billing. Capture/outbox/dead-letter paths remain independent and must be covered by their own deployment acceptance.
+
+## Withdrawing migrated sources
+
+Migration043 adds `withdrawn` mappings and their reason/time. Formal source deprecation atomically withdraws linked migration mappings, including late links, without rewriting the historical report, source manifest, external IDs or rollback evidence. Current `mappingCounts` show withdrawn records separately. Historical published reports describe their original checkpoint; they are not a claim that every source is still active.
+
+A withdrawn mapping is terminal and cannot be republished or retried through its old migration. Correct the source/parser version, stage a new migration, validate actual stored content/chunks and publish it. This preserves the failed/retired evidence and prevents an old migration from silently reactivating a deprecated source.
+
+
+## Local test execution
+
+`npm test` runs every test file with a maximum of4 concurrent test processes. On a20-logical-CPU workstation, the default test-runner parallelism caused an MCP subprocess to receive no ready response within the existing15-second limit, while the isolated5-test MCP suite passed with the first scenario completing in2.54 seconds. The concurrency bound prevents excessive simultaneous TypeScript/server startup; it does not skip tests or enlarge the server readiness timeout.
+
+Wiki review mutations use an immediate local transaction to reload authorization, publication state, revision and source snapshots after the upstream request. A concurrent review or withdrawal returns a conflict and requires reload. An upstream edit/revert may already have created a new upstream revision before a local conflict is detected; the conflict does not publish it or record a successful local review. Deprecated pages retain sources/history and have no editing/publication controls.

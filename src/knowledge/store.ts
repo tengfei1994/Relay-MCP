@@ -33,6 +33,10 @@ import { SOURCE_INDEX_MIGRATION } from "./migrations/026-source-index.js";
 import { INGEST_JOBS_MIGRATION } from "./migrations/027-ingest-jobs.js";
 import { PRODUCT_REVISIONS_MIGRATION } from "./migrations/028-product-revisions.js";
 import { PROVIDER_CONFIG_MIGRATION } from "./migrations/030-provider-configs.js";
+import { MANAGED_ENGINE_MIGRATION } from "./migrations/040-managed-engine.js";
+import { CANDIDATE_SCOPE_MIGRATION } from "./migrations/041-candidate-scope.js";
+import { CANDIDATE_WORKER_LEASE_MIGRATION } from "./migrations/042-candidate-worker-lease.js";
+import { MIGRATION_WITHDRAWAL_MIGRATION } from "./migrations/043-migration-withdrawal.js";
 import { PROVIDER_SECRETS_MIGRATION } from "./migrations/039-provider-secrets.js";
 import { WEKNORA_DOCUMENT_MIGRATION } from "./migrations/031-weknora-documents.js";
 import { WORK_SESSION_MIGRATION } from "./migrations/029-work-sessions.js";
@@ -98,6 +102,10 @@ const KNOWLEDGE_MIGRATIONS = [
     WIKI_MIGRATION,
     INTEGRATION_ROUTING_MIGRATION,
     PROVIDER_SECRETS_MIGRATION,
+    MANAGED_ENGINE_MIGRATION,
+    CANDIDATE_SCOPE_MIGRATION,
+    CANDIDATE_WORKER_LEASE_MIGRATION,
+    MIGRATION_WITHDRAWAL_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(

@@ -69,7 +69,7 @@ export interface RerankCallResult {
   tokenUsage?: ProviderTokenUsage;
 }
 
-export interface ChatCallResult {
+export interface ChatCallResult { finishReason?: string;
   status: number;
   latencyMs: number;
   text: string;
@@ -213,14 +213,16 @@ export async function callOpenAiRerank(options: ManagedHttpOptions & { query: st
   return { status, latencyMs, scores, tokenUsage: tokenUsageOf(body) };
 }
 
-export async function callOpenAiChat(options: ManagedHttpOptions & { prompt: string; maxTokens?: number }): Promise<ChatCallResult> {
+export interface ManagedChatMessage { role: "system" | "user" | "assistant"; content: string; }
+export async function callOpenAiChat(options: ManagedHttpOptions & { prompt?: string; messages?: ManagedChatMessage[]; maxTokens?: number; responseFormat?: {type: "text" | "json_object"} }): Promise<ChatCallResult> {
   const { status, latencyMs, body, diagnostics } = await requestJson(options, "/chat/completions", {
     model: options.modelId,
-    messages: [{ role: "user", content: options.prompt }],
-    max_tokens: Math.max(1, Math.min(options.maxTokens ?? 16, 256)),
+    messages: options.messages ?? [{ role: "user", content: options.prompt ?? "" }],
+    ...(options.responseFormat ? {response_format: options.responseFormat} : {}),
+    max_tokens: Math.max(1, Math.min(options.maxTokens ?? 16, 32768)),
   });
   const choices = asRecord(body)?.choices;
   const content = Array.isArray(choices) ? asRecord(asRecord(choices[0])?.message)?.content : undefined;
   if (typeof content !== "string") throw new ManagedProviderError("invalid_response", "Chat response has no message content", status, diagnostics);
-  return { status, latencyMs, text: content, tokenUsage: tokenUsageOf(body) };
+  return { status, latencyMs, text: content, finishReason: Array.isArray(choices) && typeof asRecord(choices[0])?.finish_reason === "string" ? String(asRecord(choices[0])!.finish_reason) : undefined, tokenUsage: tokenUsageOf(body) };
 }

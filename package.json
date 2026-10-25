@@ -9,7 +9,7 @@
     "check:mcp-boundary": "node scripts/check-mcp-boundary.mjs",
     "generate:mcp-baseline": "node --import tsx/esm scripts/generate-mcp-tools-baseline.mjs",
     "benchmark:knowledge-fts": "tsx scripts/knowledge-fts-benchmark.ts",
-    "test": "npm run check:mcp-boundary && tsx --test tests/*.test.ts",
+    "test": "npm run check:mcp-boundary && tsx --test --test-concurrency=4 tests/*.test.ts",
     "relay-upload": "node scripts/relay-upload.mjs",
     "relay-download": "node scripts/relay-download.mjs",
     "build": "npm run check:mcp-boundary && tsc && npm --prefix frontend run build",

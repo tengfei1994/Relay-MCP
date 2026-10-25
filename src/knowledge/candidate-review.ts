@@ -3,6 +3,8 @@ import { z } from "zod";
 import { assertReviewer } from "./domain.js";
 import type { KnowledgeStore } from "./store.js";
 import { KnowledgeRepository } from "./repository.js";
+import { WorkSessionService } from "./work-session.js";
+import { candidateScopeSnapshot } from "./candidate-scope.js";
 import {
   CANDIDATE_INSIGHT_KINDS,
   candidateInsightFromRow,
@@ -69,7 +71,7 @@ export class CandidateInsightReviewService {
   private load(id: string): CandidateInsight {
     const row = this.store.db.prepare("SELECT * FROM knowledge_candidate_insights WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     if (!row) throw new Error("Candidate Insight not found");
-    return candidateInsightFromRow(row);
+    return candidateInsightFromRow(row, this.store);
   }
 
   private assertReader(actorId: number, projectId: string): void {
@@ -101,7 +103,7 @@ export class CandidateInsightReviewService {
     const rows = input.status
       ? this.store.db.prepare("SELECT * FROM knowledge_candidate_insights WHERE project_id = ? AND status = ? ORDER BY updated_at DESC, id LIMIT ? OFFSET ?").all(input.projectId, input.status, limit, offset)
       : this.store.db.prepare("SELECT * FROM knowledge_candidate_insights WHERE project_id = ? ORDER BY updated_at DESC, id LIMIT ? OFFSET ?").all(input.projectId, limit, offset);
-    return (rows as Array<Record<string, unknown>>).map(candidateInsightFromRow);
+    return (rows as Array<Record<string, unknown>>).map(row => candidateInsightFromRow(row, this.store));
   }
 
   listDrafts(input: { actorId: number; projectId: string; limit?: number; offset?: number }): CandidateInsight[] {
@@ -136,6 +138,9 @@ export class CandidateInsightReviewService {
 
   /** Confirm a draft/edited insight. Never invoked automatically. Idempotent on replay. */
   confirm(input: { actorId: number; id: string; reason: string }): CandidateInsight {
+    return this.store.db.transaction(() => this.confirmLocked(input)).immediate();
+  }
+  private confirmLocked(input: { actorId: number; id: string; reason: string }): CandidateInsight {
     const reason = requireReason(input.reason);
     const insight = this.load(input.id);
     this.assertProjectReviewer(input.actorId, insight.projectId);
@@ -152,6 +157,9 @@ export class CandidateInsightReviewService {
 
   /** Edit a draft insight; the patched content is scanned like provider output. */
   edit(input: { actorId: number; id: string; patch: CandidateInsightEditPatch; reason: string }): CandidateInsight {
+    return this.store.db.transaction(() => this.editLocked(input)).immediate();
+  }
+  private editLocked(input: { actorId: number; id: string; patch: CandidateInsightEditPatch; reason: string }): CandidateInsight {
     const reason = requireReason(input.reason);
     const patch = editPatchSchema.parse(input.patch);
     if (Object.values(patch).every((value) => value === undefined)) throw new Error("At least one edit field is required");
@@ -187,6 +195,9 @@ export class CandidateInsightReviewService {
 
   /** Reject an insight; terminal for automatic flows. Idempotent on replay. */
   reject(input: { actorId: number; id: string; reason: string }): CandidateInsight {
+    return this.store.db.transaction(() => this.rejectLocked(input)).immediate();
+  }
+  private rejectLocked(input: { actorId: number; id: string; reason: string }): CandidateInsight {
     const reason = requireReason(input.reason);
     const insight = this.load(input.id);
     this.assertProjectReviewer(input.actorId, insight.projectId);
@@ -206,10 +217,14 @@ export class CandidateInsightReviewService {
    * recorded as explicit metadata for the future Decision integration.
    */
   promote(input: { actorId: number; id: string; target: "case" | "decision"; reason: string; title?: string }): CandidateInsightPromotion {
+    return this.store.db.transaction(() => this.promoteLocked(input)).immediate();
+  }
+  private promoteLocked(input: { actorId: number; id: string; target: "case" | "decision"; reason: string; title?: string }): CandidateInsightPromotion {
     const reason = requireReason(input.reason);
     const insight = this.load(input.id);
     this.assertProjectReviewer(input.actorId, insight.projectId);
     if (insight.status !== "accepted") throw new Error("Only an explicitly confirmed Candidate Insight can be promoted");
+    if (insight.scopeReviewRequired || !insight.sourceScope) throw new Error("Candidate requires explicit scope review before promotion; review the current Session scope");
     const existing = insight.promotion as CandidateInsightPromotion | undefined;
     if (existing && existing.target === input.target) return existing;
     const now = this.clock().toISOString();
@@ -229,9 +244,12 @@ export class CandidateInsightReviewService {
             insight.unknowns.length ? `Unknowns: ${insight.unknowns.join("; ")}` : undefined,
             insight.reusableStatement ? `Reusable statement: ${insight.reusableStatement.statement}` : undefined,
           ].filter((line): line is string => typeof line === "string").join("\n");
+          const scope = insight.sourceScope!;
           new KnowledgeRepository(this.store).saveCase({
             id: caseId, kind: "case", title: input.title?.trim().slice(0, 300) || `Case: ${insight.statement.slice(0, 180)}`, body,
             lifecycle: "draft", projectId: insight.projectId, evidenceRefs: insight.evidenceRefs, confidence: insight.confidence,
+            environment: scope.environment ?? undefined, sampleManagerVersion: scope.sampleManagerVersion ?? undefined,
+            solution: scope.solution ?? undefined, module: scope.module ?? undefined,
             createdBy: input.actorId, locator: `candidate-insight:${insight.id}`, createdAt: now, updatedAt: now,
           });
           this.store.db.prepare("UPDATE knowledge_candidate_insights SET promotion_json = ?, reviewed_by = ?, review_reason = ?, reviewed_at = ?, updated_at = ? WHERE id = ?")
@@ -255,5 +273,35 @@ export class CandidateInsightReviewService {
       this.store.audit({ actorId: input.actorId, projectId: insight.projectId, action: "candidate_insight.promote", entityType: "candidate_insight", entityId: insight.id, details: { reason, target: "decision", mode: "metadata_only" } });
     })();
     return promotion;
+  }
+
+  /** Explicitly recover a legacy or inconsistent scope without changing content approval. */
+  reviewScope(input: { actorId: number; id: string; reason: string; expectedSessionUpdatedAt?: string }): CandidateInsight {
+    const reason = requireReason(input.reason);
+    return this.store.db.transaction(() => {
+      const insight = this.load(input.id);
+      this.assertProjectReviewer(input.actorId, insight.projectId);
+      if (insight.status === "rejected") throw new Error("A rejected Candidate cannot be restored by scope review; create and review a new Candidate");
+      const session = new WorkSessionService(this.store).get({ actorId: input.actorId, sessionId: insight.workSessionId });
+      if (!session || session.projectId !== insight.projectId) throw new Error("Candidate source Session is unavailable");
+      if (input.expectedSessionUpdatedAt !== undefined && session.updatedAt !== input.expectedSessionUpdatedAt) throw new Error("Session scope changed; refresh and review the displayed scope again");
+      if (!insight.scopeReviewRequired) return insight;
+      this.assertEvidenceVisible(insight, insight.evidenceRefs);
+      const now = this.clock().toISOString(), snapshot = candidateScopeSnapshot(session, "review", now);
+      const previous = this.store.db.prepare("SELECT scope_snapshot_json FROM knowledge_candidate_insights WHERE id=?").get(insight.id) as { scope_snapshot_json: string | null };
+      const caseId = `case-${insight.id}`;
+      const caseScope = this.store.db.prepare("SELECT kind,project_id,environment,samplemanager_version,solution,module,lifecycle,source_locator FROM knowledge_documents WHERE id=?").get(caseId) as Record<string, unknown> | undefined;
+      if (caseScope && (caseScope.kind !== "case" || caseScope.source_locator !== `candidate-insight:${insight.id}`)) throw new Error("Candidate Case identity is inconsistent; scope review cannot overwrite another source");
+      const before = { snapshot: previous.scope_snapshot_json, caseScope: caseScope ?? null };
+      this.store.db.prepare("UPDATE knowledge_candidate_insights SET scope_snapshot_json=?,reviewed_by=?,review_reason=?,reviewed_at=?,updated_at=? WHERE id=?").run(JSON.stringify(snapshot), input.actorId, reason, now, now, insight.id);
+      if (caseScope) {
+        this.store.db.prepare("UPDATE knowledge_documents SET project_id=?,environment=?,samplemanager_version=?,solution=?,module=?,updated_at=? WHERE id=?").run(snapshot.projectId, snapshot.environment, snapshot.sampleManagerVersion, snapshot.solution, snapshot.module, now, caseId);
+        this.store.db.prepare("UPDATE knowledge_cases SET environment=?,samplemanager_version=?,solution=?,module=?,updated_at=? WHERE id=?").run(snapshot.environment, snapshot.sampleManagerVersion, snapshot.solution, snapshot.module, now, caseId);
+      }
+      const after = { scopeReview: true, snapshot, caseId: caseScope ? caseId : undefined };
+      this.store.db.prepare("INSERT INTO knowledge_candidate_insight_reviews(id,insight_id,reviewer_id,action,reason,before_json,after_json,created_at) VALUES (?,?,?,'edit',?,?,?,?)").run(randomUUID(), insight.id, input.actorId, reason, JSON.stringify(before), JSON.stringify(after), now);
+      this.store.audit({ actorId: input.actorId, projectId: insight.projectId, action: "candidate_insight.review_scope", entityType: "candidate_insight", entityId: insight.id, details: { reason, before, after } });
+      return this.load(insight.id);
+    }).immediate();
   }
 }

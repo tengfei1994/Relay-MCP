@@ -199,6 +199,9 @@ test("published documents with missing or pending external ids block the release
 }));
 
 test("staged or deprecated documents visible through published routing block the release", () => withStore((store) => {
+  // Deliberately simulate corrupted legacy data. Normal writes are now
+  // withdrawn by 043; the release gate must still catch this broken invariant.
+  store.db.exec("DROP TRIGGER knowledge_migration_insert_withdrawal");
   insertMigration(store, "m-1", "published", JSON.stringify({ restoreProvider: "relay_local", documentIds: ["w-staged", "w-dep"] }));
   insertWeknoraDocument(store, "w-staged", "staged", "ext-staged");
   insertWeknoraDocument(store, "w-dep", "deprecated", "ext-dep");

@@ -215,6 +215,62 @@
           "afterSha256": "9253bcf857ff125fdbab550c822c4f6a091e95bfbc2eb56b020476105a522bb5"
         }
       ]
+    },
+    {
+      "id": "0008-wiki-summary-provenance",
+      "file": "patches/0008-wiki-summary-provenance.patch",
+      "sha256": "3cd39ec8bc32c3ab69f9bfff5114d859682cb7359943c40a8209c96df584accd",
+      "targets": [
+        {
+          "path": "internal/application/service/wiki_ingest_batch.go",
+          "beforeSha256": "7f420a148c29f213a5dd286890bb79ab9348c91344e7c3fbafc1cfd7014a6554",
+          "afterSha256": "5a28947e3f092c762306d8a9980a75e1f2ab3e38b548a451a9045981dac686bf"
+        },
+        {
+          "path": "internal/application/service/wiki_ingest_cite.go",
+          "beforeSha256": "db368d00a4d0fd408763cef041353509682dc17c01e6f85fe603d613c5f4dce2",
+          "afterSha256": "fe6baebcd55f054f6d963c09acecf80f2784428bca1a1e3424dbef333d5a0ed0"
+        },
+        {
+          "path": "internal/agent/prompts_wiki.go",
+          "beforeSha256": "e36d34479ae827e77d1f7a383309b5c8c3bc63bdefc47a81f9ff5f3c5ea99466",
+          "afterSha256": "3e929ff8d1355482f891abcb8df340a4501e6e1908b575bc0fbc568c01add670"
+        }
+      ]
+    },
+    {
+      "id": "0009-xml-structural-retrieval",
+      "file": "patches/0009-xml-structural-retrieval.patch",
+      "sha256": "8023850dc6e94e12a99b777694108529a725982daefe38ea2d75c39560ad4ebe",
+      "targets": [
+        {
+          "path": "internal/application/repository/retriever/sqlite/repository.go",
+          "beforeSha256": "9ee3bd97d1e6e05c9cc071338d902956c13fe3ef2b8e48ec228cfe3e029041c3",
+          "afterSha256": "2b8a7a8a6e7d3be6a20bf68638d3ed4aec3841235e42bd0ab49dce3e8236bede"
+        },
+        {
+          "path": "internal/application/service/knowledgebase_search_fusion.go",
+          "beforeSha256": "fe1c376e661c4b306d202330973410b4a7dc0d90e5a11f2d778a6327ea12ef97",
+          "afterSha256": "5cdc66407a07fb4150eda20e492436b230b72b3ceea7e5e0c451c0388d6da2c6"
+        },
+        {
+          "path": "internal/types/retriever.go",
+          "beforeSha256": "06cc29b78661e41674f3f37345840d8503daf16609b1385fc42d11f80042a75b",
+          "afterSha256": "2fd0e14b3fef3f267bd24a67b9cba4bbe96df6ee49c085158ad2f87d5ee54c68"
+        }
+      ]
+    },
+    {
+      "id": "0010-parameterized-gorm-logging",
+      "file": "patches/0010-parameterized-gorm-logging.patch",
+      "sha256": "40ef74d15b42733a3b53231fe4fa5b368a267b30379a698892e4c537cc69dc3a",
+      "targets": [
+        {
+          "path": "internal/container/container.go",
+          "beforeSha256": "13a08d8a33f6067b00a99ff5a3e173539a1faa3ba88d2bf58d24f5b7aba43864",
+          "afterSha256": "243143b7e4364e87f94a095643abda0d83aa0f6bd7e41b3738832165b62e718d"
+        }
+      ]
     }
   ],
   "regressionTests": [
@@ -246,7 +302,7 @@
     {
       "file": "patches/relay_wiki_source_grounding_test.go",
       "target": "internal/application/service/relay_wiki_source_grounding_test.go",
-      "sha256": "d4d1471bbb3fae73c5faff83aada6544cbd67777383f409f47447ee9dabba5d8"
+      "sha256": "5db4721552e57ad50679ca23ecf65d29d00846fb16eabbd8a4caba414a15b601"
     },
     {
       "file": "patches/relay_source_aware_retrieval_test.go",
@@ -262,6 +318,26 @@
       "file": "patches/relay_retrieval_sqlite_ties_test.go",
       "target": "internal/application/repository/retriever/sqlite/relay_retrieval_sqlite_ties_test.go",
       "sha256": "510bf46fd25a637fd7fb5a7af02e69611c5e242f82dc671e5d472c3b78e603c2"
+    },
+    {
+      "file": "patches/relay_wiki_summary_provenance_test.go",
+      "target": "internal/application/service/relay_wiki_summary_provenance_test.go",
+      "sha256": "2ab7efe15eb690192c22691d0024fa95f646c254aeca404af66fb9bc7c99c1c3"
+    },
+    {
+      "file": "patches/relay_xml_structural_test.go",
+      "target": "internal/application/repository/retriever/sqlite/relay_xml_structural_test.go",
+      "sha256": "3eb0584c6e8ccaa0a4131ef686ad6a9e2720487cd44df10e3ffb54aaf45d3de0"
+    },
+    {
+      "file": "patches/relay_xml_fusion_test.go",
+      "target": "internal/application/service/relay_xml_fusion_test.go",
+      "sha256": "3957a29d7dd88d991335f0bbce9071e721b7c2ed0c123f49ed1034b7d26380cf"
+    },
+    {
+      "file": "patches/relay_gorm_log_safety_test.go",
+      "target": "internal/container/relay_gorm_log_safety_test.go",
+      "sha256": "925df8f175267c193d9e0d8812f0ae7d5f79923d5775363fcbb72611e92378ad"
     }
   ]
 }

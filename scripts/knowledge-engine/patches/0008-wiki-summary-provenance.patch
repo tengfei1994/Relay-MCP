@@ -1,0 +1,285 @@
+--- a/internal/application/service/wiki_ingest_batch.go
++++ b/internal/application/service/wiki_ingest_batch.go
+@@ -1469,6 +1469,13 @@
+ 		}
+ 	}
+ 
++	// Summary evidence is bounded raw text; generated OCR/captions and the
++	// document-wide extraction context cannot supply facts to this stage.
++	summarySourceContent, summarySourceIDs := wikiSummaryRawEvidence(chunks, payload.TenantID, knowledgeID, maxContentForWiki)
++	if !hasSufficientTextContent(summarySourceContent) {
++		return nil, nil, fmt.Errorf("wiki ingest: summary source evidence unavailable")
++	}
++
+ 	// Summary and chunk classification are independent given Pass 0 output —
+ 	// run them in parallel. Summary handles wiki-link injection; classification
+ 	// attaches concrete chunk IDs to each candidate slug.
+@@ -1497,7 +1504,7 @@
+ 	go func() {
+ 		defer wg.Done()
+ 		summaryContent, summaryErr = s.generateWithTemplate(ctx, chatModel, agent.WikiSummaryPrompt, map[string]string{
+-			"Content":            content,
++			"Content":            summarySourceContent,
+ 			"Language":           lang,
+ 			"ExtractedSlugs":     slugListing,
+ 			"CustomInstructions": batchCtx.ContentInstructions,
+@@ -1612,14 +1619,15 @@
+ 		docSummary = sumLine
+ 	}
+ 	updates = append(updates, SlugUpdate{
+-		Slug:        summarySlug,
+-		Type:        types.WikiPageTypeSummary,
+-		DocTitle:    docTitle,
+-		KnowledgeID: knowledgeID,
+-		SourceRef:   sourceRef,
+-		Language:    lang,
+-		SummaryLine: sumLine,
+-		SummaryBody: sumBody,
++		Slug:         summarySlug,
++		Type:         types.WikiPageTypeSummary,
++		DocTitle:     docTitle,
++		KnowledgeID:  knowledgeID,
++		SourceRef:    sourceRef,
++		Language:     lang,
++		SummaryLine:  sumLine,
++		SummaryBody:  sumBody,
++		SourceChunks: summarySourceIDs,
+ 	})
+ 	extractedPages = append(extractedPages, wikiIngestPageRef{Slug: summarySlug, Title: docTitle})
+ 
+@@ -2012,16 +2020,23 @@
+ 	}
+ 
+ 	if summaryUpdate != nil {
++		// The synopsis is replaced as a whole: validate and replace its current
++		// provenance as a whole too, rather than retaining stale document refs.
++		resolved := s.resolveCitedChunks(ctx, tenantID, []SlugUpdate{*summaryUpdate})
++		if len(summaryUpdate.SourceChunks) == 0 {
++			return false, affectedType, true, false, fmt.Errorf("wiki ingest: summary source evidence unavailable")
++		}
++		for _, id := range summaryUpdate.SourceChunks {
++			if strings.TrimSpace(resolved[id]) == "" {
++				return false, affectedType, true, false, fmt.Errorf("wiki ingest: summary source evidence incomplete")
++			}
++		}
+ 		page.Title = summaryUpdate.DocTitle + " - Summary"
+ 		page.Content = summaryUpdate.SummaryBody
+ 		page.Summary = summaryUpdate.SummaryLine
+ 		page.PageType = types.WikiPageTypeSummary
+-		page.SourceRefs = appendUnique(page.SourceRefs, summaryUpdate.SourceRef)
+-		// Summary pages don't carry chunk-level citations (they are document-
+-		// level synopses generated from the whole content). Clear any stale
+-		// chunk refs that may remain if this slug was once an entity page
+-		// and got converted to a summary page.
+-		page.ChunkRefs = types.StringArray{}
++		page.SourceRefs = types.StringArray{summaryUpdate.SourceRef}
++		page.ChunkRefs = mergeChunkRefs(nil, []SlugUpdate{*summaryUpdate})
+ 		changed = true
+ 
+ 		if exists {
+@@ -2096,11 +2111,6 @@
+ 		// knowledge ID, so the <new_information> block can quote the chunks
+ 		// verbatim instead of relying on the short Details paraphrase.
+ 		chunkContentByID := s.resolveCitedChunks(ctx, tenantID, additions)
+-		// A document summary is shared by every page derived from that document.
+-		// Render a deterministic, de-duplicated block before any page-specific
+-		// metadata so provider prefix caches can reuse it across parallel reduce
+-		// calls.
+-		sourceContextByRef := make(map[string]string)
+ 
+ 		for _, add := range additions {
+ 			// Missing evidence is not permission to substitute generated
+@@ -2115,24 +2125,6 @@
+ 				}
+ 			}
+ 			cited := collectCitedChunkContent(add.SourceChunks, chunkContentByID)
+-			// Frame the chunks with the document-level summary body so the
+-			// editor model knows BOTH what the document is about AND what
+-			// kind of document it is (resume vs announcement vs product
+-			// page vs schedule). The one-sentence headline alone was too
+-			// terse to keep the editor grounded on longer or multi-topic
+-			// source documents, and calibrating tone (self-reported vs
+-			// third-party authoritative) benefits from the richer context.
+-			sourceCtx := strings.TrimSpace(add.DocSummary)
+-			if sourceCtx != "" {
+-				contextKey := add.SourceRef
+-				if contextKey == "" {
+-					contextKey = add.KnowledgeID + "\x00" + add.DocTitle
+-				}
+-				sourceContextByRef[contextKey] = fmt.Sprintf(
+-					"<document>\n<title>%s</title>\n<context>\n%s\n</context>\n</document>\n",
+-					add.DocTitle, sourceCtx,
+-				)
+-			}
+ 			// Only resolved source text belongs in the evidentiary block.
+ 			// Item identity already has its own page metadata; generated
+ 			// descriptions and summaries cannot supply additional facts.
+@@ -2154,14 +2146,6 @@
+ 			}
+ 		}
+ 
+-		contextKeys := make([]string, 0, len(sourceContextByRef))
+-		for key := range sourceContextByRef {
+-			contextKeys = append(contextKeys, key)
+-		}
+-		sort.Strings(contextKeys)
+-		for _, key := range contextKeys {
+-			sharedSourceContexts.WriteString(sourceContextByRef[key])
+-		}
+ 	}
+ 
+ 	if len(additions) > 0 || len(retracts) > 0 {
+@@ -2368,3 +2352,52 @@
+ 	}
+ 	return out
+ }
++
++// wikiSummaryRawEvidence records only raw text chunks actually supplied to the
++// summary request. The final chunk may contribute a prefix at the rune budget;
++// chunks beyond that prefix and generated image children are not cited.
++func wikiSummaryRawEvidence(chunks []*types.Chunk, tenantID uint64, knowledgeID string, maxRunes int) (string, []string) {
++	var selected []*types.Chunk
++	for _, c := range chunks {
++		if c != nil && c.ID != "" && c.TenantID == tenantID && c.KnowledgeID == knowledgeID && c.IsEnabled &&
++			(c.ChunkType == types.ChunkTypeText || c.ChunkType == "") && strings.TrimSpace(c.Content) != "" {
++			selected = append(selected, c)
++		}
++	}
++	sort.SliceStable(selected, func(i, j int) bool {
++		if selected[i].ChunkIndex != selected[j].ChunkIndex {
++			return selected[i].ChunkIndex < selected[j].ChunkIndex
++		}
++		return selected[i].StartAt < selected[j].StartAt
++	})
++	var body strings.Builder
++	var ids []string
++	seen := map[string]bool{}
++	remaining := maxRunes
++	for _, c := range selected {
++		if remaining <= 0 {
++			break
++		}
++		if seen[c.ID] {
++			continue
++		}
++		separator := ""
++		if body.Len() > 0 {
++			separator = "\n\n"
++		}
++		if remaining <= len(separator) {
++			break
++		}
++		remaining -= len(separator)
++		raw := []rune(c.Content)
++		if len(raw) > remaining {
++			raw = raw[:remaining]
++		}
++		body.WriteString(separator)
++		body.WriteString(string(raw))
++		remaining -= len(raw)
++		ids = append(ids, c.ID)
++		seen[c.ID] = true
++	}
++	return body.String(), ids
++}
+--- a/internal/application/service/wiki_ingest_cite.go
++++ b/internal/application/service/wiki_ingest_cite.go
+@@ -386,6 +386,8 @@
+ 	// We batch per knowledge anyway to keep the IN(...) list bounded for
+ 	// large multi-knowledge reduces.
+ 	byKnowledge := make(map[string]map[string]bool)
++	owners := make(map[string]string)
++	conflicted := make(map[string]bool)
+ 	for _, add := range additions {
+ 		if add.KnowledgeID == "" {
+ 			continue
+@@ -399,6 +401,10 @@
+ 				set = make(map[string]bool)
+ 				byKnowledge[add.KnowledgeID] = set
+ 			}
++			if owner, ok := owners[chunkID]; ok && owner != add.KnowledgeID {
++				conflicted[chunkID] = true
++			}
++			owners[chunkID] = add.KnowledgeID
+ 			set[chunkID] = true
+ 		}
+ 	}
+@@ -407,7 +413,7 @@
+ 	}
+ 
+ 	out := make(map[string]string)
+-	for _, idSet := range byKnowledge {
++	for knowledgeID, idSet := range byKnowledge {
+ 		ids := make([]string, 0, len(idSet))
+ 		for id := range idSet {
+ 			ids = append(ids, id)
+@@ -430,7 +436,8 @@
+ 		imageInfoByID := searchutil.CollectImageInfoByChunkIDs(ctx, s.chunkRepo, tenantID, ids)
+ 
+ 		for _, c := range chunks {
+-			if c == nil || c.Content == "" {
++			if c == nil || c.TenantID != tenantID || c.KnowledgeID != knowledgeID || conflicted[c.ID] || !idSet[c.ID] || !c.IsEnabled ||
++				(c.ChunkType != types.ChunkTypeText && c.ChunkType != "") || strings.TrimSpace(c.Content) == "" {
+ 				continue
+ 			}
+ 			content := c.Content
+--- a/internal/agent/prompts_wiki.go
++++ b/internal/agent/prompts_wiki.go
+@@ -70,7 +70,7 @@
+ </available_wiki_pages>
+ 
+ <instructions>
+-1. The FIRST line of your output MUST be: SUMMARY: {one sentence, 15-40 words, describing what this document is about — for wiki index listing}
++1. The FIRST line of your output MUST be: SUMMARY: {one source-supported sentence, with no minimum length, describing what this document is about — for wiki index listing}
+ 2. After the SUMMARY line, summarize only factual statements explicitly present in the document, in Markdown format. Do not add outside knowledge, inferred behavior, unstated purposes, causal explanations, or recommendations.
+ 3. Include the key facts, arguments, and conclusions.
+ 4. Use sections only when justified by the source structure; a short source may need only a short paragraph or factual list.
+@@ -79,7 +79,8 @@
+ 7. A Key Takeaways section is optional; include it only when it adds distinct, explicitly supported source facts, without invented conclusions or repetition.
+ 8. Write in {{.Language}}.
+ 9. Match the amount of detail to the source. There is no minimum length: never expand a short source to fill a word target. Preserve its concrete facts, settings, qualifiers, tables, and technical identifiers without inventing context.
+-10. **Empty content rule**: If the <content> block above is empty, contains only image references with no extracted text, or otherwise carries no substantive information, output exactly: "SUMMARY: No textual content was extractable from this document." followed by a brief note explaining that the document could not be summarised. Do NOT invent a topic, do NOT guess from any other clue.
++10. This summary may receive a bounded prefix of the source. Describe only supplied text and do not imply coverage of omitted content. Identifier names and reference-link membership alone do not establish behavior, purpose, or active/obsolete status.
++11. **Empty content rule**: If the <content> block above is empty, contains only image references with no extracted text, or otherwise carries no substantive information, output exactly: "SUMMARY: No textual content was extractable from this document." followed by a brief note explaining that the document could not be summarised. Do NOT invent a topic, do NOT guess from any other clue.
+ </instructions>
+ 
+ Output the SUMMARY line first, then the Markdown content. Do not include any other preamble.`
+@@ -324,8 +325,9 @@
+ 1. **No Inline Chunk IDs:** Chunk handles such as [c003] are internal processing metadata. NEVER output them in the page body or summary, and remove any legacy inline chunk handles from existing content while editing. Source associations are stored separately by the system.
+ 2. **Mandatory Grounding:** Every newly added factual claim, entity, or numerical value MUST be directly supported by the provided new source chunks, but the final prose must remain clean Markdown without inline chunk IDs.
+ 3. **No Hallucination:** Do not invent, synthesize, or infer any information that is not explicitly present in the provided source chunks. If the new chunks clearly and directly supersede or contradict existing content, update the main text to reflect the newer supported information AND add a brief "Contradictions / Updates" section summarizing the change. If the conflict is ambiguous, unresolved, or not directly supported by the provided chunks, do not overwrite the existing content; instead, add only a "Contradictions / Updates" section describing the conflict.
+-4. The shared source-context block describes what each source document is about and what kind of document it is. Use it only to calibrate scope, attribution, and tone. Never copy source-context wording into the page as factual evidence.
+-5. Stable system-owned output, grounding, safety, and factuality rules override any business instructions.
++4. Only explicit assertions in raw source chunks support newly added facts. Generated document summaries are not source evidence.
++5. Page metadata, identifier names, aliases, and hyperlinks identify mentions; they do not establish functional behavior, purpose, status, or relationships. Do not infer these from identifier spelling, list membership or absence, or presence in reference/navigation material. When the source only names or links an item, preserve a neutral mention or source locator without adding an explanation.
++6. Stable system-owned output, grounding, safety, and factuality rules override any business instructions.
+ 
+ ### EDITING AND OUTPUT RULES:
+ 1. You are a COMPILER, not a creative writer. Stay close to the verbatim source wording. You may lightly reorder, deduplicate, and join related sentences, but must not rephrase for style, expand short statements, or invent transitions.
+@@ -335,7 +337,7 @@
+ 5. Preserve existing information that remains valid and on-topic. Maintain the existing page's structure and formatting style where possible.
+ 6. Keep a [[slug|name]] link only when its slug is present in the supplied valid-link list. Never invent a slug and never link a page to itself.
+ 7. Images may be included only from supplied new information. Treat each Markdown image URL as an opaque token and reproduce it exactly without altering, shortening, or normalizing it.
+-8. The first output line must be "SUMMARY: {one sentence, 15-40 words}", followed immediately by clean Markdown page content.
++8. The first output line must be "SUMMARY: {one source-supported sentence; no minimum length}", followed immediately by clean Markdown page content.
+ 
+ Output the SUMMARY line first, followed by the updated Markdown content, with no other preamble.`
+ 
+@@ -364,7 +366,7 @@
+ {{.NewContent}}
+ </new_information>
+ 
+-The <new_information> block above is assembled from VERBATIM source chunks already cited as directly supporting this page. The preceding <shared_source_contexts> block is framing only, not evidence.
++The <new_information> block above contains raw source chunks associated with this page; association alone does not establish every statement or every nearby item as a fact about this page. 
+ {{end}}
+ 
+ {{if .HasRetractions}}
+@@ -382,7 +384,7 @@
+ </valid_wiki_links>
+ 
+ <instructions>
+-1. The FIRST line of your output MUST be: SUMMARY: {one sentence, 15-40 words, describing what this page is about after the update — for wiki index listing}
++1. The FIRST line of your output MUST be: SUMMARY: {one source-supported sentence, with no minimum length, describing what this page is about after the update — for wiki index listing}
+ {{if .HasRetractions}}
+ 2. REMOVE facts/claims that were ONLY sourced from the <deleted_documents> and are NOT present in any <remaining_source_documents> or <new_information>.
+ {{end}}

@@ -75,8 +75,8 @@ func TestRelayWikiGroundingRawEvidenceOnly(t *testing.T) {
 			t.Errorf("generated prose promoted to raw evidence: %s", invented)
 		}
 	}
-	if !strings.Contains(prompt, "GENERATED_SUMMARY_CONTEXT") {
-		t.Error("non-evidentiary source context should remain available")
+	if strings.Contains(prompt, "GENERATED_SUMMARY_CONTEXT") {
+		t.Error("generated source context reached the editor provider request")
 	}
 	if len(pages.page.ChunkRefs) != 1 || pages.page.ChunkRefs[0] != "chunk-1" {
 		t.Fatalf("source references changed: %v", pages.page.ChunkRefs)

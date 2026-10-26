@@ -31,29 +31,29 @@
 
 Files: pinned upstream service/wiki_ingest_cite.go, service/wiki_ingest_batch.go, source-grounding Go regressions; scripts/knowledge-engine/patches and upstream-lock.json; EngineWiki citation DTO/tests if warranted.
 
-- [ ] Write real-service tests for raw evidence versus generated paraphrases, empty/unknown chunk citations, and extraction instruction propagation.
-- [ ] Execute against unchanged pinned source and record expected RED.
-- [ ] Apply minimal source-boundary correction, checksum-pin patch/tests; preserve ordinary upstream behavior where needed through an explicit managed-runtime scope.
-- [ ] Run focused Go regressions and source-review validator tests; record GREEN.
-- [ ] Validate a bounded new draft generation against the preserved source; keep original failed drafts intact.
+- [x] Write real-service tests for raw evidence versus generated paraphrases, empty/unknown chunk citations, and extraction instruction propagation.
+- [x] Execute against unchanged pinned source and record expected RED.
+- [x] Apply minimal source-boundary correction, checksum-pin patch/tests; preserve ordinary upstream behavior where needed through an explicit managed-runtime scope.
+- [x] Run focused Go regressions and source-review validator tests; record GREEN.
+- [x] Validate a bounded new draft generation against the preserved source; keep original failed drafts intact.
 
 ### Task 2: Retrieval candidates and repeatable ordering
 
 Files: src/knowledge/weknora.ts, src/knowledge/product-backend.ts, related tests; pinned upstream fusion/retriever only where exact reproductions justify a change.
 
-- [ ] Trace unchanged failed query cases/candidate boundaries with safe metadata, no paid calls initially.
-- [ ] Write failing source-diversity and deterministic-order tests.
-- [ ] Implement narrow general fixes; keep source/chunk/snippet/score/citation coherent and authorization fail closed.
-- [ ] Verify RED to GREEN and replay identical frozen 55 cases with existing labels, reporting all metrics and unresolved labels.
-- [ ] Do not change weights or invent a release threshold after seeing results.
+- [x] Trace unchanged failed query cases/candidate boundaries with safe metadata, no paid calls initially.
+- [x] Write failing source-diversity and deterministic-order tests.
+- [x] Implement narrow general fixes; keep source/chunk/snippet/score/citation coherent and authorization fail closed.
+- [x] Verify RED to GREEN and replay identical frozen 55 cases with existing labels, reporting all metrics and unresolved labels.
+- [x] Do not change weights or invent a release threshold after seeing results.
 
 ### Task 3: Unified verification and issue evidence
 
 Files: docs/verification/wiki-retrieval-quality-20261026.md; bounded private remote scripts/artifacts.
 
-- [ ] Run full npm test, normal build, pinned asset/Python validation and whitespace checks.
-- [ ] Run bounded real HTTP/MCP/source/privacy validation on current nonproduction build; verify provider budgets and historical state.
-- [ ] Independently review final diff; repair material findings and rerun affected checks.
+- [x] Run full npm test, normal build, pinned asset/Python validation and whitespace checks.
+- [x] Run bounded real HTTP/MCP/source/privacy validation on current nonproduction build; verify provider budgets and historical state.
+- [x] Independently review final diff; repair material findings and rerun affected checks.
 - [ ] Commit/push a reviewable repair PR or update the existing authorized PR; attach it.
 - [ ] Update relevant issue comments with immutable evidence and close only issues whose original acceptance conditions are fully met.
 
@@ -62,3 +62,9 @@ Files: docs/verification/wiki-retrieval-quality-20261026.md; bounded private rem
 - Baseline b00f4a0: initial full test 848/849; startup DB-alias rejection timed out at its unchanged 5-second guard under parallel load. Exact focused rerun 1/1 passed in 2.09 seconds. This failure remains recorded; final full suite must be green.
 - Worktree: native managed wiki-retrieval-quality, created from codex/managed-knowledge-engine. Read-only analyst agents use gpt-6.1-sol/medium.
 - Ruling: proceed without another plan-approval pause because user explicitly authorized automated nonproduction fixes and asked for intervention only when necessary.
+
+- Final code d57cfe2 plus Memory SQL repair 28ba3ce: complete 857/857 application tests and build passed; Python 22/22, all 16 pinned assets and complete affected Go packages passed. Independent reviews found no P1/P2; deployed Linux BM25 smoke passed.
+- Bounded native QA: 17 Wiki generation +2 embedding calls, then 11 audit calls; 12 pages /49 paragraphs; only3/12 automatic source-support pass. All original drafts retained, no publication. This trial is not expert factual gold or a controlled comparison with the earlier four-page population.
+- Frozen55 actual HTTP: Recall .864726 /MRR .723304 /nDCG .728150, three zero-recall cases, 387 outside-reference query-source pairs, p95 6950.42ms. QA index exactly restored after evaluation. No weights/labels/thresholds changed.
+- Final MCP5/5, immutable source/page/span guards and scoped privacy/budget guards passed. Embedding15406/Wiki68; ready200/hour restored; no pending model work. Earlier failed deployments/packets/log matches are preserved in the report.
+- Owner response: no agreed semantic precision/P95 targets; keep closure gates. #55/#56 and aggregates stay open, with expert review packets prepared and every human label null. Memory fusion score calibration, weak XML, zero recalls and Wiki support remain open; no production merge.

@@ -54,8 +54,8 @@ Files: docs/verification/wiki-retrieval-quality-20261026.md; bounded private rem
 - [x] Run full npm test, normal build, pinned asset/Python validation and whitespace checks.
 - [x] Run bounded real HTTP/MCP/source/privacy validation on current nonproduction build; verify provider budgets and historical state.
 - [x] Independently review final diff; repair material findings and rerun affected checks.
-- [ ] Commit/push a reviewable repair PR or update the existing authorized PR; attach it.
-- [ ] Update relevant issue comments with immutable evidence and close only issues whose original acceptance conditions are fully met.
+- [x] Commit/push a reviewable repair PR or update the existing authorized PR; attach it.
+- [x] Update relevant issue comments with immutable evidence and close only issues whose original acceptance conditions are fully met.
 
 ## Execution ledger
 
@@ -68,3 +68,5 @@ Files: docs/verification/wiki-retrieval-quality-20261026.md; bounded private rem
 - Frozen55 actual HTTP: Recall .864726 /MRR .723304 /nDCG .728150, three zero-recall cases, 387 outside-reference query-source pairs, p95 6950.42ms. QA index exactly restored after evaluation. No weights/labels/thresholds changed.
 - Final MCP5/5, immutable source/page/span guards and scoped privacy/budget guards passed. Embedding15406/Wiki68; ready200/hour restored; no pending model work. Earlier failed deployments/packets/log matches are preserved in the report.
 - Owner response: no agreed semantic precision/P95 targets; keep closure gates. #55/#56 and aggregates stay open, with expert review packets prepared and every human label null. Memory fusion score calibration, weak XML, zero recalls and Wiki support remain open; no production merge.
+
+- Published [stacked draft PR #62](https://github.com/tengfei1994/Relay-MCP/pull/62) against codex/managed-knowledge-engine; attached it to this task. Added immutable evidence comments to #55/#56 and aggregate #43/#49/#50. All five stay open; both #61/#62 remain draft, with no merge.

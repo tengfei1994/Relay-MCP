@@ -1,5 +1,7 @@
 # Wiki grounding and retrieval-source repair — 2026-10-26
 
+[Draft PR #62](https://github.com/tengfei1994/Relay-MCP/pull/62) stacks on #61. Evidence comments: [#55](https://github.com/tengfei1994/Relay-MCP/issues/55#issuecomment-6406693763), [#56](https://github.com/tengfei1994/Relay-MCP/issues/56#issuecomment-6406694405), [#43](https://github.com/tengfei1994/Relay-MCP/issues/43#issuecomment-6406699930), [#49](https://github.com/tengfei1994/Relay-MCP/issues/49#issuecomment-6406700710), [#50](https://github.com/tengfei1994/Relay-MCP/issues/50#issuecomment-6406701546).
+
 This is a nonproduction repair and evidence packet, not release approval. The owner confirmed that real semantic-precision and end-to-end latency thresholds have not yet been agreed; #55/#56 retain their closure gates. Production was not changed.
 
 ## Code and regression evidence

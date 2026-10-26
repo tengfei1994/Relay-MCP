@@ -293,6 +293,18 @@
           "afterSha256": "c6a1ad3b08f964832a7b7426308a29e4a4b011f59c2865c75ba2b1cdc61e5084"
         }
       ]
+    },
+    {
+      "id": "0012-xml-named-angle-comparison",
+      "file": "patches/0012-xml-named-angle-comparison.patch",
+      "sha256": "fa60e7f6c2e57a90a14460e8a8f93d152b541ac4efbafeda5568f2d220bc1e37",
+      "targets": [
+        {
+          "path": "internal/application/repository/retriever/sqlite/repository.go",
+          "beforeSha256": "f18fd76adac7a82a2875f5f0385b269746dc836659304aa91cc9eced1750d79c",
+          "afterSha256": "6c42fb70d3e76ff104d4dc7d831d42498547a3f75e8396ee5d80142ac494f049"
+        }
+      ]
     }
   ],
   "regressionTests": [
@@ -370,6 +382,16 @@
       "file": "patches/relay_literal_identifier_fusion_test.go",
       "target": "internal/application/service/relay_literal_identifier_fusion_test.go",
       "sha256": "695002806b777095a475189db396c02baf6dad375a9e2ee04824171824658df1"
+    },
+    {
+      "file": "patches/relay_xml_encoded_comparison_test.go",
+      "target": "internal/application/repository/retriever/sqlite/relay_xml_encoded_comparison_test.go",
+      "sha256": "c51360dd7aebdba1a281b9e1e7980805c0c5695de78e87176126efdbef9506c9"
+    },
+    {
+      "file": "patches/relay_xml_encoded_fusion_test.go",
+      "target": "internal/application/service/relay_xml_encoded_fusion_test.go",
+      "sha256": "30de9aab2747ef3830c36cd29ce0f3c48e831bd5baca1d7b6548a98514708308"
     }
   ]
 }

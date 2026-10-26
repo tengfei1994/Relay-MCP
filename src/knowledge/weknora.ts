@@ -82,6 +82,8 @@ export interface WeKnoraSearchInput {
   /** An explicit array is an authorization scope, including [] (no documents). */
   knowledgeIds?: string[];
   limit?: number;
+  /** Product source search counts documents; ordinary retrieval continues counting chunks. */
+  distinctDocuments?: boolean;
   vectorThreshold?: number;
   keywordThreshold?: number;
   rerank?: boolean;
@@ -307,7 +309,7 @@ export class WeKnoraClient {
     const scope = resolveScope(input);
     if (scope.documentsScoped && !scope.knowledgeIds.length) return { retrievalRunId: randomUUID(), references: [] };
     if (!scope.documentsScoped && !scope.knowledgeBaseIds.length) throw new WeKnoraError("invalid_response", "WeKnora search requires an explicit knowledge scope");
-    const body: Record<string, unknown> = { query, match_count: scope.metadataFilters.length ? Math.min(200, limit * 3) : limit };
+    const body: Record<string, unknown> = { query, match_count: input.distinctDocuments ? 200 : scope.metadataFilters.length ? Math.min(200, limit * 3) : limit };
     // Upstream unions KBs and documents. A document allowlist must NEVER carry KB ids.
     if (scope.documentsScoped) body.knowledge_ids = scope.knowledgeIds;
     else if (scope.knowledgeBaseIds.length === 1) body.knowledge_base_id = scope.knowledgeBaseIds[0];
@@ -347,7 +349,7 @@ export class WeKnoraClient {
     const references = mapWeKnoraReferences(rows, runId, input.documentMetadata)
       .filter((reference) => matchesMetadataFilters(reference, scope.metadataFilters))
       .filter((reference) => {
-        const identity = `${reference.documentId}:${reference.chunkId}`;
+        const identity = input.distinctDocuments ? reference.documentId : `${reference.documentId}:${reference.chunkId}`;
         if (seen.has(identity)) return false;
         seen.add(identity); return true;
       })

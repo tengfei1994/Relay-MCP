@@ -142,7 +142,7 @@ export async function searchProductBackend(store: KnowledgeStore, input: Product
   // Unqueried listings are control-plane summaries; content is always read from the selected engine.
   if (!input.query?.trim()) return rows.slice(0, limit).map(row => dto(row));
   const byExternalId = new Map(rows.map(row => [String(row.external_document_id), row]));
-  const result = await engine(() => control.client.search({ query: input.query!.trim(), knowledgeIds: [...byExternalId.keys()], limit: Math.min(100, limit),
+  const result = await engine(() => control.client.search({ query: input.query!.trim(), knowledgeIds: [...byExternalId.keys()], limit: Math.min(200, limit), distinctDocuments: true,
     documentMetadata: Object.fromEntries(rows.map(row => [String(row.external_document_id), metadata(row)])) }));
   if (result.degraded) throw new WeKnoraError("unavailable", "Product Knowledge search is degraded; no local fallback was used");
   assertScope(store, input);

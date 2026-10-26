@@ -144,7 +144,8 @@ export class EngineWikiService {
     const sources = [...this.sources(storedStrings(row.source_refs_json), scope), ...this.sources(strings(remote.source_refs), scope, true)];
     const byId = new Map(sources.map(source => [String(source.row.id), source]));
     const knownChunks = new Set([...byId.values()].flatMap(source => source.chunks));
-    if (strings(remote.chunk_refs).some(chunk => !knownChunks.has(chunk))) throw new WikiSourceError("Wiki chunk citation is unknown or outside the authorized source documents");
+    const citedChunks = new Set(strings(remote.chunk_refs));
+    if ([...citedChunks].some(chunk => !knownChunks.has(chunk))) throw new WikiSourceError("Wiki chunk citation is unknown or outside the authorized source documents");
     if (row.status === "published" && Number(row.current_revision) !== currentRevision && !this.reviewer(actorId, scope.projectId)) throw new Error("Wiki revision has changed and requires review");
     const status = row.status === "published" && Number(row.current_revision) !== currentRevision ? "draft" : row.status as WikiPageStatus;
     safeContent({ title: remote.title, body: remote.content });
@@ -157,7 +158,7 @@ export class EngineWikiService {
       citations: [...byId.values()].map(({ row: source, chunks }) => ({
         documentId: String(source.id), title: String(source.title), sourceLocator: optional(source.source_path),
         sourceSha256: optional(source.raw_sha256) ?? optional(source.normalized_content_sha256),
-        productVersion: optional(source.product_version), topicId: optional(source.topic_id), chunkIds: [...chunks],
+        productVersion: optional(source.product_version), topicId: optional(source.topic_id), chunkIds: chunks.filter(chunk => citedChunks.has(chunk)),
       })),
     };
   }

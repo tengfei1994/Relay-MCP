@@ -72,6 +72,12 @@ if ! go test -p 2 ./internal/application/service -run 'TestRelayKeywordFirstRRF|
   exit 1
 fi
 printf 'Keyword-first RRF defaults and explicit-setting regressions passed\n'
+GROUNDING_TEST_LOG="$BUILD_ROOT/wiki-retrieval-tests.log"
+if ! go test -p 2 -tags sqlite_fts5 ./internal/application/service ./internal/application/service/chat_pipeline ./internal/application/repository/retriever/sqlite -count=1 >"$GROUNDING_TEST_LOG" 2>&1; then
+  echo "Wiki grounding and source-aware retrieval regressions failed; inspect private build log: $GROUNDING_TEST_LOG" >&2
+  exit 1
+fi
+printf 'Wiki grounding, source-boundary and stable-ranking regression suites passed\n'
 LDFLAGS="-w -s -X github.com/Tencent/WeKnora/internal/handler.Version=$VERSION -X github.com/Tencent/WeKnora/internal/handler.Edition=lite -X github.com/Tencent/WeKnora/internal/handler.CommitID=$COMMIT -X github.com/Tencent/WeKnora/internal/handler.GoVersion=$GO_VERSION -X google.golang.org/protobuf/reflect/protoregistry.conflictPolicy=warn"
 go build -p 2 -tags sqlite_fts5 -ldflags "$LDFLAGS" -o "$BUILD_ROOT/WeKnora-lite" ./cmd/server
 BUNDLE="$BUILD_ROOT/bundle"
@@ -85,7 +91,7 @@ cp "$SCRIPT_DIR/upstream-lock.json" "$BUNDLE/relay-upstream-lock.json"
 cp "$SCRIPT_DIR/patches/"* "$BUNDLE/relay-patches/"
 bash scripts/copy-licenses.sh "$BUNDLE"
 node "$SCRIPT_DIR/7zip-install.mjs" "$BUNDLE/tools/7zip"
-python3 - "$BUNDLE" "$SCRIPT_DIR/upstream-lock.json" "$TEST_LOG" "$CONTENT_TEST_LOG" "$RETRY_TEST_LOG" "$RETRY_OPTIONS_PROOF" "$RRF_TEST_LOG" <<'PY'
+python3 - "$BUNDLE" "$SCRIPT_DIR/upstream-lock.json" "$TEST_LOG" "$CONTENT_TEST_LOG" "$RETRY_TEST_LOG" "$RETRY_OPTIONS_PROOF" "$RRF_TEST_LOG" "$GROUNDING_TEST_LOG" <<'PY'
 import hashlib,json,pathlib,sys
 root=pathlib.Path(sys.argv[1]); lock=json.loads(pathlib.Path(sys.argv[2]).read_text())
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
@@ -115,6 +121,11 @@ rrf_proof={'schemaVersion':1,'status':'passed','policy':'relay-keyword-first-rrf
        'partialExplicitLegacyFallbackPreserved':True,'rrfKUnchanged':True,
        'fusionMathUnchanged':True,'tenantConfigMutations':0,'modelCalls':0,'relayPatches':patches}
 (root/'relay-keyword-first-rrf-proof.json').write_text(json.dumps(rrf_proof,indent=2)+'\n')
+grounding_proof={'schemaVersion':1,'status':'passed','policy':'relay-wiki-grounding-source-aware-retrieval-v1',
+       'binarySha256':sha(root/'WeKnora-lite'),'testLogSha256':sha(pathlib.Path(sys.argv[8])),
+       'suite':'go test -p 2 -tags sqlite_fts5 ./internal/application/service ./internal/application/service/chat_pipeline ./internal/application/repository/retriever/sqlite -count=1',
+       'modelCalls':0,'relayPatches':patches}
+(root/'relay-wiki-retrieval-proof.json').write_text(json.dumps(grounding_proof,indent=2)+'\n')
 files={str(p.relative_to(root)).replace('\\','/'):sha(p) for p in sorted(root.rglob('*')) if p.is_file()}
 version=max(int(p.name.split('_')[0]) for p in (root/'migrations/sqlite').glob('*.up.sql'))
 manifest={'schemaVersion':1,'version':lock['version'],'sourceCommit':lock['sourceCommit'],'sourceArchiveSha256':lock['sourceArchiveSha256'],

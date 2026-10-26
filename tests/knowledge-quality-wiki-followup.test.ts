@@ -34,3 +34,18 @@ test('finite long evidence explanations retain complete text with an explicitly 
  rows.paragraphs[1].reason='x'.repeat(4097);assert.equal(validateFollowup(plan,JSON.stringify(rows),'stop').complete,false);
  rows.paragraphs[1].reason='Evidence explanation. '.repeat(40);rows.paragraphs[1].claims[0].evidence[0].sha256='wrong';assert.equal(validateFollowup(plan,JSON.stringify(rows),'stop').complete,false);
 });
+
+test('valid review coverage never becomes source-support pass while factual claims remain unresolved',()=>{
+ const plan=buildFollowupPlan(page);
+ const checked=validateFollowup(plan,JSON.stringify(response(plan)),'stop');
+ assert.equal(checked.complete,true);
+ assert.equal(checked.sourceSupportPassed,false);
+ const supportedPlan=buildFollowupPlan({...page,body:'# Heading\n\nReview requires confirmation.'});
+ const supported=validateFollowup(supportedPlan,JSON.stringify(response(supportedPlan)),'stop');
+ assert.equal(supported.complete,true);
+ assert.equal(supported.sourceSupportPassed,true);
+ const headingPlan=buildFollowupPlan({...page,body:'# Heading'});
+ assert.equal(validateFollowup(headingPlan,JSON.stringify(response(headingPlan)),'stop').sourceSupportPassed,false);
+ const invalid=response(supportedPlan);invalid.paragraphs[1].claims[0].evidence[0].sha256='wrong';
+ assert.equal(validateFollowup(supportedPlan,JSON.stringify(invalid),'stop').sourceSupportPassed,false);
+});

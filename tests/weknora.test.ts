@@ -189,3 +189,19 @@ test("document get on a missing document is classified as not_found", async () =
   const client = new WeKnoraClient({ baseUrl: BASE, fetchImpl: (async () => jsonResponse({ success: false, error: { code: 1003, message: "not found" } }, { status: 404 })) as typeof fetch });
   await assert.rejects(() => client.getDocument("missing"), (error: unknown) => error instanceof WeKnoraError && error.code === "not_found" && error.status === 404);
 });
+
+test("document-result budgets preserve distinct sources after many same-source chunks", async () => {
+  const rows = [
+    ...Array.from({ length: 180 }, (_, i) => ({ id: "a" + i, knowledge_id: "doc-a", content: "Source A " + i, score: 1 - i / 1000, chunk_type: "text" })),
+    { id: "b", knowledge_id: "doc-b", content: "Source B", score: 0.7, chunk_type: "text" },
+  ];
+  const client = new WeKnoraClient({ baseUrl: BASE, fetchImpl: async (_url, init) => {
+    const request = JSON.parse(String(init?.body));
+    return jsonResponse({ success: true, data: rows.slice(0, request.match_count) });
+  } });
+  const sources = await client.search({ query: "configuration", knowledgeIds: ["doc-a", "doc-b"], limit: 2, distinctDocuments: true });
+  assert.deepEqual(sources.references.map(ref => [ref.documentId, ref.chunkId, ref.snippet, ref.score]),
+    [["doc-a", "a0", "Source A 0", 1], ["doc-b", "b", "Source B", 0.7]]);
+  const chunks = await client.search({ query: "configuration", knowledgeIds: ["doc-a", "doc-b"], limit: 2 });
+  assert.deepEqual(chunks.references.map(ref => ref.chunkId), ["a0", "a1"]);
+});

@@ -30,3 +30,14 @@ The benchmark creates a temporary isolated Knowledge DB and deletes it after the
 ## Release evidence
 
 Attach the JSON benchmark report and golden-set evaluation output to the release/PR. Compare the golden-set version, metrics and forbidden-return count with the previous accepted baseline. A quality reduction, a nonzero forbidden return, or P95 threshold breach blocks release until explicitly investigated and documented.
+
+
+## Source boundaries repaired on 2026-10-26
+
+Product search now counts distinct documents within the engine's bounded 200-candidate response. Ordinary Knowledge retrieval keeps chunk-level limits. This avoids using a source-result slot repeatedly for one document; it does not promise exhaustive recall beyond the candidate pool.
+
+The pinned engine keeps identical or overlapping passages from different source documents separately citable. Same-source deduplication remains enabled. Keyword cutoff ties and fusion ties use stable chunk identity; vector-neighbor membership at an exact TopK distance tie is unchanged.
+
+Keep occurrence-based source metrics separate from semantic relevance. The frozen 55-case fixture and its labels remain unchanged. On 2026-10-26 the owner confirmed that real semantic Precision@10 and end-to-end latency thresholds have not yet been agreed, so #55/#56 retain their closure gates. The existing hot-cache FTS P95 gate above is unchanged.
+
+An automated Wiki review can have complete paragraph coverage and still find insufficient or contradicted claims. Source-support success is reported separately, requires at least one supported factual paragraph and no invalid/unresolved classification, and never constitutes expert factual approval or automatic publication.

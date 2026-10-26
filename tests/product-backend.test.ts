@@ -8,6 +8,7 @@ import { createKnowledgeStore, type KnowledgeStore } from "../src/knowledge/stor
 import { MigrationController } from "../src/knowledge/migration-control.ts";
 import { searchProductBackend, getProductBackend, diffProductBackend, listEngineProductBackend, type ProductBackendControlPlane } from "../src/knowledge/product-backend.ts";
 import {updateProductDocumentLifecycle,correctProductMetadata} from "../src/knowledge/knowledge-products.ts";
+import { WeKnoraClient } from "../src/knowledge/weknora.ts";
 import type { KnowledgeReference, WeKnoraDocumentRead, WeKnoraSearchInput } from "../src/knowledge/weknora.ts";
 
 const NOW = "2026-10-25T00:00:00.000Z";
@@ -256,4 +257,20 @@ test("Product read rechecks the normalized hash and ACL after the original-file 
     return result;
   };
   await assert.rejects(getProductBackend(store,{...scope,documentId:"good"},control),/denied/i);
+}));
+
+
+test("Product source limit is applied after real client chunk-to-document projection", () => fixture(async ({ store, control, select }) => {
+  mapped(store, "dense"); mapped(store, "other"); select();
+  const chunks = Array.from({ length: 180 }, (_, i) => "dense-" + i);
+  store.db.prepare("UPDATE knowledge_weknora_documents SET external_chunk_ids_json=? WHERE id='dense'").run(JSON.stringify(chunks));
+  const candidates = [...chunks.map((id, i) => ({ id, knowledge_id: "ext-dense", content: "Dense source " + i, chunk_type: "text", score: 1 - i / 1000 })),
+    { id: "chunk-other", knowledge_id: "ext-other", content: "Independent source", chunk_type: "text", score: 0.7 }];
+  control.client = new WeKnoraClient({ baseUrl: "https://engine.invalid", fetchImpl: async (_url, init) => {
+    const request = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ success: true, data: candidates.slice(0, request.match_count) }), { headers: { "content-type": "application/json" } });
+  } });
+  const results = await searchProductBackend(store, { ...scope, query: "configuration", limit: 2 }, control);
+  assert.deepEqual(results.map(row => [row.id, row.snippet]), [["dense", "Dense source 0"], ["other", "Independent source"]]);
+  assert.equal((results[0].citations as any[])[0].chunkId, "dense-0");
 }));

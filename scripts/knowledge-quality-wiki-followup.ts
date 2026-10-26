@@ -52,7 +52,10 @@ export function validateFollowup(plan:ReturnType<typeof buildFollowupPlan>,raw:s
   }
   if(seen.size!==expected.size||paragraphs.length!==expected.size||[...expected].some(id=>!seen.has(id)))flags.push('paragraph_coverage_incomplete');
  }catch{flags.push('invalid_review_json');}
- return {complete:flags.length===0,flags:[...new Set(flags)],paragraphs};
+ // This is an automated consistency finding, never expert factual approval.
+ const sourceSupportPassed=flags.length===0&&paragraphs.some(p=>p.valid&&p.classification==='supported')&&
+  paragraphs.every(p=>p.valid&&['supported','nonfactual'].includes(p.classification));
+ return {complete:flags.length===0,sourceSupportPassed,flags:[...new Set(flags)],paragraphs};
 }
 
 const PROVIDER='qwen-wiki-nonprod';
@@ -79,14 +82,14 @@ async function main(){
   // No credentials, writable database, or provider resolution in offline mode.
   const results=plan.pages.map(frozen=>{
    const page=buildFollowupPlan(frozen),key=sha(page.id),responsePath=path.join(directory,'response-'+key+'.json');requireQuality(page.prompt===frozen.prompt,'plan_changed');
-   if(!fs.existsSync(responsePath))return {pageSha256:key,complete:false,flags:['response_unavailable_no_retry'],paragraphs:page.paragraphs.length,validParagraphs:0,classifications:{} as Record<string,number>,insufficientReasons:{} as Record<string,number>,truncatedReasonPreviews:0};
+   if(!fs.existsSync(responsePath))return {pageSha256:key,complete:false,sourceSupportPassed:false,flags:['response_unavailable_no_retry'],paragraphs:page.paragraphs.length,validParagraphs:0,classifications:{} as Record<string,number>,insufficientReasons:{} as Record<string,number>,truncatedReasonPreviews:0};
    const response=JSON.parse(fs.readFileSync(responsePath,'utf8')) as {text:string;finishReason?:string},checked=validateFollowup(page,response.text,response.finishReason);
    const previous=JSON.parse(fs.readFileSync(path.join(directory,'review-'+key+'.json'),'utf8')) as {flags:string[]};
-   if(previous.flags.includes('page_or_source_changed_during_review')){checked.complete=false;checked.flags.push('page_or_source_changed_during_review');}
+   if(previous.flags.includes('page_or_source_changed_during_review')){checked.complete=false;checked.sourceSupportPassed=false;checked.flags.push('page_or_source_changed_during_review');}
    savePrivate(path.join(directory,'review-v2-'+key+'.json'),checked);
-   return {pageSha256:key,complete:checked.complete,flags:checked.flags,paragraphs:page.paragraphs.length,validParagraphs:checked.paragraphs.filter(p=>p.valid).length,classifications:checked.paragraphs.filter(p=>p.valid).reduce((o,p)=>({...o,[p.classification]:(o[p.classification]??0)+1}),{} as Record<string,number>),insufficientReasons:checked.paragraphs.filter(p=>p.valid&&p.classification==='insufficient').reduce((o,p)=>({...o,[p.reasonCode]:(o[p.reasonCode]??0)+1}),{} as Record<string,number>),truncatedReasonPreviews:checked.paragraphs.filter(p=>p.reasonPreviewTruncated).length};
+   return {pageSha256:key,complete:checked.complete,sourceSupportPassed:checked.sourceSupportPassed,flags:checked.flags,paragraphs:page.paragraphs.length,validParagraphs:checked.paragraphs.filter(p=>p.valid).length,classifications:checked.paragraphs.filter(p=>p.valid).reduce((o,p)=>({...o,[p.classification]:(o[p.classification]??0)+1}),{} as Record<string,number>),insufficientReasons:checked.paragraphs.filter(p=>p.valid&&p.classification==='insufficient').reduce((o,p)=>({...o,[p.reasonCode]:(o[p.reasonCode]??0)+1}),{} as Record<string,number>),truncatedReasonPreviews:checked.paragraphs.filter(p=>p.reasonPreviewTruncated).length};
   });
-  const report={kind:'offline_followup_revalidation_not_human_gold_standard',planSha256:sha(fs.readFileSync(planPath,'utf8')),modelCalls:0,reasonHardLimit:4096,displayPreviewLimit:500,automaticPublication:false,completePages:results.filter(r=>r.complete).length,validParagraphs:results.reduce((n,r)=>n+r.validParagraphs,0),classifications:results.reduce((o,r)=>{for(const [key,n] of Object.entries(r.classifications))o[key]=(o[key]??0)+n;return o;},{} as Record<string,number>),results};
+  const report={kind:'offline_followup_revalidation_not_human_gold_standard',planSha256:sha(fs.readFileSync(planPath,'utf8')),modelCalls:0,reasonHardLimit:4096,displayPreviewLimit:500,automaticPublication:false,completePages:results.filter(r=>r.complete).length,sourceConsistentPages:results.filter(r=>r.sourceSupportPassed).length,validParagraphs:results.reduce((n,r)=>n+r.validParagraphs,0),classifications:results.reduce((o,r)=>{for(const [key,n] of Object.entries(r.classifications))o[key]=(o[key]??0)+n;return o;},{} as Record<string,number>),results};
   console.log(JSON.stringify({status:'offline_followup_validated',report:savePrivate(output,report),completePages:report.completePages,validParagraphs:report.validParagraphs,classifications:report.classifications,modelCalls:0}));return;
  }
  const repo=isolatedPath(args.get('--repo'));
@@ -109,14 +112,14 @@ async function main(){
    try{
     const response=await handle.chat([{role:'user',content:page.prompt}],page.maxTokens,{type:'json_object'});savePrivate(path.join(directory,'response-'+key+'.json'),response);
     const checked=validateFollowup(page,response.text,response.finishReason),after=readSnapshot(relayPath,enginePath,plan.kb).find(p=>p.id===page.id);
-    if(!after||after.guardSha256!==page.guardSha256){checked.complete=false;checked.flags.push('page_or_source_changed_during_review');}
+    if(!after||after.guardSha256!==page.guardSha256){checked.complete=false;checked.sourceSupportPassed=false;checked.flags.push('page_or_source_changed_during_review');}
     savePrivate(path.join(directory,'review-'+key+'.json'),checked);
-    results.push({pageSha256:key,bodySha256:sha(page.body),complete:checked.complete,flags:checked.flags,paragraphs:page.paragraphs.length,validParagraphs:checked.paragraphs.filter(p=>p.valid).length,classifications:checked.paragraphs.filter(p=>p.valid).reduce((o,p)=>({...o,[p.classification]:(o[p.classification]??0)+1}),{} as Record<string,number>),insufficientReasons:checked.paragraphs.filter(p=>p.valid&&p.classification==='insufficient').reduce((o,p)=>({...o,[p.reasonCode]:(o[p.reasonCode]??0)+1}),{} as Record<string,number>),tokenUsage:response.tokenUsage});
+    results.push({pageSha256:key,bodySha256:sha(page.body),complete:checked.complete,sourceSupportPassed:checked.sourceSupportPassed,flags:checked.flags,paragraphs:page.paragraphs.length,validParagraphs:checked.paragraphs.filter(p=>p.valid).length,classifications:checked.paragraphs.filter(p=>p.valid).reduce((o,p)=>({...o,[p.classification]:(o[p.classification]??0)+1}),{} as Record<string,number>),insufficientReasons:checked.paragraphs.filter(p=>p.valid&&p.classification==='insufficient').reduce((o,p)=>({...o,[p.reasonCode]:(o[p.reasonCode]??0)+1}),{} as Record<string,number>),tokenUsage:response.tokenUsage});
    }catch{results.push({pageSha256:key,status:'failed_no_additional_call',flags:['private_response_or_transport_failure']});}
    console.log(JSON.stringify({status:'followup_progress',pages:results.length,logicalCalls:calls}));
   }
  }finally{newAdmissions=ledgerRows().filter(r=>!initialAdmissions.has(r.id));savePrivate(path.join(directory,'ledger-'+sha(output).slice(0,16)+'.json'),{providerId:PROVIDER,logicalAttempts:calls,newAdmissions,admissionCount:newAdmissions.length,concurrentCallsCouldAffectDelta:true});db.close();}
- const report={kind:'automatic_source_consistency_not_human_gold_standard',planSha256:sha(fs.readFileSync(planPath,'utf8')),oldPlanSha256:plan.oldPlanSha256,logicalCalls:calls,observedAdmissionDelta:newAdmissions.length,maximumNewLogicalCalls:10,maximumCumulativeLogicalCalls:27,embeddingCalls:0,wikiMutations:0,automaticPublication:false,completePages:results.filter(r=>r.complete===true).length,results};
+ const report={kind:'automatic_source_consistency_not_human_gold_standard',planSha256:sha(fs.readFileSync(planPath,'utf8')),oldPlanSha256:plan.oldPlanSha256,logicalCalls:calls,observedAdmissionDelta:newAdmissions.length,maximumNewLogicalCalls:10,maximumCumulativeLogicalCalls:27,embeddingCalls:0,wikiMutations:0,automaticPublication:false,completePages:results.filter(r=>r.complete===true).length,sourceConsistentPages:results.filter(r=>r.sourceSupportPassed===true).length,results};
  console.log(JSON.stringify({status:'followup_complete',report:savePrivate(output,report),logicalCalls:calls,completePages:report.completePages}));
 }
 if(process.argv[1]&&fileURLToPath(import.meta.url)===fs.realpathSync(process.argv[1]))main().catch(safeFailure);

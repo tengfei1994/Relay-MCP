@@ -443,3 +443,19 @@ test('global Wiki rechecks caller project ACL and source scope after the upstrea
   remote.onResponse(() => store.db.prepare("UPDATE knowledge_weknora_documents SET project_id='p2' WHERE id='global'").run());
   await assert.rejects(wiki.get({ actorId: 7, id: page.id, projectId: 'p1', environment: 'nonprod' }), /source|scope|citation/i);
 }));
+
+
+test("Wiki chunk citations reflect actual page references, not all authorized source chunks", () => fixture(async ({ store, wiki, remote }) => {
+  document(store);
+  store.db.prepare("UPDATE knowledge_weknora_documents SET external_chunk_ids_json=? WHERE id='doc-1'")
+    .run(JSON.stringify(["chunk-doc-1", "uncited-chunk"]));
+  const page = await create(wiki);
+  const upstreamPage = [...remote.pages.values()][0];
+  upstreamPage.chunk_refs = ["chunk-doc-1"];
+  const cited = await wiki.get({ actorId: 7, id: page.id });
+  assert.deepEqual(cited.citations[0].chunkIds, ["chunk-doc-1"]);
+  upstreamPage.chunk_refs = [];
+  const documentOnly = await wiki.get({ actorId: 7, id: page.id });
+  assert.deepEqual(documentOnly.sourceRefs, ["doc-1"]);
+  assert.deepEqual(documentOnly.citations[0].chunkIds, []);
+}));

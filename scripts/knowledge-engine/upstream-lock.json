@@ -139,6 +139,82 @@
           "afterSha256": "5952b83e8e9ce18ea7e7228d1da017086149d4729c43cd4d9f398f6ae3b6b755"
         }
       ]
+    },
+    {
+      "id": "0005-wiki-source-grounding",
+      "file": "patches/0005-wiki-source-grounding.patch",
+      "sha256": "e8daee6e7ca03dabc30e089cd5ce824ba211b01f7a5e4602bf3ad0993ff16b99",
+      "targets": [
+        {
+          "path": "internal/application/service/wiki_ingest.go",
+          "beforeSha256": "bc4f5c9cf5d5bd4c8759f831baff8d9ff1e1d094d7e08a9de4a18cf051b653b3",
+          "afterSha256": "a3394e8a3000a39c4801c18bec3a8124ebc33ce20878867a72cd62aa847cedd4"
+        },
+        {
+          "path": "internal/application/service/wiki_ingest_cite.go",
+          "beforeSha256": "d4c2a58862f2117a7a9eb220a8953f6aabcce4b03a688961b0001f88606f09df",
+          "afterSha256": "db368d00a4d0fd408763cef041353509682dc17c01e6f85fe603d613c5f4dce2"
+        },
+        {
+          "path": "internal/application/service/wiki_ingest_batch.go",
+          "beforeSha256": "91401c4fefae926c0b3b7dae87277099e5c71886de97a01ac638d881fe520432",
+          "afterSha256": "7f420a148c29f213a5dd286890bb79ab9348c91344e7c3fbafc1cfd7014a6554"
+        },
+        {
+          "path": "internal/application/service/wiki_ingest_reduce_row_guard_test.go",
+          "beforeSha256": "acd63f3a5e09ed4c65b87fb06409118e6bdfdd69ee63e5c41ea8c038e410bf52",
+          "afterSha256": "0fc4ee0ff5e4d1b95fc3d5ccea70f5936c0a39f65909baaab3079a0841558d30"
+        },
+        {
+          "path": "internal/agent/prompts_wiki.go",
+          "beforeSha256": "5df4d16cbf4fadb59d14bc7277ebddb2c03803d45db0b01860dd54503eb6a3fc",
+          "afterSha256": "e36d34479ae827e77d1f7a383309b5c8c3bc63bdefc47a81f9ff5f3c5ea99466"
+        }
+      ]
+    },
+    {
+      "id": "0006-source-aware-retrieval",
+      "file": "patches/0006-source-aware-retrieval.patch",
+      "sha256": "ce7681fce926b55484b0ce874640fcaeaaffa5be4732a50eb88378c4f4f00f89",
+      "targets": [
+        {
+          "path": "internal/application/repository/retriever/sqlite/repository.go",
+          "beforeSha256": "d457744742633af3774822e10f47798579c8f65198a1e9c59640d5dc0a3be392",
+          "afterSha256": "9ee3bd97d1e6e05c9cc071338d902956c13fe3ef2b8e48ec228cfe3e029041c3"
+        },
+        {
+          "path": "internal/application/service/chat_pipeline/context_images_test.go",
+          "beforeSha256": "7929466b7f4745886ce008ad21ad9899ec54a55f7ec7fe878fbe0d2ead8447f1",
+          "afterSha256": "c022d64e868fa1f4706526bb828b8c7bf3882753bc499a58780fd055ac257a2c"
+        },
+        {
+          "path": "internal/application/service/chat_pipeline/search.go",
+          "beforeSha256": "44d399f9374be25dbb8ea0901daf03b16dfa7b0c93c4b0d063728ea39a962fa9",
+          "afterSha256": "4096763f24ffb61c9f5a749daf3fa009d3b9dd0e998c9492944938796284e44c"
+        },
+        {
+          "path": "internal/application/service/knowledgebase_search_fusion.go",
+          "beforeSha256": "1ea5345c28a00ede6954030ed2edf0b1c614a7314b591a286366bbe4f7afcff4",
+          "afterSha256": "fe1c376e661c4b306d202330973410b4a7dc0d90e5a11f2d778a6327ea12ef97"
+        }
+      ]
+    },
+    {
+      "id": "0007-hermetic-service-fixtures",
+      "file": "patches/0007-hermetic-service-fixtures.patch",
+      "sha256": "a924f686ddb7e2cdae4a5150a476001f596dd59ca84f2aef20edeed07babe9fa",
+      "targets": [
+        {
+          "path": "internal/application/service/tenant_sandbox_config_test.go",
+          "beforeSha256": "01f6baffae1c654f68ff60a4716f7b819abe98dc75e73b3ea556860d79d53fbf",
+          "afterSha256": "8f81988cf67fef45dcabec744d5b64052763f964866919db5b362b4df53eda4d"
+        },
+        {
+          "path": "internal/application/service/mcp_service_test.go",
+          "beforeSha256": "5c8454c219ceab36620c41a4282dbaf07f1053cc3cf30018f438cbf9511f8946",
+          "afterSha256": "9253bcf857ff125fdbab550c822c4f6a091e95bfbc2eb56b020476105a522bb5"
+        }
+      ]
     }
   ],
   "regressionTests": [
@@ -166,6 +242,26 @@
       "file": "patches/relay_keyword_first_rrf_test.go",
       "target": "internal/application/service/relay_keyword_first_rrf_test.go",
       "sha256": "ae92ed4335d919a791f048c66174f5619beb65ffc224ec1d33af7ba5d4bf214e"
+    },
+    {
+      "file": "patches/relay_wiki_source_grounding_test.go",
+      "target": "internal/application/service/relay_wiki_source_grounding_test.go",
+      "sha256": "d4d1471bbb3fae73c5faff83aada6544cbd67777383f409f47447ee9dabba5d8"
+    },
+    {
+      "file": "patches/relay_source_aware_retrieval_test.go",
+      "target": "internal/application/service/chat_pipeline/relay_source_aware_retrieval_test.go",
+      "sha256": "99d74ad9bbe41ac9eb72218d11ce36ced4d29e2e15c1f95c504a8d8af3a57b72"
+    },
+    {
+      "file": "patches/relay_retrieval_fusion_ties_test.go",
+      "target": "internal/application/service/relay_retrieval_fusion_ties_test.go",
+      "sha256": "a3f33a5388f59a71d15698190645ab41ff3dc4d640798287263e12c6bc9a00fb"
+    },
+    {
+      "file": "patches/relay_retrieval_sqlite_ties_test.go",
+      "target": "internal/application/repository/retriever/sqlite/relay_retrieval_sqlite_ties_test.go",
+      "sha256": "510bf46fd25a637fd7fb5a7af02e69611c5e242f82dc671e5d472c3b78e603c2"
     }
   ]
 }

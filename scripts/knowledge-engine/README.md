@@ -108,3 +108,24 @@ Fusion math and source aggregation are unchanged. The build runs behavioral
 fusion regressions and records `relay-keyword-first-rrf-proof.json`; the five-case
 causal probe is diagnostic evidence, not a pass of the frozen 55-case evaluation.
 This patch does not write tenant configuration or re-embed existing documents.
+
+The subsequent pinned patches enforce raw-source Wiki evidence and source-aware
+retrieval boundaries. Summary replacement carries only current bounded raw input
+and its actual chunk references; missing or ambiguous evidence preserves the old
+draft. Generated summaries do not become authority for the additions editor.
+These checks do not establish factual entailment or automatically publish Wiki.
+
+XML structure, named angle entities and whole underscore identifiers retain
+their declared meaning through SQLite candidate selection and keyword fusion.
+Comparison views preserve stored/returned source bytes, raw BM25 and configured
+RRF weights. The tests exercise real SQLite and both keyword-only/hybrid paths,
+including document, enabled-chunk and namespace/case boundaries.
+
+Parameterized GORM diagnostics also cover the supported Scan-recorder path.
+They protect bound values, not direct SQL literals or database-origin error text.
+Old logs remain retained and private. The fresh build runs complete affected Go
+packages with SQLite FTS5 and records `relay-wiki-retrieval-proof.json`, bound to
+the binary and patch hashes. Offline fixtures replace accidental test-network
+dependencies; live quality acceptance remains a separate fixed-set evaluation.
+See the [nonproduction follow-up report](../../docs/verification/wiki-retrieval-followup-20261026.md)
+for measured results and the still-open source-support and release gates.

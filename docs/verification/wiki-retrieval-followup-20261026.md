@@ -1,78 +1,135 @@
-# Wiki source and XML retrieval follow-up — 2026-10-26
+# Wiki sources and retrieval follow-up — 2026-10-26
 
-This continues [draft PR #62](https://github.com/tengfei1994/Relay-MCP/pull/62) on #61 in nonproduction. Fixed55 queries, occurrence references, corpus/version/ACL filters, metrics and closure gates remain unchanged. The owner has not agreed semantic Precision@10/end-to-end P95 thresholds; #55/#56 and aggregates remain open.
+This records the additional nonproduction work in [draft PR #62](https://github.com/tengfei1994/Relay-MCP/pull/62), stacked on #61. Production is unchanged. Neither PR is merged. The fixed 55 queries, occurrence references, source manifest, scope filters and closure gates remain unchanged. The owner confirmed that semantic Precision@10 and end-to-end P95 targets have not been agreed; #55/#56 and aggregate #43/#49/#50 remain open.
 
-## Proven causes and repairs
+## Repairs and their evidence
 
-Implementation18c1b8f follows the [previous evidence](wiki-retrieval-quality-20261026.md).
+The first follow-up, `18c1b8f`, fixes the following demonstrated defects:
 
-- **Wiki summary provenance:** the map stage omitted summary chunk IDs and the reducer explicitly cleared them. Summaries now use only bounded current raw text input (32768runes, final chunk may contribute a prefix), record exactly supplied chunk IDs and replace stale source/chunk references. Missing evidence preserves the old draft. Exact document/tenant/enabled/text ownership and ambiguous-ID guards prevent foreign evidence from satisfying another source.
-- **Wiki authority:** additions no longer send generated DocSummary framing to the editor. Generic policy prohibits inferring semantics/status/relationships from identifiers or reference-list membership/absence and removes the remaining SUMMARY minimum length. Raw input and entity matching remain distinct. Prompt instructions are not an entailment guarantee.
-- **XML:** explicit element syntax survived canonical/index storage but was flattened into ordinary prose terms. Structural preference now precedes the bounded SQLite candidate cutoff and survives keyword rank derivation through fusion. Tag names, case, namespace and boundaries are preserved; multiple tags are conjunctive, values are bound SQL parameters, ordinary lexical fallback remains. Raw BM25, RRF weights, vector ranks and final fusion formula are unchanged. The internal preference flag is omitted from JSON. Preference beyond the inspected order-preserving Product/no-rerank path is not claimed.
-- **SQL privacy:** managed INFO suppression did not stop GORM slow/error traces from expanding parameters. Parameterized runtime logging and GORM's supported once-installed Scan recorder filter retain placeholders and duration/row/error diagnostics. Bound values are protected; directly constructed SQL literals and database-origin error text are outside this filter. Old logs remain private and retained.
+- **Wiki provenance:** summary generation omitted chunk IDs and the reducer cleared them. Summaries now use bounded current raw input (32,768 runes), record exactly supplied chunk IDs and replace stale references. If evidence is missing, the prior draft is preserved. Tenant, document, enabled/text ownership and ambiguous-ID checks remain enforced.
+- **Wiki authority:** the additions editor no longer receives generated DocSummary framing. General instructions prohibit inferring operational semantics, status or relationships from identifiers or reference-list membership/absence. The remaining SUMMARY minimum length was removed. These instructions do not prove entailment.
+- **XML retrieval:** query-declared XML elements now receive structural preference before the bounded SQLite candidate cutoff, and this preference survives keyword rank derivation through both hybrid and keyword-only fusion. Element case, namespace, boundaries, attributes and conjunctions are tested. Broad lexical fallback, raw BM25, vector ranks, RRF weights and the final fusion formula remain unchanged. The internal preference flag is omitted from JSON.
+- **SQL logging:** slow/error GORM traces expanded bound parameters despite managed INFO suppression. Parameterized logging and the supported Scan-recorder filter now retain placeholders. Actual SQLite Info/Scan/slow/error/not-found regressions reproduced RED and pass GREEN. Direct SQL literals and database-origin error text remain outside this filter; historical private logs are retained.
 
-Eight actual-service Wiki regressions showed RED then GREEN. Real SQLite-to-fusion tests prove SQL-only ordering fails both hybrid and keyword-only paths; the full repair passes. Actual GORM SQLite tests independently reproduced and fixed Info, Scan, slow Warn, error and record-not-found value exposure. One prior injected regression deliberately changes from requiring generated summary context to forbidding it; every other raw-source/table/ref assertion remains.
+Eight actual-service Wiki regressions reproduced the provenance failure before repair. Real SQLite-to-fusion regressions prove that SQL-only ordering is insufficient. One earlier injected test deliberately changed from requiring generated summary context to forbidding it; its raw-source, table and reference assertions remain.
 
-All857 application tests pass (zero skips), standard build passes, Python22/22 and final installer/hash/privacy19/19 pass. A first sandbox run853/857 had exactly four Python child-spawn EPERM failures; retained logs and unchanged normal-permission rerun are recorded. Independent reviews found no demonstrated P1/P2 within the stated scopes. Fresh source build passed complete model/privacy/parser/retry/RRF/service/chat_pipeline/SQLite/types/container suites. All23 Git-index pinned assets (10patches/13testfiles) and145 bundle artifacts match SHA-256.
+`64be666` adds two further general repairs:
 
-## Deployment and bounded trial
+- Native Wiki requests temperature 0.3, but Relay dropped it before provider HTTP. Validated optional temperature and recognized explicit thinking controls now survive gateway, provider handle and serialization. Real HTTP-capture tests cover explicit zero/false and absent-field compatibility. An independently found array-valued thinking-type coercion defect was reproduced and fixed using strict string-enum validation. The native generic adapter may omit Thinking:false before Relay; no default is invented and actual thinking-disabled behavior is not claimed.
+- Whole underscore identifiers now retain their literal meaning instead of becoming unrelated FTS prose tokens. The preference is bounded and parameterized, survives cutoff/fusion and excludes paths, dotted filenames and numeric versions. No benchmark IDs, application-specific query strings, label changes or weight tuning were introduced. Cached-vector replay moved one expected VGL source from rank 10 to 3; this is diagnostic evidence, separate from the final HTTP run.
 
-Reversible deployment preserved all101 prior Wiki pages,7174mappings, native counts, model identity/configuration and current provider ledger before newQA. No production change or merge occurred.
+`635797d` adds `0012-xml-named-angle-comparison`. Three reference sources in the remaining version-filtered zero case contain encoded XML tags, contrary to the earlier diagnostic that they contained only partial query terms. All four reference sources have genuine raw or named-entity tag evidence. The patch creates an XML-comparison-only view for `&lt;`, `&gt;`, `&LT;` and `&GT;`; source/index bytes, identifier comparisons and BM25 are preserved. Real SQLite and fusion tests cover encoded tags, attributes, namespaces, conjunctions, ACL and enabled-document boundaries, and reject double/numeric/different mixed-case encodings. Cached replay still placed the four sources below the final top ten, so this correction alone is not a zero-recall success claim.
 
-| Artifact | SHA-256 |
+## Verification and deployment
+
+Application verification passed **861/861 tests**, zero skips, and the standard build. Python regressions passed **22/22**; installer, hash and privacy checks passed **19/19**. The initial sandbox run had four Python-spawn EPERM failures and the first 861-test run retained one unchanged five-second MCP-startup timeout. Normal-permission full reruns passed; the focused startup case also passed in 2.269 seconds. No timeout, skip or quality expectation was relaxed.
+
+A fresh checksum-verified upstream build passed complete model protocol/privacy, parser, retry, RRF, service, chat-pipeline, SQLite, types and container suites. All **29 Git-index pins** (12 patches and 17 Go regression assets) and **151 bundle artifacts** match SHA-256. Independent reviews found no remaining P1/P2 in the reviewed code and evaluation lifecycle changes.
+
+The final reversible deployment preserved all **126** existing Wiki pages, all mappings, engine counts, model identities/configuration and the **15,468 /125** provider ledger. Its first attempt failed the business-state assertion and rolled back. A read-only comparison confirmed all recorded business state matched the backup after rollback. The cause of that first transient assertion is unresolved. The unchanged assertion passed on the diagnostic retry; both failure and backup evidence remain retained.
+
+| Final deployment artifact | SHA-256 |
 | --- | --- |
-| Application archive | 8dda96f624b7a41ff32b474b8ab0ea125d4ac907f2114afebd34c842a6be6e8a |
-| Engine manifest | 15ca3b5c1f474535a905c3013323ac8c5cd62fa7ed5fd43c953fd6fbc7afed3b |
-| Engine binary | 5a9d4f3d7a852e2fed39091fce8be12139a1197c49ad48f3ce9bd26a1512fc58 |
-| Complete affected Go suites | ee485859ca3be70bcba5d3d040fd6063e915b3780ce3cdf47fd34a0d356588c8 |
-| Deployment proof | ef317844aec067f9253b4c27523cd063cbe5b9e509dc3743c0a8e3ee827767f8 |
-| Final MCP5/5 report | 4706c790ce165838bf2312b5183383b26e59d0d27baef60587bbba00c076de45 |
+| Application archive | b031dbba47eb43b5178a865506ed759252e68e438cb6047f75f8c2365378b773 |
+| Engine binary | eeff7b61f8300290638dc6fab881b71fa37827bfc33a9e64787a914a826dce2f |
+| Engine manifest | a6d885f57f32e408191c140e03c23c9874e9ab5b22e1a4adf435ca758a5d64ba |
+| Complete affected Go suites | 8becb1fa4745f1f5fa3465a3139319b8a6897d93e672324b736940ec660cbc24 |
+| Deployment proof | 8935af5d71baa514d84799b52829f000d102045928787ff25416ec45af5a5c3e |
+| Post-deployment MCP source/Memory/Evidence/ACL check | d8232c70d0396b313c019f8ce86626f97ee443f4051784010d49fd9f14b991eb |
 
-Auto-review initially rejected two diagnostic embedding calls twice without executing them, requesting explicit external-send authorization. The owner then explicitly approved the existing fixed55 query texts, identical839-character Wiki source and new draft/audit context to the existing maas.qianwenaiapi.com Flash/qwen-plus models, maximum60embedding/40Wiki logical admissions, existing200/hour ceiling, concurrency1/retry1 and cumulative16000embedding gate. Two missing diagnostic vectors were then captured privately. No new model/destination or ledger reset was introduced.
+The final MCP check found 121 tools and verified five actual Product body hashes, existing Memory/Evidence and foreign-user denial, with zero model admissions. The preceding full five-check MCP packet remains separate evidence: `4706c790ce165838bf2312b5183383b26e59d0d27baef60587bbba00c076de45`.
 
-The identical source and upload filename were submitted to a separate nativeQA base. Generation used17logical Wiki calls and2embedding calls, yielding12content pages/38paragraphs plus navigation. All12 passed explicit chunk-reference preflight. A20-generation allowance and independent watchdog bound work; the provider is stopped and draining before restoring the original200/hour policy. No prior page was edited or published. Frozen plan SHA8c2aeae5ac94085a126441ab32389f04a0dca34ca3774d692e13f58d63e64a19.
+## Authorized calls and evaluation controls
 
-The unchanged audit completed12calls:10completepage reviews, only **2/12** automatedsource-support passes, supported10/insufficient10/nonfactual16/invalid2. No contradicted or unassessed paragraphs were returned. This does not demonstrate factual improvement: the page/paragraph population differs from the earlier49paragraphtrial, and read-only expert-preparation inspection found both genuine generated extrapolations and inconsistent automated judgments. A supported-labelled paragraph also misplaces obsolete items into a reference grouping. All automatedlabels are retained, and every humanlabel staysnull.
+After explicit approval of the same destination and data, the owner approved another **57 embedding /30 Wiki** logical admissions. This brings the batch limit to **117 /70**, measured from **15,406 /68**, with absolute maxima **15,523 /138**. Inputs remain the existing fixed 55 query texts, the same 839-character Wiki source and resulting draft/audit context at the already configured maas.qianwenaiapi.com Flash/qwen-plus models. Provider policies remain 200/hour, concurrency one and at most one retry; the cumulative embedding gate remains 16,000. Logical admissions do not establish exact billable HTTP requests or costs.
 
-All55HTTP cases completed with55embeddingadmissions andzero source/version/ACL/publication/citation integrity flags. Identical originalglobalindex cce2255abace0ed4e63903b5871229f6a7816b0180b5a04a257aa5716675fe0d was used and completeQA state was restored afterward (7181documents/58856chunks/6bases/114Wiki pages).
+Temporary database admission guards enforce the absolute caps and are removed only after the bounded work completes, without changing the ledger. Earlier external-send auto-review rejections executed zero calls; the owner's explicit approval then permitted the diagnostic calls. Later deployment-package auto-review rejections were resolved by verifying package contents and the repository's public visibility, without sending private sources or credentials.
 
-| First deployed follow-up vs previous | Previous | This run |
-| --- | ---: | ---: |
-| Recall@10 | 0.864726 | 0.876089 |
-| MRR | 0.723304 | 0.756407 |
-| nDCG@10 | 0.728150 | 0.747777 |
-| XML Recall@10 | 0.557292 | 0.760417 |
-| XML MRR | 0.361111 | 0.601190 |
-| XML nDCG@10 | 0.376390 | 0.547459 |
-| Zero-recallcases | 3 | 2 |
+The unchanged HTTP runner uses the exact original global index, because merely filtering out added QA bases would still alter global BM25 statistics. The complete QA database is preserved before isolation and restored afterward. Evaluation controls also received real zero-model fault testing: the original watcher restored the database while an orphan query runner remained alive after parent SIGKILL. The corrected watcher stops the complete runner service before restoration. Restored engines run in independent scopes, and tests verify survival after both normal and SIGKILL exits of the temporary service. Review found and repaired both lifecycle defects before the actual final 55 run.
 
-Both former XMLzero cases recovered;008db remainszero. A VGLsource that previously ranked10 disappeared from the top10, so VGLrecall fell0.815873→0.615873. All fiveVGL queries have no XMLsyntax, old/new corpus and keywordSQL digests match, and the top9sources of the affected query remain identical. The actual newqueryvector was not retained; attributing this boundary swap to XMLcode or model drift is unproven. The loss is preserved as a regression, not omitted from the report.383returned query-sourcepairs remain outside occurrence references; semanticprecision isunjudged. HTTPp50=6459.75ms,p95=6944.61ms,max=7157.11ms, not fullContextPack performance.
-
-| First live follow-up artifact | SHA-256 |
+| Frozen input / lifecycle proof | SHA-256 |
 | --- | --- |
-| Wiki audit report | f5d353223278188321badd04cd34d36135972589cbe275e7888b63d7884db577 |
-| HTTP report | 9bcb4207c9fd4a19259aaa7877e5cbde47806c814a7ae067526e730a22f59811 |
-| Restored index state | 38c208556c42723d1679d53b7329b2d36c962c59d368580e4bdcccd0d9c30487 |
-| Final source/privacy/budgetguards | 85b9d9e910afe25ecb80ceeb47b9a0fd6d42aba8438e90bb2e06eb34ba212f0c |
-| Private550-pair retrievalcontext | d16eb4dd5eee36188e2a9b4558717d193e9ea1645ac9e7ff119e65fc12d85c90 |
-| Private38paragraphWiki context | 463b358c713848c3af8ceaffda7edb33e0353757ff8187d12524d568fadfb705 |
+| Fixed 55 fixture | 63f1adda80e849a8d92727d512de507019000ab9bfdb6476458250532bc4c271 |
+| Source manifest | 6e151fcae5636df1e6a682294e4985b53d6a0e59054193112321142566188b95 |
+| Original global embedding rows | cce2255abace0ed4e63903b5871229f6a7816b0180b5a04a257aa5716675fe0d |
+| Same Wiki source | d3bd45f37d263df2a2cf2576730ae4a0b2163a75764e76d2375bec7a6ee88f8c |
+| Runner parent-SIGKILL RED/GREEN | b9a58dc894e3433170b192c2b0627a566006982388b7994fcc9ee5cdc6441d81 |
+| Actual CLI normal/SIGKILL engine-scope survival | 457403d5572f297eb92b926a11671dad96d140e3c1021d7f85d84907bfac21ba |
 
-All101oldpages,12new frozen pages/38paragraphs,24sourcechunkchecks and180exactspans matched finalguards.1,677,568newlogbytes/136selectedmetadata rows passed actualcredential/source/JSON/encodedquery checks; slowSQLMATCH values were placeholders. The temporary60/40admissiontrigger was removed withunchangedledger. Currentcounts15466embedding/97Wiki mean this batch used **60/29**, with0embedding and11Wiki admissions left. No extra embedding isauthorized until the owner increases the explicitbatchcap.
+## Actual retrieval results
 
-## Further concrete repairs after that live evidence
+The first follow-up completed all 55 HTTP cases with 55 embedding admissions and zero source/version/ACL/publication/citation integrity flags. It recovered two former XML zero cases but introduced a VGL rank-ten boundary loss. The affected VGL query has no XML syntax; old/new corpus and keyword-SQL digests match and its first nine sources are identical. Its actual new query vector was not retained, so attributing that loss to XML code or model drift is unproven. That regression remains in the results.
 
-Code64be666 preserves nativechat samplingcontrols. The nativeWiki requests temperature0.3, but Relay previously dropped it beforeproviderHTTP. Optional validatedtemperature and recognizedexplicitthinkingcontrols now pass gateway→handle→serializer, withrealHTTP RED→GREEN and backwardcompatibility. An independentP2(array-valuedthinking.type coercedthenreversed) was reproduced and fixed withstrictstringenumregressions. Nativegeneric adapter may omit Thinking:false beforeRelay receivesit; this repair doesnot invent a default or claim actualthinkingdisabled.
+| Metric | Previous repair | First follow-up | Final HTTP run |
+| --- | ---: | ---: | ---: |
+| Recall@10 | 0.864726 | 0.876089 | 0.908413 |
+| MRR | 0.723304 | 0.756407 | 0.794394 |
+| nDCG@10 | 0.728150 | 0.747777 | 0.794067 |
+| XML Recall@10 | 0.557292 | 0.760417 | 0.781250 |
+| XML MRR | 0.361111 | 0.601190 | 0.598958 |
+| XML nDCG@10 | 0.376390 | 0.547459 | 0.585222 |
+| VGL Recall@10 | 0.815873 | 0.615873 | 0.838095 |
+| VGL MRR | 0.653333 | 0.633333 | 0.700000 |
+| VGL nDCG@10 | 0.606576 | 0.548763 | 0.675506 |
+| Zero-recall cases | 3 | 2 | 1 |
+| Outside-reference returned pairs | 387 | 383 | 378 |
+| HTTP P95 (ms) | 6950.42 | 6944.61 | 7115.67 |
 
-0011preserves query-declared wholeunderscore identifiers. OrdinaryFTS splits these into prose tokens; in the VGLcase exactlyone indexedchunkcontains the whole identifier anditis an expectedsource. General, bounded, parameterized wholeidentifier preference now survives cutoff andfusion without case IDs, app-specific strings, weightchanges orlabel edits. Paths/filenames/numericversions are excluded; XMLmatching isunchanged. Nativecachedvector replay moves thatsource10→3, but this isCPU evidence, not a secondactual55run.
+The final run completed **55/55** HTTP requests and consumed exactly **55 logical embedding admissions** in the isolated ledger window. Integrity flags remain zero. The former XML zeros and the first follow-up VGL zero recovered; `source-occurrence-008db7099c19a1bf17585ee0` (version-filtered) remains zero. All 378 outside-reference query-source pairs remain semantically unjudged.
 
-These two repairs passed861/861application tests, normalbuild, related44tests, full affectedGo suites and independentreviews. A first861run retained one unchanged5secondMCPstartupguard timeout; focused1/1passed2.269s and the unfiltered861rerun passedzero skips. Newassets comprise11patches/15regressionfiles,26pins. The fresh combined build passed all complete gates and148 artifact hashes. The second reversible deployment preserved all114 priorWiki pages, mappings, configuration and15466/97providerledger. Enginebinary SHA daaf4febed839e3f6968d843267f7dfe7061a095fc0cfba3863932ffa9fe201b; manifest c5911fc3a94cfe26dfe84aa6959cbf732ae6fd513e430bbe914630992c9335da; Go suites e5c72d2d5407f4363485670c2a7ace58b4dbf276fda5d8e5fd1a07dfd5ce3955; deployment proof d17298834753492ecd84fc1174c2a4da460f405220c909807317b76e08eb7643.
+Two case-level regressions against the first follow-up are retained: version-filtered `00dd4d977f5255747d1365e4` nDCG 0.722295→0.718363 with unchanged recall/MRR; XML `05fdb189053ce31a6d91909d` MRR 1/7→1/8 and nDCG 0.156426→0.148041 with unchanged recall. Aggregate XML MRR slightly regressed (0.601190→0.598958), while XML recall/nDCG improved. HTTP P50 is 6531.51 ms, P95 7115.67 ms and max 9170.86 ms; P95 is worse than the first follow-up. These differences are reported without inventing a causal attribution or a pass threshold.
 
-One real gateway contract probe sent the same approved source with temperature0.3 and explicitenable_thinking:false to the existingqwen-plus endpoint and was accepted; its only assertedoutput was syntheticJSON, not factualcontent. This madecurrentbatch use **60embedding/30Wiki**, ledgers **15466/98**. ProbeSHA f7abf3b09133465f4cbdf3afbecba49e511dac3beb18e3b745adadb42d4db2c7. Actualnative thinkingfalse propagation remainsunproven when the nativegenericadapter omitsit.
+| Retrieval artifact | SHA-256 |
+| --- | --- |
+| First follow-up HTTP report | 9bcb4207c9fd4a19259aaa7877e5cbde47806c814a7ae067526e730a22f59811 |
+| Final HTTP report | a69c4a20ff8735c44ab0a7a0c4f8409a38453e68e40407dfe30bc09fe64043d4 |
+| Final restored index state | ad78da6cbf2809dd78d7e237dd85b2235642c14578be35ea0a3ff1ad399d3834 |
 
-Another full55 evaluation and a new independentWiki generation/audit require an explicitbudget increase. Current60/40authorization is not silently exceeded. No new factual or retrieval pass is claimed from CPUreplay or controlacceptance.
 
-## Remaining boundaries
+These are occurrence-reference metrics. Semantic Precision@10 remains unjudged, and HTTP search latency is not end-to-end Context Pack latency. No release threshold was inferred after observing results.
 
-The cached-model CPU diagnostic suggests two zero-recall recoveries. The remaining008db case has only one reference source containing its literal tag; the others match only part of the query. That is unresolved evidence, not permission to change labels or add a case exception. Actual55results will be reported with all regressions.
+## Wiki source support remains failed
 
-All human semantic/factual labels remain unjudged. Existing entity image enrichment is retained; raw-text-only summaries fail closed for OCR/caption-only input, and this text-only trial does not validate image-grounded factual claims. Retraction requests may still contain generated summaries. Map-to-reduce source snapshot verification and Memory negative-BM25 score calibration are unchanged. No broader completeness claim follows from these repairs.
+All trials retain the same 839-character source and upload filename, with separate QA bases and no automatic publication. Summary/citation preflight improved, but complete source support did not pass.
+
+| Independent trial | Content pages / paragraphs | Citation preflight | Complete automated reviews | Automated page source-support passes | Supported / insufficient / nonfactual / invalid / unassessed paragraphs |
+| --- | --- | --- | --- | --- | --- |
+| Previous repair | 12 /49 | Summary chunk references missing | Incomplete population | 3/12 | 18 /8 /12 /4 /6, plus 1 contradicted |
+| First follow-up | 12 /38 | 12/12 eligible | 10/12 | 2/12 | 10 /10 /16 /2 /0 |
+| Final approved trial | 11 /32 | 11/11 eligible | 10/11 | **0/11** | 9 /10 /12 /1 /0 |
+
+The first follow-up used 17 generation plus 12 audit Wiki admissions. The final trial used 16 generation plus 11 audit admissions and two source embeddings. One additional real gateway contract probe accepted temperature 0.3 and explicit enable_thinking:false using the same approved source; its asserted output was synthetic JSON, not factual acceptance. Its SHA is `f7abf3b09133465f4cbdf3afbecba49e511dac3beb18e3b745adadb42d4db2c7`.
+
+The populations changed from 49 to 38 to 32 paragraphs, so these trials do not establish an accuracy trend. Read-only inspection found genuine extrapolations and inconsistent automatic classifications. Automated labels are preserved and every human factual/relevance label remains null.
+
+| Wiki artifact | SHA-256 |
+| --- | --- |
+| First follow-up plan | 8c2aeae5ac94085a126441ab32389f04a0dca34ca3774d692e13f58d63e64a19 |
+| First follow-up audit | f5d353223278188321badd04cd34d36135972589cbe275e7888b63d7884db577 |
+| Final frozen plan | b47fe1065eaed85ed0c50e73478b3de225842abadec68aaa5d2094b2f5a0ecdc |
+| Final audit | f3de223cc91adc7016176143d6dcefa3df1e0ed458d9061b1a4975ac36f03cd1 |
+
+The source's eight explicit Markdown links all resolve to exact canonical sources; their hashes, versions, paths and published Relay mappings were verified. A private review-input packet contains 15,278 characters across the eight linked bodies (largest 5,190), with all human labels null. These additional bodies were **not sent to the configured maas generation/audit providers** and were not added to the frozen evaluation or native QA input. Packet SHA: `3b903649a7c4373cd916afb48a85bcad629db456a5b062f806c370756cdc0de5`. Earlier incorrect publication/composite lookup reports remain retained beside the corrected exact Relay-schema verification (`61d308c8011151230848746e59c7bf2e8af28aace53a53ea031bc4fd3c68d190`).
+
+## Final state and remaining gates
+
+Final source/citation/span and scoped privacy guards passed with **zero model admissions**. They verified the frozen 11 pages /32 paragraphs, 22 source-chunk checks, 165 exact spans and all 114 earlier pages. The complete QA database returned exactly to **7182 documents /58859 chunks /3 models /7 bases /126 Wiki pages**. The actual engine remains ready in its independent scope after both evaluation units ended. All 5372 migrated documents remain published.
+
+The scan covered 1,840,916 new log bytes and 121 selected operational metadata rows since the final-stage preflight, checking 10 actual credential values, six selected source fragments, JSON raw-query values and URL-encoded query forms and hidden-reasoning markers. SQL MATCH parameters remained placeholders. This is a scoped check, not a universal privacy claim; old logs and failed reports remain retained.
+
+Private human-review materials contain **550 query-source pairs /483 verified canonical sources /550 cited chunks /32 Wiki paragraphs**, with all human labels null. Supplemental read-only mapping of the 11 insufficient/invalid paragraphs against the eight linked canonical bodies found 2 full, 8 partial and 1 absent direct matches; 9 still have assertion/scope gaps. This model-agent diagnostic is not expert gold, changes no original labels and adds no managed-model calls. It identifies missing linked context, abbreviation guesses, historical qualifiers, grouping generalizations and unsupported module purpose as remaining problems.
+
+| Final evidence | SHA-256 |
+| --- | --- |
+| Source/privacy/budget/runtime guards | 1bbba0d08269f93e5e1411c66d1604932532c77fdb97f47c40fc38f6c027f82f |
+| Exact admission-guard removal | 6458a849380785d942d893df8a0789f9e5cdc8c6188306648d68cf52ec5fc2cb |
+| Private retrieval review inputs | 8722c0221e9cfe7494af04b85c9fec743b313a61d985155f899de002b39d0488 |
+| Private Wiki review inputs | 1f85e73ec98ea5cc11225ef925eaf64b2259d2dcc44e80a5a33c435ee90dcb5c |
+| Private review manifest | befa5585bf72a9befba474f8d23086e21dfe5f0ee06d9200db204a4722a92ad8 |
+| Supplemental linked-source paragraph mapping | 091067bc87c3601c251722581d18069801721bc5c27f01eb83d32ebc27e3df52 |
+
+Final retained ledgers are **15,523 embedding /125 Wiki**: this batch used **117 /57**, within the owner's **117 /70** cap and below the 16,000 cumulative embedding gate. The temporary guard was removed only after completion and exact SQL-hash verification, with no admission rows changed. Providers are ready at 200/hour, concurrency one, retry one. No model work or evaluation watchdog is pending. No further embedding is authorized by this batch; 13 same-scope Wiki admissions remain unused and none are scheduled.
+
+Existing entity image enrichment is retained; raw-text-only summaries fail closed for OCR/caption-only input, and this text-only trial does not validate image-grounded factual claims. Retraction requests may still contain generated summaries. Map-to-reduce snapshot verification, Memory negative-BM25 score calibration, and bounded-candidate/vector-tie membership remain separate limitations. The broader #42 and real Windows #11/#19/#32 acceptance work is not claimed complete by this packet.
+
+Wiki factual support, human semantic/factual adjudication and agreed release/performance thresholds remain open. No failure record was removed or relabelled, no Wiki draft was automatically published, and no production deployment or merge occurred.

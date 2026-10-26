@@ -108,7 +108,17 @@ function readRows(store: KnowledgeStore, request: KnowledgeSearchRequest): Array
   const limit = Math.max(1, Math.min(request.limit ?? 20, 100));
   const candidateLimit = Math.min(500, Math.max(limit * 5, 50));
   try {
-    const query = `SELECT d.*, MIN(bm25(knowledge_fts)) AS rank FROM knowledge_fts JOIN knowledge_documents d ON d.id = knowledge_fts.document_id WHERE knowledge_fts MATCH @match AND ${conditions.join(" AND ")} GROUP BY d.id ORDER BY rank LIMIT ${candidateLimit}`;
+    // Score each matching FTS cursor row before windowing: FTS5 auxiliary
+    // functions cannot run inside aggregates. Keep the best chunk per document.
+    const query = `WITH scored AS MATERIALIZED (
+      SELECT d.id, knowledge_fts.rowid AS match_rowid, bm25(knowledge_fts) AS rank
+      FROM knowledge_fts JOIN knowledge_documents d ON d.id = knowledge_fts.document_id
+      WHERE knowledge_fts MATCH @match AND ${conditions.join(" AND ")}
+    ), best AS (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY rank, match_rowid) AS chunk_rank FROM scored
+    )
+    SELECT d.*, best.rank FROM best JOIN knowledge_documents d ON d.id = best.id
+    WHERE best.chunk_rank = 1 ORDER BY best.rank, d.id LIMIT ${candidateLimit}`;
     const rows = store.db.prepare(query).all({ ...params, match: escapeFtsQuery(request.query) }) as Array<Record<string, unknown>>;
     if (!includeFacts) return rows;
     try {

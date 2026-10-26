@@ -11,7 +11,7 @@ bash scripts/knowledge-engine/build.sh /path/to/dedicated/build
 KNOWLEDGE_ENGINE_BUNDLE=/path/to/dedicated/build/bundle bash deploy.sh
 ```
 
-The existing Relay deployment consumes the verified bundle; production servers do not compile the engine. A failed checksum or incomplete bundle never changes the active release. To upgrade, stop the engine, back up, then install a newly reviewed pinned release. Upstream upgrades require updating the source lock and validating migration compatibility. Reviewed Relay patches are tracked independently by exact source and patch hashes.
+The existing Relay deployment consumes the verified bundle; production servers do not compile the engine. A failed checksum or incomplete bundle never changes the active release. To upgrade, stop the engine, back up, then install a newly reviewed pinned release. Upstream upgrades require updating the source lock and validating migration compatibility. Reviewed Relay patches are tracked independently by exact source and patch hashes. For an offline or previously downloaded tool input, set `RELAY_7ZIP_ARCHIVE=/path/to/7z2605-linux-x64.tar.xz`; the installer still enforces the same archive and binary SHA-256 values.
 
 For an isolated nonproduction instance:
 
@@ -115,11 +115,13 @@ and its actual chunk references; missing or ambiguous evidence preserves the old
 draft. Generated summaries do not become authority for the additions editor.
 These checks do not establish factual entailment or automatically publish Wiki.
 
-XML structure, named angle entities and whole underscore identifiers retain
-their declared meaning through SQLite candidate selection and keyword fusion.
-Comparison views preserve stored/returned source bytes, raw BM25 and configured
-RRF weights. The tests exercise real SQLite and both keyword-only/hybrid paths,
-including document, enabled-chunk and namespace/case boundaries.
+XML structure, named angle entities, Markdown-heading elements and whole
+underscore identifiers retain their declared meaning through SQLite candidate
+selection and keyword fusion. Heading/structure flags survive vector metadata
+merging. Comparison views preserve stored/returned source bytes, raw BM25 and
+configured RRF weights. The tests exercise real SQLite and both
+keyword-only/hybrid paths, including document, enabled-chunk, code-fence and
+namespace/case boundaries.
 
 Parameterized GORM diagnostics also cover the supported Scan-recorder path.
 They protect bound values, not direct SQL literals or database-origin error text.

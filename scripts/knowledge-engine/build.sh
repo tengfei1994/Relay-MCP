@@ -90,7 +90,9 @@ cp -r migrations/sqlite "$BUNDLE/migrations/sqlite"
 cp "$SCRIPT_DIR/upstream-lock.json" "$BUNDLE/relay-upstream-lock.json"
 cp "$SCRIPT_DIR/patches/"* "$BUNDLE/relay-patches/"
 bash scripts/copy-licenses.sh "$BUNDLE"
-node "$SCRIPT_DIR/7zip-install.mjs" "$BUNDLE/tools/7zip"
+TOOL_ARCHIVE_ARGS=()
+if [ -n "${RELAY_7ZIP_ARCHIVE:-}" ]; then TOOL_ARCHIVE_ARGS=(--archive "$RELAY_7ZIP_ARCHIVE"); fi
+node "$SCRIPT_DIR/7zip-install.mjs" "$BUNDLE/tools/7zip" "${TOOL_ARCHIVE_ARGS[@]}"
 python3 - "$BUNDLE" "$SCRIPT_DIR/upstream-lock.json" "$TEST_LOG" "$CONTENT_TEST_LOG" "$RETRY_TEST_LOG" "$RETRY_OPTIONS_PROOF" "$RRF_TEST_LOG" "$GROUNDING_TEST_LOG" <<'PY'
 import hashlib,json,pathlib,sys
 root=pathlib.Path(sys.argv[1]); lock=json.loads(pathlib.Path(sys.argv[2]).read_text())

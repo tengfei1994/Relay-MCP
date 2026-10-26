@@ -305,6 +305,28 @@
           "afterSha256": "6c42fb70d3e76ff104d4dc7d831d42498547a3f75e8396ee5d80142ac494f049"
         }
       ]
+    },
+    {
+      "id": "0013-xml-heading-retrieval",
+      "file": "patches/0013-xml-heading-retrieval.patch",
+      "sha256": "0f5c03fa2f7daec721fdb4ac1d92baca703aaf9a348ebba3664e5699a29ed978",
+      "targets": [
+        {
+          "path": "internal/application/repository/retriever/sqlite/repository.go",
+          "beforeSha256": "6c42fb70d3e76ff104d4dc7d831d42498547a3f75e8396ee5d80142ac494f049",
+          "afterSha256": "28ad359988cea59f1cba3ba503399f36d5a8f30c1c50f8ff34582976bfbad283"
+        },
+        {
+          "path": "internal/application/service/knowledgebase_search_fusion.go",
+          "beforeSha256": "e5628fbd6d3d1e95d7c0e09d98a6745b0aef32df139083938885856ceed55d4b",
+          "afterSha256": "e1ec80e3a4080c67c8e2d14e794bcb0a7fd1abc57d74aa30728958105881be84"
+        },
+        {
+          "path": "internal/types/retriever.go",
+          "beforeSha256": "c6a1ad3b08f964832a7b7426308a29e4a4b011f59c2865c75ba2b1cdc61e5084",
+          "afterSha256": "20905c50d96a94b5f311a47949cf51b2c8720d83f89781f2f33db805845a65f7"
+        }
+      ]
     }
   ],
   "regressionTests": [
@@ -392,6 +414,16 @@
       "file": "patches/relay_xml_encoded_fusion_test.go",
       "target": "internal/application/service/relay_xml_encoded_fusion_test.go",
       "sha256": "30de9aab2747ef3830c36cd29ce0f3c48e831bd5baca1d7b6548a98514708308"
+    },
+    {
+      "file": "patches/relay_xml_heading_test.go",
+      "target": "internal/application/repository/retriever/sqlite/relay_xml_heading_test.go",
+      "sha256": "2f900ffa85070b1d03e73aeebef4ab896eaf0fb85af4de733df5c68bb2de25da"
+    },
+    {
+      "file": "patches/relay_xml_heading_fusion_test.go",
+      "target": "internal/application/service/relay_xml_heading_fusion_test.go",
+      "sha256": "df8104bad30581d269c551e12fc58fc445a7116d936c666dd5508af26c9a981d"
     }
   ]
 }

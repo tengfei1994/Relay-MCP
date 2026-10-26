@@ -4,7 +4,7 @@ import { ProviderUnavailableError } from "./providers.js";
 import { admitProviderInvocation } from "./provider-admission.js";
 import { ProviderPolicy, ProviderBindingStaleError, ProviderCredentialsChangedError, type ProviderConfig, type ProviderHealth, type ProviderPolicyOptions, type ProviderCallOptions } from "./provider-runtime.js";
 import type { SecretResolver } from "./provider-secret.js";
-import { ManagedProviderError, providerErrorAuditDetails, callOpenAiChat, callOpenAiEmbedding, callOpenAiRerank, type ManagedHttpOptions, type ManagedChatMessage, type ProviderTokenUsage } from "./provider-probe.js";
+import { ManagedProviderError, providerErrorAuditDetails, callOpenAiChat, callOpenAiEmbedding, callOpenAiRerank, validateChatGenerationOptions, type ManagedChatGenerationOptions, type ManagedHttpOptions, type ManagedChatMessage, type ProviderTokenUsage } from "./provider-probe.js";
 
 export type ManagedProviderKind = "embedding" | "rerank" | "wiki_llm" | "candidate_llm";
 export type ManagedProviderStatus = "ready" | "pending_reindex" | "degraded" | "disabled";
@@ -91,6 +91,7 @@ function auditUsage(usage: ProviderTokenUsage | undefined): Record<string, numbe
 export interface ManagedEmbeddingResult { vectors: number[][]; tokenUsage?: ProviderTokenUsage; }
 export interface ManagedRerankResult { results: Array<{ id: string; score: number }>; tokenUsage?: ProviderTokenUsage; }
 export interface ManagedChatResult { text: string; finishReason?: string; tokenUsage?: ProviderTokenUsage; }
+export interface ManagedChatOptions extends ProviderCallOptions, ManagedChatGenerationOptions {}
 
 /**
  * Live handle for one managed provider. Each call re-reads the config row and
@@ -106,7 +107,7 @@ export interface ManagedProviderHandle {
   embed(texts: string[]): Promise<ManagedEmbeddingResult>;
   rerank(query: string, documents: Array<{ id: string; text: string; score: number }>): Promise<ManagedRerankResult>;
   complete(prompt: string, maxTokens?: number): Promise<ManagedChatResult>;
-  chat(messages: ManagedChatMessage[], maxTokens?: number, responseFormat?: {type: "text" | "json_object"}, options?:ProviderCallOptions): Promise<ManagedChatResult>;
+  chat(messages: ManagedChatMessage[], maxTokens?: number, responseFormat?: {type: "text" | "json_object"}, options?:ManagedChatOptions): Promise<ManagedChatResult>;
 }
 
 // Process-wide, per-database provider budgets survive repeated registry/handle
@@ -333,7 +334,8 @@ export class ProviderRegistry {
       },
       chat: async (messages, maxTokens, responseFormat, callOptions) => {
         if (kind === "embedding" || kind === "rerank") throw new ProviderUnavailableError("Provider is not a chat provider");
-        const result = await invoke("chat", (options) => callOpenAiChat({ ...options, messages, maxTokens, responseFormat }),callOptions);
+        const controls = validateChatGenerationOptions(callOptions ?? {});
+        const result = await invoke("chat", (options) => callOpenAiChat({ ...options, messages, maxTokens, responseFormat, ...controls }),callOptions);
         return { text: result.text, finishReason: result.finishReason, tokenUsage: result.tokenUsage };
       },
       complete: async (prompt, maxTokens) => {

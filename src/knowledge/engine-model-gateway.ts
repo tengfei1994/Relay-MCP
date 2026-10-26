@@ -1,7 +1,7 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { classifyProviderError, type ManagedProviderHandle, type ManagedProviderKind, type ProviderRegistry } from "./provider-registry.js";
-import type { ManagedChatMessage } from "./provider-probe.js";
+import { validateChatGenerationOptions, type ManagedChatMessage, type ManagedChatGenerationOptions } from "./provider-probe.js";
 import { ProviderAdmissionQuotaError } from "./provider-admission.js";
 import { ProviderBindingStaleError, ProviderCredentialsChangedError } from "./provider-runtime.js";
 
@@ -25,6 +25,30 @@ function messages(value: unknown): ManagedChatMessage[] {
 }
 function usage(value: {promptTokens?:number;completionTokens?:number;totalTokens?:number}|undefined) {
   return {prompt_tokens:value?.promptTokens??0,completion_tokens:value?.completionTokens??0,total_tokens:value?.totalTokens??0};
+}
+function chatControls(body: Record<string, unknown>): ManagedChatGenerationOptions {
+  try {
+    const thinkingValues: boolean[] = [];
+    if (Object.hasOwn(body, "enable_thinking")) {
+      if (typeof body.enable_thinking !== "boolean") throw new Error();
+      thinkingValues.push(body.enable_thinking);
+    }
+    if (Object.hasOwn(body, "thinking")) {
+      const value = body.thinking as { type?: unknown } | null;
+      if (!value || typeof value !== "object" || Object.keys(value).length !== 1 || typeof value.type !== "string" || !["enabled", "disabled"].includes(value.type)) throw new Error();
+      thinkingValues.push(value.type === "enabled");
+    }
+    if (Object.hasOwn(body, "chat_template_kwargs")) {
+      const value = body.chat_template_kwargs as { enable_thinking?: unknown } | null;
+      if (!value || typeof value !== "object" || Object.keys(value).length !== 1 || typeof value.enable_thinking !== "boolean") throw new Error();
+      thinkingValues.push(value.enable_thinking);
+    }
+    if (thinkingValues.some(value => value !== thinkingValues[0])) throw new Error();
+    return validateChatGenerationOptions({
+      ...(Object.hasOwn(body, "temperature") ? { temperature: body.temperature as number } : {}),
+      ...(thinkingValues.length ? { enableThinking: thinkingValues[0] } : {}),
+    });
+  } catch { throw new GatewayError(400, "invalid_chat_generation_options"); }
 }
 
 /** Internal-only alias gateway. Upstream never receives a user's provider credential. */
@@ -61,7 +85,7 @@ export async function registerEngineModelGateway(app: FastifyInstance, options: 
         if (!Number.isInteger(maxTokens)||maxTokens<1||maxTokens>32768) throw new GatewayError(400,"invalid_token_limit");
         const responseFormat=body?.response_format as {type?:string}|undefined;
         if (responseFormat && !["text","json_object"].includes(String(responseFormat.type))) throw new GatewayError(400,"unsupported_response_format");
-        const result=await cached.handle.chat(messages(body?.messages),maxTokens,responseFormat as {type:"text"|"json_object"}|undefined);
+        const result=await cached.handle.chat(messages(body?.messages),maxTokens,responseFormat as {type:"text"|"json_object"}|undefined,chatControls(body!));
         const id="chatcmpl-"+randomUUID(),created=Math.floor(Date.now()/1000),model=binding.alias;
         if (body?.stream===true) {
           const chunk={id,object:"chat.completion.chunk",created,model,choices:[{index:0,delta:{role:"assistant",content:result.text},finish_reason:null}]};

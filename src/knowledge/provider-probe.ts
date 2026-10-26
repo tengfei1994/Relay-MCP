@@ -227,12 +227,22 @@ export async function callOpenAiRerank(options: ManagedHttpOptions & { query: st
 }
 
 export interface ManagedChatMessage { role: "system" | "user" | "assistant"; content: string; }
-export async function callOpenAiChat(options: ManagedHttpOptions & { prompt?: string; messages?: ManagedChatMessage[]; maxTokens?: number; responseFormat?: {type: "text" | "json_object"} }): Promise<ChatCallResult> {
+export interface ManagedChatGenerationOptions { temperature?: number; enableThinking?: boolean; }
+export function validateChatGenerationOptions(options: ManagedChatGenerationOptions): ManagedChatGenerationOptions {
+  const { temperature, enableThinking } = options;
+  if ((temperature !== undefined && (typeof temperature !== "number" || !Number.isFinite(temperature) || temperature < 0 || temperature > 2)) ||
+      (enableThinking !== undefined && typeof enableThinking !== "boolean")) throw new Error("invalid_chat_generation_options");
+  return { ...(temperature !== undefined ? { temperature } : {}), ...(enableThinking !== undefined ? { enableThinking } : {}) };
+}
+export async function callOpenAiChat(options: ManagedHttpOptions & ManagedChatGenerationOptions & { prompt?: string; messages?: ManagedChatMessage[]; maxTokens?: number; responseFormat?: {type: "text" | "json_object"} }): Promise<ChatCallResult> {
+  const controls = validateChatGenerationOptions(options);
   const { status, latencyMs, body, diagnostics } = await requestJson(options, "/chat/completions", {
     model: options.modelId,
     messages: options.messages ?? [{ role: "user", content: options.prompt ?? "" }],
     ...(options.responseFormat ? {response_format: options.responseFormat} : {}),
     max_tokens: Math.max(1, Math.min(options.maxTokens ?? 16, 32768)),
+    ...(controls.temperature !== undefined ? { temperature: controls.temperature } : {}),
+    ...(controls.enableThinking !== undefined ? { enable_thinking: controls.enableThinking } : {}),
   });
   const choices = asRecord(body)?.choices;
   const content = Array.isArray(choices) ? asRecord(asRecord(choices[0])?.message)?.content : undefined;

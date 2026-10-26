@@ -271,6 +271,28 @@
           "afterSha256": "243143b7e4364e87f94a095643abda0d83aa0f6bd7e41b3738832165b62e718d"
         }
       ]
+    },
+    {
+      "id": "0011-literal-identifier-retrieval",
+      "file": "patches/0011-literal-identifier-retrieval.patch",
+      "sha256": "071b775e7773d4d7b2551e7489b8ae9e55589dc423ffff05f75d8ddc96dab636",
+      "targets": [
+        {
+          "path": "internal/application/repository/retriever/sqlite/repository.go",
+          "beforeSha256": "2b8a7a8a6e7d3be6a20bf68638d3ed4aec3841235e42bd0ab49dce3e8236bede",
+          "afterSha256": "f18fd76adac7a82a2875f5f0385b269746dc836659304aa91cc9eced1750d79c"
+        },
+        {
+          "path": "internal/application/service/knowledgebase_search_fusion.go",
+          "beforeSha256": "5cdc66407a07fb4150eda20e492436b230b72b3ceea7e5e0c451c0388d6da2c6",
+          "afterSha256": "e5628fbd6d3d1e95d7c0e09d98a6745b0aef32df139083938885856ceed55d4b"
+        },
+        {
+          "path": "internal/types/retriever.go",
+          "beforeSha256": "2fd0e14b3fef3f267bd24a67b9cba4bbe96df6ee49c085158ad2f87d5ee54c68",
+          "afterSha256": "c6a1ad3b08f964832a7b7426308a29e4a4b011f59c2865c75ba2b1cdc61e5084"
+        }
+      ]
     }
   ],
   "regressionTests": [
@@ -338,6 +360,16 @@
       "file": "patches/relay_gorm_log_safety_test.go",
       "target": "internal/container/relay_gorm_log_safety_test.go",
       "sha256": "925df8f175267c193d9e0d8812f0ae7d5f79923d5775363fcbb72611e92378ad"
+    },
+    {
+      "file": "patches/relay_literal_identifier_test.go",
+      "target": "internal/application/repository/retriever/sqlite/relay_literal_identifier_test.go",
+      "sha256": "a5084e95ffd5d72f579b7e6ad59546d8dcc41ad8ed7a466476c3db8506e8d94a"
+    },
+    {
+      "file": "patches/relay_literal_identifier_fusion_test.go",
+      "target": "internal/application/service/relay_literal_identifier_fusion_test.go",
+      "sha256": "695002806b777095a475189db396c02baf6dad375a9e2ee04824171824658df1"
     }
   ]
 }

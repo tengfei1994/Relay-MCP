@@ -47,3 +47,9 @@ for (const [name, oldHash, projectHash, newHash, status, potentialConflict] of c
     assert.equal(result.next?.sha256, newHash);
   });
 }
+
+test("project edit is not a conflict when the next baseline retains the old file", () => {
+  const result = change("A", "B", "A");
+  assert.equal(result.status, "PROJECT_ONLY");
+  assert.equal(result.potentialConflict, undefined);
+});

@@ -372,6 +372,15 @@ test("migration stages only explicitly selected local document IDs", async () =>
   assert.equal(state.calls, 2);
 }));
 
+test("explicit local document batches are not truncated by the generic limit", async () => withStore(async (store) => {
+  for (const id of ["doc-1", "doc-2", "doc-3"]) seedProductDocument(store, id);
+  const { writer, state } = countingWriter(); const ingestor = new WeKnoraIngestor(store, writer); const controller = makeController(store);
+  const migration = await controller.createFromLocal({ actorId: 7, idempotencyKey: "selected-limit", parserVersion: "v1", limit: 1, localDocumentIds: ["doc-1", "doc-2", "doc-3"] }, ingestor);
+  assert.equal(migration.report.total, 3);
+  assert.equal(migration.report.mapped, 3);
+  assert.equal(state.calls, 3);
+}));
+
 test("migration rerun stages only newly added source documents", async () => withStore(async (store) => {
   seedProductDocument(store, "doc-1"); seedProductDocument(store, "doc-2");
   const { writer, state } = countingWriter(); const ingestor = new WeKnoraIngestor(store, writer); const controller = makeController(store);

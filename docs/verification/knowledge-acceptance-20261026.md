@@ -85,3 +85,13 @@ The aggregate release disposition is unchanged: human semantic/factual review an
 The [source-control and Developer-scale packet](source-control-developer-scale-20261027.md) repairs the three-way single-side classification and MCP snapshot ACL, adds real API/MCP/UI coverage and audited low-confidence Topic review, and records a real changed-body/stable-ID two-version check. The full 42,724-HTML manifest matches raw hashes, but only two complete Developer documents exist in the managed engine. The no-call native forecast is 63,781 logical embedding admissions without retry; no full import was started and #42 remains open. Aggregate #43/#49/#50/#56 remain open.
 
 The [request performance checkpoint](request-performance-20261027.md) retains the failed 50k/100k/100k replay report, separates a Relay N+1 lookup repair from a replay chunk-fixture defect, and records successful post-repair 50k smoke and full concurrency-four cold/hot distributions. Live read-only Candidate/Evidence measurements and the reversible nonproduction deployment are complete with zero model calls. Performance thresholds and real Context Pack provider measurements remain open; no performance issue is closed.
+
+## Automated closeout repairs — 2026-10-27
+
+Three deterministic defects found during the closeout audit were repaired without provider calls or deployment changes:
+
+- Context Pack now counts version conflicts across the complete ACL/version/scope-eligible set even when the response limit truncates returned documents, and equal-score authoritative documents use a stable document-ID tie-break.
+- Explicit `localDocumentIds` migration batches now use the exact de-duplicated ID count instead of the generic scan limit, so a bounded checkpoint cannot silently under-report its manifest or coverage.
+- Source baseline comparison retains the two-anchor single-side rule for `old=A / project=B / next=A`; the regression remains `PROJECT_ONLY` with no conflict flag.
+
+Fresh verification after these repairs passed **893/893** application tests, standard build, strict TypeScript and `git diff --check`. Existing Python-backed engine tests required the local Windows subprocess permission and passed **19/19** when rerun. No embedding/Wiki provider call, production change, publication or merge occurred. The remaining closure gates are still the explicit 42k external-engine coverage/resume decision, real Context Pack provider measurement with an agreed threshold, and human semantic/Wiki factual labels.

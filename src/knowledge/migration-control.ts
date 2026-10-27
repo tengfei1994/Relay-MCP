@@ -394,7 +394,11 @@ create(input: { actorId: number; kind?: string; idempotencyKey: string; sourceMa
       FROM knowledge_documents d
       LEFT JOIN knowledge_product_documents p ON p.id = d.id
       LEFT JOIN knowledge_product_document_bindings b ON b.document_id = d.id
-      WHERE ${conditions.join(" AND ")} ORDER BY d.id LIMIT ?`).all(...params, limit) as Array<Record<string, unknown>>;
+      WHERE ${conditions.join(" AND ")} ORDER BY d.id LIMIT ?`).all(...params,
+      // An explicit ID list is an exact batch contract. Applying the generic
+      // default limit here would silently drop selected documents (and make
+      // durable coverage accounting report a false total).
+      input.localDocumentIds ? Math.max(1, new Set(input.localDocumentIds).size) : limit) as Array<Record<string, unknown>>;
     return rows.map((row) => {
       const body = String(row.body ?? "");
       return {

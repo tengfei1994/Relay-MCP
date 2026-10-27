@@ -70,7 +70,7 @@ Full managed-engine import, incremental reindex, interrupted 42k recovery and 42
 
 ## Verification
 
-- `npm test`: **883/883 passed**, zero skipped; includes the new comparison, API/MCP/ACL, Topic review and request-benchmark regressions.
+- `npm test`: **884/884 passed**, zero skipped; includes the new comparison, API/MCP/ACL, Topic review and request-benchmark regressions.
 - `npm run build`: passed; 121-tool MCP boundary and 1,827 frontend modules.
 - `npx tsc --noEmit`: passed.
 - `git diff --check`: passed apart from Git's Windows LF→CRLF warnings.

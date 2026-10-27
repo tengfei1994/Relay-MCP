@@ -227,6 +227,8 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   server.tool("knowledge_solution_upgrade_analysis", "Run a published-baseline three-way upgrade comparison against a project snapshot.", { oldBaselineId: z.string(), currentProjectSnapshotId: z.string(), newBaselineId: z.string(), limit: z.number().int().min(1).max(1000).optional() }, async ({ oldBaselineId, currentProjectSnapshotId, newBaselineId, limit }) => {
     const store = requireKnowledge(); assertPublishedBaseline(store, oldBaselineId); assertPublishedBaseline(store, newBaselineId);
     if (!user.isAdmin && !store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id=? AND can_read=1 LIMIT 1").get(user.id)) throw new Error("Knowledge access denied");
+    const snapshot = store.db.prepare("SELECT project_id FROM knowledge_project_snapshots WHERE id=?").get(currentProjectSnapshotId) as { project_id?: string } | undefined;
+    if (!snapshot || (snapshot.project_id && !store.canRead(user.id, snapshot.project_id))) throw new Error("Knowledge access denied");
     const changes = compareSourceBaselines(sourceManifest(store, oldBaselineId), sourceManifest(store, currentProjectSnapshotId, true), sourceManifest(store, newBaselineId));
     const ids = (table: string, key: string, id: string) => new Map((store.db.prepare(`SELECT relative_path,id FROM ${table} WHERE ${key}=?`).all(id) as Array<{ relative_path: string; id: string }>).map((row) => [row.relative_path, row.id]));
     const oldIds = ids("knowledge_source_files", "baseline_id", oldBaselineId); const projectIds = ids("knowledge_project_snapshot_files", "snapshot_id", currentProjectSnapshotId); const newIds = ids("knowledge_source_files", "baseline_id", newBaselineId);

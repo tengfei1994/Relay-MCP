@@ -955,6 +955,21 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
     try { return reply.send(ingestProjectSnapshot(getKnowledgeStore(), body.data)); } catch (error) { return sendError(reply, error, 400); }
   });
+  app.get("/api/knowledge/source-baselines", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const store = getKnowledgeStore(); if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
+    const query = request.query as Record<string, unknown>; const limit = parseBoundedInt(query.limit, 100, 1, 500); const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
+    const baselines = store.db.prepare(`SELECT b.id,b.solution,b.version,b.manifest_sha256,b.root_locator,b.created_at,b.artifact_set_id,p.status FROM knowledge_source_baselines b JOIN knowledge_artifact_publications p ON p.artifact_set_id=b.artifact_set_id ORDER BY b.solution,b.version LIMIT ? OFFSET ?`).all(limit, offset);
+    const total = store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_source_baselines").get() as { count?: number };
+    return reply.send({ baselines, page: { limit, offset, total: Number(total.count ?? 0) } });
+  });
+  app.get("/api/knowledge/project-snapshots", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const store = getKnowledgeStore(); if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
+    const query = request.query as Record<string, unknown>; const limit = parseBoundedInt(query.limit, 100, 1, 500); const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
+    const access = request.user.isAdmin ? { where: "", params: [] as unknown[] } : { where: "WHERE s.project_id IS NULL OR EXISTS (SELECT 1 FROM knowledge_acl a WHERE a.project_id=s.project_id AND a.user_id=? AND a.can_read=1)", params: [request.user.id] as unknown[] };
+    const snapshots = store.db.prepare(`SELECT s.id,s.project_id,s.name,s.version,s.manifest_sha256,s.created_at,COUNT(f.id) AS file_count FROM knowledge_project_snapshots s LEFT JOIN knowledge_project_snapshot_files f ON f.snapshot_id=s.id ${access.where} GROUP BY s.id ORDER BY s.created_at DESC LIMIT ? OFFSET ?`).all(...access.params, limit, offset);
+    const total = store.db.prepare(`SELECT COUNT(*) AS count FROM knowledge_project_snapshots s ${access.where}`).get(...access.params) as { count?: number };
+    return reply.send({ snapshots, page: { limit, offset, total: Number(total.count ?? 0) } });
+  });
   app.get("/api/knowledge/source-search", { onRequest: [app.authenticate] }, async (request, reply) => {
     const q = request.query as Record<string, unknown>; const query = queryValue(q, "query") ?? queryValue(q, "q"); if (!query) return reply.status(400).send({ error: "query is required" }); const store = getKnowledgeStore(); if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" }); const baselineId = queryValue(q, "baselineId"); const snapshotId = queryValue(q, "projectSnapshotId");
     if (!baselineId && !snapshotId) return reply.status(400).send({ error: "baselineId or projectSnapshotId is required" }); if (baselineId) { const published = store.db.prepare("SELECT 1 FROM knowledge_source_baselines b JOIN knowledge_artifact_publications p ON p.artifact_set_id=b.artifact_set_id AND p.status='published' WHERE b.id=?").get(baselineId); if (!published) return reply.status(409).send({ error: "Source baseline is not published" }); }
@@ -966,7 +981,10 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   app.get("/api/knowledge/source-baselines/:id/files", { onRequest: [app.authenticate] }, async (request, reply) => {
     const id = String((request.params as { id: string }).id); const store = getKnowledgeStore(); if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     const baseline = store.db.prepare("SELECT * FROM knowledge_source_baselines WHERE id=?").get(id); if (!baseline) return reply.status(404).send({ error: "Source baseline not found" });
-    return reply.send({ baseline, files: store.db.prepare("SELECT relative_path AS path,sha256,size_bytes AS size,language,storage_uri FROM knowledge_source_files WHERE baseline_id=? ORDER BY relative_path").all(id) });
+    const query = request.query as Record<string, unknown>; const limit = parseBoundedInt(query.limit, 100, 1, 500); const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
+    const files = store.db.prepare("SELECT id,relative_path AS path,sha256,size_bytes AS size,language,storage_uri FROM knowledge_source_files WHERE baseline_id=? ORDER BY relative_path LIMIT ? OFFSET ?").all(id, limit, offset);
+    const total = store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_source_files WHERE baseline_id=?").get(id) as { count?: number };
+    return reply.send({ baseline, files, page: { limit, offset, total: Number(total.count ?? 0) } });
   });
   app.post("/api/knowledge/source-baselines/compare", { onRequest: [app.authenticate] }, async (request, reply) => {
     const body = z.object({ oldBaselineId: z.string(), projectSnapshotId: z.string(), newBaselineId: z.string() }).safeParse(request.body);
@@ -1037,6 +1055,18 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       return reply.send({topic,versions});
     }
     return reply.send({ topic: { ...topic, metadata: safeRows(() => JSON.parse(String(topic.metadata_json ?? "{}")), {}) }, versions: bindings.map(({ document_project_id: _project, ...row }) => ({ ...row, metadata: safeRows(() => JSON.parse(String(row.metadata_json ?? "{}")), {}), sections: safeRows(() => JSON.parse(String(row.sections_json ?? "[]")), []) })) });
+  });
+  app.post("/api/knowledge/product-topic-bindings/:id/review", { onRequest: [app.authenticate] }, async (request, reply) => {
+    if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
+    const body = z.object({ status: z.enum(["active", "rejected"]), reason: z.string().trim().min(1).max(2000) }).safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: "Invalid topic binding review", details: body.error.issues });
+    const id = String((request.params as { id: string }).id); const store = getKnowledgeStore();
+    const binding = store.db.prepare("SELECT id,topic_id,document_id,product_version,status FROM knowledge_product_document_bindings WHERE id=?").get(id) as KnowledgeRow | undefined;
+    if (!binding) return reply.status(404).send({ error: "Product topic binding not found" });
+    const now = new Date().toISOString();
+    store.db.prepare("UPDATE knowledge_product_document_bindings SET status=?,updated_at=? WHERE id=?").run(body.data.status, now, id);
+    store.audit({ actorId: request.user.id, action: "knowledge.product_topic_binding.review", entityType: "product_topic_binding", entityId: id, details: { topicId: binding.topic_id, documentId: binding.document_id, productVersion: binding.product_version, previousStatus: binding.status, status: body.data.status, reason: body.data.reason } });
+    return reply.send({ ok: true, id, status: body.data.status, reviewedAt: now });
   });
 
   // Stable Product Knowledge API names. Keep /product-docs above as a

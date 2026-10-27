@@ -45,15 +45,23 @@ async function controlPlane(store: KnowledgeStore, injected?: ProductBackendCont
     return managedControlPlane(store);
   });
 }
-function legacyMetadata(store: KnowledgeStore, row: Row): Row {
-  const mapping = store.db.prepare(`SELECT md.local_document_id FROM knowledge_migration_documents md
-    JOIN knowledge_migrations m ON m.id=md.migration_id
-    WHERE md.document_id=? AND md.status='published' AND m.status='published'
-    ORDER BY m.published_at DESC,md.local_document_id LIMIT 1`).get(row.id) as Row | undefined;
-  if (!mapping) return {};
-  const local = store.db.prepare(`SELECT d.id,d.project_name_snapshot,d.source_commit,p.document_family_id,p.document_type,p.authority,p.diff_review_status
-    FROM knowledge_documents d LEFT JOIN knowledge_product_documents p ON p.id=d.id WHERE d.id=? AND d.kind='product_document'`).get(mapping.local_document_id) as Row | undefined;
-  return local ? { ...local, localDocumentId: mapping.local_document_id } : { localDocumentId: mapping.local_document_id };
+function legacyMetadataByDocument(store: KnowledgeStore): Map<string, Row> {
+  const rows = store.db.prepare(`SELECT md.document_id,md.local_document_id,d.id AS local_exists,d.project_name_snapshot,d.source_commit,p.document_family_id,p.document_type,p.authority,p.diff_review_status
+    FROM knowledge_migration_documents md JOIN knowledge_migrations m ON m.id=md.migration_id
+    LEFT JOIN knowledge_documents d ON d.id=md.local_document_id AND d.kind='product_document'
+    LEFT JOIN knowledge_product_documents p ON p.id=md.local_document_id
+    WHERE md.status='published' AND m.status='published'
+    ORDER BY m.published_at DESC,md.local_document_id`).all() as Row[];
+  const result = new Map<string, Row>();
+  for (const row of rows) {
+    const documentId = String(row.document_id);
+    if (result.has(documentId)) continue;
+    result.set(documentId, row.local_exists ? {
+      project_name_snapshot: row.project_name_snapshot, source_commit: row.source_commit, document_family_id: row.document_family_id,
+      document_type: row.document_type, authority: row.authority, diff_review_status: row.diff_review_status, localDocumentId: row.local_document_id,
+    } : { localDocumentId: row.local_document_id });
+  }
+  return result;
 }
 function publishedRows(store: KnowledgeStore, input: ProductBackendSearchInput, knowledgeBaseId: string): Row[] {
   const conditions = ["status='published'", "upstream_verified_at IS NOT NULL", "upstream_verified_at<>''", "external_knowledge_base_id=?", "((project_id IS ? AND environment IS ?) OR (project_id IS NULL AND environment IS NULL))"];
@@ -61,12 +69,13 @@ function publishedRows(store: KnowledgeStore, input: ProductBackendSearchInput, 
   for (const [key, column] of [["sampleManagerVersion", "product_version"], ["solution", "solution"], ["module", "module"], ["language", "language"]] as const) {
     const value = text(input[key]); if (value) { conditions.push(column + "=?"); params.push(value); }
   }
+  const legacy = legacyMetadataByDocument(store);
   return (store.db.prepare("SELECT * FROM knowledge_weknora_documents WHERE " + conditions.join(" AND ") + " ORDER BY updated_at DESC,id").all(...params) as Row[])
-    .map(row => ({ ...row, legacy: legacyMetadata(store, row) }))
+    .map(row => ({ ...row, legacy: legacy.get(String(row.id)) ?? {} }))
     .filter(row => {
-      const legacy = row.legacy as Row;
-      return (!input.product || legacy.project_name_snapshot === input.product) &&
-        (!input.documentType || legacy.document_type === input.documentType) && (!input.authority || legacy.authority === input.authority);
+      const metadata = row.legacy as Row;
+      return (!input.product || metadata.project_name_snapshot === input.product) &&
+        (!input.documentType || metadata.document_type === input.documentType) && (!input.authority || metadata.authority === input.authority);
     });
 }
 function metadata(row: Row): WeKnoraReferenceMetadata {

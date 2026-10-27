@@ -17,6 +17,9 @@ Product document reads/searches and generated Wiki use the pinned internal WeKno
 - Unconfigured hybrid retrieval defaults favor keywords for technical objects and paths. Explicit retrieval weights retain their existing behavior.
 - Wiki links navigate between scoped Relay pages with deep links and Back support; stale async responses cannot overwrite a newer selection or draft.
 - Session summaries retain scoped Job/Deployment/Evidence/retrieval receipts. Audit projections omit raw queries, Candidate context and private reasoning fields.
+- Three-way Solution comparison now distinguishes single-side changes/deletions from real conflicts and enforces Project Snapshot ACL in MCP. Baseline/snapshot selectors, source-evidence references and paged Source files are available in the existing Solution UI.
+- Product bindings below 0.8 match confidence enter `pending_review`; administrators can approve/reject with a required audited reason in Topics. Existing reviewed binding identity is preserved when a same-version revision advances.
+- The isolated request benchmark covers complete Context Pack HTTP assembly, Candidate Insights and Evidence with cold/hot distributions and pagination boundaries. It uses deterministic replay, has no inferred release threshold, and does not replace real-provider latency acceptance.
 
 ## Upgrade and rollback
 

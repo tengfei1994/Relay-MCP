@@ -79,3 +79,9 @@ Patch `0013-xml-heading-retrieval` resolves the remaining cached zero-recall def
 Application verification passed **861/861**, standard build and strict TypeScript; the fresh engine produced 155 verified bundle files. Final source/span/privacy/runtime guards pass, and the complete QA state was restored. The 24-hour admission retention cleanup reduced cumulative rows, while the independent batch window proves exactly **55 embedding /0 Wiki** admissions. Production remains unchanged.
 
 The aggregate release disposition is unchanged: human semantic/factual review and Context Pack performance/threshold acceptance remain open. **#55/#56 and #43/#49/#50 are not closed.**
+
+## Source-control and Developer-scale continuation — 2026-10-27
+
+The [source-control and Developer-scale packet](source-control-developer-scale-20261027.md) repairs the three-way single-side classification and MCP snapshot ACL, adds real API/MCP/UI coverage and audited low-confidence Topic review, and records a real changed-body/stable-ID two-version check. The full 42,724-HTML manifest matches raw hashes, but only two complete Developer documents exist in the managed engine. The no-call native forecast is 63,781 logical embedding admissions without retry; no full import was started and #42 remains open. Aggregate #43/#49/#50/#56 remain open.
+
+The [request performance checkpoint](request-performance-20261027.md) retains the failed 50k/100k/100k replay report, separates a Relay N+1 lookup repair from a replay chunk-fixture defect, and records a successful post-repair 50k smoke. Full post-repair distributions and nonproduction deployment are pending; no performance issue is closed.

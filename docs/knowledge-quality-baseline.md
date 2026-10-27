@@ -27,6 +27,14 @@ KNOWLEDGE_BENCHMARK_REPORT=path/to/report.json
 
 The benchmark creates a temporary isolated Knowledge DB and deletes it after the report; it never accesses production Relay or SampleManager data.
 
+## Context Pack, Candidate and Evidence request benchmark
+
+Run `node --import tsx/esm scripts/knowledge-request-benchmark.ts` for the isolated full-route benchmark. It measures `POST /api/knowledge/weknora/search` including Context Pack assembly, `GET /api/knowledge/candidate-insights`, and `GET /api/knowledge/evidence`, with default/max limits, deep offsets and empty results. The report contains data sizes, concurrency, separate cold/hot samples and P50/P95/max. Cold means before scenario warm-up; process, OS and SQLite caches are not purged.
+
+The Product provider is deterministic WeKnora HTTP replay. Fastify `inject` excludes real socket transport, and replay excludes actual model latency. Candidate and Evidence routes use only new temporary SQLite databases. The benchmark blocks unexpected network requests and makes no paid calls. It is not a substitute for a separately required real-provider measurement.
+
+Use `KNOWLEDGE_REQUEST_BENCHMARK_SAMPLES`, `CONCURRENCY`, `PRODUCT_DOCUMENTS`, `CANDIDATE_INSIGHTS`, `EVIDENCE`, `COLD_REPETITIONS`, `HOT_REPETITIONS`, and optionally `KNOWLEDGE_REQUEST_BENCHMARK_OUTPUT` (full variable names carry the `KNOWLEDGE_REQUEST_BENCHMARK_` prefix). No pass/fail threshold is inferred. Project-specific targets must be agreed independently; the FTS and frozen-search thresholds do not apply to these endpoints.
+
 ## Release evidence
 
 Attach the JSON benchmark report and golden-set evaluation output to the release/PR. Compare the golden-set version, metrics and forbidden-return count with the previous accepted baseline. A quality reduction, a nonzero forbidden return, or P95 threshold breach blocks release until explicitly investigated and documented.

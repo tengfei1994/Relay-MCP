@@ -93,11 +93,35 @@ function ProductImportRuns() {
 
 function ProductTopics() {
   const [topics, setTopics] = useState<any[]>([]); const [selected, setSelected] = useState<any>(); const [query, setQuery] = useState(""); const [version, setVersion] = useState(""); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
+  const [reviewReasons, setReviewReasons] = useState<Record<string, string>>({}); const [reviewBusy, setReviewBusy] = useState("");
   const load = () => { setLoading(true); setError(""); api.productTopics({ q: query, productVersion: version, limit: 200 }).then((r) => setTopics(r.topics ?? [])).catch((err) => setError(err instanceof Error ? err.message : "Unable to load topics")).finally(() => setLoading(false)); };
   useEffect(() => { load(); }, []);
-  const open = async (id: string) => { try { setSelected(await api.productTopic(id)); } catch (err) { setError(err instanceof Error ? err.message : "Unable to load topic"); } };
+  const open = async (id: string) => { try { setError(""); setSelected(await api.productTopic(id)); } catch (err) { setError(err instanceof Error ? err.message : "Unable to load topic"); } };
+  const review = async (bindingId: string, status: "active" | "rejected") => {
+    const reason = (reviewReasons[bindingId] ?? "").trim();
+    if (!reason) { setError("Enter a review reason before approving or rejecting the binding."); return; }
+    setReviewBusy(bindingId); setError("");
+    try {
+      await api.productTopicBindingReview(bindingId, { status, reason });
+      setReviewReasons((old) => ({ ...old, [bindingId]: "" }));
+      if (selected?.topic?.id) await open(String(selected.topic.id));
+    } catch (err) { setError(err instanceof Error ? err.message : "Binding review failed"); }
+    finally { setReviewBusy(""); }
+  };
   if (loading) return <StatePanel state="loading" message="Loading logical Product Knowledge topics…" />;
-  if (selected) return <div className="space-y-4"><button onClick={() => setSelected(undefined)} className="text-xs text-gray-400 hover:text-gray-200">← Back to topics</button><section className={cardClass}><div className="flex flex-wrap items-start justify-between gap-3"><div><Badge tone="blue">Logical topic</Badge><h3 className="mt-3 text-xl font-semibold text-gray-100">{selected.topic?.canonical_title}</h3><p className="mt-1 text-xs text-gray-500">{selected.topic?.canonical_key}</p></div><div className="text-right text-xs text-gray-500">{selected.versions?.length ?? 0} version bindings</div></div><div className="mt-4 space-y-3">{(selected.versions ?? []).map((row: any) => <details key={row.id} className="rounded-lg border border-gray-800 bg-gray-950/40 p-3"><summary className="cursor-pointer text-sm text-gray-200"><span className="mr-3 inline-block min-w-12 text-cyan-300">{row.product_version}</span>{row.title}<span className="ml-3 text-xs text-gray-500">{row.match_method} · {Math.round(Number(row.match_confidence ?? 0) * 100)}%</span></summary><div className="mt-3 grid gap-2 text-xs text-gray-500 sm:grid-cols-2"><span>Source: {row.source_path}</span><span>Revision hash: {row.source_sha256 ?? "—"}</span><span>Document ID: {row.document_id}</span><span>Sections: {(row.sections ?? []).length}</span></div><p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-gray-400">{String(row.body ?? "").slice(0, 1800)}</p></details>)}</div></section></div>;
+  if (selected) return <div className="space-y-4">
+    <button onClick={() => setSelected(undefined)} className="text-xs text-gray-400 hover:text-gray-200">← Back to topics</button>
+    {error && <StatePanel state="error" message={error} />}
+    <section className={cardClass}>
+      <div className="flex flex-wrap items-start justify-between gap-3"><div><Badge tone="blue">Logical topic</Badge><h3 className="mt-3 text-xl font-semibold text-gray-100">{selected.topic?.canonical_title}</h3><p className="mt-1 text-xs text-gray-500">{selected.topic?.canonical_key}</p></div><div className="text-right text-xs text-gray-500">{selected.versions?.length ?? 0} version bindings</div></div>
+      <div className="mt-4 space-y-3">{(selected.versions ?? []).map((row: any) => <details key={row.id} className="rounded-lg border border-gray-800 bg-gray-950/40 p-3">
+        <summary className="cursor-pointer text-sm text-gray-200"><span className="mr-3 inline-block min-w-12 text-cyan-300">{row.product_version}</span>{row.title}<span className="ml-3 text-xs text-gray-500">{row.match_method} · {Math.round(Number(row.match_confidence ?? 0) * 100)}%</span><StatusBadge value={row.status ?? "active"} /></summary>
+        <div className="mt-3 grid gap-2 text-xs text-gray-500 sm:grid-cols-2"><span>Source: {row.source_path}</span><span>Revision hash: {row.source_sha256 ?? "—"}</span><span>Document ID: {row.document_id}</span><span>Sections: {(row.sections ?? []).length}</span></div>
+        {row.status === "pending_review" && <div className="mt-3 flex flex-wrap items-center gap-2"><input required aria-label={`Review reason for ${row.product_version}`} className={`${inputClass} min-w-[220px] flex-1`} placeholder="Binding review reason (required)" value={reviewReasons[row.id] ?? ""} onChange={(event) => setReviewReasons((old) => ({ ...old, [row.id]: event.target.value }))} /><button disabled={reviewBusy === row.id || !(reviewReasons[row.id] ?? "").trim()} onClick={() => void review(row.id, "active")} className="rounded-md bg-emerald-700 px-3 py-2 text-xs text-white disabled:opacity-50">Approve</button><button disabled={reviewBusy === row.id || !(reviewReasons[row.id] ?? "").trim()} onClick={() => void review(row.id, "rejected")} className="rounded-md bg-rose-700 px-3 py-2 text-xs text-white disabled:opacity-50">Reject</button></div>}
+        <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-gray-400">{String(row.body ?? "").slice(0, 1800)}</p>
+      </details>)}</div>
+    </section>
+  </div>;
   return <div className="space-y-4"><section className={cardClass}><div className="grid gap-3 sm:grid-cols-[1fr_180px_auto]"><input className={inputClass} placeholder="Search logical topics…" value={query} onChange={(e) => setQuery(e.target.value)} /><input className={inputClass} placeholder="Product version" value={version} onChange={(e) => setVersion(e.target.value)} /><button onClick={load} className="rounded-md bg-cyan-700 px-3 py-2 text-xs text-white"><Search size={14} className="mr-1 inline" />Search</button></div><p className="mt-3 text-xs text-gray-500">A topic can reuse the same immutable revision across 21.1 and 21.3; changed content appears as a new revision binding.</p></section>{error && <StatePanel state="error" message={error} onRetry={load} />}{topics.length === 0 ? <StatePanel state="empty" message="No logical topics found." /> : <div className="overflow-hidden rounded-xl border border-gray-800"><div className="divide-y divide-gray-800">{topics.map((topic) => <button key={topic.id} onClick={() => void open(topic.id)} className="grid w-full gap-2 px-4 py-4 text-left hover:bg-gray-900/80 sm:grid-cols-[minmax(240px,1fr)_120px_120px_1fr] sm:items-center"><div><p className="text-sm font-medium text-gray-200">{topic.canonical_title}</p><p className="mt-1 text-xs text-gray-600">{topic.canonical_key}</p></div><span className="text-xs text-gray-400">{topic.versionCount} versions</span><span className="text-xs text-gray-400">{topic.revisionCount} revisions</span><span className="text-xs text-gray-500">{(topic.versions ?? []).join(", ")}</span></button>)}</div></div>}</div>;
 }
 

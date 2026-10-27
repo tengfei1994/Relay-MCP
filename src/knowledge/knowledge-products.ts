@@ -377,10 +377,11 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
           .run(topicId, canonicalKey, parsed.title, "product_document", "product", createdAt, createdAt);
         const persistedTopic = store.db.prepare("SELECT id FROM knowledge_topics WHERE canonical_key = ?").get(canonicalKey) as { id?: string } | undefined;
         const bindingTopicId = String(persistedTopic?.id ?? topicId);
+        const matchConfidence = titleMatch ? 0.78 : (local.documentFamilyId ? 0.95 : 0.7);
         store.db.prepare(`INSERT OR IGNORE INTO knowledge_product_document_bindings
           (id,topic_id,document_id,product,product_version,source_path,match_method,match_confidence,status,created_at,updated_at)
           VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-          .run(`binding-${sha256(`${bindingTopicId}\0${version}\0${id}`).slice(0, 24)}`, bindingTopicId, id, local.product ?? null, version, relativePath, titleMatch ? "title_module" : "family_id", titleMatch ? 0.78 : (local.documentFamilyId ? 0.95 : 0.7), "active", createdAt, createdAt);
+          .run(`binding-${sha256(`${bindingTopicId}\0${version}\0${id}`).slice(0, 24)}`, bindingTopicId, id, local.product ?? null, version, relativePath, titleMatch ? "title_module" : "family_id", matchConfidence, matchConfidence < 0.8 ? "pending_review" : "active", createdAt, createdAt);
       }
       if (prior?.id) { store.db.prepare("UPDATE knowledge_documents SET lifecycle='deprecated',updated_at=? WHERE id=? AND lifecycle<>'deprecated'").run(now, prior.id); report.deprecated++; }
       if (prior?.id) report.updated++; else report.imported++;

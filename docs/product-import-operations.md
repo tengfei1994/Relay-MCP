@@ -8,6 +8,8 @@ Workers default to a 30-minute deadline (`RELAY_INGEST_TIMEOUT_MS` can override 
 
 Only deploy the importer modules, store changes, Web routes/entry point and built frontend for this fix. No table rebuild or destructive schema migration is required. Before deployment use SQLite backup, then verify `/api/health` and the public homepage. A PM2 `online` label alone does not prove that the HTTP event loop is responsive.
 
+For the complete Developer manifest, current managed-engine coverage and native CPU-only embedding forecast, see [source control and Developer scale acceptance](verification/source-control-developer-scale-20261027.md). A completed raw archive import is not evidence of managed-engine indexing. Retry recovery re-scans and skips unchanged documents; it is not a file-level checkpoint. Source baseline/snapshot lists and Source files use server-side pagination for large collections.
+
 
 ## Wiki source grounding
 

@@ -215,6 +215,7 @@ export class KnowledgeStore {
   migrate(): void {
     // Bootstrap before querying it: migration must work on a brand-new database.
     this.db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)");
+    this.repairLegacyDocumentCheckSchema();
     const applied = this.db.prepare("SELECT version FROM schema_migrations WHERE version = ?");
     const insert = this.db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)");
     const rebuildsReferencedTable = KNOWLEDGE_MIGRATIONS.some((migration) => migration.requiresForeignKeysOff && !applied.get(migration.version));
@@ -371,6 +372,45 @@ export class KnowledgeStore {
     `);
     this.backfillDefaultScopes();
     this.backfillProductTopics();
+  }
+
+  /**
+   * Older SQLite builds accepted double-quoted enum literals in the
+   * knowledge_documents CHECK constraints and stored that SQL verbatim in
+   * sqlite_master. Newer better-sqlite3 builds reject those literals while
+   * reparsing the schema for an ALTER TABLE, which prevents later migrations
+   * from starting. Rebuild only this legacy table with equivalent constraints;
+   * rows, indexes and triggers are retained and the operation is idempotent.
+   */
+  private repairLegacyDocumentCheckSchema(): void {
+    const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='knowledge_documents'").get() as { sql?: string } | undefined;
+    const sql = String(row?.sql ?? "");
+    if (!/CHECK\s*\(\s*kind\s+IN\s*\(\s*\"candidate\"/i.test(sql)) return;
+    const columns = ["id", "kind", "title", "body", "lifecycle", "project_id", "project_name_snapshot", "samplemanager_version", "solution", "module", "environment", "source_locator", "source_commit", "source_sha256", "created_at", "updated_at"];
+    const indexesAndTriggers = this.db.prepare("SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL AND ((type='index' AND tbl_name='knowledge_documents') OR (type='trigger' AND tbl_name='knowledge_documents'))").all() as Array<{ type: string; name: string; sql: string }>;
+    const foreignKeysEnabled = this.db.pragma("foreign_keys", { simple: true }) === 1;
+    if (foreignKeysEnabled) this.db.pragma("foreign_keys = OFF");
+    try {
+      const repair = this.db.transaction(() => {
+        this.db.exec("DROP TABLE IF EXISTS knowledge_documents_legacy_repair");
+        this.db.exec(`CREATE TABLE knowledge_documents_legacy_repair (
+          id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
+          lifecycle TEXT NOT NULL, project_id TEXT, project_name_snapshot TEXT,
+          samplemanager_version TEXT, solution TEXT, module TEXT, environment TEXT,
+          source_locator TEXT NOT NULL, source_commit TEXT, source_sha256 TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          CHECK(kind IN ('candidate','case','pattern','playbook','product_document','fact','evidence','relation')),
+          CHECK(lifecycle IN ('draft','reproduced','verified','approved','deprecated'))
+        )`);
+        const quoted = columns.map((column) => `"${column}"`).join(",");
+        this.db.exec(`INSERT INTO knowledge_documents_legacy_repair (${quoted}) SELECT ${quoted} FROM knowledge_documents`);
+        this.db.exec("DROP TABLE knowledge_documents; ALTER TABLE knowledge_documents_legacy_repair RENAME TO knowledge_documents");
+        for (const item of indexesAndTriggers) this.db.exec(item.sql);
+      });
+      repair.immediate();
+    } finally {
+      if (foreignKeysEnabled) this.db.pragma("foreign_keys = ON");
+    }
   }
 
   private backfillProductTopics(): void {

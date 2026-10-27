@@ -95,3 +95,23 @@ test("per-section limits are enforced", () => {
   assert.equal(pack.authoritativeDocs.length, 3);
   assert.equal(pack.counts.authoritativeDocs, 3);
 });
+
+test("conflict metadata covers eligible documents beyond the section limit", () => {
+  const pack = buildContextPack({
+    maxItemsPerSection: 1,
+    authoritativeDocs: [
+      ref({ documentId: "d1", topicId: "t1", version: "21.1" }),
+      ref({ documentId: "d2", topicId: "t1", version: "21.3" }),
+      ref({ documentId: "d3", topicId: "t1", version: "22.1" }),
+    ],
+  });
+  assert.equal(pack.authoritativeDocs.length, 1);
+  assert.equal(pack.conflicts.versionConflicts, 2);
+});
+
+test("equal-score authoritative documents have a stable document-id tie break", () => {
+  const pack = buildContextPack({
+    authoritativeDocs: [ref({ documentId: "z", score: 0.5 }), ref({ documentId: "a", score: 0.5 })],
+  });
+  assert.deepEqual(pack.authoritativeDocs.map((item) => item.documentId), ["a", "z"]);
+});

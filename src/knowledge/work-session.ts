@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { KnowledgeStore } from "./store.js";
+import { summarizeWorkSession } from "./work-session-summary.js";
 
 export const INTENT_ACTIONS = ["understand", "diagnose", "design", "implement", "deploy", "verify", "capture"] as const;
 export const INTENT_PHASES = ["explore", "diagnosis", "implementation", "validation", "closure"] as const;
@@ -109,10 +110,13 @@ function safeText(value: unknown, max: number): string | undefined {
 }
 
 export class WorkSessionService {
-  constructor(private readonly store: KnowledgeStore, private readonly clock: () => Date = () => new Date()) {}
+  constructor(private readonly store: KnowledgeStore, private readonly clock: () => Date = () => new Date(), private readonly assertProjectAccess?: (actorId: number, projectId: string) => void) {}
 
   private assertAccess(actorId: number, projectId: string): void {
     if (!this.store.canRead(actorId, projectId)) throw new Error("Work Session access denied");
+    // Transport injects current control-plane scope; the mirrored user ACL and
+    // session owner checks remain mandatory and cannot be replaced by it.
+    this.assertProjectAccess?.(actorId, projectId);
   }
 
   private row(sessionId: string): Record<string, unknown> | undefined {
@@ -231,7 +235,10 @@ export class WorkSessionService {
   list(input: { actorId: number; limit?: number }): WorkSession[] {
     const limit = Math.max(1, Math.min(input.limit ?? 50, 200));
     const rows = this.store.db.prepare("SELECT * FROM knowledge_work_sessions WHERE actor_id=? ORDER BY updated_at DESC LIMIT ?").all(input.actorId, limit) as Array<Record<string, unknown>>;
-    return rows.map(sessionFromRow).filter((session) => this.store.canRead(input.actorId, session.projectId));
+    return rows.map(sessionFromRow).filter((session) => {
+      try { this.assertAccess(input.actorId, session.projectId); return true; }
+      catch { return false; }
+    });
   }
 
   /**
@@ -252,20 +259,33 @@ export class WorkSessionService {
     this.store.db.prepare(`INSERT OR IGNORE INTO knowledge_work_session_events(id,session_id,event_id,event_type,intent_step,objective_ref,acceptance_criterion_ref,created_at) VALUES (?,?,?,?,?,?,?,?)`).run(randomUUID(), session.id, input.eventId, input.eventType, safeText(input.intentStep, 100) ?? null, safeText(input.objectiveRef, 200) ?? null, safeText(input.acceptanceCriterionRef, 200) ?? null, now);
   }
 
-  listEvents(input: { actorId: number; sessionId: string }): Array<Record<string, unknown>> {
+  /** Persist a metadata-only receipt for a real completed retrieval, deduplicated by source run. */
+  recordRetrieval(input: { actorId: number; sessionId: string; projectId: string; environment?: string; query: string; sourceRunId: string; resultCount: number; degraded: boolean; operation?: "search" | "document_read" }): string {
     const session = this.load(input.actorId, input.sessionId);
-    return this.store.db.prepare("SELECT id,event_id,event_type,intent_step,objective_ref,acceptance_criterion_ref,created_at FROM knowledge_work_session_events WHERE session_id=? ORDER BY created_at,rowid").all(session.id) as Array<Record<string, unknown>>;
+    if (session.projectId !== input.projectId) throw new Error("Work Session project does not match retrieval");
+    if ((session.environment ?? "") !== (input.environment ?? "")) throw new Error("Work Session environment does not match retrieval");
+    const sourceRunId = ["engine-empty", "local-scope-empty"].includes(input.sourceRunId) ? randomUUID() : input.sourceRunId;
+    const id = "session-retrieval-" + createHash("sha256").update(session.id + "\0" + sourceRunId).digest("hex");
+    const queryHash = createHash("sha256").update(input.query).digest("hex");
+    const metadata = { schemaVersion: 1, workSessionId: session.id, actorId: input.actorId, environment: input.environment ?? null,
+      sourceRunIdHash: createHash("sha256").update(sourceRunId).digest("hex"), queryHash, operation: input.operation ?? "search",
+      resultCount: Number.isFinite(input.resultCount) ? Math.max(0, Math.trunc(input.resultCount)) : 0 };
+    this.store.db.transaction(() => {
+      this.assertSessionUsable({actorId:input.actorId,sessionId:session.id,projectId:input.projectId,environment:input.environment});
+      this.store.db.prepare("INSERT OR IGNORE INTO knowledge_retrieval_runs(id,project_id,query,degraded,results_json,created_at) VALUES (?,?,?,?,?,?)")
+        .run(id, session.projectId, `sha256:${queryHash}`, input.degraded ? 1 : 0, JSON.stringify(metadata), this.clock().toISOString());
+      this.correlateEvent({ actorId: input.actorId, sessionId: session.id, eventId: id, eventType: "knowledge.retrieval" });
+    })();
+    return id;
   }
 
-  /** Time-ordered aggregation of everything correlated to the session. */
-  summarize(input: { actorId: number; sessionId: string }): { session: WorkSession; eventCounts: Record<string, number>; events: Array<Record<string, unknown>> } {
-    const session = this.load(input.actorId, input.sessionId);
-    const events = this.listEvents(input);
-    const eventCounts: Record<string, number> = {};
-    for (const event of events) {
-      const type = String(event.event_type);
-      eventCounts[type] = (eventCounts[type] ?? 0) + 1;
-    }
-    return { session, eventCounts, events };
+  listEvents(input: { actorId: number; sessionId: string; limit?: number; offset?: number }): Array<Record<string, unknown>> {
+    return this.summarize(input).events;
+  }
+
+  /** Independently paginated, scope-verified references; never includes source content. */
+  summarize(input: { actorId: number; sessionId: string; limit?: number; offset?: number }) {
+    const session=this.load(input.actorId,input.sessionId);
+    return this.store.db.transaction(()=>summarizeWorkSession(this.store,session,input))();
   }
 }

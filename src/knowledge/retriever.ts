@@ -1,9 +1,14 @@
+import { WorkSessionService } from "./work-session.js";
+import { MigrationController } from "./migration-control.js";
+import { CANDIDATE_CASE_SCOPE_GUARD_SQL } from "./candidate-scope.js";
+import { searchProductBackend } from "./product-backend.js";
 import { createHash, randomUUID } from "crypto";
 import type { KnowledgeStore } from "./store.js";
 import { defaultKnowledgeProviders, tokenize, type KnowledgeProviders } from "./providers.js";
 
 export interface KnowledgeSearchRequest {
   userId: number;
+  workSessionId?: string;
   projectId: string;
   query: string;
   limit?: number;
@@ -23,6 +28,7 @@ export interface KnowledgeSearchResult {
   retrievalRunId: string;
   query: string;
   degraded: boolean;
+  degradedReasons?: {productKnowledge?: string};
   results: Array<{
     id: string;
     kind: string;
@@ -80,6 +86,7 @@ function visibleEvidenceRefs(store: KnowledgeStore, row: Record<string, unknown>
 
 function readRows(store: KnowledgeStore, request: KnowledgeSearchRequest): Array<Record<string, unknown>> {
   const conditions = ["(d.project_id = @projectId OR EXISTS (SELECT 1 FROM knowledge_scope_bindings sb WHERE sb.document_id = d.id AND sb.visibility IN ('global','organization') AND d.lifecycle IN ('verified','approved')))"];
+  conditions.push(CANDIDATE_CASE_SCOPE_GUARD_SQL);
   const params: Record<string, unknown> = { projectId: request.projectId };
   if (!request.includeDeprecated) conditions.push("d.lifecycle <> 'deprecated'");
   if (request.sampleManagerVersion) { conditions.push("(d.samplemanager_version IS NULL OR d.samplemanager_version = @sampleManagerVersion)"); params.sampleManagerVersion = request.sampleManagerVersion; }
@@ -101,7 +108,17 @@ function readRows(store: KnowledgeStore, request: KnowledgeSearchRequest): Array
   const limit = Math.max(1, Math.min(request.limit ?? 20, 100));
   const candidateLimit = Math.min(500, Math.max(limit * 5, 50));
   try {
-    const query = `SELECT d.*, MIN(bm25(knowledge_fts)) AS rank FROM knowledge_fts JOIN knowledge_documents d ON d.id = knowledge_fts.document_id WHERE knowledge_fts MATCH @match AND ${conditions.join(" AND ")} GROUP BY d.id ORDER BY rank LIMIT ${candidateLimit}`;
+    // Score each matching FTS cursor row before windowing: FTS5 auxiliary
+    // functions cannot run inside aggregates. Keep the best chunk per document.
+    const query = `WITH scored AS MATERIALIZED (
+      SELECT d.id, knowledge_fts.rowid AS match_rowid, bm25(knowledge_fts) AS rank
+      FROM knowledge_fts JOIN knowledge_documents d ON d.id = knowledge_fts.document_id
+      WHERE knowledge_fts MATCH @match AND ${conditions.join(" AND ")}
+    ), best AS (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY rank, match_rowid) AS chunk_rank FROM scored
+    )
+    SELECT d.*, best.rank FROM best JOIN knowledge_documents d ON d.id = best.id
+    WHERE best.chunk_rank = 1 ORDER BY best.rank, d.id LIMIT ${candidateLimit}`;
     const rows = store.db.prepare(query).all({ ...params, match: escapeFtsQuery(request.query) }) as Array<Record<string, unknown>>;
     if (!includeFacts) return rows;
     try {
@@ -144,11 +161,15 @@ function readFactRows(store: KnowledgeStore, request: KnowledgeSearchRequest): A
 
 export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeSearchRequest): Promise<KnowledgeSearchResult> {
   if (!store.canRead(request.userId, request.projectId)) throw new Error("Knowledge access denied for project");
+  if (request.workSessionId) new WorkSessionService(store).assertSessionUsable({actorId:request.userId,sessionId:request.workSessionId,projectId:request.projectId,environment:request.environment});
+  const startedAt = Date.now();
   const retrievalRunId = `retrieval-${randomUUID()}`;
   const providers = { ...defaultKnowledgeProviders(), ...(request.providers ?? {}) };
-  const rows = readRows(store, request);
+  const engineProduct = new MigrationController(store).activeProductProvider() === "weknora";
+  const rows = readRows(store, request).filter(row => !engineProduct || row.kind !== "product_document");
   const queryTokens = new Set(tokenize(request.query));
   let degraded = false;
+  let degradedReasons: KnowledgeSearchResult["degradedReasons"];
   const vectorScores = new Map<string, number>();
   let embeddingModelId: string | undefined;
   // Vector generation happens only after readRows has applied project ACL,
@@ -175,7 +196,7 @@ export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeS
       degraded = true;
     }
   } else if (!providers.embedding) degraded = true;
-  const resultRows = rows.map((row) => {
+  const resultRows: KnowledgeSearchResult["results"] = rows.map((row) => {
     const card = String(row.kind) === "candidate" ? store.getCandidateCard(String(row.id)) : undefined;
     const body = card?.summary ?? String(row.body ?? "");
     const title = card?.summary ? String(row.title ?? card.summary) : String(row.title ?? "");
@@ -208,6 +229,13 @@ export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeS
       for (const result of resultRows) { const item = byId.get(result.id); if (item?.reason) result.matchReasons.push(item.reason); if (item) result.score = item.score; }
     } catch { degraded = true; }
   }
+  if (engineProduct && !request.kinds?.length) {
+    try {
+      const products = await searchProductBackend(store, {userId:request.userId,projectId:request.projectId,environment:request.environment,query:request.query,sampleManagerVersion:request.sampleManagerVersion,solution:request.solution,module:request.module,limit:request.limit});
+      for (const product of products) resultRows.push({...product,id:String(product.id),kind:"product_document",title:String(product.title),summary:String(product.snippet??product.summary??""),score:Number(product.score??0.5),lifecycle:"approved",versionMatch:true,matchReasons:["Published Product Knowledge engine"],applicability:{sampleManagerVersion:product.sampleManagerVersion?String(product.sampleManagerVersion):undefined,solution:product.solution?String(product.solution):undefined,module:product.module?String(product.module):undefined,environment:product.environment?String(product.environment):undefined},evidenceRefs:[],scope:{specificity:0}});
+      resultRows.sort((a,b)=>b.score-a.score);
+    } catch { degraded=true;degradedReasons={productKnowledge:"unavailable"}; }
+  }
   const quotas = request.typeQuotas ?? {};
   const quotaCounts = new Map<string, number>();
   const quotaResults = resultRows.filter((result) => {
@@ -218,11 +246,39 @@ export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeS
     quotaCounts.set(result.kind, used + 1); return true;
   });
   const finalResults = quotaResults.slice(0, Math.max(1, Math.min(request.limit ?? 20, 100)));
+  const queryHash = createHash("sha256").update(request.query, "utf8").digest("hex");
+  const metadata = {
+    schemaVersion: 1, queryHash, queryLength: [...request.query].length,
+    queryBytes: Buffer.byteLength(request.query, "utf8"), resultCount: finalResults.length,
+    latencyMs: Math.max(0, Date.now() - startedAt), degraded,
+    ...(degradedReasons ? { degradedReasons } : {}),
+    productProvider: engineProduct ? "weknora" : "relay_local",
+    embeddingModelId, rerankModelId: providers.rerank?.capabilities.modelId,
+  };
+  // Explicit telemetry allowlist, separate from the content-bearing response.
+  // Titles, snippets and provider match reasons can echo private requests.
+  const resultMetadata = finalResults.map((result, index) => {
+    const reference = result as KnowledgeSearchResult["results"][number] & Record<string, unknown>;
+    return {
+      id: result.id, kind: result.kind, rank: index + 1, score: result.score,
+      lifecycle: result.lifecycle, versionMatch: result.versionMatch,
+      applicability: { sampleManagerVersion: result.applicability.sampleManagerVersion, solution: result.applicability.solution, module: result.applicability.module, environment: result.applicability.environment },
+      scope: { scopeType: result.scope.scopeType, scopeKey: result.scope.scopeKey, visibility: result.scope.visibility, sourceProjectId: result.scope.sourceProjectId, redactionStatus: result.scope.redactionStatus, specificity: result.scope.specificity },
+      evidenceRefs: result.evidenceRefs,
+      ...(typeof reference.externalDocumentId === "string" ? { externalDocumentId: reference.externalDocumentId } : {}),
+      ...(typeof reference.chunkId === "string" ? { chunkId: reference.chunkId } : {}),
+      ...(typeof reference.retrievalRunId === "string" ? { upstreamRetrievalRunId: reference.retrievalRunId } : {}),
+      ...(typeof reference.sourceSha256 === "string" && /^[a-f0-9]{64}$/i.test(reference.sourceSha256) ? { sourceSha256: reference.sourceSha256 } : {}),
+    };
+  });
   try {
-    store.db.prepare("INSERT OR REPLACE INTO knowledge_retrieval_runs(id,project_id,query,provider_model_id,degraded,results_json,created_at) VALUES (?,?,?,?,?,?,?)").run(retrievalRunId, request.projectId, request.query, embeddingModelId ?? null, degraded ? 1 : 0, JSON.stringify(finalResults), new Date().toISOString());
+    // New rows use a tagged digest in the legacy NOT NULL query column.
+    // Historical content is untouched; cleanup requires an explicit operation.
+    store.db.prepare("INSERT OR REPLACE INTO knowledge_retrieval_runs(id,project_id,query,provider_model_id,degraded,results_json,created_at) VALUES (?,?,?,?,?,?,?)").run(retrievalRunId, request.projectId, `sha256:${queryHash}`, embeddingModelId ?? null, degraded ? 1 : 0, JSON.stringify({ ...metadata, results: resultMetadata }), new Date().toISOString());
   } catch { /* older stores may not have the optional replay table */ }
-  store.audit({ actorId: request.userId, projectId: request.projectId, action: "knowledge.search", entityType: "retrieval", entityId: retrievalRunId, details: { queryTokens: [...queryTokens], resultCount: finalResults.length, degraded, embeddingModelId } });
-  return { retrievalRunId, query: request.query, degraded, results: finalResults };
+  if (request.workSessionId) new WorkSessionService(store).recordRetrieval({actorId:request.userId,sessionId:request.workSessionId,projectId:request.projectId,environment:request.environment,query:request.query,sourceRunId:retrievalRunId,resultCount:finalResults.length,degraded});
+  store.audit({ actorId: request.userId, projectId: request.projectId, action: "knowledge.search", entityType: "retrieval", entityId: retrievalRunId, details: metadata });
+  return { retrievalRunId, query: request.query, degraded, ...(degradedReasons?{degradedReasons}:{}), results: finalResults };
 }
 
 function cosine(a: number[], b: number[]): number {

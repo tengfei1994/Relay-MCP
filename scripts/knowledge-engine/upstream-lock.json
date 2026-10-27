@@ -1,0 +1,429 @@
+{
+  "schemaVersion": 1,
+  "version": "v0.8.3",
+  "sourceCommit": "3e22822c1d2397be730c458c7539d0eb8c113a24",
+  "sourceArchiveSha256": "91e13c59134db179ca305dfb1dce2ee6fed752e1334ff0ab662255474e012568",
+  "goVersion": "go1.26.10",
+  "goArchiveSha256": "ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5",
+  "securityPolicy": "relay-model-metadata-only-v1",
+  "patches": [
+    {
+      "id": "0001-model-log-metadata-only",
+      "file": "patches/0001-model-log-metadata-only.patch",
+      "sha256": "03fc298647d86e901581d926b6afe712140a7be443619d7b0694679a2a83c2e5",
+      "targets": [
+        {
+          "path": "internal/models/api/endpoint.go",
+          "beforeSha256": "9ed5b1b94aa710980a7fd64953aef15902e8b04b95fcd601e1a6c397006f6b61",
+          "afterSha256": "77c8accb40254a6b71d35164bf9308938f4e1f8bba6f82337287529c5ae90f19"
+        },
+        {
+          "path": "internal/models/api/openaicompletions/client.go",
+          "beforeSha256": "97621fbb63ca5b18249fa8b03f1c6530eb7cc9b6654e70c2a64e7e2d5d043b10",
+          "afterSha256": "ce8c53efab5a60e696628becd10d9293f337212ee506f214f8de7dd2d7f0e2cf"
+        },
+        {
+          "path": "internal/models/api/anthropicmessages/client.go",
+          "beforeSha256": "5aa27bfd1c011c9d51210f3f0c50cc4ad7c247b0584f164404090bb341805b7a",
+          "afterSha256": "22cb7365c8b97ada2c22ceb693c84c5f50fb1b26a46349ad10dedc767642bfb0"
+        },
+        {
+          "path": "internal/models/api/googlegenai/client.go",
+          "beforeSha256": "7cf0767eb7b33abcbdd56206ec8104ebbcb7de01cc2ffe6d73c658caf1d7af01",
+          "afterSha256": "2a3ce4022b490171fa443001ca71e48f47013ba2ab698a1e1dd632cd4d8a8c88"
+        },
+        {
+          "path": "internal/models/api/openairesponses/client.go",
+          "beforeSha256": "dbdb20e566707729469c5b119b12fc908a4931b4279da6c696e1e43758260850",
+          "afterSha256": "e800af0285975790392b6228dff7a7704a2997d54bf4ade0289333485eab0920"
+        },
+        {
+          "path": "internal/models/api/openaicompletions/golden_test.go",
+          "beforeSha256": "7bad71fc673aea265c7048e31d2331bc0a942597ad3a8f37e6b45c7234e37c29",
+          "afterSha256": "0033f298f46b5fce84fbf808a5362e722ebe5458da3a891c33efa8528ced3a62"
+        },
+        {
+          "path": "internal/models/api/anthropicmessages/anthropicmessages_test.go",
+          "beforeSha256": "9e2178a3dd642511c19994385fa9cd797049dfb4d3cd0380af22d5a6b210fe76",
+          "afterSha256": "9f343fda9bb69be2bdd9858ac57658f960ef9a92e38389e7f58dfa04c19cf307"
+        },
+        {
+          "path": "internal/models/api/openairesponses/openairesponses_test.go",
+          "beforeSha256": "1fcd885f1263990bb8a1ef238d22926988b4eea0d14fe5c00854194239108437",
+          "afterSha256": "69412daaba16f72c0f1272c62c9e76449afd85f1f5ef80a974926c67eca876d5"
+        },
+        {
+          "path": "internal/models/api/googlegenai/googlegenai_test.go",
+          "beforeSha256": "4c59514303236b28a9319ecbcbd63755ed42a6c120fd3d079c9924f06df39801",
+          "afterSha256": "da03a0a4120850b5ee6f9c6288e4edb358722f7c41872a965305e9180e07fc46"
+        },
+        {
+          "path": "internal/models/api/images.go",
+          "beforeSha256": "9e84737e9dd419774a41c208738d1696fe6e529a00dbb41bc02a67e49caf26be",
+          "afterSha256": "8a623c03d4c74a5b7420a08ca51fc5c93adfddf219f87bcf0540dc1097baa86f"
+        },
+        {
+          "path": "internal/models/api/retry_test.go",
+          "beforeSha256": "f3bfb943c7f9043e30b0313339fbf001c26a3e9115aa7695c4cfcc582df17764",
+          "afterSha256": "07d5f9c7c9d941055fccdd0fdbd8306c15987b65c5db0bd2cd0136b8e9653a77"
+        },
+        {
+          "path": "internal/models/api/cohererank/golden_test.go",
+          "beforeSha256": "ac256ebc43c38b48100591af46b95802be353fe10faa5bc44f1f0ae5b3cf5687",
+          "afterSha256": "067cb223e59d916e4f554038e1b806f1fd13c475dc6e12a67d52f7be7a20fd03"
+        },
+        {
+          "path": "internal/models/api/nimrerank/golden_test.go",
+          "beforeSha256": "aee48d77a016da7396f717c2590f25b23b4ef80a167979d97950698cbd5ac6e3",
+          "afterSha256": "a6443bf817207be6c2c33b20f88b47d17637fd2a09e93d7ed2ea76ffd6dd726a"
+        },
+        {
+          "path": "internal/models/api/openaiembeddings/golden_test.go",
+          "beforeSha256": "69d7ebdddb57a6e9ae3883323653fbeae48ae2728f00469acd9d6d3cae5fa087",
+          "afterSha256": "542b94171e39786ffdf338bd6b538f447553eba11951593ed8509600bd2c43bc"
+        },
+        {
+          "path": "internal/models/api/openaitranscriptions/golden_test.go",
+          "beforeSha256": "66ad2d9081754981198e49ddb9e3d139457c6ab4891b325e580a2deb043f9f23",
+          "afterSha256": "25b38a85e2767ae17619dcec2d0d44a719053052846d126db264882b258f5d73"
+        },
+        {
+          "path": "internal/models/api/pineconerank/golden_test.go",
+          "beforeSha256": "101659c39517ff4e00e2a2512b80f6637c938bdd546ce8c280ff1c95d5aa86de",
+          "afterSha256": "c9eaf3f85f3cbb54eaf8fe0ec4fdbd4b2cb5734aed40a5b3960a977f160654a8"
+        },
+        {
+          "path": "internal/models/api/teirank/golden_test.go",
+          "beforeSha256": "fcb84a86ddc9fc09e96a42ce621a580e877e01f5ea1cba3e4e9ffb8d73e99e6b",
+          "afterSha256": "d1adb6caffd8ec68fde980d56ece995f149d7fd245a9b9c82fb219093760f0a2"
+        }
+      ]
+    },
+    {
+      "id": "0002-preserve-linked-image-hrefs",
+      "file": "patches/0002-preserve-linked-image-hrefs.patch",
+      "sha256": "aa4c53f9825ecc7a1d713cd1e7f034863e2ac2ebbf6bd670cd0203ebcf12af69",
+      "targets": [
+        {
+          "path": "internal/infrastructure/docparser/image_resolver.go",
+          "beforeSha256": "b5f25bddd3dfa7997e7d50226cac43bc128ca35915c5343229fd7c24de5dfb42",
+          "afterSha256": "3935d7efa51d9a627eac82d2c46b5e6a709e2281e8047844e71df8487ccafae2"
+        }
+      ]
+    },
+    {
+      "id": "0003-managed-document-no-auto-retry",
+      "file": "patches/0003-managed-document-no-auto-retry.patch",
+      "sha256": "e82f0186383e1cc7fb30728937f3e29c10e19b5a6cb2a71f56f96e2c03fe4aaa",
+      "targets": [
+        {
+          "path": "internal/application/service/knowledge_task_options.go",
+          "beforeSha256": "e11119f33a77d8373e33a680995398ad65c6e2cf54b55131baf853ce7407ff00",
+          "afterSha256": "b1ccaecbf7f4e6aef1768e1a82426a9e054a584b93fa7a722199203c92ba97a6"
+        }
+      ]
+    },
+    {
+      "id": "0004-keyword-first-rrf-defaults",
+      "file": "patches/0004-keyword-first-rrf-defaults.patch",
+      "sha256": "5cadf1d80b2555b3effdbad10619d650b89522e8f26693a2e0a75238e26dcaf2",
+      "targets": [
+        {
+          "path": "internal/types/retrieval_config.go",
+          "beforeSha256": "0b6e9dd4bfeb242cd5630948aa11e29bf992db88e63f466178153de00e1b976c",
+          "afterSha256": "a5b709f2b409588cde8e41e3f21dc03e4e947e224b38f13e992b8ec842f7fa63"
+        },
+        {
+          "path": "internal/application/service/knowledgebase_search_fusion_test.go",
+          "beforeSha256": "42f07e80ee9317e9563872b226e69abc3c773a1f93015953ad70cbce5fe5d52d",
+          "afterSha256": "5952b83e8e9ce18ea7e7228d1da017086149d4729c43cd4d9f398f6ae3b6b755"
+        }
+      ]
+    },
+    {
+      "id": "0005-wiki-source-grounding",
+      "file": "patches/0005-wiki-source-grounding.patch",
+      "sha256": "e8daee6e7ca03dabc30e089cd5ce824ba211b01f7a5e4602bf3ad0993ff16b99",
+      "targets": [
+        {
+          "path": "internal/application/service/wiki_ingest.go",
+          "beforeSha256": "bc4f5c9cf5d5bd4c8759f831baff8d9ff1e1d094d7e08a9de4a18cf051b653b3",
+          "afterSha256": "a3394e8a3000a39c4801c18bec3a8124ebc33ce20878867a72cd62aa847cedd4"
+        },
+        {
+          "path": "internal/application/service/wiki_ingest_cite.go",
+          "beforeSha256": "d4c2a58862f2117a7a9eb220a8953f6aabcce4b03a688961b0001f88606f09df",
+          "afterSha256": "db368d00a4d0fd408763cef041353509682dc17c01e6f85fe603d613c5f4dce2"
+        },
+        {
+          "path": "internal/application/service/wiki_ingest_batch.go",
+          "beforeSha256": "91401c4fefae926c0b3b7dae87277099e5c71886de97a01ac638d881fe520432",
+          "afterSha256": "7f420a148c29f213a5dd286890bb79ab9348c91344e7c3fbafc1cfd7014a6554"
+        },
+        {
+          "path": "internal/application/service/wiki_ingest_reduce_row_guard_test.go",
+          "beforeSha256": "acd63f3a5e09ed4c65b87fb06409118e6bdfdd69ee63e5c41ea8c038e410bf52",
+          "afterSha256": "0fc4ee0ff5e4d1b95fc3d5ccea70f5936c0a39f65909baaab3079a0841558d30"
+        },
+        {
+          "path": "internal/agent/prompts_wiki.go",
+          "beforeSha256": "5df4d16cbf4fadb59d14bc7277ebddb2c03803d45db0b01860dd54503eb6a3fc",
+          "afterSha256": "e36d34479ae827e77d1f7a383309b5c8c3bc63bdefc47a81f9ff5f3c5ea99466"
+        }
+      ]
+    },
+    {
+      "id": "0006-source-aware-retrieval",
+      "file": "patches/0006-source-aware-retrieval.patch",
+      "sha256": "ce7681fce926b55484b0ce874640fcaeaaffa5be4732a50eb88378c4f4f00f89",
+      "targets": [
+        {
+          "path": "internal/application/repository/retriever/sqlite/repository.go",
+          "beforeSha256": "d457744742633af3774822e10f47798579c8f65198a1e9c59640d5dc0a3be392",
+          "afterSha256": "9ee3bd97d1e6e05c9cc071338d902956c13fe3ef2b8e48ec228cfe3e029041c3"
+        },
+        {
+          "path": "internal/application/service/chat_pipeline/context_images_test.go",
+          "beforeSha256": "7929466b7f4745886ce008ad21ad9899ec54a55f7ec7fe878fbe0d2ead8447f1",
+          "afterSha256": "c022d64e868fa1f4706526bb828b8c7bf3882753bc499a58780fd055ac257a2c"
+        },
+        {
+          "path": "internal/application/service/chat_pipeline/search.go",
+          "beforeSha256": "44d399f9374be25dbb8ea0901daf03b16dfa7b0c93c4b0d063728ea39a962fa9",
+          "afterSha256": "4096763f24ffb61c9f5a749daf3fa009d3b9dd0e998c9492944938796284e44c"
+        },
+        {
+          "path": "internal/application/service/knowledgebase_search_fusion.go",
+          "beforeSha256": "1ea5345c28a00ede6954030ed2edf0b1c614a7314b591a286366bbe4f7afcff4",
+          "afterSha256": "fe1c376e661c4b306d202330973410b4a7dc0d90e5a11f2d778a6327ea12ef97"
+        }
+      ]
+    },
+    {
+      "id": "0007-hermetic-service-fixtures",
+      "file": "patches/0007-hermetic-service-fixtures.patch",
+      "sha256": "a924f686ddb7e2cdae4a5150a476001f596dd59ca84f2aef20edeed07babe9fa",
+      "targets": [
+        {
+          "path": "internal/application/service/tenant_sandbox_config_test.go",
+          "beforeSha256": "01f6baffae1c654f68ff60a4716f7b819abe98dc75e73b3ea556860d79d53fbf",
+          "afterSha256": "8f81988cf67fef45dcabec744d5b64052763f964866919db5b362b4df53eda4d"
+        },
+        {
+          "path": "internal/application/service/mcp_service_test.go",
+          "beforeSha256": "5c8454c219ceab36620c41a4282dbaf07f1053cc3cf30018f438cbf9511f8946",
+          "afterSha256": "9253bcf857ff125fdbab550c822c4f6a091e95bfbc2eb56b020476105a522bb5"
+        }
+      ]
+    },
+    {
+      "id": "0008-wiki-summary-provenance",
+      "file": "patches/0008-wiki-summary-provenance.patch",
+      "sha256": "3cd39ec8bc32c3ab69f9bfff5114d859682cb7359943c40a8209c96df584accd",
+      "targets": [
+        {
+          "path": "internal/application/service/wiki_ingest_batch.go",
+          "beforeSha256": "7f420a148c29f213a5dd286890bb79ab9348c91344e7c3fbafc1cfd7014a6554",
+          "afterSha256": "5a28947e3f092c762306d8a9980a75e1f2ab3e38b548a451a9045981dac686bf"
+        },
+        {
+          "path": "internal/application/service/wiki_ingest_cite.go",
+          "beforeSha256": "db368d00a4d0fd408763cef041353509682dc17c01e6f85fe603d613c5f4dce2",
+          "afterSha256": "fe6baebcd55f054f6d963c09acecf80f2784428bca1a1e3424dbef333d5a0ed0"
+        },
+        {
+          "path": "internal/agent/prompts_wiki.go",
+          "beforeSha256": "e36d34479ae827e77d1f7a383309b5c8c3bc63bdefc47a81f9ff5f3c5ea99466",
+          "afterSha256": "3e929ff8d1355482f891abcb8df340a4501e6e1908b575bc0fbc568c01add670"
+        }
+      ]
+    },
+    {
+      "id": "0009-xml-structural-retrieval",
+      "file": "patches/0009-xml-structural-retrieval.patch",
+      "sha256": "8023850dc6e94e12a99b777694108529a725982daefe38ea2d75c39560ad4ebe",
+      "targets": [
+        {
+          "path": "internal/application/repository/retriever/sqlite/repository.go",
+          "beforeSha256": "9ee3bd97d1e6e05c9cc071338d902956c13fe3ef2b8e48ec228cfe3e029041c3",
+          "afterSha256": "2b8a7a8a6e7d3be6a20bf68638d3ed4aec3841235e42bd0ab49dce3e8236bede"
+        },
+        {
+          "path": "internal/application/service/knowledgebase_search_fusion.go",
+          "beforeSha256": "fe1c376e661c4b306d202330973410b4a7dc0d90e5a11f2d778a6327ea12ef97",
+          "afterSha256": "5cdc66407a07fb4150eda20e492436b230b72b3ceea7e5e0c451c0388d6da2c6"
+        },
+        {
+          "path": "internal/types/retriever.go",
+          "beforeSha256": "06cc29b78661e41674f3f37345840d8503daf16609b1385fc42d11f80042a75b",
+          "afterSha256": "2fd0e14b3fef3f267bd24a67b9cba4bbe96df6ee49c085158ad2f87d5ee54c68"
+        }
+      ]
+    },
+    {
+      "id": "0010-parameterized-gorm-logging",
+      "file": "patches/0010-parameterized-gorm-logging.patch",
+      "sha256": "40ef74d15b42733a3b53231fe4fa5b368a267b30379a698892e4c537cc69dc3a",
+      "targets": [
+        {
+          "path": "internal/container/container.go",
+          "beforeSha256": "13a08d8a33f6067b00a99ff5a3e173539a1faa3ba88d2bf58d24f5b7aba43864",
+          "afterSha256": "243143b7e4364e87f94a095643abda0d83aa0f6bd7e41b3738832165b62e718d"
+        }
+      ]
+    },
+    {
+      "id": "0011-literal-identifier-retrieval",
+      "file": "patches/0011-literal-identifier-retrieval.patch",
+      "sha256": "071b775e7773d4d7b2551e7489b8ae9e55589dc423ffff05f75d8ddc96dab636",
+      "targets": [
+        {
+          "path": "internal/application/repository/retriever/sqlite/repository.go",
+          "beforeSha256": "2b8a7a8a6e7d3be6a20bf68638d3ed4aec3841235e42bd0ab49dce3e8236bede",
+          "afterSha256": "f18fd76adac7a82a2875f5f0385b269746dc836659304aa91cc9eced1750d79c"
+        },
+        {
+          "path": "internal/application/service/knowledgebase_search_fusion.go",
+          "beforeSha256": "5cdc66407a07fb4150eda20e492436b230b72b3ceea7e5e0c451c0388d6da2c6",
+          "afterSha256": "e5628fbd6d3d1e95d7c0e09d98a6745b0aef32df139083938885856ceed55d4b"
+        },
+        {
+          "path": "internal/types/retriever.go",
+          "beforeSha256": "2fd0e14b3fef3f267bd24a67b9cba4bbe96df6ee49c085158ad2f87d5ee54c68",
+          "afterSha256": "c6a1ad3b08f964832a7b7426308a29e4a4b011f59c2865c75ba2b1cdc61e5084"
+        }
+      ]
+    },
+    {
+      "id": "0012-xml-named-angle-comparison",
+      "file": "patches/0012-xml-named-angle-comparison.patch",
+      "sha256": "fa60e7f6c2e57a90a14460e8a8f93d152b541ac4efbafeda5568f2d220bc1e37",
+      "targets": [
+        {
+          "path": "internal/application/repository/retriever/sqlite/repository.go",
+          "beforeSha256": "f18fd76adac7a82a2875f5f0385b269746dc836659304aa91cc9eced1750d79c",
+          "afterSha256": "6c42fb70d3e76ff104d4dc7d831d42498547a3f75e8396ee5d80142ac494f049"
+        }
+      ]
+    },
+    {
+      "id": "0013-xml-heading-retrieval",
+      "file": "patches/0013-xml-heading-retrieval.patch",
+      "sha256": "0f5c03fa2f7daec721fdb4ac1d92baca703aaf9a348ebba3664e5699a29ed978",
+      "targets": [
+        {
+          "path": "internal/application/repository/retriever/sqlite/repository.go",
+          "beforeSha256": "6c42fb70d3e76ff104d4dc7d831d42498547a3f75e8396ee5d80142ac494f049",
+          "afterSha256": "28ad359988cea59f1cba3ba503399f36d5a8f30c1c50f8ff34582976bfbad283"
+        },
+        {
+          "path": "internal/application/service/knowledgebase_search_fusion.go",
+          "beforeSha256": "e5628fbd6d3d1e95d7c0e09d98a6745b0aef32df139083938885856ceed55d4b",
+          "afterSha256": "e1ec80e3a4080c67c8e2d14e794bcb0a7fd1abc57d74aa30728958105881be84"
+        },
+        {
+          "path": "internal/types/retriever.go",
+          "beforeSha256": "c6a1ad3b08f964832a7b7426308a29e4a4b011f59c2865c75ba2b1cdc61e5084",
+          "afterSha256": "20905c50d96a94b5f311a47949cf51b2c8720d83f89781f2f33db805845a65f7"
+        }
+      ]
+    }
+  ],
+  "regressionTests": [
+    {
+      "file": "patches/relay_log_safety_test.go",
+      "target": "internal/models/api/relay_log_safety_test.go",
+      "sha256": "f184a2f17e62167199f0c203c91093f024bebb105ed838e264b0318369fa13b3"
+    },
+    {
+      "file": "patches/relay_linked_image_preservation_test.go",
+      "target": "internal/infrastructure/docparser/relay_linked_image_preservation_test.go",
+      "sha256": "89aa1c15c0363fd5d2f0a0ae622c6a6e049a6cbcb7bd9c8c1705854ca08ba700"
+    },
+    {
+      "file": "patches/relay_document_retry_options_test.go",
+      "target": "internal/application/service/relay_document_retry_options_test.go",
+      "sha256": "a38021374781d68e68bec2890d35220aa81267914040fff3170a8de70fae8ff7"
+    },
+    {
+      "file": "patches/relay_document_retry_queue_test.go",
+      "target": "internal/router/relay_document_retry_queue_test.go",
+      "sha256": "71ca1601c286f6b4bc88380b273c90cf0d08bd06c61e9ae4e92c99d9abaf95df"
+    },
+    {
+      "file": "patches/relay_keyword_first_rrf_test.go",
+      "target": "internal/application/service/relay_keyword_first_rrf_test.go",
+      "sha256": "ae92ed4335d919a791f048c66174f5619beb65ffc224ec1d33af7ba5d4bf214e"
+    },
+    {
+      "file": "patches/relay_wiki_source_grounding_test.go",
+      "target": "internal/application/service/relay_wiki_source_grounding_test.go",
+      "sha256": "5db4721552e57ad50679ca23ecf65d29d00846fb16eabbd8a4caba414a15b601"
+    },
+    {
+      "file": "patches/relay_source_aware_retrieval_test.go",
+      "target": "internal/application/service/chat_pipeline/relay_source_aware_retrieval_test.go",
+      "sha256": "99d74ad9bbe41ac9eb72218d11ce36ced4d29e2e15c1f95c504a8d8af3a57b72"
+    },
+    {
+      "file": "patches/relay_retrieval_fusion_ties_test.go",
+      "target": "internal/application/service/relay_retrieval_fusion_ties_test.go",
+      "sha256": "a3f33a5388f59a71d15698190645ab41ff3dc4d640798287263e12c6bc9a00fb"
+    },
+    {
+      "file": "patches/relay_retrieval_sqlite_ties_test.go",
+      "target": "internal/application/repository/retriever/sqlite/relay_retrieval_sqlite_ties_test.go",
+      "sha256": "510bf46fd25a637fd7fb5a7af02e69611c5e242f82dc671e5d472c3b78e603c2"
+    },
+    {
+      "file": "patches/relay_wiki_summary_provenance_test.go",
+      "target": "internal/application/service/relay_wiki_summary_provenance_test.go",
+      "sha256": "2ab7efe15eb690192c22691d0024fa95f646c254aeca404af66fb9bc7c99c1c3"
+    },
+    {
+      "file": "patches/relay_xml_structural_test.go",
+      "target": "internal/application/repository/retriever/sqlite/relay_xml_structural_test.go",
+      "sha256": "3eb0584c6e8ccaa0a4131ef686ad6a9e2720487cd44df10e3ffb54aaf45d3de0"
+    },
+    {
+      "file": "patches/relay_xml_fusion_test.go",
+      "target": "internal/application/service/relay_xml_fusion_test.go",
+      "sha256": "3957a29d7dd88d991335f0bbce9071e721b7c2ed0c123f49ed1034b7d26380cf"
+    },
+    {
+      "file": "patches/relay_gorm_log_safety_test.go",
+      "target": "internal/container/relay_gorm_log_safety_test.go",
+      "sha256": "925df8f175267c193d9e0d8812f0ae7d5f79923d5775363fcbb72611e92378ad"
+    },
+    {
+      "file": "patches/relay_literal_identifier_test.go",
+      "target": "internal/application/repository/retriever/sqlite/relay_literal_identifier_test.go",
+      "sha256": "a5084e95ffd5d72f579b7e6ad59546d8dcc41ad8ed7a466476c3db8506e8d94a"
+    },
+    {
+      "file": "patches/relay_literal_identifier_fusion_test.go",
+      "target": "internal/application/service/relay_literal_identifier_fusion_test.go",
+      "sha256": "695002806b777095a475189db396c02baf6dad375a9e2ee04824171824658df1"
+    },
+    {
+      "file": "patches/relay_xml_encoded_comparison_test.go",
+      "target": "internal/application/repository/retriever/sqlite/relay_xml_encoded_comparison_test.go",
+      "sha256": "c51360dd7aebdba1a281b9e1e7980805c0c5695de78e87176126efdbef9506c9"
+    },
+    {
+      "file": "patches/relay_xml_encoded_fusion_test.go",
+      "target": "internal/application/service/relay_xml_encoded_fusion_test.go",
+      "sha256": "30de9aab2747ef3830c36cd29ce0f3c48e831bd5baca1d7b6548a98514708308"
+    },
+    {
+      "file": "patches/relay_xml_heading_test.go",
+      "target": "internal/application/repository/retriever/sqlite/relay_xml_heading_test.go",
+      "sha256": "2f900ffa85070b1d03e73aeebef4ab896eaf0fb85af4de733df5c68bb2de25da"
+    },
+    {
+      "file": "patches/relay_xml_heading_fusion_test.go",
+      "target": "internal/application/service/relay_xml_heading_fusion_test.go",
+      "sha256": "df8104bad30581d269c551e12fc58fc445a7116d936c666dd5508af26c9a981d"
+    }
+  ]
+}

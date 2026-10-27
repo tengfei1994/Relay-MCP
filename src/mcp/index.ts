@@ -10,9 +10,10 @@ import { configureJobStore } from "../shared/job-store.js";
 import { configureDeploymentStore } from "../shared/deployment-store.js";
 import { createKnowledgeStore } from "../knowledge/store.js";
 import { WorkSessionService } from "../knowledge/work-session.js";
+import { startCandidateInsightDispatcher } from "../knowledge/candidate-dispatch.js";
 import { captureKnowledgeCandidates, ProjectResolutionUnavailableError } from "../knowledge/capture-worker.js";
 import { drainRelayEventSpool, relayEventSpoolHealth } from "../knowledge/event-sink.js";
-import { sanitizeAuditArguments } from "../shared/audit-sanitizer.js";
+import { sanitizeToolAuditArguments } from "../shared/retrieval-audit.js";
 import { TOOL_CATALOG_BY_NAME } from "../shared/tool-catalog.js";
 import { extractMcpToken, queryTokenAuthEnabled } from "./auth.js";
 import { requireJwtSecret } from "../shared/auth-secret.js";
@@ -117,6 +118,7 @@ function attemptKnowledgeRecovery(): void {
 attemptKnowledgeRecovery();
 const recoveryTimer = setInterval(attemptKnowledgeRecovery, 10000);
 recoveryTimer.unref?.();
+const candidateDispatcher = startCandidateInsightDispatcher(() => knowledge, {onError:()=>process.stderr.write("[candidate-worker] cycle failed; queued work remains durable\n")});
 
 // The capture consumer is part of the production composition root. Events are
 // first persisted to the domain/outbox tables, then periodically claimed and
@@ -244,7 +246,7 @@ app.all("/mcp", async (req, res) => {
     }
     if (body?.method === "tools/call" && typeof body.params?.name === "string") {
       const metadata = TOOL_CATALOG_BY_NAME.get(body.params.name);
-      writeAudit({ event: "tool_called", userId: user.id, username: user.username, tool: body.params.name, category: metadata?.category ?? "unclassified", description: metadata?.description, arguments: sanitizeAuditArguments(body.params.arguments) });
+      writeAudit({ event: "tool_called", userId: user.id, username: user.username, tool: body.params.name, category: metadata?.category ?? "unclassified", description: metadata?.description, arguments: sanitizeToolAuditArguments(body.params.name, body.params.arguments) });
     }
     server = registerToolsForUser(user, { knowledge });
     transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
@@ -304,7 +306,7 @@ app.use((_error: unknown, _req: express.Request, res: express.Response, _next: e
     error: { code: -32700, message: "Parse error" },
   });
 });
-const mcpHttpServer = app.listen(MCP_PORT, "0.0.0.0", () => console.log(`MCP server running on port ${MCP_PORT}`));
+const mcpHttpServer = app.listen(MCP_PORT, process.env.MCP_HOST ?? "0.0.0.0", () => console.log(`MCP server running on port ${MCP_PORT}`));
 let sharedResourcesClosed = false;
 const closeSharedResources = (): void => {
   if (sharedResourcesClosed) return;
@@ -312,4 +314,4 @@ const closeSharedResources = (): void => {
   try { knowledge?.close(); } catch { /* ignore */ }
   try { closeSharedProjectRegistry(); } catch { /* ignore */ }
 };
-installMcpShutdown({ server: mcpHttpServer, waitForDrain: () => requestActivity.waitForDrain(), closeSharedResources, timers: [recoveryTimer, captureTimer, retentionTimer], graceMs: MCP_SHUTDOWN_GRACE_MS });
+installMcpShutdown({ server: mcpHttpServer, waitForDrain: async () => { await Promise.all([candidateDispatcher.stop(),requestActivity.waitForDrain()]); }, closeSharedResources, timers: [recoveryTimer, captureTimer, retentionTimer], graceMs: MCP_SHUTDOWN_GRACE_MS });

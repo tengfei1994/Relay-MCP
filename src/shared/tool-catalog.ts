@@ -87,6 +87,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: "knowledge_work_session_list", category: "context", description: "List or summarize ACL-scoped Work Sessions." },
   { name: "knowledge_provider_config_list", category: "context", description: "List safe Relay provider metadata without returning secrets." },
   { name: "knowledge_candidate_insight_compile", category: "context", description: "Compile an Evidence-backed Candidate Insight with deterministic fallback." },
+  { name: "knowledge_candidate_insight_job_get", category: "context", description: "Read an ACL-scoped asynchronous Candidate compilation job." },
   { name: "knowledge_candidate_insight_list", category: "context", description: "List ACL-scoped Candidate Insights for human review." },
   { name: "knowledge_candidate_insight_review", category: "context", description: "Confirm, edit, reject, or promote a Candidate Insight with a reason." },
   { name: "knowledge_wiki_search", category: "context", description: "Search Relay-native Wiki pages with ACL and Product Knowledge filters." },

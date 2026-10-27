@@ -51,6 +51,8 @@ export interface JobRecord {
   terminalEventKind?: "finished" | "failed" | "cancelled" | "unknown" | "interrupted";
   /** Stable project identity used to make terminal-event replay immutable. */
   projectIdSnapshot?: string;
+  /** Validated target environment snapshotted for new jobs; legacy records stay unscoped. */
+  environment?: string;
   /** Optional Work Session correlation carried through every event. */
   workSessionId?: string;
   intentStep?: string;
@@ -114,7 +116,7 @@ function boundedSanitizedText(value: string, limit: number): string {
 
 /** Bounded and sanitized terminal context retained in Knowledge candidates. */
 function knowledgeTerminalPayload(
-  job: Pick<JobRecord, "status" | "kind" | "errorCategory" | "error" | "summary" | "phase" | "retrySafe" | "cancelRequestedAt" | "cancelReason" | "retryOf" | "retryAttempt" | "retryReason" | "input" | "logs" | "workSessionId" | "intentStep" | "objectiveRef" | "acceptanceCriterionRef">,
+  job: Pick<JobRecord, "status" | "kind" | "errorCategory" | "error" | "summary" | "phase" | "retrySafe" | "cancelRequestedAt" | "cancelReason" | "retryOf" | "retryAttempt" | "retryReason" | "input" | "logs" | "environment" | "workSessionId" | "intentStep" | "objectiveRef" | "acceptanceCriterionRef">,
 ): Record<string, unknown> {
   const executionStreams = extractExecutionSummaryStreams(job.summary);
   const logs = (job.logs ?? []).slice(-50).map((entry) => ({
@@ -123,6 +125,7 @@ function knowledgeTerminalPayload(
     message: boundedSanitizedText(entry.message, 2_000),
   }));
   return sanitizeAuditArguments({
+    environment: job.environment,
     workSessionId: job.workSessionId,
     intentStep: job.intentStep,
     objectiveRef: job.objectiveRef,
@@ -204,7 +207,7 @@ function resolveProjectIdSnapshot(userId: number, projectName: string): string |
   }
 }
 
-function startedJobEvent(job: Pick<JobRecord, "id" | "userId" | "username" | "project" | "kind" | "input" | "startedAt" | "projectIdSnapshot" | "workSessionId" | "intentStep" | "objectiveRef" | "acceptanceCriterionRef">): Parameters<typeof emitRelayEvent>[1] {
+function startedJobEvent(job: Pick<JobRecord, "id" | "userId" | "username" | "project" | "kind" | "input" | "startedAt" | "projectIdSnapshot" | "environment" | "workSessionId" | "intentStep" | "objectiveRef" | "acceptanceCriterionRef">): Parameters<typeof emitRelayEvent>[1] {
   return {
     type: "job.started",
     eventKey: `job:${job.id}:started`,
@@ -213,7 +216,7 @@ function startedJobEvent(job: Pick<JobRecord, "id" | "userId" | "username" | "pr
     projectId: job.projectIdSnapshot,
     projectNameSnapshot: job.project,
     jobId: job.id,
-    payload: sanitizeAuditArguments({ userId: job.userId, username: job.username, kind: job.kind, input: job.input, workSessionId: job.workSessionId, intentStep: job.intentStep, objectiveRef: job.objectiveRef, acceptanceCriterionRef: job.acceptanceCriterionRef }) as Record<string, unknown>,
+    payload: sanitizeAuditArguments({ userId: job.userId, username: job.username, kind: job.kind, environment: job.environment, input: job.input, workSessionId: job.workSessionId, intentStep: job.intentStep, objectiveRef: job.objectiveRef, acceptanceCriterionRef: job.acceptanceCriterionRef }) as Record<string, unknown>,
   };
 }
 
@@ -405,6 +408,8 @@ export function startJob(
     ? boundedText(retryOptions.retryReason, 2_000)
     : undefined;
   const stableProjectId = resolveProjectIdSnapshot(user.id, project);
+  const environment = input && typeof input === "object" && !Array.isArray(input)
+    ? boundedRef((input as Record<string, unknown>).environment, 200) : undefined;
   const job: JobRecord = {
     id: `${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     userId: user.id,
@@ -414,6 +419,7 @@ export function startJob(
     status: "running",
     phase: "not_started",
     input,
+    ...(environment === undefined ? {} : { environment }),
     logs: [],
     startedAt: new Date().toISOString(),
     ...(retryOf ? { retryOf, retryAttempt, retryReason } : {}),
@@ -435,6 +441,7 @@ export function startJob(
       jobId: job.id,
       payload: sanitizeAuditArguments({
         status: "retrying",
+        environment: job.environment,
         kind,
         retryOf,
         retryAttempt,

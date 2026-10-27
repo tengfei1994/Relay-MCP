@@ -35,7 +35,7 @@ function countingWriter(result?: { externalDocumentId: string; externalChunkIds?
       state.calls += 1;
       state.lastContent = input.normalizedContent;
       state.lastInput = input;
-      return result ?? { externalDocumentId: `ext-${state.calls}`, externalChunkIds: ["chunk-1"], knowledgeBaseId: "kb-1" };
+      return { parseStatus: "completed", externalChunkIds: ["chunk-1"], ...(result ?? { externalDocumentId: `ext-${state.calls}`, knowledgeBaseId: input.modelProvenance?.knowledgeBaseId ?? "kb-1" }) };
     },
   };
   return { writer, state };
@@ -73,13 +73,13 @@ test("identity dedupe never merges across topic or source boundaries", async () 
   assert.equal(state.calls, 3);
 }));
 
-test("upstream dedupe returning an already-recorded external document id reuses the existing row", async () => withStore(async (store) => {
+test("upstream dedupe cannot merge an external document across Relay scopes", async () => withStore(async (store) => {
   const { writer, state } = countingWriter({ externalDocumentId: "ext-shared", knowledgeBaseId: "kb-1" });
   const ingestor = new WeKnoraIngestor(store, writer);
   const first = await ingestor.stage(baseInput);
-  const second = await ingestor.stage({ ...baseInput, idempotencyKey: "import-5", topicId: "topic-9" });
+  await assert.rejects(ingestor.stage({ ...baseInput, idempotencyKey: "import-5", topicId: "topic-9" }), /scope|identity/i);
   assert.equal(state.calls, 2);
-  assert.equal(second.id, first.id);
+  assert.equal(ingestor.get(first.id)?.topicId, "topic-1");
 }));
 
 test("writer failure stages a failed row with a sanitized category and explicit retry recovers without duplicating the external document", async () => withStore(async (store) => {
@@ -88,7 +88,7 @@ test("writer failure stages a failed row with a sanitized category and explicit 
     async upsertDocument() {
       calls += 1;
       if (calls === 1) throw new WeKnoraError("rate_limited", "WeKnora rate limit exceeded", 429, 3);
-      return { externalDocumentId: "ext-retry", knowledgeBaseId: "kb-1" };
+      return { externalDocumentId: "ext-retry", knowledgeBaseId: "kb-1", parseStatus: "completed", externalChunkIds: ["retry-chunk"] };
     },
   };
   const ingestor = new WeKnoraIngestor(store, writer);
@@ -119,7 +119,7 @@ test("batch import reports per-file outcomes and continues after failures", asyn
   const writer: WeKnoraDocumentWriter = {
     async upsertDocument(input) {
       if (input.idempotencyKey === "bad-1") throw new Error("upstream 500 with token sk-batch-secret-123");
-      return { externalDocumentId: `ext-${input.idempotencyKey}` };
+      return { externalDocumentId: `ext-${input.idempotencyKey}`, parseStatus: "completed", externalChunkIds: ["batch-chunk"] };
     },
   };
   const ingestor = new WeKnoraIngestor(store, writer);
@@ -187,12 +187,39 @@ test("normalizeProductContent keeps plain text input stable", () => {
 
 test("migration controller records staged publish and auditable rollback without deleting source", async () => withStore(async (store) => {
   const controller = new MigrationController(store, () => new Date("2026-10-23T00:00:00.000Z"));
-  const created = controller.create({ actorId: 7, idempotencyKey: "m-1", sourceManifest: { documents: 1, sourceHash: "sha" } });
-  assert.equal(controller.create({ actorId: 7, idempotencyKey: "m-1", sourceManifest: { documents: 99 } }).id, created.id);
+  const created = controller.create({ actorId: 7, idempotencyKey: "m-1", kind: "audit_only", sourceManifest: { documents: 1, sourceHash: "sha" } });
+  assert.equal(controller.create({ actorId: 7, idempotencyKey: "m-1", kind: "audit_only", sourceManifest: { documents: 99 } }).id, created.id);
   controller.markStaged(created.id, { imported: 1, skipped: 0, failed: 0 }, 7);
   controller.publish(created.id, 7);
   const rolled = controller.rollback(created.id, 7, "verification failed");
   assert.equal(rolled.status, "rolled_back");
   assert.equal(rolled.rollbackReason, "verification failed");
   assert.equal((store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_audit WHERE entity_id=?").get(created.id) as { count: number }).count, 4);
+}));
+
+test("environment and embedding index generation form part of document identity", async () => withStore(async (store) => {
+  const { writer } = countingWriter();
+  const ingestor = new WeKnoraIngestor(store, writer);
+  const provenance = { knowledgeBaseId: "kb-1", providerId: "provider", modelId: "embedding", dimensions: 32, indexVersion: 1 };
+  const testDoc = await ingestor.stage({ ...baseInput, environment: "test", modelProvenance: provenance });
+  const prodDoc = await ingestor.stage({ ...baseInput, idempotencyKey: "prod", environment: "prod", modelProvenance: provenance });
+  const nextIndex = await ingestor.stage({ ...baseInput, idempotencyKey: "index-2", environment: "test", modelProvenance: { ...provenance, knowledgeBaseId: "kb-2", indexVersion: 2 } });
+  assert.notEqual(testDoc.id, prodDoc.id);
+  assert.notEqual(testDoc.id, nextIndex.id);
+  assert.deepEqual(testDoc.modelProvenance, provenance);
+  assert.equal(testDoc.upstreamParseStatus, "completed");
+  assert.ok(testDoc.upstreamVerifiedAt);
+  assert.deepEqual(testDoc.externalChunkIds, ["chunk-1"]);
+  ingestor.publish(testDoc.id, 7); ingestor.publish(prodDoc.id, 7);
+  assert.deepEqual(ingestor.listRetrievalVisible({ projectId:"p1", environment: "test" }).map((d) => d.id), [testDoc.id]);
+  await assert.rejects(ingestor.stage({ ...baseInput, environment: "prod", modelProvenance: provenance }), /idempotency|identity/i);
+}));
+
+
+test("ContextPack source IDs include only explicit global or exact project/environment publications", async () => withStore(async store => {
+  const {writer}=countingWriter(); const ingestor=new WeKnoraIngestor(store,writer);
+  for (const [key,projectId,environment] of [["global",undefined,undefined],["mine","p1","dev"],["foreign","p2","dev"],["production","p1","prod"],["ambiguous",undefined,"dev"]]) {
+    const doc=await ingestor.stage({...baseInput,idempotencyKey:key!,projectId,environment,sourcePath:key}); ingestor.publish(doc.id,7);
+  }
+  assert.deepEqual(ingestor.listRetrievalVisible({projectId:"p1",environment:"dev"}).map(d=>d.sourcePath).sort(),["global","mine"]);
 }));

@@ -37,3 +37,9 @@ test("provider metadata suppresses credentials from legacy base URL rows", () =>
   assert.equal(listed.baseUrl, undefined);
   assert.doesNotMatch(JSON.stringify(listed), /legacy-user|legacy-password/);
 }));
+
+test("changing embedding endpoint invalidates vectors even when model label and width match",()=>withStore((registry)=>{
+  registry.upsert({id:"embed",kind:"embedding",provider:"one",baseUrl:"https://one.test/v1",modelId:"model",dimensions:3,actorId:7});
+  const changed=registry.upsert({id:"embed",kind:"embedding",provider:"two",baseUrl:"https://two.test/v1",modelId:"model",dimensions:3,actorId:7});
+  assert.equal(changed.indexVersion,2);assert.equal(changed.reindexRequired,true);
+}));

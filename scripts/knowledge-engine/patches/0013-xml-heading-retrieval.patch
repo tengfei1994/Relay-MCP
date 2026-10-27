@@ -1,0 +1,154 @@
+--- a/internal/application/repository/retriever/sqlite/repository.go
++++ b/internal/application/repository/retriever/sqlite/repository.go
+@@ -626,17 +626,18 @@
+ 			i+1, row.ChunkID, score, row.Content)
+ 
+ 		items[i] = &types.IndexWithScore{
+-			ID:                     fmt.Sprintf("%d", row.ID),
+-			SourceID:               row.SourceID,
+-			SourceType:             types.SourceType(row.SourceType),
+-			ChunkID:                row.ChunkID,
+-			KnowledgeID:            row.KnowledgeID,
+-			KnowledgeBaseID:        row.KnowledgeBaseID,
+-			TagID:                  row.TagID,
+-			Content:                row.Content,
+-			Score:                  score,
+-			MatchType:              types.MatchTypeKeywords,
+-			KeywordStructuralMatch: row.KeywordStructuralMatch,
++			ID:                            fmt.Sprintf("%d", row.ID),
++			SourceID:                      row.SourceID,
++			SourceType:                    types.SourceType(row.SourceType),
++			ChunkID:                       row.ChunkID,
++			KnowledgeID:                   row.KnowledgeID,
++			KnowledgeBaseID:               row.KnowledgeBaseID,
++			TagID:                         row.TagID,
++			Content:                       row.Content,
++			Score:                         score,
++			MatchType:                     types.MatchTypeKeywords,
++			KeywordStructuralMatch:        row.KeywordStructuralMatch,
++			KeywordStructuralHeadingMatch: keywordXMLHeadingMatch(params.Query, row.Content),
+ 		}
+ 	}
+ 
+@@ -1054,6 +1055,77 @@
+ 	return "CASE WHEN " + strings.Join(clauses, " AND ") + " THEN 1 ELSE 0 END", args
+ }
+ 
++var xmlNamedAngleReplacer = strings.NewReplacer("&lt;", "<", "&gt;", ">", "&LT;", "<", "&GT;", ">")
++
++func keywordXMLHeadingMatch(query, content string) bool {
++	names := make(map[string]bool)
++	for _, match := range xmlQueryTag.FindAllStringSubmatch(query, -1) {
++		name := match[1]
++		if strings.HasPrefix(match[0], "</") && strings.TrimSpace(strings.TrimPrefix(match[0], "</"+name)) != ">" {
++			continue
++		}
++		names[name] = true
++		if len(names) > 32 {
++			return false
++		}
++	}
++	if len(names) == 0 {
++		return false
++	}
++	fence := ""
++	for _, line := range strings.Split(xmlNamedAngleReplacer.Replace(content), "\n") {
++		trimmed := strings.TrimSpace(line)
++		marker := ""
++		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
++			marker = trimmed[:3]
++		}
++		if marker != "" {
++			if fence == "" {
++				fence = marker
++			} else if strings.HasPrefix(trimmed, fence) && strings.TrimSpace(trimmed[len(fence):]) == "" {
++				fence = ""
++			}
++			continue
++		}
++		if fence != "" {
++			continue
++		}
++		heading := strings.TrimLeft(line, " \t")
++		level := 0
++		for level < len(heading) && heading[level] == '#' {
++			level++
++		}
++		if level == 0 || level > 6 || len(heading) == level || (heading[level] != ' ' && heading[level] != '\t') {
++			continue
++		}
++		for name := range names {
++			if !xmlHeadingHasElement(heading[level:], name) {
++				goto nextLine
++			}
++		}
++		return true
++	nextLine:
++	}
++	return false
++}
++
++func xmlHeadingHasElement(line, name string) bool {
++	for _, prefix := range []string{"<" + name, "</" + name} {
++		for offset := 0; offset < len(line); {
++			index := strings.Index(line[offset:], prefix)
++			if index < 0 {
++				break
++			}
++			end := offset + index + len(prefix)
++			if end < len(line) && strings.ContainsRune(" \t\r\n/>", rune(line[end])) {
++				return true
++			}
++			offset = end
++		}
++	}
++	return false
++}
++
+ var technicalQueryIdentifier = regexp.MustCompile(`[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+`)
+ var numericQueryVersion = regexp.MustCompile(`(?i)^v?[0-9]+(?:_[0-9]+)+$`)
+ 
+--- a/internal/application/service/knowledgebase_search_fusion.go
++++ b/internal/application/service/knowledgebase_search_fusion.go
+@@ -94,10 +94,15 @@
+ 	return cmp.Compare(a.ChunkID, b.ChunkID)
+ }
+ 
+-// sortKeywordByScoreDesc preserves explicit literal structure before BM25. It is
+-// used only while ranking keyword candidates; final fused scores and vector
+-// ranks continue to use sortByScoreDesc.
++// sortKeywordByScoreDesc preserves explicit heading and literal structure before
++// BM25. Final fused scores and vector ranks continue to use sortByScoreDesc.
+ func sortKeywordByScoreDesc(a, b *types.IndexWithScore) int {
++	if a.KeywordStructuralHeadingMatch != b.KeywordStructuralHeadingMatch {
++		if a.KeywordStructuralHeadingMatch {
++			return -1
++		}
++		return 1
++	}
+ 	if a.KeywordStructuralMatch != b.KeywordStructuralMatch {
+ 		if a.KeywordStructuralMatch {
+ 			return -1
+@@ -203,7 +208,10 @@
+ 		}
+ 	}
+ 	for _, r := range flattenLists(keywordLists) {
+-		if _, exists := chunkInfoMap[r.ChunkID]; !exists {
++		if existing, exists := chunkInfoMap[r.ChunkID]; exists {
++			existing.KeywordStructuralMatch = existing.KeywordStructuralMatch || r.KeywordStructuralMatch
++			existing.KeywordStructuralHeadingMatch = existing.KeywordStructuralHeadingMatch || r.KeywordStructuralHeadingMatch
++		} else {
+ 			chunkInfoMap[r.ChunkID] = r
+ 		}
+ 	}
+--- a/internal/types/retriever.go
++++ b/internal/types/retriever.go
+@@ -95,6 +95,8 @@
+ 	// KeywordStructuralMatch records explicit literal-structure evidence for keyword
+ 	// ranking only. Raw BM25 remains in Score; fusion output uses its own rank.
+ 	KeywordStructuralMatch bool `json:"-"`
++	// KeywordStructuralHeadingMatch records query elements in a Markdown heading.
++	KeywordStructuralHeadingMatch bool `json:"-"`
+ 	// VectorScore is a vector hit's similarity as its engine reported it.
+ 	// Fusion replaces Score with a rank-based one; this keeps the evidence of
+ 	// how close the vector actually was, which reranking weighs for images.

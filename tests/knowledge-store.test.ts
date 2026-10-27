@@ -18,6 +18,19 @@ const eventDefaults = {
   payload: { status: "succeeded" },
 };
 
+test("topic backfill preserves an existing title and timestamp when another source has no binding", () => {
+  const root=mkdtempSync(join(tmpdir(),"relay-topic-backfill-"));
+  const store=createKnowledgeStore({dbPath:join(root,"knowledge.db")});
+  try {
+    store.db.prepare("INSERT INTO knowledge_topics(id,canonical_key,canonical_title,kind,domain,created_at,updated_at) VALUES('curated','product:family','Curated title','product_document','product','before','before')").run();
+    store.db.prepare("INSERT INTO knowledge_documents(id,kind,title,body,lifecycle,samplemanager_version,source_locator,created_at,updated_at) VALUES('unbound','product_document','Alternate source title','body','approved','21.3','path','then','then')").run();
+    store.db.prepare("INSERT INTO knowledge_product_documents(id,document_family_id,document_type,source_path,version,created_at,updated_at) VALUES('unbound','family','guide','path','21.3','then','then')").run();
+    store.migrate();store.migrate();
+    assert.deepEqual(store.db.prepare("SELECT canonical_title,updated_at FROM knowledge_topics WHERE id='curated'").get(),{canonical_title:'Curated title',updated_at:'before'});
+    assert.equal((store.db.prepare("SELECT topic_id FROM knowledge_product_document_bindings WHERE document_id='unbound'").get() as {topic_id:string}).topic_id,'curated');
+  } finally {store.close();cleanup(root);}
+});
+
 test("read-path ACL mirroring preserves an existing reviewer grant", () => {
   const root = mkdtempSync(join(tmpdir(), "relay-knowledge-acl-"));
   const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });
@@ -342,7 +355,7 @@ test("migrations tolerate a partially applied event_key column", async (t) => {
         "016-product-document-governance",
       "017-product-document-operations",
       "018-evidence-metadata",
-      "019-human-display-projection", "020-observation-candidate", "021-observation-review", "022-chunk-fts-ownership", "023-business-context", "024-product-topics", "025-artifact-baselines", "026-source-index", "027-ingest-jobs", "028-product-revisions", "029-work-sessions", "030-provider-configs", "031-weknora-documents", "032-candidate-insights", "033-work-session-ops", "034-provider-runtime", "035-weknora-ingest-identity", "036-candidate-insight-review", "037-wiki", "038-integration-routing", "039-provider-secrets",
+      "019-human-display-projection", "020-observation-candidate", "021-observation-review", "022-chunk-fts-ownership", "023-business-context", "024-product-topics", "025-artifact-baselines", "026-source-index", "027-ingest-jobs", "028-product-revisions", "029-work-sessions", "030-provider-configs", "031-weknora-documents", "032-candidate-insights", "033-work-session-ops", "034-provider-runtime", "035-weknora-ingest-identity", "036-candidate-insight-review", "037-wiki", "038-integration-routing", "039-provider-secrets", "040-managed-engine", "041-candidate-scope", "042-candidate-worker-lease", "043-migration-withdrawal", "044-provider-admission", "045-ingest-ownership", "046-product-revision-parser-identity",
     ]);
       store.append({ id: "event-partial", type: "job.finished", eventKey: "job:partial:finished", ...eventDefaults });
       assert.equal(store.claim("capture").length, 1);

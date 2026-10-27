@@ -63,8 +63,13 @@ export function compareSourceBaselines(oldBaseline: SourceManifest, project: Sou
     else if (!oldFile && !projectFile && newFile) status = "ADDED";
     else if (oldFile && !projectFile && !newFile) status = "DELETED";
     else if (oldHash === projectHash && projectHash === newHash) status = "UNCHANGED";
-    else if (oldHash === projectHash && projectHash !== newHash) status = "BASELINE_ONLY";
-    else if (oldHash !== projectHash && projectHash === newHash) status = "PROJECT_ONLY";
+    else if (oldHash === projectHash) status = "BASELINE_ONLY";
+    // A project change is safe when the next baseline preserves either the old
+    // content (the baseline did not touch this file) or the project's content
+    // (both sides made the same change).  Check both anchors explicitly: using
+    // only `projectHash === newHash` misclassifies old=A/project=B/new=A as a
+    // conflict even though the baseline side is unchanged.
+    else if (oldHash === newHash || projectHash === newHash) status = "PROJECT_ONLY";
     else status = "BOTH_CHANGED";
     return { path, status, ...(status === "BOTH_CHANGED" ? { potentialConflict: true } : {}), ...(oldFile ? { old: oldFile } : {}), ...(projectFile ? { project: projectFile } : {}), ...(newFile ? { next: newFile } : {}) };
   });

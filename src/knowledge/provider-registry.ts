@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { KnowledgeStore } from "./store.js";
 import { ProviderUnavailableError } from "./providers.js";
-import { ProviderPolicy, type ProviderConfig, type ProviderHealth, type ProviderPolicyOptions } from "./provider-runtime.js";
+import { admitProviderInvocation } from "./provider-admission.js";
+import { ProviderPolicy, ProviderBindingStaleError, ProviderCredentialsChangedError, type ProviderConfig, type ProviderHealth, type ProviderPolicyOptions, type ProviderCallOptions } from "./provider-runtime.js";
 import type { SecretResolver } from "./provider-secret.js";
-import { ManagedProviderError, callOpenAiChat, callOpenAiEmbedding, callOpenAiRerank, type ManagedHttpOptions, type ProviderTokenUsage } from "./provider-probe.js";
+import { ManagedProviderError, providerErrorAuditDetails, callOpenAiChat, callOpenAiEmbedding, callOpenAiRerank, validateChatGenerationOptions, type ManagedChatGenerationOptions, type ManagedHttpOptions, type ManagedChatMessage, type ProviderTokenUsage } from "./provider-probe.js";
 
 export type ManagedProviderKind = "embedding" | "rerank" | "wiki_llm" | "candidate_llm";
 export type ManagedProviderStatus = "ready" | "pending_reindex" | "degraded" | "disabled";
@@ -13,6 +14,7 @@ export interface ProviderConfigMetadata { id: string; kind: ManagedProviderKind;
 export type ProviderReindexJobStatus = "pending" | "running" | "completed" | "failed";
 export interface ProviderReindexJob { id: string; providerId: string; indexVersion: number; fromModelId?: string; fromDimensions?: number; toModelId: string; toDimensions?: number; status: ProviderReindexJobStatus; errorCode?: string; createdAt: string; updatedAt: string; completedAt?: string; }
 export interface PendingReindexEntry { job: ProviderReindexJob; provider: ProviderConfigMetadata; }
+export interface ExpectedProviderBinding { kind: ManagedProviderKind; modelId: string; dimensions?: number; indexVersion: number; }
 /** Numeric, credential-free probe outcome; safe for DTOs and audit. */
 export interface ProviderProbeReport { ok: boolean; errorCode?: string; latencyMs?: number; httpStatus?: number; observedDimensions?: number; tokenUsage?: ProviderTokenUsage; }
 export interface ProviderRegistryRuntimeOptions { secrets?: SecretResolver; fetchImpl?: typeof fetch; policy?: ProviderPolicyOptions; }
@@ -88,7 +90,8 @@ function auditUsage(usage: ProviderTokenUsage | undefined): Record<string, numbe
 
 export interface ManagedEmbeddingResult { vectors: number[][]; tokenUsage?: ProviderTokenUsage; }
 export interface ManagedRerankResult { results: Array<{ id: string; score: number }>; tokenUsage?: ProviderTokenUsage; }
-export interface ManagedChatResult { text: string; tokenUsage?: ProviderTokenUsage; }
+export interface ManagedChatResult { text: string; finishReason?: string; tokenUsage?: ProviderTokenUsage; }
+export interface ManagedChatOptions extends ProviderCallOptions, ManagedChatGenerationOptions {}
 
 /**
  * Live handle for one managed provider. Each call re-reads the config row and
@@ -104,7 +107,12 @@ export interface ManagedProviderHandle {
   embed(texts: string[]): Promise<ManagedEmbeddingResult>;
   rerank(query: string, documents: Array<{ id: string; text: string; score: number }>): Promise<ManagedRerankResult>;
   complete(prompt: string, maxTokens?: number): Promise<ManagedChatResult>;
+  chat(messages: ManagedChatMessage[], maxTokens?: number, responseFormat?: {type: "text" | "json_object"}, options?:ManagedChatOptions): Promise<ManagedChatResult>;
 }
+
+// Process-wide, per-database provider budgets survive repeated registry/handle
+// resolution. Durable admission also enforces quotas across processes/restarts.
+const sharedPolicies=new Map<string,ProviderPolicy>();
 
 export class ProviderRegistry {
   private readonly secrets?: SecretResolver;
@@ -114,7 +122,9 @@ export class ProviderRegistry {
   constructor(private readonly store: KnowledgeStore, private readonly clock: () => Date = () => new Date(), options: ProviderRegistryRuntimeOptions = {}) {
     this.secrets = options.secrets;
     this.fetchImpl = options.fetchImpl;
-    this.policyOptions = options.policy ?? {};
+    // Managed quotas have one durable authority; the process policy handles
+    // timeout, retries, concurrency and circuits without a second quota gate.
+    this.policyOptions = { ...options.policy, quota: undefined };
   }
 
   upsert(input: ProviderConfigInput): ProviderConfigMetadata {
@@ -125,7 +135,7 @@ export class ProviderRegistry {
     if (input.dimensions !== undefined && (!Number.isInteger(input.dimensions) || input.dimensions <= 0 || input.dimensions > 100_000)) throw new Error("Invalid embedding dimensions");
     const existing = this.store.db.prepare("SELECT * FROM knowledge_provider_configs WHERE id=?").get(input.id) as Record<string, unknown> | undefined;
     const now = this.clock().toISOString();
-    const changedEmbedding = Boolean(existing && String(existing.kind) === "embedding" && (String(existing.model_id) !== input.modelId || Number(existing.dimensions ?? 0) !== Number(input.dimensions ?? 0)));
+    const changedEmbedding = Boolean(existing && String(existing.kind) === "embedding" && (String(existing.model_id) !== input.modelId || Number(existing.dimensions ?? 0) !== Number(input.dimensions ?? 0) || String(existing.provider) !== input.provider || String(existing.base_url ?? "").replace(/\/+$/, "") !== String(baseUrl ?? "").replace(/\/+$/, "")));
     const indexVersion = changedEmbedding ? Number(existing?.index_version ?? 1) + 1 : Number(existing?.index_version ?? 1);
     const status: ManagedProviderStatus = changedEmbedding ? "pending_reindex" : "ready";
     this.store.db.prepare(`INSERT INTO knowledge_provider_configs(id,kind,provider,base_url,model_id,dimensions,batch_size,timeout_ms,concurrency,max_retries,data_residency,status,secret_ref,token_configured,reindex_required,index_version,quota_max_calls,quota_window_ms,last_test_at,last_error_code,created_by,created_at,updated_at,disabled_at)
@@ -209,11 +219,11 @@ export class ProviderRegistry {
    * Resolve a live managed provider handle for backend callers (candidate
    * pipeline, retriever). Throws when the provider is missing or disabled.
    */
-  resolveCandidateProvider(id: string): ManagedProviderHandle {
+  resolveCandidateProvider(id: string, expectedBinding?: ExpectedProviderBinding): ManagedProviderHandle {
     const row = this.row(id);
     if (!row) throw new ProviderUnavailableError(`Provider '${id}' is not configured`);
     if (String(row.status) === "disabled") throw new ProviderUnavailableError(`Provider '${id}' is disabled`);
-    return this.handleFromRow(row);
+    return this.handleFromRow(row, expectedBinding);
   }
 
   private row(id: string): Record<string, unknown> | undefined {
@@ -238,18 +248,24 @@ export class ProviderRegistry {
       timeoutMs: Number(row.timeout_ms),
       concurrency: Number(row.concurrency),
       maxRetries: Number(row.max_retries),
-      quota: row.quota_max_calls != null && row.quota_window_ms != null ? { maxCalls: Number(row.quota_max_calls), windowMs: Number(row.quota_window_ms) } : undefined,
     };
   }
 
-  private handleFromRow(initialRow: Record<string, unknown>): ManagedProviderHandle {
+  private handleFromRow(initialRow: Record<string, unknown>, expectedBinding?: ExpectedProviderBinding): ManagedProviderHandle {
     const id = String(initialRow.id);
     const kind = String(initialRow.kind) as ManagedProviderKind;
-    const policy = new ProviderPolicy(this.policyConfig(initialRow), this.policyOptions);
+    const policyKey=JSON.stringify([this.store.db.name,id]);
+    let policy=sharedPolicies.get(policyKey);
+    if(!policy){policy=new ProviderPolicy(this.policyConfig(initialRow),this.policyOptions);sharedPolicies.set(policyKey,policy);}
+    else policy.updateConfig(this.policyConfig(initialRow));
     const currentRow = (): Record<string, unknown> => {
       const row = this.row(id);
       if (!row) throw new ProviderUnavailableError(`Provider '${id}' is not configured`);
       if (String(row.status) === "disabled") throw new ProviderUnavailableError(`Provider '${id}' is disabled`);
+      // Gateway aliases carry their own frozen generation. An external process
+      // may update SQLite between the gateway check and handle construction.
+      if (expectedBinding && (String(row.kind) !== expectedBinding.kind || String(row.model_id) !== expectedBinding.modelId || Number(row.index_version ?? 1) !== expectedBinding.indexVersion || (row.dimensions == null ? undefined : Number(row.dimensions)) !== expectedBinding.dimensions)) throw new ProviderBindingStaleError();
+      if(String(row.kind)!==kind)throw new ProviderUnavailableError("Provider kind changed; resolve a new handle");
       return row;
     };
     const httpOptions = async (row: Record<string, unknown>, signal: AbortSignal): Promise<ManagedHttpOptions> => {
@@ -258,12 +274,33 @@ export class ProviderRegistry {
       const token = row.secret_ref && this.secrets ? await this.secrets.resolve(String(row.secret_ref)) : undefined;
       return { baseUrl, modelId: String(row.model_id), token, fetchImpl: this.fetchImpl, signal };
     };
-    const invoke = async <T extends { status: number; latencyMs: number; tokenUsage?: ProviderTokenUsage }>(request: string, call: (options: ManagedHttpOptions, row: Record<string, unknown>) => Promise<T>): Promise<T> => {
+    const invoke = async <T extends { status: number; latencyMs: number; tokenUsage?: ProviderTokenUsage }>(request: string, call: (options: ManagedHttpOptions, row: Record<string, unknown>) => Promise<T>, callOptions?:ProviderCallOptions): Promise<T> => {
       const row = currentRow();
+      // Handles remain live between invocations. One queued/retried invocation
+      // must never cross model spaces, even when their dimensions are equal.
+      const binding = (value: Record<string, unknown>) => JSON.stringify([value.kind, value.provider, value.base_url, value.model_id, value.dimensions, value.index_version]);
+      const expectedBinding = binding(row);
+      const assertBinding = () => {
+        const current = currentRow();
+        if (binding(current) !== expectedBinding) throw new ProviderBindingStaleError();
+        return current;
+      };
+      policy.updateConfig(this.policyConfig(row));
       try {
-        return await policy.execute(async (signal) => call(await httpOptions(row, signal), row));
+        if (callOptions?.signal?.aborted) throw callOptions.signal.reason ?? new Error("Provider operation aborted");
+        let admitted = false;
+        return await policy.execute(async (signal) => {
+          const current = assertBinding();
+          const options = await httpOptions(current,signal);
+          // Secret resolution can yield too. Check again before quota/HTTP.
+          if (assertBinding().secret_ref !== current.secret_ref) throw new ProviderCredentialsChangedError();
+          // Circuit/queue rejection never reaches this callback. Reserve once
+          // before transport; retries share this logical invocation's record.
+          if (!admitted) { admitProviderInvocation(this.store,id,this.clock()); admitted = true; }
+          return call(options,current);
+        },callOptions);
       } catch (error) {
-        this.store.audit({ action: "knowledge.provider.invoke_error", entityType: "provider", entityId: id, details: { request, errorCode: classifyProviderError(error) } });
+        this.store.audit({ action: "knowledge.provider.invoke_error", entityType: "provider", entityId: id, details: { request, errorCode: classifyProviderError(error), ...providerErrorAuditDetails(error) } });
         throw error;
       }
     };
@@ -295,10 +332,16 @@ export class ProviderRegistry {
         const result = await invoke("rerank", (options) => callOpenAiRerank({ ...options, query, documents: documents.map((document) => document.text) }));
         return { results: result.scores.map((score) => ({ id: documents[score.index].id, score: score.score })), tokenUsage: result.tokenUsage };
       },
+      chat: async (messages, maxTokens, responseFormat, callOptions) => {
+        if (kind === "embedding" || kind === "rerank") throw new ProviderUnavailableError("Provider is not a chat provider");
+        const controls = validateChatGenerationOptions(callOptions ?? {});
+        const result = await invoke("chat", (options) => callOpenAiChat({ ...options, messages, maxTokens, responseFormat, ...controls }),callOptions);
+        return { text: result.text, finishReason: result.finishReason, tokenUsage: result.tokenUsage };
+      },
       complete: async (prompt, maxTokens) => {
         if (kind === "embedding" || kind === "rerank") throw new ProviderUnavailableError(`Provider '${id}' is not a chat provider`);
         const result = await invoke("chat", (options) => callOpenAiChat({ ...options, prompt, maxTokens }));
-        return { text: result.text, tokenUsage: result.tokenUsage };
+        return { text: result.text, finishReason: result.finishReason, tokenUsage: result.tokenUsage };
       },
     };
   }

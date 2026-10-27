@@ -23,6 +23,11 @@ const codes = {
   upstream_error: "upstream_error", server_error: "upstream_error",
 } as const;
 
+/** Reuse the exact diagnostic code allowlist at persistence boundaries. */
+export function isProviderErrorCode(value: unknown): value is keyof typeof codes {
+  return typeof value === "string" && Object.hasOwn(codes, value);
+}
+
 export interface UpstreamErrorSummary {
   upstreamErrorCode?: keyof typeof codes;
   upstreamReportedStatus?: number;

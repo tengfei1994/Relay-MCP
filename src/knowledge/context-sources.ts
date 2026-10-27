@@ -5,6 +5,7 @@ import type { KnowledgeStore } from "./store.js";
 export interface RelayContextSourceInput {
   store: KnowledgeStore;
   userId: number;
+  workSessionId?: string;
   projectId: string;
   query: string;
   intent?: ContextPackIntent;
@@ -23,6 +24,7 @@ export async function loadRelayContextSources(input: RelayContextSourceInput): P
   const query = [input.query, input.intent?.objective, ...(input.intent?.actions ?? [])].filter((value): value is string => Boolean(value?.trim())).join(" ").trim() || "knowledge";
   const requestBase = {
     userId: input.userId,
+    workSessionId: input.workSessionId,
     projectId: input.projectId,
     query,
     limit: Math.max(1, Math.min(100, input.limit)),

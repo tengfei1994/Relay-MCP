@@ -3,7 +3,7 @@
  * rerank, chat). Errors are classified into safe categories; messages and
  * audit never carry prompts, request bodies, or response bodies.
  */
-import { providerFailureReasons, readProviderErrorSummary, safeProviderRequestId, type UpstreamErrorSummary } from "./provider-error-summary.js";
+import { isProviderErrorCode, providerFailureReasons, readProviderErrorSummary, safeProviderRequestId, type UpstreamErrorSummary } from "./provider-error-summary.js";
 
 export type ManagedProviderErrorCode =
   | "timeout"
@@ -39,6 +39,19 @@ export class ManagedProviderError extends Error {
   }
 }
 
+/** Persist only fixed diagnostics; messages, request IDs and response bodies stay out of audit. */
+export function providerErrorAuditDetails(error: unknown): {
+  httpStatus?: number; upstreamErrorCode?: UpstreamErrorSummary["upstreamErrorCode"]; reason?: UpstreamErrorSummary["reason"];
+} {
+  if (!(error instanceof ManagedProviderError)) return {};
+  const result: ReturnType<typeof providerErrorAuditDetails> = {};
+  if (Number.isInteger(error.status) && error.status! >= 100 && error.status! <= 599) result.httpStatus = error.status;
+  const code = error.diagnostics?.upstreamErrorCode, reason = error.diagnostics?.reason;
+  if (isProviderErrorCode(code)) result.upstreamErrorCode = code;
+  if (typeof reason === "string" && Object.hasOwn(providerFailureReasons, reason)) result.reason = reason;
+  return result;
+}
+
 export interface ProviderTokenUsage {
   promptTokens?: number;
   completionTokens?: number;
@@ -69,7 +82,7 @@ export interface RerankCallResult {
   tokenUsage?: ProviderTokenUsage;
 }
 
-export interface ChatCallResult {
+export interface ChatCallResult { finishReason?: string;
   status: number;
   latencyMs: number;
   text: string;
@@ -213,14 +226,26 @@ export async function callOpenAiRerank(options: ManagedHttpOptions & { query: st
   return { status, latencyMs, scores, tokenUsage: tokenUsageOf(body) };
 }
 
-export async function callOpenAiChat(options: ManagedHttpOptions & { prompt: string; maxTokens?: number }): Promise<ChatCallResult> {
+export interface ManagedChatMessage { role: "system" | "user" | "assistant"; content: string; }
+export interface ManagedChatGenerationOptions { temperature?: number; enableThinking?: boolean; }
+export function validateChatGenerationOptions(options: ManagedChatGenerationOptions): ManagedChatGenerationOptions {
+  const { temperature, enableThinking } = options;
+  if ((temperature !== undefined && (typeof temperature !== "number" || !Number.isFinite(temperature) || temperature < 0 || temperature > 2)) ||
+      (enableThinking !== undefined && typeof enableThinking !== "boolean")) throw new Error("invalid_chat_generation_options");
+  return { ...(temperature !== undefined ? { temperature } : {}), ...(enableThinking !== undefined ? { enableThinking } : {}) };
+}
+export async function callOpenAiChat(options: ManagedHttpOptions & ManagedChatGenerationOptions & { prompt?: string; messages?: ManagedChatMessage[]; maxTokens?: number; responseFormat?: {type: "text" | "json_object"} }): Promise<ChatCallResult> {
+  const controls = validateChatGenerationOptions(options);
   const { status, latencyMs, body, diagnostics } = await requestJson(options, "/chat/completions", {
     model: options.modelId,
-    messages: [{ role: "user", content: options.prompt }],
-    max_tokens: Math.max(1, Math.min(options.maxTokens ?? 16, 256)),
+    messages: options.messages ?? [{ role: "user", content: options.prompt ?? "" }],
+    ...(options.responseFormat ? {response_format: options.responseFormat} : {}),
+    max_tokens: Math.max(1, Math.min(options.maxTokens ?? 16, 32768)),
+    ...(controls.temperature !== undefined ? { temperature: controls.temperature } : {}),
+    ...(controls.enableThinking !== undefined ? { enable_thinking: controls.enableThinking } : {}),
   });
   const choices = asRecord(body)?.choices;
   const content = Array.isArray(choices) ? asRecord(asRecord(choices[0])?.message)?.content : undefined;
   if (typeof content !== "string") throw new ManagedProviderError("invalid_response", "Chat response has no message content", status, diagnostics);
-  return { status, latencyMs, text: content, tokenUsage: tokenUsageOf(body) };
+  return { status, latencyMs, text: content, finishReason: Array.isArray(choices) && typeof asRecord(choices[0])?.finish_reason === "string" ? String(asRecord(choices[0])!.finish_reason) : undefined, tokenUsage: tokenUsageOf(body) };
 }

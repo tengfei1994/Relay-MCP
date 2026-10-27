@@ -1,3 +1,4 @@
+import { ProviderAdmissionQuotaError } from "./provider-admission.js";
 import type {
   EmbeddingProvider,
   InferenceProvider,
@@ -39,6 +40,29 @@ export interface ProviderPolicyOptions {
   quota?: { maxCalls: number; windowMs: number };
   now?: () => number;
   sleep?: (delayMs: number) => Promise<void>;
+}
+export interface ProviderCallOptions { signal?: AbortSignal; timeoutMs?: number; }
+
+/** A local binding guard, not an upstream failure or a retryable request. */
+export class ProviderBindingStaleError extends Error {
+  readonly code = "model_binding_stale";
+  readonly retryable = false;
+  constructor() { super("Provider model binding changed during invocation"); }
+}
+
+export class ProviderCredentialsChangedError extends Error {
+  readonly code = "provider_credentials_changed";
+  readonly retryable = false;
+  constructor() { super("Provider credentials changed before transport"); }
+}
+
+function withAbort<T>(promise:Promise<T>,signal?:AbortSignal):Promise<T> {
+  if(!signal)return promise;
+  if(signal.aborted)return Promise.reject(abortError(signal));
+  return new Promise<T>((resolve,reject)=>{
+    const abort=()=>reject(abortError(signal));signal.addEventListener("abort",abort,{once:true});
+    promise.then(resolve,reject).finally(()=>signal.removeEventListener("abort",abort));
+  });
 }
 
 export interface ProviderHealth {
@@ -128,15 +152,16 @@ function abortError(signal: AbortSignal): Error {
 export class ProviderPolicy {
   private readonly now: () => number;
   private readonly sleep: (delayMs: number) => Promise<void>;
-  private readonly config: ProviderConfig;
-  private readonly options: ReturnType<typeof normalizePolicy>;
+  private config: ProviderConfig;
+  private options: ReturnType<typeof normalizePolicy>;
   private state: ProviderHealth;
   private quotaCalls: number[] = [];
-  private halfOpenProbe = false;
+  private halfOpenProbe: symbol | undefined;
   private running = 0;
   private readonly queue: Array<() => void> = [];
 
-  constructor(config: ProviderConfig, options: ProviderPolicyOptions = {}) {
+  constructor(config: ProviderConfig, private readonly baseOptions: ProviderPolicyOptions = {}) {
+    const options=baseOptions;
     assertProviderConfig(config);
     this.config = { ...config };
     this.options = normalizePolicy(config, options);
@@ -153,79 +178,108 @@ export class ProviderPolicy {
     };
   }
 
+  updateConfig(config:ProviderConfig):void {assertProviderConfig(config);this.config={...config};this.options=normalizePolicy(config,this.baseOptions);}
+
   health(): ProviderHealth {
     const now = this.now();
-    this.quotaCalls = this.quotaCalls.filter((calledAt) => !this.options.quota || calledAt > now - this.options.quota.windowMs);
+    this.quotaCalls = this.options.quota ? this.quotaCalls.filter((calledAt) => calledAt > now - this.options.quota!.windowMs) : [];
     this.state.quotaUsed = this.quotaCalls.length;
     this.state.quotaResetAt = this.quotaCalls.length && this.options.quota ? this.quotaCalls[0] + this.options.quota.windowMs : undefined;
     if (this.state.state === "open" && this.state.nextRetryAt !== undefined && now >= this.state.nextRetryAt) this.state.state = "half-open";
     return { ...this.state };
   }
 
-  async execute<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    const health = this.health();
-    if (health.state === "open") throw new ProviderCircuitOpenError(this.config.providerId, health.nextRetryAt ?? this.now() + this.options.circuitCooldownMs);
-    if (health.state === "half-open") {
-      if (this.halfOpenProbe) throw new ProviderCircuitOpenError(this.config.providerId, this.now() + this.options.circuitCooldownMs);
-      this.halfOpenProbe = true;
-    }
-    const quota = this.options.quota;
-    if (quota && this.quotaCalls.length >= quota.maxCalls) throw new ProviderQuotaExceededError(this.config.providerId, this.quotaCalls[0] + quota.windowMs);
-    this.quotaCalls.push(this.now());
-    this.state.totalCalls += 1;
+  async execute<T>(operation: (signal: AbortSignal) => Promise<T>, call:ProviderCallOptions={}): Promise<T> {
+    const budget=new AbortController();
+    const budgetMs=call.timeoutMs===undefined?undefined:bounded(call.timeoutMs,this.options.timeoutMs,1,600_000);
+    const budgetTimer=budgetMs===undefined?undefined:setTimeout(()=>budget.abort(new ProviderTimeoutError(this.config.providerId,budgetMs)),budgetMs);
+    const signal=call.signal?AbortSignal.any([budget.signal,call.signal]):budget.signal;
+    try{return await this.executeWithinBudget(operation,signal);}finally{if(budgetTimer)clearTimeout(budgetTimer);}
+  }
 
-    await this.acquire();
+  private async executeWithinBudget<T>(operation:(signal:AbortSignal)=>Promise<T>,signal:AbortSignal):Promise<T> {
+    if(signal.aborted)throw abortError(signal);
+    const probeOwner = Symbol("provider-probe");
+    let acquired = false;
+    const assertCircuit = () => {
+      const health = this.health();
+      if (health.state === "open") throw new ProviderCircuitOpenError(this.config.providerId, health.nextRetryAt ?? this.now() + this.options.circuitCooldownMs);
+      if (health.state === "half-open") {
+        if (this.halfOpenProbe !== undefined && this.halfOpenProbe !== probeOwner) throw new ProviderCircuitOpenError(this.config.providerId, this.now() + this.options.circuitCooldownMs);
+        this.halfOpenProbe = probeOwner;
+      }
+    };
     try {
+      assertCircuit();
+      const quota = this.options.quota;
+      if (quota && this.quotaCalls.length >= quota.maxCalls) throw new ProviderQuotaExceededError(this.config.providerId, this.quotaCalls[0] + quota.windowMs);
+      if(quota)this.quotaCalls.push(this.now());
+      this.state.totalCalls += 1;
+
+      await this.acquire(signal);
+      acquired = true;
+      if(signal.aborted)throw abortError(signal);
+      // An earlier concurrent operation may have opened the circuit while
+      // this call waited. Recheck before the callback can reserve or send.
+      assertCircuit();
       let lastError: unknown;
       for (let attempt = 0; attempt <= this.options.maxRetries; attempt++) {
         const controller = new AbortController();
+        const combined=AbortSignal.any([controller.signal,signal]);
         const timer = setTimeout(() => controller.abort(new ProviderTimeoutError(this.config.providerId, this.options.timeoutMs)), this.options.timeoutMs);
         try {
-          const result = await Promise.race([
-            operation(controller.signal),
-            new Promise<never>((_, reject) => controller.signal.addEventListener("abort", () => reject(abortError(controller.signal)), { once: true })),
-          ]);
+          if(signal.aborted)throw abortError(signal);
+          const result = await withAbort(operation(combined),combined);
           clearTimeout(timer);
           this.state.consecutiveFailures = 0;
           this.state.state = "closed";
           this.state.nextRetryAt = undefined;
-          this.halfOpenProbe = false;
           return result;
         } catch (error) {
           clearTimeout(timer);
+          // A local durable budget denial made no upstream attempt and must
+          // not open its circuit or turn future quota responses into 503s.
+          if (error instanceof ProviderAdmissionQuotaError || error instanceof ProviderBindingStaleError || error instanceof ProviderCredentialsChangedError) throw error;
           lastError = error;
-          if (attempt >= this.options.maxRetries || !retryable(error)) break;
-          await this.sleep(Math.min(60_000, this.options.retryBaseMs * 2 ** attempt));
+          if (signal.aborted || attempt >= this.options.maxRetries || !retryable(error)) break;
+          await withAbort(this.sleep(Math.min(60_000, this.options.retryBaseMs * 2 ** attempt)),signal);
         }
       }
       this.state.totalFailures += 1;
       this.state.consecutiveFailures += 1;
       this.state.lastFailureAt = this.now();
-      this.halfOpenProbe = false;
       if (this.state.consecutiveFailures >= this.options.circuitFailureThreshold) {
         this.state.state = "open";
         this.state.nextRetryAt = this.now() + this.options.circuitCooldownMs;
       }
       throw lastError instanceof Error ? lastError : new ProviderUnavailableError(`Provider '${this.config.providerId}' failed`);
     } finally {
-      this.release();
+      // Only this invocation can release its probe reservation. In particular,
+      // an unrelated cancelled waiter must not unlock another half-open probe.
+      if (this.halfOpenProbe === probeOwner) this.halfOpenProbe = undefined;
+      if (acquired) this.release();
     }
   }
 
-  private async acquire(): Promise<void> {
+  private async acquire(signal:AbortSignal): Promise<void> {
+    if(signal.aborted)throw abortError(signal);
     const limit = this.options.concurrency;
     if (limit === undefined || this.running < limit) {
       this.running += 1;
       return;
     }
-    await new Promise<void>((resolve) => this.queue.push(resolve));
-    this.running += 1;
+    await new Promise<void>((resolve,reject) => {
+      const wake=()=>{signal.removeEventListener("abort",abort);resolve();};
+      const abort=()=>{const index=this.queue.indexOf(wake);if(index>=0)this.queue.splice(index,1);reject(abortError(signal));};
+      this.queue.push(wake);signal.addEventListener("abort",abort,{once:true});
+    });
   }
 
   private release(): void {
-    this.running -= 1;
-    const next = this.queue.shift();
-    next?.();
+    this.running-=1;
+    if(this.options.concurrency===undefined||this.running<this.options.concurrency){
+      const next=this.queue.shift();if(next){this.running++;next();}
+    }
   }
 }
 

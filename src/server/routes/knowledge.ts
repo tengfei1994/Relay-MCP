@@ -17,6 +17,7 @@ import { correctProductMetadata, updateProductDocumentLifecycle } from "../../kn
 import { ingestArtifactSet, ingestProjectSnapshot } from "../../knowledge/artifact-ingest.js";
 import { enqueueArtifactImport, enqueueProductImport, enqueueProductMigration, MigrationQueueBusyError } from "../../knowledge/ingest-worker.js";
 import { compareSourceBaselines, type SourceManifest } from "../../knowledge/source-baseline.js";
+import { compareSourceUpgradeWithSymbols } from "../../knowledge/source-symbol.js";
 import { classifyRelayEvent } from "../../knowledge/event-classifier.js";
 import { describeCandidate } from "../../knowledge/candidate-narrative.js";
 import { readDeadLetterPage } from "../../knowledge/dead-letter-page.js";
@@ -999,7 +1000,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       if (!rows.length) throw new Error("Source snapshot not found or empty"); return { root: id, files: rows, sha256: createHash("sha256").update(JSON.stringify(rows)).digest("hex") };
     };
     try {
-      const changes = compareSourceBaselines(manifest("knowledge_source_files", body.data.oldBaselineId), manifest("knowledge_project_snapshot_files", body.data.projectSnapshotId), manifest("knowledge_source_files", body.data.newBaselineId));
+      const changes = compareSourceUpgradeWithSymbols(store, compareSourceBaselines(manifest("knowledge_source_files", body.data.oldBaselineId), manifest("knowledge_project_snapshot_files", body.data.projectSnapshotId), manifest("knowledge_source_files", body.data.newBaselineId)), body.data.oldBaselineId, body.data.projectSnapshotId, body.data.newBaselineId);
       const ids = (table: string, key: string, id: string) => new Map((store.db.prepare(`SELECT relative_path,id FROM ${table} WHERE ${key}=?`).all(id) as Array<{ relative_path: string; id: string }>).map((row) => [row.relative_path, row.id]));
       const oldIds = ids("knowledge_source_files", "baseline_id", body.data.oldBaselineId); const projectIds = ids("knowledge_project_snapshot_files", "snapshot_id", body.data.projectSnapshotId); const newIds = ids("knowledge_source_files", "baseline_id", body.data.newBaselineId);
       return reply.send({ changes: changes.map((change) => ({ ...change, evidenceRefs: { old: oldIds.get(change.path), project: projectIds.get(change.path), next: newIds.get(change.path) } })) });

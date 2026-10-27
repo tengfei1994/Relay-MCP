@@ -12,6 +12,8 @@ HTTP and MCP tests exercise the real routes/tool handlers with old/project/new m
 
 The Solution UI was exercised in Chromium with deterministic API replay: baseline/snapshot selection, project snapshot import controls, Compare upgrade, all three source-evidence references, and paged Source files rendered and operated successfully. The API and MCP behavior is covered separately by the real-handler tests above.
 
+The comparison now also emits deterministic symbol-level changes for C# types/methods, SQL objects, VGL routines and named XML elements. It reuses the file-level three-way status contract and returns only symbol identity, content hash, line span, status/conflict and overlapping old/project/next chunk IDs. API and MCP return the same nested `symbols` collection, and the Solution UI displays those states and references in Chromium. This is a bounded source projection, not a compiler AST or a claim to parse every language construct; unsupported languages remain file-level comparisons.
+
 ## Topics, revisions and review
 
 Synthetic regressions verify:
@@ -70,7 +72,7 @@ Full managed-engine import, incremental reindex, interrupted 42k recovery and 42
 
 ## Verification
 
-- `npm test`: **884/884 passed**, zero skipped; includes the new comparison, API/MCP/ACL, Topic review and request-benchmark regressions.
+- `npm test`: **887/887 passed**, zero skipped; includes the new comparison, symbol, API/MCP/ACL, Topic review and request-benchmark regressions.
 - `npm run build`: passed; 121-tool MCP boundary and 1,827 frontend modules.
 - `npx tsc --noEmit`: passed.
 - `git diff --check`: passed apart from Git's Windows LF→CRLF warnings.

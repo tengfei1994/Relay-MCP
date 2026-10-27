@@ -39,9 +39,19 @@ test("HTTP and MCP upgrade comparisons return the same classifications and sourc
       if (!sha256) continue;
       const id = `${side}-evidence-${path}`;
       evidenceIds[side][path] = id;
-      if (side === "project") store.db.prepare("INSERT INTO knowledge_project_snapshot_files(id,snapshot_id,relative_path,sha256,size_bytes,created_at) VALUES(?,?,?,?,?,?)").run(id, "project", path, sha256, 1, now);
-      else store.db.prepare("INSERT INTO knowledge_source_files(id,baseline_id,relative_path,sha256,size_bytes,created_at) VALUES(?,?,?,?,?,?)").run(id, side, path, sha256, 1, now);
+      if (side === "project") store.db.prepare("INSERT INTO knowledge_project_snapshot_files(id,snapshot_id,relative_path,language,sha256,size_bytes,created_at) VALUES(?,?,?,?,?,?,?)").run(id, "project", path, "csharp", sha256, 1, now);
+      else store.db.prepare("INSERT INTO knowledge_source_files(id,baseline_id,relative_path,language,sha256,size_bytes,created_at) VALUES(?,?,?,?,?,?,?)").run(id, side, path, "csharp", sha256, 1, now);
     }
+  }
+  const sourceBodies = {
+    old: "public class Example {\n public int Run() { return 1; }\n}\n",
+    project: "public class Example {\n public int Run() { return 2; }\n}\n",
+    new: "public class Example {\n public int Run() { return 1; }\n}\n",
+  };
+  for (const [side, content] of Object.entries(sourceBodies)) {
+    const chunkId = `${side}-chunk-project`;
+    if (side === "project") store.db.prepare("INSERT INTO knowledge_source_chunks(id,snapshot_id,source_file_id,relative_path,symbol,line_start,line_end,content,content_sha256,parser_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(chunkId, "project", evidenceIds[side]["project.cs"], "project.cs", "Example", 1, 3, content, `${side}-content`, "fixture-v1", now);
+    else store.db.prepare("INSERT INTO knowledge_source_chunks(id,baseline_id,source_file_id,relative_path,symbol,line_start,line_end,content,content_sha256,parser_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(chunkId, side, evidenceIds[side]["project.cs"], "project.cs", "Example", 1, 3, content, `${side}-content`, "fixture-v1", now);
   }
 
   const app = Fastify();
@@ -65,6 +75,10 @@ test("HTTP and MCP upgrade comparisons return the same classifications and sourc
         assert.equal(change.evidenceRefs[side], evidenceIds[manifestSide][change.path]);
       }
     }
+    const projectChange = http.changes.find((change: { path: string }) => change.path === "project.cs");
+    const runChange = projectChange.symbols.find((symbol: { name: string }) => symbol.name === "Run");
+    assert.equal(runChange.status, "PROJECT_ONLY");
+    assert.deepEqual(runChange.evidenceRefs, { old: ["old-chunk-project"], project: ["project-chunk-project"], next: ["new-chunk-project"] });
     assert.deepEqual(mcp.changes, http.changes);
     assert.deepEqual(mcp.counts, { UNCHANGED: 1, PROJECT_ONLY: 1, BASELINE_ONLY: 1, BOTH_CHANGED: 1, ADDED: 1, DELETED: 1 });
     const baselinePage = (await app.inject({ url: "/api/knowledge/source-baselines?limit=1&offset=1" })).json();

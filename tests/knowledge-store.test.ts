@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -17,6 +18,39 @@ const eventDefaults = {
   jobId: "job-1",
   payload: { status: "succeeded" },
 };
+
+test("repairs legacy double-quoted document checks before reopening", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "relay-legacy-schema-"));
+  const dbPath = join(root, "knowledge.db");
+  let store = createKnowledgeStore({ dbPath });
+  store.close();
+  const python = process.env.KNOWLEDGE_ENGINE_PYTHON ?? (process.platform === "win32" ? "python" : "python3");
+  const script = [
+    "import sqlite3,sys",
+    "db=sqlite3.connect(sys.argv[1])",
+    "db.execute('PRAGMA writable_schema=ON')",
+    "row=db.execute(\"SELECT sql FROM sqlite_master WHERE type='table' AND name='knowledge_documents'\").fetchone()",
+    "sql=row[0].replace(\"CHECK(kind IN ('candidate','case','pattern','playbook','product_document','fact','evidence','relation'))\", 'CHECK(kind IN (\\\"candidate\\\",\\\"case\\\",\\\"pattern\\\",\\\"playbook\\\",\\\"product_document\\\",\\\"fact\\\",\\\"evidence\\\",\\\"relation\\\"))').replace(\"CHECK(lifecycle IN ('draft','reproduced','verified','approved','deprecated'))\", 'CHECK(lifecycle IN (\\\"draft\\\",\\\"reproduced\\\",\\\"verified\\\",\\\"approved\\\",\\\"deprecated\\\"))')",
+    "db.execute(\"UPDATE sqlite_master SET sql=? WHERE type='table' AND name='knowledge_documents'\", (sql,))",
+    "db.commit(); db.close()",
+  ].join(";");
+  const result = spawnSync(python, ["-c", script, dbPath], { encoding: "utf8" });
+  if (result.error || result.status !== 0) {
+    t.skip(`Python schema fixture unavailable: ${result.error?.message ?? result.stderr}`);
+    cleanup(root);
+    return;
+  }
+  try {
+    store = createKnowledgeStore({ dbPath });
+    const schema = String((store.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='knowledge_documents'").get() as { sql: string }).sql);
+    assert.match(schema, /CHECK\(kind IN \('candidate'/);
+    assert.doesNotMatch(schema, /CHECK\(kind IN \(\"candidate\"/);
+    assert.deepEqual(store.db.pragma("foreign_key_check"), []);
+  } finally {
+    try { store.close(); } catch { /* already closed */ }
+    cleanup(root);
+  }
+});
 
 test("topic backfill preserves an existing title and timestamp when another source has no binding", () => {
   const root=mkdtempSync(join(tmpdir(),"relay-topic-backfill-"));

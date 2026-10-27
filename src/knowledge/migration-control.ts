@@ -14,7 +14,7 @@ const PRODUCT_PROVIDERS: readonly ProductProvider[] = ["relay_local", "weknora"]
 /** Per-document manifest metadata only: never the body, never secrets. */
 export interface SourceManifestDocument { localDocumentId: string; title: string; sourcePath: string; sourceSha256?: string; bodySha256: string; productVersion?: string; solution?: string; module?: string; language?: string; topicId?: string; projectId?: string; environment?: string; }
 
-export interface CreateFromLocalInput { actorId: number; idempotencyKey: string; kind?: string; productVersion?: string; solution?: string; module?: string; projectId?: string; environment?: string; limit?: number; parserVersion: string; /** Re-attempt documents currently recorded as failed. */ retry?: boolean; }
+export interface CreateFromLocalInput { actorId: number; idempotencyKey: string; kind?: string; productVersion?: string; solution?: string; module?: string; projectId?: string; environment?: string; limit?: number; parserVersion: string; /** Exact source IDs for bounded migration batches; empty selects none. */ localDocumentIds?: string[]; /** Re-attempt documents currently recorded as failed. */ retry?: boolean; }
 
 export interface ExecutionOptions {
   maxDocumentsPerPass?: number;
@@ -386,6 +386,10 @@ create(input: { actorId: number; kind?: string; idempotencyKey: string; sourceMa
     if (input.projectId) { conditions.push("d.project_id = ?"); params.push(input.projectId); }
     if (input.environment) { conditions.push("d.environment = ?"); params.push(input.environment); }
     const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 1000), 10000));
+    if (input.localDocumentIds) {
+      if (!Array.isArray(input.localDocumentIds) || input.localDocumentIds.length > 10_000 || input.localDocumentIds.some(id => typeof id !== "string" || !id)) throw new Error("localDocumentIds must contain at most 10000 nonempty IDs");
+      conditions.push("d.id IN (SELECT value FROM json_each(?))"); params.push(JSON.stringify([...new Set(input.localDocumentIds)]));
+    }
     const rows = this.store.db.prepare(`SELECT d.id, d.title, d.body, d.project_id, d.environment, d.samplemanager_version, d.solution, d.module, d.source_locator, d.source_sha256, p.source_path, p.language, b.topic_id
       FROM knowledge_documents d
       LEFT JOIN knowledge_product_documents p ON p.id = d.id

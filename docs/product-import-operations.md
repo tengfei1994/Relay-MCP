@@ -10,6 +10,8 @@ Only deploy the importer modules, store changes, Web routes/entry point and buil
 
 For the complete Developer manifest, current managed-engine coverage and native CPU-only embedding forecast, see [source control and Developer scale acceptance](verification/source-control-developer-scale-20261027.md). A completed raw archive import is not evidence of managed-engine indexing. Retry recovery re-scans and skips unchanged documents; it is not a file-level checkpoint. Source baseline/snapshot lists and Source files use server-side pagination for large collections.
 
+For controlled migration batches, `CreateFromLocalInput.localDocumentIds` selects exact source IDs and is preserved by the durable job payload. This avoids repeating the first 10,000 ordered rows across independent operations; it does not change the existing mapping-based idempotent recovery model.
+
 
 ## Wiki source grounding
 

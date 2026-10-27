@@ -37,7 +37,7 @@ export class MigrationQueueBusyError extends Error {
   constructor() { super("Migration queue is busy; retry the same operation key"); this.name = "MigrationQueueBusyError"; }
 }
 export function enqueueProductMigration(store: KnowledgeStore, input: CreateFromLocalInput) {
-  const request = { actorId: input.actorId, idempotencyKey: input.idempotencyKey.trim(), parserVersion: input.parserVersion.trim(), kind: input.kind ?? "product_knowledge", productVersion: input.productVersion, solution: input.solution, module: input.module, projectId: input.projectId, environment: input.environment, limit: input.limit ?? 1000 };
+  const request = { actorId: input.actorId, idempotencyKey: input.idempotencyKey.trim(), parserVersion: input.parserVersion.trim(), kind: input.kind ?? "product_knowledge", productVersion: input.productVersion, solution: input.solution, module: input.module, projectId: input.projectId, environment: input.environment, limit: input.limit ?? 1000, localDocumentIds: input.localDocumentIds };
   if (!request.idempotencyKey || !request.parserVersion) throw new Error("Migration operation key and parser version are required");
   const serialized = JSON.stringify(request);
   const id = `migration-job-${createHash("sha256").update(request.idempotencyKey).digest("hex")}`;

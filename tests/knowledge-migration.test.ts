@@ -358,3 +358,28 @@ test("migration rejects linkage identity, source hash and model generation misma
   store.db.prepare("UPDATE knowledge_weknora_documents SET model_provenance_json=? WHERE id=?").run(JSON.stringify({ ...binding, indexVersion: 2 }), first.documentId);
   assert.throws(() => controller.validateAndPublish(migration.id, 7), /model|index|generation/i);
 }));
+
+test("migration stages only explicitly selected local document IDs", async () => withStore(async (store) => {
+  for (const id of ["doc-1", "doc-2", "doc-3"]) seedProductDocument(store, id);
+  const { writer, state } = countingWriter(); const ingestor = new WeKnoraIngestor(store, writer); const controller = makeController(store);
+  const migration = await controller.createFromLocal({ actorId: 7, idempotencyKey: "selected-batch", parserVersion: "v1", localDocumentIds: ["doc-1", "doc-3"] }, ingestor);
+  assert.equal(migration.report.total, 2);
+  assert.equal(state.calls, 2);
+  assert.deepEqual(state.keys.sort(), ["selected-batch:doc-1", "selected-batch:doc-3"]);
+  assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_weknora_documents WHERE id='doc-2'").get().n, 0);
+  const repeated = await controller.createFromLocal({ actorId: 7, idempotencyKey: "selected-batch", parserVersion: "v1", localDocumentIds: ["doc-1", "doc-3"] }, ingestor);
+  assert.equal(repeated.report.mapped, 2);
+  assert.equal(state.calls, 2);
+}));
+
+test("migration rerun stages only newly added source documents", async () => withStore(async (store) => {
+  seedProductDocument(store, "doc-1"); seedProductDocument(store, "doc-2");
+  const { writer, state } = countingWriter(); const ingestor = new WeKnoraIngestor(store, writer); const controller = makeController(store);
+  const migration = await controller.createFromLocal({ actorId: 7, idempotencyKey: "incremental", parserVersion: "v1" }, ingestor);
+  const originalMappings = store.db.prepare("SELECT local_document_id,document_id,external_document_id FROM knowledge_migration_documents WHERE migration_id=? ORDER BY local_document_id").all(migration.id);
+  seedProductDocument(store, "doc-3");
+  const updated = await controller.createFromLocal({ actorId: 7, idempotencyKey: "incremental", parserVersion: "v1" }, ingestor);
+  assert.equal(updated.report.total, 3);
+  assert.deepEqual(state.keys, ["incremental:doc-1", "incremental:doc-2", "incremental:doc-3"]);
+  assert.deepEqual(store.db.prepare("SELECT local_document_id,document_id,external_document_id FROM knowledge_migration_documents WHERE migration_id=? AND local_document_id IN ('doc-1','doc-2') ORDER BY local_document_id").all(migration.id), originalMappings);
+}));

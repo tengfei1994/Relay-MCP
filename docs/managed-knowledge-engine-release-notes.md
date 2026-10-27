@@ -19,6 +19,7 @@ Product document reads/searches and generated Wiki use the pinned internal WeKno
 - Session summaries retain scoped Job/Deployment/Evidence/retrieval receipts. Audit projections omit raw queries, Candidate context and private reasoning fields.
 - Three-way Solution comparison now distinguishes single-side changes/deletions from real conflicts and enforces Project Snapshot ACL in MCP. Baseline/snapshot selectors, source-evidence references and paged Source files are available in the existing Solution UI.
 - Upgrade analysis includes deterministic C#/SQL/VGL/XML symbol changes with line spans and old/project/next chunk references alongside the existing file-level result; unsupported languages remain file-level.
+- Local migration accepts exact `localDocumentIds` for bounded batches while preserving the same idempotency/checkpoint semantics. Empty selections import nothing, reruns stage only newly added documents, and no 10,000-document prefix is silently reused across batches.
 - Product bindings below 0.8 match confidence enter `pending_review`; administrators can approve/reject with a required audited reason in Topics. Existing reviewed binding identity is preserved when a same-version revision advances.
 - The isolated request benchmark covers complete Context Pack HTTP assembly, Candidate Insights and Evidence with cold/hot distributions and pagination boundaries. It uses deterministic replay, has no inferred release threshold, and does not replace real-provider latency acceptance.
 

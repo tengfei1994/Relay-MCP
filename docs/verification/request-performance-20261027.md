@@ -56,10 +56,14 @@ Real loopback HTTP against the existing nonproduction Relay measured 20 requests
 
 These small live datasets are not comparable to the 100k synthetic workload and do not supply a Context Pack real-provider measurement. No Context Pack request or model call was made.
 
+## Nonproduction deployment
+
+The application archive SHA-256 `b26916e26e3ff86a83082d57219b60295de8950145b298e0b31746417db1e986` passed the reversible deployment: code/database backup, archive verification, health/readiness, rollback-on-failure path, and before/after business snapshots. Wiki content, source mappings, migration publication state, provider configuration/ledger and engine counts were unchanged; the engine was not replaced and model calls were zero. Deployment proof SHA-256: `9081db416bacff0fe04ce99cb4619c1978c3f25db3e59c99bea15eb5945e10b8`. Deployed Source Baseline and Project Snapshot list APIs both returned HTTP 200. Production was not changed.
+
 ## Reproduction
 
 ```bash
 node --import tsx/esm --test tests/knowledge-request-benchmark.test.ts
 ```
 
-The focused post-repair run covered Product backend, benchmark, source comparison/API/MCP and Topic review: **42/42 passed**. `npx tsc --noEmit` and `git diff --check` passed. The preceding complete application run was **883/883**; rerun the complete suite after this checkpoint's Product backend change before final delivery.
+The focused post-repair run covered Product backend, benchmark, source comparison/API/MCP and Topic review: **42/42 passed**. Final standard validation passed **884/884 application tests**, zero skipped, `npm run build`, `npx tsc --noEmit`, and `git diff --check`. Two earlier full runs each had one different environmental failure (MCP startup alias boundary, then fresh-deploy); their focused files passed **5/5** and **7/7**, respectively, before the final complete green run. No test, expectation or timeout was changed to obtain the result.

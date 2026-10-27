@@ -74,4 +74,5 @@ Full managed-engine import, incremental reindex, interrupted 42k recovery and 42
 - `npm run build`: passed; 121-tool MCP boundary and 1,827 frontend modules.
 - `npx tsc --noEmit`: passed.
 - `git diff --check`: passed apart from Git's Windows LF→CRLF warnings.
+- Reversible nonproduction deployment passed with application archive SHA-256 `b26916e26e3ff86a83082d57219b60295de8950145b298e0b31746417db1e986` and deployment proof SHA-256 `9081db416bacff0fe04ce99cb4619c1978c3f25db3e59c99bea15eb5945e10b8`. Business state was preserved, both new list APIs returned HTTP 200, the engine was unchanged, and no model call occurred.
 - Real Chromium interaction passed for Solution comparison/Evidence/files and Topic pending-review approval using deterministic API replay. No private source or model request was used.

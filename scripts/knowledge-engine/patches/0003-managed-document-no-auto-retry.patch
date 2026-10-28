@@ -1,0 +1,22 @@
+--- a/internal/application/service/knowledge_task_options.go
++++ b/internal/application/service/knowledge_task_options.go
+@@ -1,6 +1,7 @@
+ package service
+ 
+ import (
++	"os"
+ 	"time"
+ 
+ 	"github.com/Tencent/WeKnora/internal/config"
+@@ -15,6 +16,11 @@
+ 		asynq.MaxRetry(3),
+ 	}
+ 	opts = append(opts, extra...)
++	// Relay owns paid document retries. Append last so caller options cannot
++	// silently re-enable whole-document model calls in the managed runtime.
++	if os.Getenv("RELAY_MANAGED_DOCUMENT_PROCESS_NO_RETRY") == "true" {
++		opts = append(opts, asynq.MaxRetry(0))
++	}
+ 	return opts
+ }
+ 

@@ -8,6 +8,7 @@ import { KnowledgeRepository } from "../src/knowledge/repository.ts";
 import { loadRelayContextSources } from "../src/knowledge/context-sources.ts";
 import { resolveRetrievalProjectId } from "../src/knowledge/weknora-scope.ts";
 import { canReadTopicBinding } from "../src/knowledge/topic-access.ts";
+import { EvidenceStore } from "../src/knowledge/evidence-store.ts";
 import { ConfirmedMemoryService } from "../src/knowledge/confirmed-memory.ts";
 
 test("WeKnora retrieval requires an explicit project or a Work Session scope", () => {
@@ -23,9 +24,8 @@ test("Context Pack sources include ACL-scoped Relay memory, candidates and facts
     store.grantAcl("p1", 7, true);
     const repository = new KnowledgeRepository(store);
     const now = "2026-10-23T00:00:00.000Z";
-    store.db.prepare("INSERT INTO knowledge_evidence(id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,source_locator,retention,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run("evidence-1", "sha-1", "memory://evidence-1", "text/plain", 5, "log", "p1", "test:evidence-1", "standard", now);
-    store.db.prepare("INSERT INTO knowledge_evidence_acl(evidence_id,project_id,created_at) VALUES (?,?,?)").run("evidence-1", "p1", now);
-    new ConfirmedMemoryService(store).save({ id: "case-1", type: "Case", title: "Cache case", statement: "cache failure confirmed", details: { symptoms: "cache failure", rootCause: "stale cache", resolution: "refresh cache", verification: "reloaded" }, scope: { projectId: "p1", scopeType: "project", scopeKey: "p1", visibility: "project" }, evidenceRefs: ["evidence-1"], source: { kind: "manual", locator: "case:1" }, confirmedBy: 7, confirmedAt: now, audit: { action: "manual", reason: "reviewed" }, createdAt: now, updatedAt: now });
+    const evidence = new EvidenceStore(store, join(root, "evidence")).put({ content: Buffer.from("cache failure confirmed"), mimeType: "text/plain", sourceKind: "log", projectId: "p1", locator: "case:1" });
+    new ConfirmedMemoryService(store).save({ id: "case-1", type: "Case", title: "Cache case", statement: "cache failure confirmed", details: { symptoms: "cache failure", rootCause: "fixture", resolution: "reviewed", verification: "confirmed" }, scope: { projectId: "p1", scopeType: "project", scopeKey: "p1", visibility: "project" }, evidenceRefs: [evidence.id], source: { kind: "manual", locator: "case:1" }, confirmedBy: 7, confirmedAt: now, audit: { action: "manual", reason: "fixture" } });
     repository.saveCandidate({ id: "candidate-1", kind: "candidate", title: "Cache candidate", body: "cache candidate", lifecycle: "draft", projectId: "p1", locator: "candidate:1", createdAt: now, updatedAt: now } as any);
     repository.saveFact({ id: "fact-1", userId: 7, projectId: "p1", text: "cache fact", tags: ["cache"], locator: "fact:1", status: "resolved", createdAt: now } as any);
 

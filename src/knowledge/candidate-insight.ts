@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import type { KnowledgeStore } from "./store.js";
 import { WorkSessionService, type WorkSession } from "./work-session.js";
+import { candidateScopeSnapshot, candidateScopeMatches, readCandidateScope, type CandidateScopeSnapshot } from "./candidate-scope.js";
 
 export const CANDIDATE_INSIGHT_KINDS = ["fact", "decision", "case", "pattern"] as const;
 export type CandidateInsightKind = typeof CANDIDATE_INSIGHT_KINDS[number];
@@ -29,6 +30,8 @@ export interface CandidateInsight {
   intentRefs: string[];
   unknowns: string[];
   reuseBoundary: Record<string, unknown>;
+  scopeReviewRequired: boolean;
+  sourceScope?: Pick<CandidateScopeSnapshot, "projectId" | "environment" | "sampleManagerVersion" | "solution" | "module">;
   confirmedFacts: string[];
   observedBehavior: string[];
   hypothesis?: string;
@@ -82,6 +85,7 @@ export interface CandidateInsightProviderRequest {
   prompt: string;
   timeoutMs: number;
   signal: AbortSignal;
+  maxTokens?: number;
 }
 
 /**
@@ -101,6 +105,7 @@ export type CandidateInsightProvider = ManagedCandidateInsightProvider | Insight
 
 export interface CandidateInsightCompilerOptions {
   timeoutMs?: number;
+  maxTokens?: number;
   maxOutputChars?: number;
   maxPromptChars?: number;
   evidenceExcerptChars?: number;
@@ -132,7 +137,7 @@ export const candidateInsightOutputSchema = z.object({
 export type CandidateInsightModelOutput = z.infer<typeof candidateInsightOutputSchema>;
 
 const SENSITIVE_KEY = /(token|secret|password|passwd|credential|authorization|api[-_]?key|private[-_]?key|ssh[-_]?key|connection[-_]?string|cookie|bearer)/i;
-const HIDDEN_REASONING_KEY = /^(?:thought|thinking|reasoning|chain[-_ ]?of[-_ ]?thought|cot|scratchpad|reflection|internal[-_ ]?monologue|deliberation)$/i;
+const HIDDEN_REASONING_KEY = /^(?:hidden[-_ ]?reasoning|thought|thinking|reasoning|chain[-_ ]?of[-_ ]?thought|cot|scratchpad|reflection|internal[-_ ]?monologue|deliberation)$/i;
 const SENSITIVE_VALUE = /(bearer\s+[a-z0-9._~+/=-]+|(?:password|passwd|pwd|token|secret|api[-_ ]?key|access[-_ ]?key|connection[-_ ]?string)\s*[:=]\s*\S+|[a-z][a-z0-9+.-]*:\/\/[^\s/@:]+:[^\s/@]+@)/i;
 const URI_CREDENTIAL = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/@:]+:)([^\s/@]+)(@)/gi;
 const SENSITIVE_ASSIGNMENT = /((?:bearer\s+|(?:password|passwd|pwd|token|secret|api[-_ ]?key|access[-_ ]?key|private[-_ ]?key|connection[-_ ]?string)\s*[:=]\s*["']?))([^\s"'&,;\]}]+)/gi;
@@ -148,6 +153,8 @@ export function redactCandidateInput(value: unknown, depth = 0): unknown {
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
       .slice(0, 100)
+      // Omit private reasoning before queue persistence, idempotency hashing and provider input.
+      .filter(([key]) => !HIDDEN_REASONING_KEY.test(key))
       .map(([key, item]) => [key, SENSITIVE_KEY.test(key) ? "[REDACTED]" : redactCandidateInput(item, depth + 1)]),
   );
 }
@@ -216,13 +223,18 @@ function bounded(value: number | undefined, fallback: number, min: number, max: 
   return Number.isFinite(value) ? Math.max(min, Math.min(max, Math.trunc(value!))) : fallback;
 }
 
-export function candidateInsightFromRow(row: Record<string, unknown>): CandidateInsight {
+export function candidateInsightFromRow(row: Record<string, unknown>, store?: KnowledgeStore): CandidateInsight {
   const reusable = parseJsonObject(row.reusable_statement_json ?? "null");
+  const snapshot = readCandidateScope(row.scope_snapshot_json);
+  const projection = store?.db.prepare("SELECT project_id,environment,samplemanager_version,solution,module,source_locator FROM knowledge_documents WHERE id=? AND kind='case'").get(`case-${row.id}`) as Record<string, unknown> | undefined;
+  const scopeReviewRequired = !snapshot || snapshot.projectId !== row.project_id || Boolean(projection && (!candidateScopeMatches(snapshot, projection) || projection.source_locator !== `candidate-insight:${row.id}`));
   return {
     id: String(row.id), workSessionId: String(row.work_session_id), projectId: String(row.project_id),
     kind: String(row.kind) as CandidateInsightKind, statement: String(row.statement), whyProposed: String(row.why_proposed),
     evidenceRefs: parseJsonArray(row.evidence_refs_json), intentRefs: parseJsonArray(row.intent_refs_json),
     unknowns: parseJsonArray(row.unknowns_json), reuseBoundary: parseJsonObject(row.reuse_boundary_json),
+    scopeReviewRequired,
+    sourceScope: snapshot && snapshot.projectId === row.project_id ? { projectId: snapshot.projectId, environment: snapshot.environment, sampleManagerVersion: snapshot.sampleManagerVersion, solution: snapshot.solution, module: snapshot.module } : undefined,
     confirmedFacts: parseJsonArray(row.confirmed_facts_json), observedBehavior: parseJsonArray(row.observed_behavior_json),
     hypothesis: row.hypothesis ? String(row.hypothesis) : undefined,
     reusableStatement: typeof reusable.statement === "string" ? { statement: reusable.statement, applicability: typeof reusable.applicability === "string" ? reusable.applicability : undefined, boundary: typeof reusable.boundary === "string" ? reusable.boundary : undefined } : undefined,
@@ -272,6 +284,7 @@ export class CandidateInsightCompiler {
     }
     this.options = {
       timeoutMs: bounded(options.timeoutMs, 30_000, 1, 120_000),
+      maxTokens: bounded(options.maxTokens, 4096, 1, 32768),
       maxOutputChars: bounded(options.maxOutputChars, 32_000, 1_000, 200_000),
       maxPromptChars: bounded(options.maxPromptChars, 24_000, 2_000, 200_000),
       evidenceExcerptChars: bounded(options.evidenceExcerptChars, 1_200, 0, 8_000),
@@ -315,8 +328,30 @@ export class CandidateInsightCompiler {
         "Never include chain-of-thought or hidden reasoning fields (thought, reasoning, scratchpad, ...).",
         "Never include credentials, tokens, passwords or connection strings.",
         "Every evidenceRefs entry must be one of the provided evidence ids.",
+        "Match every field type in outputSchema; omit unknown optional fields instead of null or empty placeholders.",
       ],
-      outputSchema: "{kind, statement, whyProposed, evidenceRefs, intentRefs, unknowns, reuseBoundary, confidence?, confirmedFacts, observedBehavior, hypothesis?, reusableStatement?}",
+      outputSchema: {
+        type: "object", additionalProperties: false,
+        required: ["kind", "statement", "whyProposed", "evidenceRefs", "intentRefs", "unknowns", "reuseBoundary", "confirmedFacts", "observedBehavior"],
+        properties: {
+          kind: { type: "string", enum: CANDIDATE_INSIGHT_KINDS },
+          statement: { type: "string", minLength: 1, maxLength: 4_000 },
+          whyProposed: { type: "string", minLength: 1, maxLength: 4_000 },
+          evidenceRefs: { type: "array", minItems: 1, maxItems: 100, items: { type: "string", enum: evidence.map(item => item.id) } },
+          intentRefs: { type: "array", maxItems: 50, items: { type: "string", minLength: 1, maxLength: 300 } },
+          unknowns: { type: "array", maxItems: 50, items: { type: "string", minLength: 1, maxLength: 1_000 } },
+          reuseBoundary: { type: "object", description: "Explicit project scope and applicability limits as named properties." },
+          confidence: { type: "number", minimum: 0, maximum: 1 },
+          confirmedFacts: { type: "array", maxItems: 50, items: { type: "string", minLength: 1, maxLength: 2_000 } },
+          observedBehavior: { type: "array", maxItems: 50, items: { type: "string", minLength: 1, maxLength: 2_000 } },
+          hypothesis: { type: "string", minLength: 1, maxLength: 2_000 },
+          reusableStatement: { type: "object", additionalProperties: false, required: ["statement"], properties: {
+            statement: { type: "string", minLength: 1, maxLength: 2_000 },
+            applicability: { type: "string", minLength: 1, maxLength: 2_000 },
+            boundary: { type: "string", minLength: 1, maxLength: 2_000 },
+          } },
+        },
+      },
       kinds: CANDIDATE_INSIGHT_KINDS,
     };
     const build = (excerptChars: number): string => JSON.stringify({
@@ -346,7 +381,7 @@ export class CandidateInsightCompiler {
     const timer = setTimeout(() => controller.abort(new CandidateProviderError("timeout", `Candidate Insight provider timed out after ${timeoutMs}ms`)), timeoutMs);
     try {
       return await Promise.race([
-        this.provider.complete({ prompt, timeoutMs, signal: controller.signal }),
+        this.provider.complete({ prompt, timeoutMs, signal: controller.signal, maxTokens:this.options.maxTokens }),
         new Promise<never>((_, reject) => controller.signal.addEventListener("abort", () => {
           const reason = controller.signal.reason;
           reject(reason instanceof Error ? reason : new CandidateProviderError("timeout", "Candidate Insight provider aborted"));
@@ -421,7 +456,7 @@ export class CandidateInsightCompiler {
     const safeContext = redactCandidateInput(input.context ?? {}) as Record<string, unknown>;
     const inputHash = createHash("sha256").update(canonicalCandidateJson({ sessionId: session.id, projectId: session.projectId, evidenceRefs, context: safeContext })).digest("hex");
     const existing = this.store.db.prepare("SELECT * FROM knowledge_candidate_insights WHERE work_session_id = ? AND input_hash = ?").get(session.id, inputHash) as Record<string, unknown> | undefined;
-    if (existing) return candidateInsightFromRow(existing);
+    if (existing) return candidateInsightFromRow(existing, this.store);
 
     const now = this.clock().toISOString();
     const id = `insight-${inputHash.slice(0, 32)}`;
@@ -431,7 +466,7 @@ export class CandidateInsightCompiler {
     if (evidence.length === 0) {
       const draft = this.fallbackDraft(session, [], safeContext, "no_evidence");
       this.store.audit({ actorId: input.actorId, projectId: session.projectId, action: "candidate_insight.skipped_no_evidence", entityType: "candidate_insight", entityId: id, details: { workSessionId: session.id } });
-      return { id, workSessionId: session.id, projectId: session.projectId, ...draft, confidence: undefined, status: "draft", generatedBy: FALLBACK_GENERATED_BY, fallbackReason: "no_evidence", inputHash, persisted: false, createdAt: now, updatedAt: now };
+      return { id, workSessionId: session.id, projectId: session.projectId, ...draft, scopeReviewRequired: true, confidence: undefined, status: "draft", generatedBy: FALLBACK_GENERATED_BY, fallbackReason: "no_evidence", inputHash, persisted: false, createdAt: now, updatedAt: now };
     }
 
     let fields: CandidateInsightFields;
@@ -453,8 +488,15 @@ export class CandidateInsightCompiler {
       generatedBy = FALLBACK_GENERATED_BY;
     }
 
+    // Applicability scope is a Relay fact, not a model inference. Preserve it
+    // even when the provider omits or attempts to broaden these fields.
+    fields.reuseBoundary = { ...fields.reuseBoundary, scope: "project", projectId: session.projectId,
+      environment: session.environment, sampleManagerVersion: session.intent.sampleManagerVersion,
+      solution: session.intent.solution, module: session.intent.module };
+    const snapshot = candidateScopeSnapshot(session, "compile", now);
     const result: CandidateInsight = {
       id, workSessionId: session.id, projectId: session.projectId, ...fields,
+      scopeReviewRequired: false, sourceScope: { projectId: snapshot.projectId, environment: snapshot.environment, sampleManagerVersion: snapshot.sampleManagerVersion, solution: snapshot.solution, module: snapshot.module },
       status: "draft", generatedBy, fallbackReason, inputHash, persisted: true, createdAt: now, updatedAt: now,
     };
 
@@ -463,13 +505,13 @@ export class CandidateInsightCompiler {
     let inserted = false;
     this.store.db.transaction(() => {
       const write = this.store.db.prepare(`INSERT OR IGNORE INTO knowledge_candidate_insights
-        (id,work_session_id,project_id,kind,statement,why_proposed,evidence_refs_json,intent_refs_json,unknowns_json,reuse_boundary_json,confirmed_facts_json,observed_behavior_json,hypothesis,reusable_statement_json,confidence,status,generated_by,fallback_reason,input_hash,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        (id,work_session_id,project_id,kind,statement,why_proposed,evidence_refs_json,intent_refs_json,unknowns_json,reuse_boundary_json,confirmed_facts_json,observed_behavior_json,hypothesis,reusable_statement_json,confidence,status,generated_by,fallback_reason,input_hash,created_at,updated_at,scope_snapshot_json)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .run(result.id, result.workSessionId, result.projectId, result.kind, result.statement, result.whyProposed,
           JSON.stringify(result.evidenceRefs), JSON.stringify(result.intentRefs), JSON.stringify(result.unknowns), JSON.stringify(result.reuseBoundary),
           JSON.stringify(result.confirmedFacts), JSON.stringify(result.observedBehavior), result.hypothesis ?? null,
           result.reusableStatement ? JSON.stringify(result.reusableStatement) : null, result.confidence ?? null,
-          result.status, result.generatedBy, result.fallbackReason ?? null, result.inputHash, result.createdAt, result.updatedAt);
+          result.status, result.generatedBy, result.fallbackReason ?? null, result.inputHash, result.createdAt, result.updatedAt, JSON.stringify(snapshot));
       inserted = write.changes === 1;
       if (inserted) {
         this.store.audit({ actorId: input.actorId, projectId: session.projectId, action: "candidate_insight.compiled", entityType: "candidate_insight", entityId: result.id, details: { workSessionId: session.id, evidenceCount: result.evidenceRefs.length, generatedBy: result.generatedBy, fallbackReason: result.fallbackReason } });
@@ -477,7 +519,7 @@ export class CandidateInsightCompiler {
     })();
     if (!inserted) {
       const winner = this.store.db.prepare("SELECT * FROM knowledge_candidate_insights WHERE work_session_id = ? AND input_hash = ?").get(session.id, inputHash) as Record<string, unknown> | undefined;
-      if (winner) return candidateInsightFromRow(winner);
+      if (winner) return candidateInsightFromRow(winner, this.store);
     }
     return result;
   }
@@ -490,6 +532,6 @@ export class CandidateInsightCompiler {
     } catch {
       return undefined;
     }
-    return candidateInsightFromRow(row);
+    return candidateInsightFromRow(row, this.store);
   }
 }

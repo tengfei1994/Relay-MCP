@@ -1,0 +1,54 @@
+diff --git a/internal/container/container.go b/internal/container/container.go
+--- a/internal/container/container.go
++++ b/internal/container/container.go
+@@ -9,6 +9,7 @@
+ 	"errors"
+ 	"fmt"
+ 	"io"
++	stdlog "log"
+ 	"net"
+ 	"net/url"
+ 	"os"
+@@ -35,6 +36,7 @@
+ 	"gorm.io/driver/postgres"
+ 	"gorm.io/driver/sqlite"
+ 	"gorm.io/gorm"
++	gormlogger "gorm.io/gorm/logger"
+ 
+ 	"github.com/Tencent/WeKnora/internal/agent/approval"
+ 	"github.com/Tencent/WeKnora/internal/application/repository"
+@@ -786,6 +788,26 @@
+ 	return client, nil
+ }
+ 
++// Scan uses GORM's shared trace recorder before the configured logger sees SQL.
++// Filter there too, so successful and failed Scan traces retain placeholders.
++func init() {
++	gormlogger.RecorderParamsFilter = func(_ context.Context, sql string, _ ...interface{}) (string, []interface{}) {
++		return sql, nil
++	}
++}
++
++// newParameterizedGormLogger retains GORM's warning/error diagnostics without
++// interpolating bound query values into SQL traces.
++func newParameterizedGormLogger(out io.Writer) gormlogger.Interface {
++	return gormlogger.New(stdlog.New(out, "\r\n", stdlog.LstdFlags), gormlogger.Config{
++		SlowThreshold:             200 * time.Millisecond,
++		LogLevel:                  gormlogger.Warn,
++		IgnoreRecordNotFoundError: false,
++		Colorful:                  true,
++		ParameterizedQueries:      true,
++	})
++}
++
+ // initDatabase initializes database connection
+ // Creates and configures database connection based on environment configuration
+ // Supports multiple database backends (PostgreSQL)
+@@ -863,6 +885,7 @@
+ 		return nil, fmt.Errorf("unsupported database driver: %s", os.Getenv("DB_DRIVER"))
+ 	}
+ 	db, err := gorm.Open(dialector, &gorm.Config{
++		Logger: newParameterizedGormLogger(os.Stdout),
+ 		NowFunc: func() time.Time {
+ 			return time.Now().UTC()
+ 		},

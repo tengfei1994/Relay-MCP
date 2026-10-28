@@ -33,6 +33,15 @@ import { SOURCE_INDEX_MIGRATION } from "./migrations/026-source-index.js";
 import { INGEST_JOBS_MIGRATION } from "./migrations/027-ingest-jobs.js";
 import { PRODUCT_REVISIONS_MIGRATION } from "./migrations/028-product-revisions.js";
 import { PROVIDER_CONFIG_MIGRATION } from "./migrations/030-provider-configs.js";
+import { MANAGED_ENGINE_MIGRATION } from "./migrations/040-managed-engine.js";
+import { CANDIDATE_SCOPE_MIGRATION } from "./migrations/041-candidate-scope.js";
+import { CANDIDATE_WORKER_LEASE_MIGRATION } from "./migrations/042-candidate-worker-lease.js";
+import { MIGRATION_WITHDRAWAL_MIGRATION } from "./migrations/043-migration-withdrawal.js";
+import { PROVIDER_ADMISSION_MIGRATION } from "./migrations/044-provider-admission.js";
+import { INGEST_OWNERSHIP_MIGRATION } from "./migrations/045-ingest-ownership.js";
+import { PRODUCT_REVISION_PARSER_IDENTITY_MIGRATION, PARSER_SCOPED_PRODUCT_REVISIONS_SCHEMA } from "./migrations/046-product-revision-parser-identity.js";
+import { CONFIRMED_MEMORY_MIGRATION } from "./migrations/047-confirmed-memory.js";
+import { PROVIDER_SECRETS_MIGRATION } from "./migrations/039-provider-secrets.js";
 import { WEKNORA_DOCUMENT_MIGRATION } from "./migrations/031-weknora-documents.js";
 import { WORK_SESSION_MIGRATION } from "./migrations/029-work-sessions.js";
 import { CANDIDATE_INSIGHT_MIGRATION } from "./migrations/032-candidate-insights.js";
@@ -42,7 +51,6 @@ import { INTEGRATION_ROUTING_MIGRATION } from "./migrations/038-integration-rout
 import { WEKNORA_INGEST_IDENTITY_MIGRATION } from "./migrations/035-weknora-ingest-identity.js";
 import { PROVIDER_RUNTIME_MIGRATION, PROVIDER_RUNTIME_MIGRATION_RECOVERY_SQL } from "./migrations/034-provider-runtime.js";
 import { WORK_SESSION_OPS_MIGRATION } from "./migrations/033-work-session-ops.js";
-import { CONFIRMED_MEMORY_MIGRATION } from "./migrations/039-confirmed-memory.js";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
 import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type CandidateCard, type KnowledgeDocument, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeBinding, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
@@ -57,7 +65,7 @@ function canonicalJson(value: unknown): string {
   return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
 }
 
-const KNOWLEDGE_MIGRATIONS = [
+const KNOWLEDGE_MIGRATIONS: Array<{ version: string; sql: string; requiresForeignKeysOff?: boolean }> = [
   { version: "001-initial", sql: INITIAL_KNOWLEDGE_SCHEMA },
   KNOWLEDGE_DOMAIN_MIGRATION,
   EVENT_PROJECT_IDENTITY_MIGRATION,
@@ -97,6 +105,14 @@ const KNOWLEDGE_MIGRATIONS = [
     CANDIDATE_INSIGHT_REVIEW_MIGRATION,
     WIKI_MIGRATION,
     INTEGRATION_ROUTING_MIGRATION,
+    PROVIDER_SECRETS_MIGRATION,
+    MANAGED_ENGINE_MIGRATION,
+    CANDIDATE_SCOPE_MIGRATION,
+    CANDIDATE_WORKER_LEASE_MIGRATION,
+    MIGRATION_WITHDRAWAL_MIGRATION,
+    PROVIDER_ADMISSION_MIGRATION,
+    INGEST_OWNERSHIP_MIGRATION,
+    PRODUCT_REVISION_PARSER_IDENTITY_MIGRATION,
     CONFIRMED_MEMORY_MIGRATION,
 ];
 
@@ -201,8 +217,14 @@ export class KnowledgeStore {
   migrate(): void {
     // Bootstrap before querying it: migration must work on a brand-new database.
     this.db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)");
+    this.repairLegacyDocumentCheckSchema();
     const applied = this.db.prepare("SELECT version FROM schema_migrations WHERE version = ?");
     const insert = this.db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)");
+    const rebuildsReferencedTable = KNOWLEDGE_MIGRATIONS.some((migration) => migration.requiresForeignKeysOff && !applied.get(migration.version));
+    // SQLite ignores foreign_keys changes inside a transaction. A referenced
+    // parent-table rebuild must run at top level, with validation before commit.
+    if (rebuildsReferencedTable && this.db.inTransaction) throw new Error("Knowledge parent-table migrations require a top-level transaction");
+    const foreignKeysEnabled = this.db.pragma("foreign_keys", { simple: true }) === 1;
     const run = this.db.transaction(() => {
       for (const migration of KNOWLEDGE_MIGRATIONS) {
         if (applied.get(migration.version)) continue;
@@ -254,12 +276,26 @@ export class KnowledgeStore {
         }
         insert.run(migration.version, this.now().toISOString());
       }
+      if (rebuildsReferencedTable) {
+        const violations = this.db.pragma("foreign_key_check") as unknown[];
+        if (violations.length) throw new Error(`Knowledge migration foreign key validation failed (${violations.length} violations)`);
+      }
     });
-    run();
+    try {
+      if (rebuildsReferencedTable) {
+        this.db.pragma("foreign_keys = OFF");
+        if (this.db.pragma("foreign_keys", { simple: true }) !== 0) throw new Error("Knowledge migration could not suspend foreign key enforcement");
+      }
+      // Acquire the writer lock before inspecting migration markers so two
+      // startup processes cannot both attempt the same parent-table rebuild.
+      run.immediate();
+    } finally {
+      if (rebuildsReferencedTable && foreignKeysEnabled) this.db.pragma("foreign_keys = ON");
+    }
     // Databases created by the early P01 preview may already carry the
     // 002-domain marker but not the type projections introduced later. Make
     // this additive repair safe and idempotent without rewriting user data.
-    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions", "knowledge_topics", "knowledge_product_document_bindings", "knowledge_artifact_sets", "knowledge_artifacts", "knowledge_source_baselines", "knowledge_source_files", "knowledge_project_snapshots", "knowledge_project_snapshot_files", "knowledge_source_chunks", "knowledge_source_chunks_fts", "knowledge_artifact_publications", "knowledge_ingest_jobs", "knowledge_product_revisions", "knowledge_confirmed_memories"];
+    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_confirmed_memories", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions", "knowledge_topics", "knowledge_product_document_bindings", "knowledge_artifact_sets", "knowledge_artifacts", "knowledge_source_baselines", "knowledge_source_files", "knowledge_project_snapshots", "knowledge_project_snapshot_files", "knowledge_source_chunks", "knowledge_source_chunks_fts", "knowledge_artifact_publications", "knowledge_ingest_jobs", "knowledge_product_revisions"];
     const missingTable = requiredTables.some((name) => !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
     if (missingTable) this.db.exec(KNOWLEDGE_DOMAIN_MIGRATION.sql);
     const columns: Record<string, Array<[string, string]>> = {
@@ -283,9 +319,6 @@ export class KnowledgeStore {
     // The 035 identity indexes depend on repair-added columns; apply them here
     // (idempotent) so fresh and recovered databases converge.
     this.db.exec(WEKNORA_INGEST_IDENTITY_MIGRATION.sql);
-    // The confirmed-memory migration is additive; this repair keeps an older
-    // database readable if its migration marker was written before a crash.
-    this.db.exec(CONFIRMED_MEMORY_MIGRATION.sql);
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_weknora_documents_identity ON knowledge_weknora_documents(identity_hash)");
     this.db.exec(`CREATE TABLE IF NOT EXISTS knowledge_observations (
       id TEXT PRIMARY KEY, event_id TEXT NOT NULL UNIQUE, project_id TEXT, event_class TEXT NOT NULL,
@@ -293,11 +326,7 @@ export class KnowledgeStore {
       evidence_refs_json TEXT NOT NULL DEFAULT '[]', source_locator TEXT NOT NULL, source_sha256 TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     ); CREATE INDEX IF NOT EXISTS idx_knowledge_observations_project ON knowledge_observations(project_id, created_at);`);
-    this.db.exec(`CREATE TABLE IF NOT EXISTS knowledge_product_revisions (
-      id TEXT PRIMARY KEY, normalized_content_sha256 TEXT NOT NULL UNIQUE, raw_sha256 TEXT,
-      title TEXT NOT NULL, body TEXT NOT NULL, sections_json TEXT NOT NULL DEFAULT '[]', parser_version TEXT NOT NULL,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-    );`);
+    this.db.exec(PARSER_SCOPED_PRODUCT_REVISIONS_SCHEMA);
     this.db.exec(`CREATE TABLE IF NOT EXISTS knowledge_candidate_insight_reviews (
       id TEXT PRIMARY KEY, insight_id TEXT NOT NULL REFERENCES knowledge_candidate_insights(id) ON DELETE CASCADE,
       reviewer_id INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL,
@@ -347,6 +376,45 @@ export class KnowledgeStore {
     this.backfillProductTopics();
   }
 
+  /**
+   * Older SQLite builds accepted double-quoted enum literals in the
+   * knowledge_documents CHECK constraints and stored that SQL verbatim in
+   * sqlite_master. Newer better-sqlite3 builds reject those literals while
+   * reparsing the schema for an ALTER TABLE, which prevents later migrations
+   * from starting. Rebuild only this legacy table with equivalent constraints;
+   * rows, indexes and triggers are retained and the operation is idempotent.
+   */
+  private repairLegacyDocumentCheckSchema(): void {
+    const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='knowledge_documents'").get() as { sql?: string } | undefined;
+    const sql = String(row?.sql ?? "");
+    if (!/CHECK\s*\(\s*kind\s+IN\s*\(\s*\"candidate\"/i.test(sql)) return;
+    const columns = ["id", "kind", "title", "body", "lifecycle", "project_id", "project_name_snapshot", "samplemanager_version", "solution", "module", "environment", "source_locator", "source_commit", "source_sha256", "created_at", "updated_at"];
+    const indexesAndTriggers = this.db.prepare("SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL AND ((type='index' AND tbl_name='knowledge_documents') OR (type='trigger' AND tbl_name='knowledge_documents'))").all() as Array<{ type: string; name: string; sql: string }>;
+    const foreignKeysEnabled = this.db.pragma("foreign_keys", { simple: true }) === 1;
+    if (foreignKeysEnabled) this.db.pragma("foreign_keys = OFF");
+    try {
+      const repair = this.db.transaction(() => {
+        this.db.exec("DROP TABLE IF EXISTS knowledge_documents_legacy_repair");
+        this.db.exec(`CREATE TABLE knowledge_documents_legacy_repair (
+          id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
+          lifecycle TEXT NOT NULL, project_id TEXT, project_name_snapshot TEXT,
+          samplemanager_version TEXT, solution TEXT, module TEXT, environment TEXT,
+          source_locator TEXT NOT NULL, source_commit TEXT, source_sha256 TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          CHECK(kind IN ('candidate','case','pattern','playbook','product_document','fact','evidence','relation')),
+          CHECK(lifecycle IN ('draft','reproduced','verified','approved','deprecated'))
+        )`);
+        const quoted = columns.map((column) => `"${column}"`).join(",");
+        this.db.exec(`INSERT INTO knowledge_documents_legacy_repair (${quoted}) SELECT ${quoted} FROM knowledge_documents`);
+        this.db.exec("DROP TABLE knowledge_documents; ALTER TABLE knowledge_documents_legacy_repair RENAME TO knowledge_documents");
+        for (const item of indexesAndTriggers) this.db.exec(item.sql);
+      });
+      repair.immediate();
+    } finally {
+      if (foreignKeysEnabled) this.db.pragma("foreign_keys = ON");
+    }
+  }
+
   private backfillProductTopics(): void {
     const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 24);
     const now = this.now().toISOString();
@@ -355,7 +423,7 @@ export class KnowledgeStore {
       WHERE d.kind='product_document'
         AND NOT EXISTS (SELECT 1 FROM knowledge_product_document_bindings b WHERE b.document_id=d.id)`).all() as Array<Record<string, unknown>>;
     const topic = this.db.prepare(`INSERT INTO knowledge_topics(id,canonical_key,canonical_title,kind,domain,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?) ON CONFLICT(canonical_key) DO UPDATE SET canonical_title=excluded.canonical_title,updated_at=excluded.updated_at`);
+      VALUES (?,?,?,?,?,?,?) ON CONFLICT(canonical_key) DO NOTHING`);
     const bind = this.db.prepare(`INSERT OR IGNORE INTO knowledge_product_document_bindings
       (id,topic_id,document_id,product,product_version,source_path,match_method,match_confidence,status,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)`);

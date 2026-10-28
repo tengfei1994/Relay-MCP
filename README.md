@@ -374,6 +374,7 @@ Knowledge 审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [`d
 | Context | `knowledge_work_session_list` | 列出或汇总当前用户可读的 Work Session。 |
 | Context | `knowledge_provider_config_list` | 列出不包含密钥的 Relay Provider 配置。 |
 | Context | `knowledge_candidate_insight_compile` | 基于真实 Evidence 编译 Candidate Insight，失败时安全降级且不自动批准。 |
+| Context | `knowledge_candidate_insight_job_get` | 检查异步 Candidate 编译任务状态及结果，验证 Session 访问权限。 |
 | Context | `knowledge_candidate_insight_list` | 按 Project ACL 列出待人工审核或已处理的 Candidate Insight。 |
 | Context | `knowledge_candidate_insight_review` | 使用必填理由确认、编辑、拒绝或晋级 Candidate Insight。 |
 | Context | `knowledge_confirmed_memory_list` | 列出按 ACL 过滤的 Fact、Decision、Case、Pattern Confirmed Memory。 |
@@ -501,6 +502,10 @@ npm run dev:mcp
 ```
 
 技术栈：Node.js、TypeScript、Fastify、Express、MCP SDK、SQLite/Drizzle、React、Vite、Tailwind CSS、PM2、node-ssh，以及 Windows WPF/.NET Agent。
+
+## Managed Knowledge engine
+
+Product Knowledge 和 Wiki 的统一模型、部署、迁移及故障恢复见 [运维指南](docs/managed-knowledge-engine-operations.md)。本轮能力与升级边界见 [未发布变更说明](docs/managed-knowledge-engine-release-notes.md)，真实验收证据见 [验证报告](docs/verification/managed-engine-progress.md)。
 
 ## 安全边界
 

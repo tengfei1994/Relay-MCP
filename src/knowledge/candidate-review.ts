@@ -3,6 +3,8 @@ import { z } from "zod";
 import { assertReviewer } from "./domain.js";
 import type { KnowledgeStore } from "./store.js";
 import { ConfirmedMemoryService, type ConfirmedMemoryType } from "./confirmed-memory.js";
+import { WorkSessionService } from "./work-session.js";
+import { candidateScopeSnapshot } from "./candidate-scope.js";
 import {
   CANDIDATE_INSIGHT_KINDS,
   candidateInsightFromRow,
@@ -69,7 +71,7 @@ export class CandidateInsightReviewService {
   private load(id: string): CandidateInsight {
     const row = this.store.db.prepare("SELECT * FROM knowledge_candidate_insights WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     if (!row) throw new Error("Candidate Insight not found");
-    return candidateInsightFromRow(row);
+    return candidateInsightFromRow(row, this.store);
   }
 
   private assertReader(actorId: number, projectId: string): void {
@@ -101,7 +103,7 @@ export class CandidateInsightReviewService {
     const rows = input.status
       ? this.store.db.prepare("SELECT * FROM knowledge_candidate_insights WHERE project_id = ? AND status = ? ORDER BY updated_at DESC, id LIMIT ? OFFSET ?").all(input.projectId, input.status, limit, offset)
       : this.store.db.prepare("SELECT * FROM knowledge_candidate_insights WHERE project_id = ? ORDER BY updated_at DESC, id LIMIT ? OFFSET ?").all(input.projectId, limit, offset);
-    return (rows as Array<Record<string, unknown>>).map(candidateInsightFromRow);
+    return (rows as Array<Record<string, unknown>>).map(row => candidateInsightFromRow(row, this.store));
   }
 
   listDrafts(input: { actorId: number; projectId: string; limit?: number; offset?: number }): CandidateInsight[] {
@@ -136,6 +138,9 @@ export class CandidateInsightReviewService {
 
   /** Confirm a draft/edited insight. Never invoked automatically. Idempotent on replay. */
   confirm(input: { actorId: number; id: string; reason: string }): CandidateInsight {
+    return this.store.db.transaction(() => this.confirmLocked(input)).immediate();
+  }
+  private confirmLocked(input: { actorId: number; id: string; reason: string }): CandidateInsight {
     const reason = requireReason(input.reason);
     const insight = this.load(input.id);
     this.assertProjectReviewer(input.actorId, insight.projectId);
@@ -152,6 +157,9 @@ export class CandidateInsightReviewService {
 
   /** Edit a draft insight; the patched content is scanned like provider output. */
   edit(input: { actorId: number; id: string; patch: CandidateInsightEditPatch; reason: string }): CandidateInsight {
+    return this.store.db.transaction(() => this.editLocked(input)).immediate();
+  }
+  private editLocked(input: { actorId: number; id: string; patch: CandidateInsightEditPatch; reason: string }): CandidateInsight {
     const reason = requireReason(input.reason);
     const patch = editPatchSchema.parse(input.patch);
     if (Object.values(patch).every((value) => value === undefined)) throw new Error("At least one edit field is required");
@@ -187,6 +195,9 @@ export class CandidateInsightReviewService {
 
   /** Reject an insight; terminal for automatic flows. Idempotent on replay. */
   reject(input: { actorId: number; id: string; reason: string }): CandidateInsight {
+    return this.store.db.transaction(() => this.rejectLocked(input)).immediate();
+  }
+  private rejectLocked(input: { actorId: number; id: string; reason: string }): CandidateInsight {
     const reason = requireReason(input.reason);
     const insight = this.load(input.id);
     this.assertProjectReviewer(input.actorId, insight.projectId);
@@ -202,10 +213,14 @@ export class CandidateInsightReviewService {
 
   /** Promote an accepted insight into a distinct, typed Confirmed Memory. */
   promote(input: { actorId: number; id: string; target: "fact" | "decision" | "case" | "pattern"; reason: string; title?: string }): CandidateInsightPromotion {
+    return this.store.db.transaction(() => this.promoteLocked(input)).immediate();
+  }
+  private promoteLocked(input: { actorId: number; id: string; target: "fact" | "decision" | "case" | "pattern"; reason: string; title?: string }): CandidateInsightPromotion {
     const reason = requireReason(input.reason);
     const insight = this.load(input.id);
     this.assertProjectReviewer(input.actorId, insight.projectId);
     if (insight.status !== "accepted") throw new Error("Only an explicitly confirmed Candidate Insight can be promoted");
+    if (insight.scopeReviewRequired || !insight.sourceScope) throw new Error("Candidate requires explicit scope review before promotion; review the current Session scope");
     const existing = insight.promotion as CandidateInsightPromotion | undefined;
     if (existing && existing.target === input.target) return existing;
     if (insight.kind !== input.target) throw new Error(`Candidate Insight kind '${insight.kind}' cannot be promoted as '${input.target}'`);
@@ -217,18 +232,27 @@ export class CandidateInsightReviewService {
       : input.target === "decision"
         ? { decision: insight.statement, rationale: insight.whyProposed, alternatives: insight.unknowns }
         : input.target === "case"
-        ? (() => {
-          if (!insight.hypothesis?.trim() || !insight.confirmedFacts.length) throw new Error("Case promotion requires a reviewed hypothesis and confirmed verification facts");
-          return { symptoms: insight.observedBehavior.join("; ") || insight.statement, rootCause: insight.hypothesis, resolution: insight.reusableStatement?.statement || insight.statement, verification: insight.confirmedFacts.join("; ") };
-        })()
+          ? (() => {
+            if (!insight.hypothesis?.trim() || !insight.confirmedFacts.length) throw new Error("Case promotion requires a reviewed hypothesis and confirmed verification facts");
+            return { symptoms: insight.observedBehavior.join("; ") || insight.statement, rootCause: insight.hypothesis, resolution: insight.reusableStatement?.statement || insight.statement, verification: insight.confirmedFacts.join("; ") };
+          })()
           : { statement: insight.reusableStatement?.statement || insight.statement, applicability: String(insight.reuseBoundary.applicability ?? insight.reuseBoundary.scope ?? "project"), signals: insight.confirmedFacts, exceptions: insight.unknowns };
     const memoryId = `memory-${input.target}-${insight.id}`;
     const promotion: CandidateInsightPromotion = { target: input.target, mode: "persisted", targetId: memoryId, reason, promotedBy: input.actorId, promotedAt: now };
     new ConfirmedMemoryService(this.store, this.clock).save({
-      id: memoryId, type: targetType, title: input.title?.trim().slice(0, 300) || `${targetType}: ${insight.statement.slice(0, 180)}`,
-      statement: insight.statement, details, scope: { projectId: insight.projectId, environment: session?.environment ?? undefined, scopeType: session?.environment ? "environment" : "project", scopeKey: session?.environment ?? insight.projectId, visibility: "project" },
-      evidenceRefs: insight.evidenceRefs, source: { kind: "candidate_insight", id: insight.id, locator: `candidate-insight:${insight.id}` },
-      confirmedBy: input.actorId, confirmedAt: now, audit: { action: "promote", reason }, createdAt: now, updatedAt: now,
+      id: memoryId,
+      type: targetType,
+      title: input.title?.trim().slice(0, 300) || `${targetType}: ${insight.statement.slice(0, 180)}`,
+      statement: insight.statement,
+      details,
+      scope: { projectId: insight.projectId, environment: session?.environment ?? insight.sourceScope.environment ?? undefined, scopeType: session?.environment || insight.sourceScope.environment ? "environment" : "project", scopeKey: session?.environment ?? insight.sourceScope.environment ?? insight.projectId, visibility: "project" },
+      evidenceRefs: insight.evidenceRefs,
+      source: { kind: "candidate_insight", id: insight.id, locator: `candidate-insight:${insight.id}` },
+      confirmedBy: input.actorId,
+      confirmedAt: now,
+      audit: { action: "promote", reason },
+      createdAt: now,
+      updatedAt: now,
     });
     this.store.db.transaction(() => {
       this.store.db.prepare("UPDATE knowledge_candidate_insights SET promotion_json = ?, reviewed_by = ?, review_reason = ?, reviewed_at = ?, updated_at = ? WHERE id = ?")
@@ -238,5 +262,35 @@ export class CandidateInsightReviewService {
       this.store.audit({ actorId: input.actorId, projectId: insight.projectId, action: "candidate_insight.promote", entityType: "candidate_insight", entityId: insight.id, details: { reason, target: input.target, targetId: memoryId } });
     })();
     return promotion;
+  }
+
+  /** Explicitly recover a legacy or inconsistent scope without changing content approval. */
+  reviewScope(input: { actorId: number; id: string; reason: string; expectedSessionUpdatedAt?: string }): CandidateInsight {
+    const reason = requireReason(input.reason);
+    return this.store.db.transaction(() => {
+      const insight = this.load(input.id);
+      this.assertProjectReviewer(input.actorId, insight.projectId);
+      if (insight.status === "rejected") throw new Error("A rejected Candidate cannot be restored by scope review; create and review a new Candidate");
+      const session = new WorkSessionService(this.store).get({ actorId: input.actorId, sessionId: insight.workSessionId });
+      if (!session || session.projectId !== insight.projectId) throw new Error("Candidate source Session is unavailable");
+      if (input.expectedSessionUpdatedAt !== undefined && session.updatedAt !== input.expectedSessionUpdatedAt) throw new Error("Session scope changed; refresh and review the displayed scope again");
+      if (!insight.scopeReviewRequired) return insight;
+      this.assertEvidenceVisible(insight, insight.evidenceRefs);
+      const now = this.clock().toISOString(), snapshot = candidateScopeSnapshot(session, "review", now);
+      const previous = this.store.db.prepare("SELECT scope_snapshot_json FROM knowledge_candidate_insights WHERE id=?").get(insight.id) as { scope_snapshot_json: string | null };
+      const caseId = `case-${insight.id}`;
+      const caseScope = this.store.db.prepare("SELECT kind,project_id,environment,samplemanager_version,solution,module,lifecycle,source_locator FROM knowledge_documents WHERE id=?").get(caseId) as Record<string, unknown> | undefined;
+      if (caseScope && (caseScope.kind !== "case" || caseScope.source_locator !== `candidate-insight:${insight.id}`)) throw new Error("Candidate Case identity is inconsistent; scope review cannot overwrite another source");
+      const before = { snapshot: previous.scope_snapshot_json, caseScope: caseScope ?? null };
+      this.store.db.prepare("UPDATE knowledge_candidate_insights SET scope_snapshot_json=?,reviewed_by=?,review_reason=?,reviewed_at=?,updated_at=? WHERE id=?").run(JSON.stringify(snapshot), input.actorId, reason, now, now, insight.id);
+      if (caseScope) {
+        this.store.db.prepare("UPDATE knowledge_documents SET project_id=?,environment=?,samplemanager_version=?,solution=?,module=?,updated_at=? WHERE id=?").run(snapshot.projectId, snapshot.environment, snapshot.sampleManagerVersion, snapshot.solution, snapshot.module, now, caseId);
+        this.store.db.prepare("UPDATE knowledge_cases SET environment=?,samplemanager_version=?,solution=?,module=?,updated_at=? WHERE id=?").run(snapshot.environment, snapshot.sampleManagerVersion, snapshot.solution, snapshot.module, now, caseId);
+      }
+      const after = { scopeReview: true, snapshot, caseId: caseScope ? caseId : undefined };
+      this.store.db.prepare("INSERT INTO knowledge_candidate_insight_reviews(id,insight_id,reviewer_id,action,reason,before_json,after_json,created_at) VALUES (?,?,?,'edit',?,?,?,?)").run(randomUUID(), insight.id, input.actorId, reason, JSON.stringify(before), JSON.stringify(after), now);
+      this.store.audit({ actorId: input.actorId, projectId: insight.projectId, action: "candidate_insight.review_scope", entityType: "candidate_insight", entityId: insight.id, details: { reason, before, after } });
+      return this.load(insight.id);
+    }).immediate();
   }
 }

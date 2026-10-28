@@ -1,0 +1,142 @@
+diff --git a/internal/application/repository/retriever/sqlite/repository.go b/internal/application/repository/retriever/sqlite/repository.go
+--- a/internal/application/repository/retriever/sqlite/repository.go
++++ b/internal/application/repository/retriever/sqlite/repository.go
+@@ -9,6 +9,7 @@
+ 	"sync"
+ 	"time"
+ 	"unicode"
++	"unicode/utf8"
+ 
+ 	"github.com/Tencent/WeKnora/internal/common"
+ 	"github.com/Tencent/WeKnora/internal/logger"
+@@ -571,7 +572,7 @@
+ 	}
+ 
+ 	ftsQuery := sanitizeFTS5Query(params.Query)
+-	structuralClause, structuralArgs := keywordXMLStructuralPreference(params.Query)
++	structuralClause, structuralArgs := keywordStructuralPreference(params.Query)
+ 
+ 	sql := `
+ 		SELECT ` + structuralClause + ` AS keyword_structural_match, e.id, e.source_id, e.source_type, e.chunk_id,
+@@ -1003,12 +1004,12 @@
+ 
+ var xmlQueryTag = regexp.MustCompile(`</?(` + xmlQueryName + `)(?:[ \t\r\n]+` + xmlQueryName + `[ \t\r\n]*=[ \t\r\n]*(?:"[^"<]*"|'[^'<]*'))*[ \t\r\n]*/?>`)
+ 
+-// keywordXMLStructuralPreference preserves the intent of explicit XML element
+-// queries without narrowing the broad lexical fallback. Multiple elements are
+-// a conjunction within a candidate chunk. SQL values are always bound; names,
+-// namespaces and case are preserved. GLOB's name boundary prevents NodeExtra
+-// from matching Node. No index migration or source rewriting is needed.
+-func keywordXMLStructuralPreference(query string) (string, []interface{}) {
++// keywordStructuralPreference preserves query-declared XML elements and whole
++// technical identifiers without narrowing the broad lexical fallback. Multiple
++// declarations are a conjunction within a candidate chunk. XML names remain
++// case-sensitive; ASCII identifier matching retains FTS's case-insensitive
++// semantics. All SQL values are bound. No source/index rewriting is needed.
++func keywordStructuralPreference(query string) (string, []interface{}) {
+ 	var clauses []string
+ 	var args []interface{}
+ 	seen := make(map[string]bool)
+@@ -1017,10 +1018,10 @@
+ 		if strings.HasPrefix(match[0], "</") && strings.TrimSpace(strings.TrimPrefix(match[0], "</"+name)) != ">" {
+ 			continue
+ 		}
+-		if seen[name] {
++		if seen["xml:"+name] {
+ 			continue
+ 		}
+-		seen[name] = true
++		seen["xml:"+name] = true
+ 		// Keep preference evaluation bounded for adversarially long queries. When
+ 		// the bound is exceeded, preserve the ordinary lexical search in full.
+ 		if len(seen) > 32 {
+@@ -1029,8 +1030,65 @@
+ 		clauses = append(clauses, "(e.content GLOB ? OR e.content GLOB ?)")
+ 		args = append(args, "*<"+name+"[ \t\r\n/>]*", "*</"+name+"[ \t\r\n>]*")
+ 	}
++	for _, name := range technicalQueryIdentifiers(query) {
++		if seen["identifier:"+name] {
++			continue
++		}
++		seen["identifier:"+name] = true
++		if len(seen) > 32 {
++			return "0", nil
++		}
++		// Space padding lets the same ASCII word-boundary pattern match at
++		// the start/end of content and beside source-code call punctuation.
++		clauses = append(clauses, "(' ' || lower(e.content) || ' ') GLOB ?")
++		args = append(args, "*[^A-Za-z0-9_]"+name+"[^A-Za-z0-9_]*")
++	}
+ 	if len(clauses) == 0 {
+ 		return "0", nil
+ 	}
+ 	return "CASE WHEN " + strings.Join(clauses, " AND ") + " THEN 1 ELSE 0 END", args
+ }
++
++var technicalQueryIdentifier = regexp.MustCompile(`[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+`)
++var numericQueryVersion = regexp.MustCompile(`(?i)^v?[0-9]+(?:_[0-9]+)+$`)
++
++// Only standalone query words declare an identifier. A substring of a path,
++// dotted filename, address or numeric version must retain ordinary FTS order.
++// Valid XML tags (including attribute names/values) already have their own
++// structural semantics and must not acquire extra identifier requirements.
++func technicalQueryIdentifiers(query string) []string {
++	query = xmlQueryTag.ReplaceAllString(query, " ")
++	var names []string
++	for _, loc := range technicalQueryIdentifier.FindAllStringIndex(query, -1) {
++		name := query[loc[0]:loc[1]]
++		if numericQueryVersion.MatchString(name) {
++			continue
++		}
++		if loc[0] > 0 {
++			previous, _ := utf8.DecodeLastRuneInString(query[:loc[0]])
++			if identifierQueryWordRune(previous) || strings.ContainsRune("/\\.:@-", previous) {
++				continue
++			}
++		}
++		if loc[1] < len(query) {
++			next, size := utf8.DecodeRuneInString(query[loc[1]:])
++			if identifierQueryWordRune(next) || strings.ContainsRune("/\\@-", next) {
++				continue
++			}
++			// A terminal period/colon can be prose punctuation; a following
++			// word makes it a filename, dotted member or qualified fragment.
++			if (next == '.' || next == ':') && loc[1]+size < len(query) {
++				after, _ := utf8.DecodeRuneInString(query[loc[1]+size:])
++				if identifierQueryWordRune(after) || after == '/' || after == '\\' {
++					continue
++				}
++			}
++		}
++		names = append(names, strings.ToLower(name))
++	}
++	return names
++}
++
++func identifierQueryWordRune(r rune) bool {
++	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
++}
+diff --git a/internal/application/service/knowledgebase_search_fusion.go b/internal/application/service/knowledgebase_search_fusion.go
+--- a/internal/application/service/knowledgebase_search_fusion.go
++++ b/internal/application/service/knowledgebase_search_fusion.go
+@@ -94,7 +94,7 @@
+ 	return cmp.Compare(a.ChunkID, b.ChunkID)
+ }
+ 
+-// sortKeywordByScoreDesc preserves explicit element intent before BM25. It is
++// sortKeywordByScoreDesc preserves explicit literal structure before BM25. It is
+ // used only while ranking keyword candidates; final fused scores and vector
+ // ranks continue to use sortByScoreDesc.
+ func sortKeywordByScoreDesc(a, b *types.IndexWithScore) int {
+diff --git a/internal/types/retriever.go b/internal/types/retriever.go
+--- a/internal/types/retriever.go
++++ b/internal/types/retriever.go
+@@ -92,7 +92,7 @@
+ 	TagID string
+ 	// Score
+ 	Score float64
+-	// KeywordStructuralMatch records explicit XML element evidence for keyword
++	// KeywordStructuralMatch records explicit literal-structure evidence for keyword
+ 	// ranking only. Raw BM25 remains in Score; fusion output uses its own rank.
+ 	KeywordStructuralMatch bool `json:"-"`
+ 	// VectorScore is a vector hit's similarity as its engine reported it.

@@ -114,7 +114,11 @@ export class ContextPackService {
       if (!scopeMatches(reference, intent)) { scopeFiltered += 1; return false; }
       return true;
     });
-    authoritative.sort((a, b) => intentScore(b, intent) - intentScore(a, intent));
+    authoritative.sort((a, b) => {
+      const scoreDelta = intentScore(b, intent) - intentScore(a, intent);
+      if (scoreDelta !== 0) return scoreDelta;
+      return a.documentId.localeCompare(b.documentId);
+    });
 
     const captureOnly = intent?.knowledgeMode === "capture";
     const authoritativeDocs = (captureOnly ? [] : authoritative).slice(0, limit).map((item) => ({ ...item }));
@@ -141,7 +145,9 @@ export class ContextPackService {
       candidates,
       currentFacts,
       degraded,
-      conflicts: { versionConflicts: countVersionConflicts(authoritativeDocs), aclFiltered, versionFiltered, scopeFiltered },
+      // Count conflicts across the complete eligible set, not only the page
+      // returned to the caller. Truncation must not hide known version drift.
+      conflicts: { versionConflicts: countVersionConflicts(authoritative), aclFiltered, versionFiltered, scopeFiltered },
       counts: { authoritativeDocs: authoritativeDocs.length, confirmedKnowledge: confirmedKnowledge.length, candidates: candidates.length, currentFacts: currentFacts.length },
     };
   }

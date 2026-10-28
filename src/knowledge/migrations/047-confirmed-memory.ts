@@ -1,5 +1,5 @@
 export const CONFIRMED_MEMORY_MIGRATION = {
-  version: "039-confirmed-memory",
+  version: "047-confirmed-memory",
   sql: `
 CREATE TABLE IF NOT EXISTS knowledge_confirmed_memories (
   id TEXT PRIMARY KEY,

@@ -1,0 +1,24 @@
+diff --git a/internal/application/repository/retriever/sqlite/repository.go b/internal/application/repository/retriever/sqlite/repository.go
+--- a/internal/application/repository/retriever/sqlite/repository.go
++++ b/internal/application/repository/retriever/sqlite/repository.go
+@@ -1004,6 +1004,11 @@
+ 
+ var xmlQueryTag = regexp.MustCompile(`</?(` + xmlQueryName + `)(?:[ \t\r\n]+` + xmlQueryName + `[ \t\r\n]*=[ \t\r\n]*(?:"[^"<]*"|'[^'<]*'))*[ \t\r\n]*/?>`)
+ 
++// Decode only the named HTML angle entities used to display literal markup.
++// This view is for XML comparison only: original content and BM25 stay intact.
++// Mixed-case entities and ampersand/double encodings retain their own meaning.
++const xmlElementComparisonSQL = `replace(replace(replace(replace(e.content, '&lt;', '<'), '&gt;', '>'), '&LT;', '<'), '&GT;', '>')`
++
+ // keywordStructuralPreference preserves query-declared XML elements and whole
+ // technical identifiers without narrowing the broad lexical fallback. Multiple
+ // declarations are a conjunction within a candidate chunk. XML names remain
+@@ -1027,7 +1032,7 @@
+ 		if len(seen) > 32 {
+ 			return "0", nil
+ 		}
+-		clauses = append(clauses, "(e.content GLOB ? OR e.content GLOB ?)")
++		clauses = append(clauses, "("+xmlElementComparisonSQL+" GLOB ? OR "+xmlElementComparisonSQL+" GLOB ?)")
+ 		args = append(args, "*<"+name+"[ \t\r\n/>]*", "*</"+name+"[ \t\r\n>]*")
+ 	}
+ 	for _, name := range technicalQueryIdentifiers(query) {

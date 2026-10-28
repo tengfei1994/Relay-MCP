@@ -1,11 +1,11 @@
 import type { ContextPackIntent } from "./context-pack.js";
 import { searchKnowledge, type KnowledgeSearchResult } from "./retriever.js";
 import type { KnowledgeStore } from "./store.js";
-import { ConfirmedMemoryService } from "./confirmed-memory.js";
 
 export interface RelayContextSourceInput {
   store: KnowledgeStore;
   userId: number;
+  workSessionId?: string;
   projectId: string;
   query: string;
   intent?: ContextPackIntent;
@@ -24,6 +24,7 @@ export async function loadRelayContextSources(input: RelayContextSourceInput): P
   const query = [input.query, input.intent?.objective, ...(input.intent?.actions ?? [])].filter((value): value is string => Boolean(value?.trim())).join(" ").trim() || "knowledge";
   const requestBase = {
     userId: input.userId,
+    workSessionId: input.workSessionId,
     projectId: input.projectId,
     query,
     limit: Math.max(1, Math.min(100, input.limit)),
@@ -39,11 +40,5 @@ export async function loadRelayContextSources(input: RelayContextSourceInput): P
     searchKnowledge(input.store, { ...requestBase, kinds: ["fact"] }),
   ]);
   const degraded = confirmed.degraded || candidates.degraded || facts.degraded ? { relayMemory: "fts_only" } : undefined;
-  const memories = new ConfirmedMemoryService(input.store).list({ actorId: input.userId, projectId: input.projectId, environment: input.intent?.environment, limit: input.limit });
-  const confirmedMemoryResults = memories.map((memory) => ({
-    id: memory.id, kind: "confirmed_memory", memoryType: memory.type, title: memory.title, summary: memory.statement, score: 1, lifecycle: "confirmed", versionMatch: true,
-    matchReasons: ["confirmed memory"], applicability: { environment: memory.scope.environment }, evidenceRefs: memory.evidenceRefs,
-    scope: { scopeType: memory.scope.scopeType, scopeKey: memory.scope.scopeKey, visibility: memory.scope.visibility, specificity: memory.scope.scopeType === "environment" ? 5 : 4 },
-  }));
-  return { confirmedKnowledge: confirmedMemoryResults, candidates: candidates.results.filter((item) => item.kind === "candidate"), currentFacts: facts.results.filter((item) => item.kind === "fact"), degraded };
+  return { confirmedKnowledge: confirmed.results.filter((item) => item.kind === "confirmed_memory"), candidates: candidates.results.filter((item) => item.kind === "candidate"), currentFacts: facts.results.filter((item) => item.kind === "fact"), degraded };
 }

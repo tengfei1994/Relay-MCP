@@ -1,102 +1,50 @@
-# Managed Knowledge Engine: Memory Model
+# Relay-managed Knowledge Engine Design (2026-10-25)
 
-## Intent
+User direction: complete true WeKnora integration and replacement, reuse Relay models and deployment, no separately operated WeKnora; reopen any issues without acceptance evidence and close only after real E2E.
 
-Relay's durable memory must represent what happened in a work session, what
-was observed, what is only a candidate interpretation, and what a reviewer has
-confirmed. The product model is therefore:
+## Scope and decisions
+- Keep Relay as the only UI/MCP/auth boundary. Work Sessions, memory, Evidence, ACL, version bindings, publication and audit stay Relay-owned.
+- Replace Product document body/chunk/index/search and Wiki backend with real Tencent/WeKnora v0.8.3, pinned to its release commit. Use upstream Lite mode as an internal supervised process (Go, SQLite vector/FTS, in-process tasks). No second web frontend, PG/Redis stack or user-managed WeKnora credentials. This is an implementation choice under the approved integration boundary.
+- Alternatives considered: external separately administered WeKnora contradicts the request; copying/reimplementing its capabilities creates a fork and does not prove upstream integration; a bundled internal Lite engine reuses the upstream code and keeps Relay the operational unit.
+- Relay installer owns versioned binary/config/migrations, private data/log/PID dirs, health/start/stop/backup. Build on separate nonproduction Linux host; production reads only until integration is verified.
+- Existing ProviderSetupService/ProviderCredentialStore and ProviderRegistry remain authoritative. An authenticated internal OpenAI-compatible model gateway resolves current Relay provider configuration on each request. Upstream receives only a scoped internal credential, never the user's model key.
+- Bootstrap a private upstream tenant/key and knowledge base idempotently. Persist engine connection/bootstrap state privately, automatic initialization from the Relay provider selection. New model index versions create a new binding; never mix dimensions or silently acknowledge a pending reindex.
+- Route existing knowledge_search/get and Product Web search/read through the selected Product backend. Memory remains local. During explicit migration only, local Product data remains readable; after publish no silent fallback to old Product FTS.
+- Relay publication/scope filters are enforced before request and on returned document IDs. Include project/environment/version/solution/module/language; hydrate source locator/hash from Relay mappings when upstream omits metadata.
+- Keep upstream parse/index state separate from Relay staged/published lifecycle. Publish only successfully parsed documents, store real chunk IDs, make retry idempotent and failure reports bounded.
+- Wiki pages/revisions/search use upstream Wiki APIs; Relay enforces ACL, source refs and published/deprecated visibility, retains immutable audit. Preserve old local pages for explicit migration; do not present SQLite CRUD as upstream Wiki.
+- Real E2E uses actual Lite process and configured remote embedding/LLM with a bounded fixture initially, then available representative SampleManager data. Mock tests remain unit tests, never release proof.
 
-`Work Session / IntentEnvelope -> Evidence -> Observation -> Candidate Insight -> Confirmed Memory`
+## Acceptance
+1. One Relay deployment entry point installs/starts/stops/health-checks engine, restart preserves data, backup restores a nonproduction instance.
+2. Actual upstream parsing -> embedding via Relay gateway -> index -> published search -> source read works; recorded provider/model/dimension and real chunk IDs.
+3. Token rotation/disable enforced at gateway; scope and authentication failures cannot broaden search, expose credentials or trigger local fallback.
+4. Actual Wiki create/search/read/edit/diff/rollback/source navigation passes through Relay API/UI.
+5. Existing MCP/API contracts work across switch/rollback; evidence/memory unchanged, staged/deprecated/foreign environment excluded.
+6. Full tests/build, real E2E logs, IDs, request metrics and sensitive-field scan recorded. Bulk document/quality claims require their own measured reports.
+7. Reopened issues remain open for missing evidence, unsupported upstream operations, external model limitations or unverified scale.
 
-The arrows describe provenance, not a mandatory promotion pipeline. A
-Candidate Insight never becomes default context merely because it exists or is
-reviewed. A Playbook is an independently approved executable operation plan.
+## Long-term memory model
 
-## Goals
+Relay's durable memory is separate from the Product and Wiki planes. Its
+objects are Work Session / IntentEnvelope, Evidence, Observation, Candidate
+Insight, and Confirmed Memory. These relationships describe provenance, not a
+mandatory promotion pipeline; Candidate Insight is never default context and
+Playbook is an independently approved executable operation plan.
 
-- Keep `WorkSession` and `IntentEnvelope` as the scope and intent boundary.
-- Restrict Candidate Insight kinds to `fact | decision | case | pattern`.
-- Store Confirmed Memory as a distinct typed entity with kinds `Fact | Decision | Case | Pattern`.
-- Require every Confirmed Memory to reference Evidence, scope, source, confirmer,
-  confirmation time, and an audit record.
-- Make default retrieval and Context Pack candidate-free and Playbook-free.
-- Preserve read access to legacy Case/Pattern/Playbook rows without writing new
-  lifecycle semantics to those tables.
-- Keep Product Knowledge, Wiki, and WeKnora retrieval as separate planes.
+Candidate Insight is restricted to `fact | decision | case | pattern`.
+Confirmed Memory is a distinct typed entity with `Fact | Decision | Case |
+Pattern`. Each Confirmed Memory stores Evidence references, project and
+environment scope, source, confirmer, confirmation time, and audit metadata.
+The details schema is discriminated: Fact has subject/value, Decision has
+rationale/alternatives, Case has symptoms/root cause/resolution/verification,
+and Pattern has applicability/signals/exceptions. Types are immutable and
+cannot be implicitly converted.
 
-## Non-goals and anti-goals
-
-This change does not redesign Product Knowledge ingestion, Wiki revisioning, or
-WeKnora provider behavior. It does not delete or rewrite legacy rows, and it
-does not auto-approve or execute Playbooks. It must not present a linear
-Evidence-to-Playbook lifecycle as the primary UI.
-
-## Approaches considered
-
-1. **Incremental compatibility (chosen).** Add a `knowledge_confirmed_memories`
-   table, typed domain unions, and new retrieval/DTO paths. Legacy tables remain
-   readable through an adapter and are never targets of new Candidate promotion.
-   This bounds migration risk while allowing existing data to remain useful.
-2. **Table replacement.** Rename and rewrite all legacy projections in place.
-   This gives a smaller long-term schema but makes old database reads and rollback
-   substantially riskier.
-3. **Facade only.** Rename UI and DTOs while continuing to persist Case/Pattern/
-   Playbook. This fails the requirement that new writes stop using the old linear
-   semantics and cannot enforce Candidate exclusion from default context.
-
-## Domain model
-
-`CandidateInsight` is a draft analysis attached to a Work Session. Its stable
-fields are `id`, `workSessionId`, `projectId`, `kind`, `statement`, `whyProposed`,
-`evidenceRefs`, `intentRefs`, `reuseBoundary`, `status`, `generatedBy`, and
-creation/update timestamps. `kind` is a strict discriminated union of the four
-candidate kinds.
-
-`ConfirmedMemory` is independent of Candidate Insight. Common fields are
-`id`, `type`, `title`, `statement`, `details`, `projectId`, `environment`,
-`scopeType`, `scopeKey`, `visibility`, `evidenceRefs`, `source`, `confirmedBy`,
-`confirmedAt`, `createdAt`, `updatedAt`, and `audit`. `details` is validated by
-the discriminant: Fact has a subject/value, Decision has rationale and
-alternatives, Case has symptoms/root cause/resolution/verification, and Pattern
-has applicability/signals/exceptions. No implicit conversion between these
-types is allowed.
-
-Playbooks are stored and reviewed as `Approved Operation` records. They are
-not a Confirmed Memory type and do not appear in the default memory list.
-
-## Persistence and migration
-
-Migration `039-confirmed-memory` adds the new table and indexes. Evidence links
-use the existing `knowledge_entity_evidence` table with entity type
-`confirmed_memory`; the table also stores serialized source, scope, and audit
-metadata so each record is self-contained and auditable. Existing legacy rows
-remain untouched. Legacy DTOs and document routes remain readable, but never
-return those rows as new Confirmed Memory writes.
-
-## Review, promotion, and retrieval
-
-Candidate review actions remain explicit and reasoned. Confirm marks a
-Candidate Insight as reviewed; Promote requires a target among the four
-Confirmed Memory types and creates exactly one typed memory, carrying verified
-Evidence and scope. Reject and edit never create memory. A default search or
-Context Pack queries only confirmed memories with visible Evidence and matching
-project/environment/ACL. Candidate results require an explicit candidate filter;
-Playbooks require an explicit approved-operation filter.
-
-## API, MCP, and UI
-
-HTTP and MCP expose `candidate-insight` and `confirmed-memory` DTOs with the
-same discriminated types. Legacy `/knowledge/documents` and resource URIs stay
-readable for old clients. The UI's primary workspace is Memory with separate
-Sessions, Evidence, Observations, Candidate Insights, and Confirmed Memory
-views. Confirmed Memory can filter Fact/Decision/Case/Pattern. Approved
-Operations is a separate Playbook area. Details show type, status, Evidence,
-scope, source, confirmer, confirmation time, and audit history. The old arrow
-pipeline is removed from primary navigation.
-
-## Verification
-
-Regression coverage must prove strict Candidate kinds, all four Confirmed
-Memory confirmations and searches, Candidate exclusion from default context,
-Evidence/ACL/project/environment isolation, legacy read compatibility, new UI
-navigation, and unchanged Product Knowledge/Wiki/WeKnora routes.
+Migration `047-confirmed-memory` adds the additive confirmed-memory table and
+indexes. Legacy Case/Pattern/Playbook rows remain readable, while new
+Candidate promotion writes only Confirmed Memory. Default retrieval and
+Context Pack exclude Candidates and Playbooks and enforce Evidence ACL,
+project, and environment isolation. The Memory workspace presents Sessions,
+Evidence, Observations, Candidate Insights, and Confirmed Memory separately;
+Approved Operations remains the independent Playbook area.

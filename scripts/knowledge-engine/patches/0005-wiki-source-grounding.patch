@@ -1,0 +1,258 @@
+--- a/internal/application/service/wiki_ingest.go
++++ b/internal/application/service/wiki_ingest.go
+@@ -2604,7 +2604,7 @@
+ 		Merges map[string]string `json:"merges"`
+ 	}
+ 	if err := json.Unmarshal([]byte(dedupeJSON), &dedupeResult); err != nil {
+-		logger.Warnf(ctx, "wiki ingest: failed to parse dedup JSON: %v\nRaw: %s", err, dedupeJSON)
++		logger.Warnf(ctx, "wiki ingest: failed to parse dedup JSON error_class=%T", err)
+ 		return stabilize()
+ 	}
+ 
+--- a/internal/application/service/wiki_ingest_cite.go
++++ b/internal/application/service/wiki_ingest_cite.go
+@@ -111,8 +111,8 @@
+ 
+ 	var result combinedExtraction
+ 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+-		logger.Warnf(ctx, "wiki ingest: failed to parse candidate slug JSON: %v\nRaw: %s", err, raw)
+-		return nil, nil, nil, fmt.Errorf("parse candidate slug JSON: %w", err)
++		logger.Warnf(ctx, "wiki ingest: failed to parse candidate slug JSON error_class=%T", err)
++		return nil, nil, nil, fmt.Errorf("parse candidate slug JSON: %T", err)
+ 	}
+ 
+ 	result.Entities, result.Concepts = s.deduplicateExtractedBatch(
+@@ -281,10 +281,16 @@
+ 		batchIdx := bi
+ 		eg.Go(func() error {
+ 			chunksXML := renderChunksXML(batch)
++			var extractionInstructions string
++			if batchCtx != nil {
++				extractionInstructions = batchCtx.ExtractionInstructions
++			}
+ 			raw, err := s.generateWithTemplate(ectx, chatModel, agent.WikiChunkCitationPrompt, map[string]string{
+-				"CandidateSlugs": candidatesXML,
+-				"ChunksXML":      chunksXML,
+-				"Language":       lang,
++				"CandidateSlugs":     candidatesXML,
++				"ChunksXML":          chunksXML,
++				"Language":           lang,
++				"CustomInstructions": extractionInstructions,
++				"InstructionScope":   "wiki_extraction",
+ 			})
+ 			if err != nil {
+ 				logger.Warnf(ectx, "wiki ingest: citation batch %d failed: %v", batchIdx, err)
+@@ -294,7 +300,7 @@
+ 
+ 			var parsed citationBatchResult
+ 			if jerr := json.Unmarshal([]byte(raw), &parsed); jerr != nil {
+-				logger.Warnf(ectx, "wiki ingest: citation batch %d parse failed: %v\nRaw: %s", batchIdx, jerr, raw)
++				logger.Warnf(ectx, "wiki ingest: citation batch %d parse failed error_class=%T", batchIdx, jerr)
+ 				return nil
+ 			}
+ 
+@@ -314,7 +320,7 @@
+ 				for _, handle := range handleList {
+ 					realID, known := batch.handles.Resolve(handle)
+ 					if !known {
+-						logger.Warnf(ectx, "wiki ingest: citation batch %d referenced unknown chunk handle %q for slug %s", batchIdx, handle, slug)
++						logger.Warnf(ectx, "wiki ingest: citation batch %d rejected unknown chunk handle", batchIdx)
+ 						continue
+ 					}
+ 					set[realID] = true
+@@ -331,6 +337,11 @@
+ 						real = append(real, id)
+ 					}
+ 				}
++				// Generated Details are not source evidence. An item whose
++				// handles all failed validation must not become a new page.
++				if len(real) == 0 {
++					continue
++				}
+ 				ns.SourceChunks = real
+ 				newSlugsAll = append(newSlugsAll, ns)
+ 			}
+@@ -363,8 +374,8 @@
+ // resolveCitedChunks loads the content of every chunk referenced by the
+ // given additions in a single batched query per knowledge ID, returning a
+ // map[chunkID]content. Missing / out-of-tenant chunk IDs are silently skipped
+-// (logged at warn level) so the Reduce phase can gracefully fall back to the
+-// Details paraphrase.
++// (logged at warn level). Reduce rejects incomplete source evidence rather
++// than substituting a generated Details paraphrase.
+ func (s *wikiIngestService) resolveCitedChunks(
+ 	ctx context.Context,
+ 	tenantID uint64,
+@@ -456,7 +467,7 @@
+ // mergeCitationsIntoItems backfills SourceChunks on every extractedItem from
+ // the citation map, and augments the item slices with any genuinely new slugs
+ // the citation pass discovered. Items whose slug is not in citations are left
+-// untouched — Reduce will fall back to Description/Details for them.
++// untouched — Reduce rejects them if raw source evidence is unavailable.
+ //
+ // Returns the updated entity and concept slices plus a count of candidates
+ // that ended with zero citations (for observability).
+--- a/internal/application/service/wiki_ingest_batch.go
++++ b/internal/application/service/wiki_ingest_batch.go
+@@ -1412,8 +1412,8 @@
+ 	oldPageSlugs := s.getExistingPageSlugsForKnowledge(ctx, payload.KnowledgeBaseID, knowledgeID)
+ 
+ 	// Pass 0: lightweight candidate slug extraction (skeleton only).
+-	// On failure we fall back to the legacy single-shot extractor so the doc
+-	// still gets ingested, just without chunk-level citations.
++	// On failure the legacy extractor can still supply usable candidates;
++	// both paths must then attach raw chunk citations before reduce.
+ 	var (
+ 		extractedEntities []extractedItem
+ 		extractedConcepts []extractedItem
+@@ -1487,13 +1487,10 @@
+ 		"content_chars":   utf8.RuneCountInString(content),
+ 		"extracted_slugs": len(summaryExtractedPages),
+ 	})
+-	var classifySpan *Span
+-	if !pass0Failed {
+-		classifySpan = s.tracker().BeginSubSpan(ctx, wikiSpan, "postprocess.wiki.classify", types.SpanKindSubSpan, types.JSONMap{
+-			"chunks":     len(chunks),
+-			"candidates": len(extractedEntities) + len(extractedConcepts),
+-		})
+-	}
++	classifySpan := s.tracker().BeginSubSpan(ctx, wikiSpan, "postprocess.wiki.classify", types.SpanKindSubSpan, types.JSONMap{
++		"chunks":     len(chunks),
++		"candidates": len(extractedEntities) + len(extractedConcepts),
++	})
+ 
+ 	var wg sync.WaitGroup
+ 	wg.Add(2)
+@@ -1519,13 +1516,8 @@
+ 	}()
+ 	go func() {
+ 		defer wg.Done()
+-		// Skip citation pass when Pass 0 has fallen back to the legacy path —
+-		// the legacy output already contains paraphrased Details, so chunk
+-		// citations would be redundant and we'd spend LLM calls for nothing.
+-		if pass0Failed {
+-			citations = map[string][]string{}
+-			return
+-		}
++		// Legacy extraction yields candidates, not source evidence. It uses
++		// the same citation pass so reduce never relies on generated Details.
+ 		candidatesXML := renderCandidateSlugsXML(extractedEntities, extractedConcepts)
+ 		citations, newSlugs, batchCount = s.classifyChunkCitations(ctx, chatModel, candidatesXML, chunks, lang, batchCtx)
+ 		s.tracker().EndSpan(ctx, classifySpan, types.JSONMap{
+@@ -1538,8 +1530,8 @@
+ 	}()
+ 	wg.Wait()
+ 
+-	// Merge citations back into the item structs (non-failing; items without
+-	// citations simply keep their Description+Details fallback).
++	// Merge citations back into the item structs. Uncited items remain
++	// distinguishable and will fail closed at the reduce evidence boundary.
+ 	var uncited int
+ 	extractedEntities, extractedConcepts, uncited = mergeCitationsIntoItems(extractedEntities, extractedConcepts, citations, newSlugs)
+ 	extractedEntities, extractedConcepts = s.reclaimExtractedIdentities(
+@@ -1815,8 +1807,8 @@
+ 
+ 	var result combinedExtraction
+ 	if err := json.Unmarshal([]byte(extractionJSON), &result); err != nil {
+-		logger.Warnf(ctx, "wiki ingest: failed to parse combined extraction JSON: %v\nRaw: %s", err, extractionJSON)
+-		return nil, nil, nil, fmt.Errorf("parse combined extraction JSON: %w", err)
++		logger.Warnf(ctx, "wiki ingest: failed to parse combined extraction JSON error_class=%T", err)
++		return nil, nil, nil, fmt.Errorf("parse combined extraction JSON: %T", err)
+ 	}
+ 
+ 	// Dedup pre-filter is dispatched against the wiki page repo via
+@@ -2111,6 +2103,17 @@
+ 		sourceContextByRef := make(map[string]string)
+ 
+ 		for _, add := range additions {
++			// Missing evidence is not permission to substitute generated
++			// Description/Details. Fail before any model call or page write,
++			// preserving the old draft and the normal failed-op handling.
++			if len(add.SourceChunks) == 0 {
++				return false, affectedType, true, false, fmt.Errorf("wiki ingest: source evidence unavailable for %s", slug)
++			}
++			for _, chunkID := range add.SourceChunks {
++				if strings.TrimSpace(chunkContentByID[chunkID]) == "" {
++					return false, affectedType, true, false, fmt.Errorf("wiki ingest: source evidence incomplete for %s", slug)
++				}
++			}
+ 			cited := collectCitedChunkContent(add.SourceChunks, chunkContentByID)
+ 			// Frame the chunks with the document-level summary body so the
+ 			// editor model knows BOTH what the document is about AND what
+@@ -2130,18 +2133,12 @@
+ 					add.DocTitle, sourceCtx,
+ 				)
+ 			}
+-			if cited != "" {
+-				fmt.Fprintf(&newContentBuilder,
+-					"<document>\n<title>%s</title>\n<content>\n**%s**: %s\n\n%s\n</content>\n</document>\n\n",
+-					add.DocTitle, add.Item.Name, add.Item.Description, cited)
+-			} else {
+-				// Fallback: no citations available (legacy path, citation pass
+-				// failed, or bad chunk IDs were filtered out) — stick with
+-				// the short Details summary so the page still gets real text.
+-				fmt.Fprintf(&newContentBuilder,
+-					"<document>\n<title>%s</title>\n<content>\n**%s**: %s\n\n%s\n</content>\n</document>\n\n",
+-					add.DocTitle, add.Item.Name, add.Item.Description, add.Item.Details)
+-			}
++			// Only resolved source text belongs in the evidentiary block.
++			// Item identity already has its own page metadata; generated
++			// descriptions and summaries cannot supply additional facts.
++			fmt.Fprintf(&newContentBuilder,
++				"<document>\n<title>%s</title>\n<content>\n%s\n</content>\n</document>\n\n",
++				add.DocTitle, cited)
+ 			docTitles = appendUnique(docTitles, add.DocTitle)
+ 
+ 			for _, alias := range add.Item.Aliases {
+--- a/internal/application/service/wiki_ingest_reduce_row_guard_test.go
++++ b/internal/application/service/wiki_ingest_reduce_row_guard_test.go
+@@ -29,16 +29,22 @@
+ ) (deferred bool, err error) {
+ 	t.Helper()
+ 	model := &templateCaptureChatModel{response: modelResponse}
++	// Supply actual cited source text so these tests still exercise the
++	// page row guard after the evidence boundary rejects uncited additions.
++	chunk := citationChunk("row-guard-source", modelResponse)
++	chunk.KnowledgeID = "k-row-guard"
++	svc.chunkRepo = &citedChunkRepo{byID: map[string][]*types.Chunk{"row-guard-source": {chunk}}}
+ 	batchCtx := &WikiBatchContext{
+ 		SlugTitleMany: func(context.Context, []string) map[string]string { return nil },
+ 	}
+ 	updates := []SlugUpdate{{
+-		Slug:        slug,
+-		Type:        types.WikiPageTypeEntity,
+-		KnowledgeID: "k-row-guard",
+-		DocTitle:    "证书台账",
+-		SourceRef:   "k-row-guard|证书台账",
+-		Item:        extractedItem{Name: "证书台账", Description: "持证人员明细"},
++		Slug:         slug,
++		Type:         types.WikiPageTypeEntity,
++		KnowledgeID:  "k-row-guard",
++		DocTitle:     "证书台账",
++		SourceRef:    "k-row-guard|证书台账",
++		SourceChunks: []string{"row-guard-source"},
++		Item:         extractedItem{Name: "证书台账", Description: "持证人员明细"},
+ 	}}
+ 	_, _, _, deferred, err = svc.reduceSlugUpdates(
+ 		context.Background(), model, "kb-row-guard", slug, updates, 1, batchCtx, nil)
+--- a/internal/agent/prompts_wiki.go
++++ b/internal/agent/prompts_wiki.go
+@@ -71,14 +71,14 @@
+ 
+ <instructions>
+ 1. The FIRST line of your output MUST be: SUMMARY: {one sentence, 15-40 words, describing what this document is about — for wiki index listing}
+-2. After the SUMMARY line, write a comprehensive summary of the document in Markdown format.
++2. After the SUMMARY line, summarize only factual statements explicitly present in the document, in Markdown format. Do not add outside knowledge, inferred behavior, unstated purposes, causal explanations, or recommendations.
+ 3. Include the key facts, arguments, and conclusions.
+-4. Use proper heading hierarchy (## for sections, ### for subsections).
++4. Use sections only when justified by the source structure; a short source may need only a short paragraph or factual list.
+ 5. **Wiki-link rule**: The available_wiki_pages list above maps slugs to display names and their aliases (format: "[[slug]] = display name (Aliases: a, b)"). Whenever you mention a name or alias that matches a listed entry, you MUST write it as [[slug|display name]] (e.g. [[entity/zhong-guo|中国]]), NOT as bold (**name**) or bare [[slug]]. Use the EXACT slugs provided — do NOT invent new slugs.
+ 6. **Image rule**: If the document contains <images> tags with <image> elements, you SHOULD include the relevant images in your summary using the Markdown syntax: ![caption](url). Place the images where they are contextually relevant to the text. The URL inside ![caption](url) is an opaque token; reproduce it EXACTLY and VERBATIM, do not alter, shorten, or normalize it.
+-7. At the end, include a "## Key Takeaways" section with bullet points.
++7. A Key Takeaways section is optional; include it only when it adds distinct, explicitly supported source facts, without invented conclusions or repetition.
+ 8. Write in {{.Language}}.
+-9. Keep the summary concise but thorough (500-1500 words depending on document length).
++9. Match the amount of detail to the source. There is no minimum length: never expand a short source to fill a word target. Preserve its concrete facts, settings, qualifiers, tables, and technical identifiers without inventing context.
+ 10. **Empty content rule**: If the <content> block above is empty, contains only image references with no extracted text, or otherwise carries no substantive information, output exactly: "SUMMARY: No textual content was extractable from this document." followed by a brief note explaining that the document could not be summarised. Do NOT invent a topic, do NOT guess from any other clue.
+ </instructions>
+ 

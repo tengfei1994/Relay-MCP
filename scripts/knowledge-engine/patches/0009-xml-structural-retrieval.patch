@@ -1,0 +1,222 @@
+diff --git a/internal/application/repository/retriever/sqlite/repository.go b/internal/application/repository/retriever/sqlite/repository.go
+--- a/internal/application/repository/retriever/sqlite/repository.go
++++ b/internal/application/repository/retriever/sqlite/repository.go
+@@ -4,6 +4,7 @@
+ 	"context"
+ 	"errors"
+ 	"fmt"
++	"regexp"
+ 	"strings"
+ 	"sync"
+ 	"time"
+@@ -570,9 +571,10 @@
+ 	}
+ 
+ 	ftsQuery := sanitizeFTS5Query(params.Query)
++	structuralClause, structuralArgs := keywordXMLStructuralPreference(params.Query)
+ 
+ 	sql := `
+-		SELECT e.id, e.source_id, e.source_type, e.chunk_id,
++		SELECT ` + structuralClause + ` AS keyword_structural_match, e.id, e.source_id, e.source_type, e.chunk_id,
+ 			e.knowledge_id, e.knowledge_base_id, e.tag_id,
+ 			e.content,
+ 			(bm25(lite_embeddings_fts) * -1000000.0) AS score
+@@ -582,26 +584,27 @@
+ 		AND (e.is_enabled IS NULL OR e.is_enabled = 1)
+ 	`
+ 
+-	args := []interface{}{ftsQuery}
++	args := append(structuralArgs, ftsQuery)
+ 
+ 	for _, wp := range buildFilterWhere(params, "e") {
+ 		sql += " AND " + wp.clause
+ 		args = append(args, wp.args...)
+ 	}
+ 
+-	sql += " ORDER BY score DESC, e.chunk_id ASC, e.id ASC LIMIT ?"
++	sql += " ORDER BY keyword_structural_match DESC, score DESC, e.chunk_id ASC, e.id ASC LIMIT ?"
+ 	args = append(args, params.TopK)
+ 
+ 	type ftsResult struct {
+-		ID              uint
+-		SourceID        string
+-		SourceType      int
+-		ChunkID         string
+-		KnowledgeID     string
+-		KnowledgeBaseID string
+-		TagID           string
+-		Content         string
+-		Score           float64
++		KeywordStructuralMatch bool
++		ID                     uint
++		SourceID               string
++		SourceType             int
++		ChunkID                string
++		KnowledgeID            string
++		KnowledgeBaseID        string
++		TagID                  string
++		Content                string
++		Score                  float64
+ 	}
+ 
+ 	var rows []ftsResult
+@@ -622,16 +625,17 @@
+ 			i+1, row.ChunkID, score, row.Content)
+ 
+ 		items[i] = &types.IndexWithScore{
+-			ID:              fmt.Sprintf("%d", row.ID),
+-			SourceID:        row.SourceID,
+-			SourceType:      types.SourceType(row.SourceType),
+-			ChunkID:         row.ChunkID,
+-			KnowledgeID:     row.KnowledgeID,
+-			KnowledgeBaseID: row.KnowledgeBaseID,
+-			TagID:           row.TagID,
+-			Content:         row.Content,
+-			Score:           score,
+-			MatchType:       types.MatchTypeKeywords,
++			ID:                     fmt.Sprintf("%d", row.ID),
++			SourceID:               row.SourceID,
++			SourceType:             types.SourceType(row.SourceType),
++			ChunkID:                row.ChunkID,
++			KnowledgeID:            row.KnowledgeID,
++			KnowledgeBaseID:        row.KnowledgeBaseID,
++			TagID:                  row.TagID,
++			Content:                row.Content,
++			Score:                  score,
++			MatchType:              types.MatchTypeKeywords,
++			KeywordStructuralMatch: row.KeywordStructuralMatch,
+ 		}
+ 	}
+ 
+@@ -992,3 +996,41 @@
+ 	// a UUID fragment.
+ 	return "content : (" + strings.Join(parts, " OR ") + ")"
+ }
++
++// Recognize explicit element syntax, including quoted attributes. A comparison
++// such as a < b > c and malformed/unquoted attributes do not declare an element.
++const xmlQueryName = `[\p{L}_][\p{L}\p{N}\p{M}_.:\-]*`
++
++var xmlQueryTag = regexp.MustCompile(`</?(` + xmlQueryName + `)(?:[ \t\r\n]+` + xmlQueryName + `[ \t\r\n]*=[ \t\r\n]*(?:"[^"<]*"|'[^'<]*'))*[ \t\r\n]*/?>`)
++
++// keywordXMLStructuralPreference preserves the intent of explicit XML element
++// queries without narrowing the broad lexical fallback. Multiple elements are
++// a conjunction within a candidate chunk. SQL values are always bound; names,
++// namespaces and case are preserved. GLOB's name boundary prevents NodeExtra
++// from matching Node. No index migration or source rewriting is needed.
++func keywordXMLStructuralPreference(query string) (string, []interface{}) {
++	var clauses []string
++	var args []interface{}
++	seen := make(map[string]bool)
++	for _, match := range xmlQueryTag.FindAllStringSubmatch(query, -1) {
++		name := match[1]
++		if strings.HasPrefix(match[0], "</") && strings.TrimSpace(strings.TrimPrefix(match[0], "</"+name)) != ">" {
++			continue
++		}
++		if seen[name] {
++			continue
++		}
++		seen[name] = true
++		// Keep preference evaluation bounded for adversarially long queries. When
++		// the bound is exceeded, preserve the ordinary lexical search in full.
++		if len(seen) > 32 {
++			return "0", nil
++		}
++		clauses = append(clauses, "(e.content GLOB ? OR e.content GLOB ?)")
++		args = append(args, "*<"+name+"[ \t\r\n/>]*", "*</"+name+"[ \t\r\n>]*")
++	}
++	if len(clauses) == 0 {
++		return "0", nil
++	}
++	return "CASE WHEN " + strings.Join(clauses, " AND ") + " THEN 1 ELSE 0 END", args
++}
+diff --git a/internal/application/service/knowledgebase_search_fusion.go b/internal/application/service/knowledgebase_search_fusion.go
+--- a/internal/application/service/knowledgebase_search_fusion.go
++++ b/internal/application/service/knowledgebase_search_fusion.go
+@@ -74,7 +74,7 @@
+ 		for _, list := range keywordLists {
+ 			rescaleUnboundedScores(list)
+ 		}
+-		result := deduplicateByScore(flattenLists(keywordLists))
++		result := deduplicateWithComparator(flattenLists(keywordLists), sortKeywordByScoreDesc)
+ 		logger.Infof(ctx, "Result count after deduplication: %d", len(result))
+ 		return result
+ 	}
+@@ -94,13 +94,30 @@
+ 	return cmp.Compare(a.ChunkID, b.ChunkID)
+ }
+ 
++// sortKeywordByScoreDesc preserves explicit element intent before BM25. It is
++// used only while ranking keyword candidates; final fused scores and vector
++// ranks continue to use sortByScoreDesc.
++func sortKeywordByScoreDesc(a, b *types.IndexWithScore) int {
++	if a.KeywordStructuralMatch != b.KeywordStructuralMatch {
++		if a.KeywordStructuralMatch {
++			return -1
++		}
++		return 1
++	}
++	return sortByScoreDesc(a, b)
++}
++
+ // deduplicateByScore deduplicates retrieval results by chunk ID, keeping the highest score
+ // for each chunk. Returns the results sorted by score descending.
+ // Used when only a single retriever (e.g. vector-only for FAQ) is active.
+ func deduplicateByScore(results []*types.IndexWithScore) []*types.IndexWithScore {
++	return deduplicateWithComparator(results, sortByScoreDesc)
++}
++
++func deduplicateWithComparator(results []*types.IndexWithScore, compare func(*types.IndexWithScore, *types.IndexWithScore) int) []*types.IndexWithScore {
+ 	chunkInfoMap := make(map[string]*types.IndexWithScore, len(results))
+ 	for _, r := range results {
+-		if existing, exists := chunkInfoMap[r.ChunkID]; !exists || r.Score > existing.Score {
++		if existing, exists := chunkInfoMap[r.ChunkID]; !exists || compare(r, existing) < 0 {
+ 			chunkInfoMap[r.ChunkID] = r
+ 		}
+ 	}
+@@ -108,7 +125,7 @@
+ 	for _, info := range chunkInfoMap {
+ 		deduped = append(deduped, info)
+ 	}
+-	slices.SortFunc(deduped, sortByScoreDesc)
++	slices.SortFunc(deduped, compare)
+ 	return deduped
+ }
+ 
+@@ -176,7 +193,7 @@
+ 	maxRRF := (vectorWeight + keywordWeight) / float64(rrfK+1)
+ 
+ 	vectorRanks := bestRanks(vectorLists)
+-	keywordRanks := bestRanks(keywordLists)
++	keywordRanks := bestRanksWithComparator(keywordLists, sortKeywordByScoreDesc)
+ 
+ 	// Collect all unique chunks — prefer vector result's metadata for each chunk
+ 	chunkInfoMap := make(map[string]*types.IndexWithScore)
+@@ -223,9 +240,13 @@
+ // bestRanks returns each chunk's best 1-based rank across lists, ranking every
+ // list on its own by score (a chunk repeated in a list keeps its best score).
+ func bestRanks(lists [][]*types.IndexWithScore) map[string]int {
++	return bestRanksWithComparator(lists, sortByScoreDesc)
++}
++
++func bestRanksWithComparator(lists [][]*types.IndexWithScore, compare func(*types.IndexWithScore, *types.IndexWithScore) int) map[string]int {
+ 	ranks := make(map[string]int)
+ 	for _, list := range lists {
+-		for i, r := range deduplicateByScore(list) {
++		for i, r := range deduplicateWithComparator(list, compare) {
+ 			if current, ok := ranks[r.ChunkID]; !ok || i+1 < current {
+ 				ranks[r.ChunkID] = i + 1
+ 			}
+diff --git a/internal/types/retriever.go b/internal/types/retriever.go
+--- a/internal/types/retriever.go
++++ b/internal/types/retriever.go
+@@ -92,6 +92,9 @@
+ 	TagID string
+ 	// Score
+ 	Score float64
++	// KeywordStructuralMatch records explicit XML element evidence for keyword
++	// ranking only. Raw BM25 remains in Score; fusion output uses its own rank.
++	KeywordStructuralMatch bool `json:"-"`
+ 	// VectorScore is a vector hit's similarity as its engine reported it.
+ 	// Fusion replaces Score with a rank-based one; this keeps the evidence of
+ 	// how close the vector actually was, which reranking weighs for images.

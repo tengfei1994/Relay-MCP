@@ -1,0 +1,78 @@
+diff --git a/internal/application/repository/retriever/sqlite/repository.go b/internal/application/repository/retriever/sqlite/repository.go
+--- a/internal/application/repository/retriever/sqlite/repository.go
++++ b/internal/application/repository/retriever/sqlite/repository.go
+@@ -589,7 +589,7 @@
+ 		args = append(args, wp.args...)
+ 	}
+ 
+-	sql += " ORDER BY score DESC LIMIT ?"
++	sql += " ORDER BY score DESC, e.chunk_id ASC, e.id ASC LIMIT ?"
+ 	args = append(args, params.TopK)
+ 
+ 	type ftsResult struct {
+diff --git a/internal/application/service/chat_pipeline/context_images_test.go b/internal/application/service/chat_pipeline/context_images_test.go
+--- a/internal/application/service/chat_pipeline/context_images_test.go
++++ b/internal/application/service/chat_pipeline/context_images_test.go
+@@ -152,7 +152,7 @@
+ 		expanded := (&PluginMerge{chunkRepo: repo}).resolveParentChunks(
+ 			t.Context(), &types.ChatManage{}, []*types.SearchResult{r})
+ 		caption := withImage(&types.SearchResult{
+-			ID: "copy", KnowledgeBaseID: "other-kb", Content: expanded[0].Content,
++			ID: "copy", KnowledgeID: "doc", KnowledgeBaseID: "other-kb", Content: expanded[0].Content,
+ 			ChunkType: string(types.ChunkTypeImageCaption),
+ 		}, "resource://wrong")
+ 		deduped := removeDuplicateResults([]*types.SearchResult{caption, expanded[0]})
+diff --git a/internal/application/service/chat_pipeline/search.go b/internal/application/service/chat_pipeline/search.go
+--- a/internal/application/service/chat_pipeline/search.go
++++ b/internal/application/service/chat_pipeline/search.go
+@@ -194,6 +194,8 @@
+ 		}
+ 		sig := buildContentSignature(r.Content)
+ 		if sig != "" {
++			// Equal content in different manuals remains independently citable.
++			sig = r.KnowledgeID + "\x00" + sig
+ 			if firstChunk, exists := contentSig[sig]; exists {
+ 				logger.Debugf(context.Background(),
+ 					"Dedup: chunk %s removed due to content signature (dup of %s, sig prefix: %.50s...)",
+@@ -214,8 +216,8 @@
+ }
+ 
+ // removePartialOverlaps drops chunks whose content is largely contained within
+-// a higher-scored chunk, even across different knowledge sources. This catches
+-// cross-KB duplicates and near-duplicates that exact-signature dedup misses.
++// a higher-scored chunk of the same knowledge source. Distinct sources retain
++// their independently citable evidence even when their passages overlap.
+ //
+ // Two thresholds are used:
+ //   - Substring containment: if the normalized short text is a literal substring
+@@ -275,6 +277,10 @@
+ 			}
+ 
+ 			a, b := entries[i], entries[j]
++			// Similar passages from distinct sources are separate citation evidence.
++			if a.result.KnowledgeID != b.result.KnowledgeID {
++				continue
++			}
+ 
+ 			shortIdx, longIdx := i, j
+ 			if len(a.norm) > len(b.norm) {
+diff --git a/internal/application/service/knowledgebase_search_fusion.go b/internal/application/service/knowledgebase_search_fusion.go
+--- a/internal/application/service/knowledgebase_search_fusion.go
++++ b/internal/application/service/knowledgebase_search_fusion.go
+@@ -1,6 +1,7 @@
+ package service
+ 
+ import (
++	"cmp"
+ 	"context"
+ 	"math"
+ 	"slices"
+@@ -90,7 +91,7 @@
+ 	} else if a.Score < b.Score {
+ 		return 1
+ 	}
+-	return 0
++	return cmp.Compare(a.ChunkID, b.ChunkID)
+ }
+ 
+ // deduplicateByScore deduplicates retrieval results by chunk ID, keeping the highest score

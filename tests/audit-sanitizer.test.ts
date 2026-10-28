@@ -59,3 +59,20 @@ test("audit sanitizer summarizes circular structures and BigInt instead of throw
   assert.deepEqual(sanitized.total, { bigint: "9007199254740993" });
   assert.doesNotThrow(() => JSON.stringify(sanitized));
 });
+
+test("generic audit recursively redacts explicit hidden-reasoning keys while retaining ordinary unknown business fields", () => {
+  const hidden = "SYNTHETIC_HIDDEN_REASONING_MARKER";
+  const keys = ["hiddenReasoning", "hidden_reasoning", "reasoning", "reasoning_content", "reasoningContent", "chain_of_thought", "chainOfThought", "thinking", "scratchpad", "internal_monologue", "reflection", "deliberation", "thoughts", "cot"];
+  const nested = Object.fromEntries(keys.map(key => [key, hidden]));
+  const input = { ordinaryUnknown: "business-selector", reasoningSummary: "User-visible conclusion", analysisMode: "source", nested, rows: [{ nested }, { value: [{ hiddenReasoning: { text: hidden } }, { chain_of_thought: [hidden] }], businessFlag: true }] };
+  const before = structuredClone(input), sanitized = sanitizeAuditArguments(input) as any;
+  assert.equal(JSON.stringify(sanitized).includes(hidden), false, "hidden values must not persist at any object/array depth");
+  for (const key of keys) {
+    assert.deepEqual(sanitized.nested[key], { redacted: true, length: hidden.length });
+    assert.deepEqual(sanitized.rows[0].nested[key], { redacted: true, length: hidden.length });
+  }
+  assert.deepEqual(sanitized.rows[1].value[0].hiddenReasoning, { redacted: true, length: JSON.stringify({ text: hidden }).length });
+  assert.deepEqual(sanitized.rows[1].value[1].chain_of_thought, { redacted: true, length: JSON.stringify([hidden]).length });
+  assert.equal(sanitized.ordinaryUnknown, input.ordinaryUnknown); assert.equal(sanitized.reasoningSummary, input.reasoningSummary); assert.equal(sanitized.analysisMode, "source"); assert.equal(sanitized.rows[1].businessFlag, true);
+  assert.deepEqual(input, before);
+});

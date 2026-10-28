@@ -10,12 +10,15 @@ import {
   CandidateInsightCompiler,
   FALLBACK_GENERATED_BY,
   type CandidateInsight,
+  type CandidateInsightKind,
   type CandidateInsightProviderRequest,
   type ManagedCandidateInsightProvider,
 } from "../src/knowledge/candidate-insight.ts";
 import { CandidateInsightReviewService } from "../src/knowledge/candidate-review.ts";
 import { CandidateInsightWorker, enqueueCandidateInsight } from "../src/knowledge/candidate-worker.ts";
 import { WorkSessionService, type IntentEnvelope } from "../src/knowledge/work-session.ts";
+import { loadRelayContextSources } from "../src/knowledge/context-sources.ts";
+import { searchKnowledge } from "../src/knowledge/retriever.ts";
 
 const intent: IntentEnvelope = { actions: ["diagnose", "capture"], phase: "diagnosis", objective: "Find root cause", constraints: [], acceptanceCriteria: ["Evidence linked"], projectId: "p1", risk: "read_only", knowledgeMode: "retrieve_and_capture", actorId: 7 };
 
@@ -26,8 +29,8 @@ class FakeManagedProvider implements ManagedCandidateInsightProvider {
   complete(request: CandidateInsightProviderRequest): Promise<string> { return Promise.resolve(this.handler(request.prompt, request)); }
 }
 
-function validOutput(refs: string[]): string {
-  return JSON.stringify({ kind: "fact", statement: "Root cause found", whyProposed: "Evidence supports it", evidenceRefs: refs, intentRefs: [], unknowns: [], reuseBoundary: { scope: "project" }, confidence: 0.7, confirmedFacts: ["Pump stopped"], observedBehavior: [], hypothesis: "Power supply fault" });
+function validOutput(refs: string[], kind: CandidateInsightKind = "fact"): string {
+  return JSON.stringify({ kind, statement: "Root cause found", whyProposed: "Evidence supports it", evidenceRefs: refs, intentRefs: [], unknowns: [], reuseBoundary: { scope: "project" }, confidence: 0.7, confirmedFacts: ["Pump stopped"], observedBehavior: ["Pump stopped"], hypothesis: "Power supply fault", reusableStatement: { statement: "Replace the power supply" } });
 }
 
 interface Fixture {
@@ -38,15 +41,15 @@ interface Fixture {
   review: CandidateInsightReviewService;
 }
 
-function withFixture(fn: (fixture: Fixture) => Promise<void> | void): Promise<void> {
+function withFixture(fn: (fixture: Fixture) => Promise<void> | void, intentOverrides: Partial<IntentEnvelope> = {}, kind: CandidateInsightKind = "fact"): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "relay-insight-review-"));
   const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db"), evidenceRoot: join(root, "evidence") });
   store.grantAcl("p1", 7, true);
   const clock = () => new Date("2026-10-23T00:00:00.000Z");
   return Promise.resolve((async () => {
-    const session = new WorkSessionService(store, clock).open({ actorId: 7, idempotencyKey: randomUUID(), intent });
+    const session = new WorkSessionService(store, clock).open({ actorId: 7, idempotencyKey: randomUUID(), intent: { ...intent, ...intentOverrides } });
     const evidence = new EvidenceStore(store, store.evidenceRoot!).put({ content: Buffer.from("pump stopped at 12:00", "utf8"), mimeType: "text/plain", sourceKind: "log", projectId: "p1", locator: `test:${randomUUID()}` });
-    const compiler = new CandidateInsightCompiler(store, new FakeManagedProvider(() => validOutput([evidence.id])), clock);
+    const compiler = new CandidateInsightCompiler(store, new FakeManagedProvider(() => validOutput([evidence.id], kind)), clock);
     const insight = await compiler.compile({ actorId: 7, sessionId: session.id, evidenceRefs: [evidence.id], context: { statement: "Root cause found" } });
     assert.equal(insight.persisted, true);
     await fn({ store, sessionId: session.id, evidenceId: evidence.id, insight, review: new CandidateInsightReviewService(store, clock) });
@@ -167,7 +170,7 @@ test("Worker provider failure degrades to fallback without failing the job", () 
 test("Worker retries validation failures and stops after the attempt cap", () => withWorkerStore(async (store, sessionId) => {
   const enqueued = enqueueCandidateInsight(store, { actorId: 7, sessionId, evidenceRefs: ["missing-evidence"], context: {} });
   const compiler = new CandidateInsightCompiler(store, new FakeManagedProvider(() => validOutput([])));
-  const worker = new CandidateInsightWorker(store, compiler, { maxAttempts: 2 });
+  const worker = new CandidateInsightWorker(store, compiler, { maxAttempts: 2, retryBaseMs: 0 });
   const first = await worker.runOnce();
   assert.deepEqual(first, { claimed: 1, completed: 0, failed: 0, retried: 1 });
   const second = await worker.runOnce();
@@ -182,4 +185,89 @@ test("Worker retries validation failures and stops after the attempt cap", () =>
 
 test("Enqueue requires session access", () => withWorkerStore(async (store, sessionId, evidenceId) => {
   assert.throws(() => enqueueCandidateInsight(store, { actorId: 9, sessionId, evidenceRefs: [evidenceId], context: {} }));
+}));
+
+
+test("Candidate compilation and promotion retain authoritative Session environment and product scope", () => withFixture(async ({store, insight, review}) => {
+  assert.equal(insight.reuseBoundary.projectId, "p1");
+  assert.equal(insight.reuseBoundary.environment, "nonprod");
+  assert.equal(insight.reuseBoundary.sampleManagerVersion, "21.3");
+  review.confirm({actorId:7,id:insight.id,reason:"Verified within nonproduction only"});
+  const promotion=review.promote({actorId:7,id:insight.id,target:"case",reason:"Preserve the same source scope"});
+  const saved=store.db.prepare("SELECT project_id,environment FROM knowledge_confirmed_memories WHERE id=?").get(promotion.targetId) as any;
+  assert.deepEqual(saved,{project_id:"p1",environment:"nonprod"});
+}, {environment:"nonprod",sampleManagerVersion:"21.3",solution:"pharma",module:"samples"}, "case"));
+
+test("Candidate promotion uses a trusted compile-time snapshot despite later Session changes", () => withFixture(({store, sessionId, insight, review}) => {
+  assert.equal(insight.sourceScope?.sampleManagerVersion, "21.3");
+  new WorkSessionService(store).update({actorId:7,sessionId,patch:{sampleManagerVersion:"21.4",module:"different"}});
+  store.db.prepare("UPDATE knowledge_candidate_insights SET reuse_boundary_json=? WHERE id=?").run(JSON.stringify({scope:"global",sampleManagerVersion:"99",environment:"prod"}),insight.id);
+  review.confirm({actorId:7,id:insight.id,reason:"Confirmed original evidence"});
+  const promoted=review.promote({actorId:7,id:insight.id,target:"case",reason:"Preserve captured scope"});
+  assert.deepEqual(store.db.prepare("SELECT project_id,environment FROM knowledge_confirmed_memories WHERE id=?").get(promoted.targetId),{project_id:"p1",environment:"nonprod"});
+}, {environment:"nonprod",sampleManagerVersion:"21.3",module:"samples"}, "case"));
+
+for (const action of ["confirm","edit","promote","reject"] as const) test(`Candidate ${action} rechecks status inside the writer transaction across two real stores`, () => withFixture(({store, insight, review}) => {
+  if(action==="promote")review.confirm({actorId:7,id:insight.id,reason:"Initially accepted"});
+  const other=createKnowledgeStore({dbPath:store.db.name}); const transaction=store.db.transaction.bind(store.db); let raced=false;
+  (store.db as any).transaction=(fn:Function)=>{if(!raced){raced=true;new CandidateInsightReviewService(other).reject({actorId:7,id:insight.id,reason:"Concurrent rejection"});}return transaction(fn as any);};
+  try{
+    const call=()=>action==="edit"?review.edit({actorId:7,id:insight.id,patch:{statement:"stale change"},reason:"Review"}):action==="promote"?review.promote({actorId:7,id:insight.id,target:"case",reason:"Review"}):review[action]({actorId:7,id:insight.id,reason:"Review"});
+    if(action==="reject")call();else assert.throws(call,/rejected|confirmed|edited/i);
+    assert.equal(review.get({actorId:7,id:insight.id}).status,"rejected");
+    assert.equal(store.db.prepare("SELECT COUNT(*) n FROM knowledge_confirmed_memories WHERE id=?").get(`memory-case-${insight.id}`).n,0);
+    assert.equal(review.reviewHistory({actorId:7,id:insight.id}).filter(row=>row.action==="reject").length,1);
+  }finally{(store.db as any).transaction=transaction;other.close();}
+}, {}, "case"));
+
+test("Candidate scope review stays explicit while Confirmed Memory remains environment-bound", () => withFixture(async ({store,sessionId,insight,review}) => {
+  review.confirm({actorId:7,id:insight.id,reason:"Confirm"}); const promotion=review.promote({actorId:7,id:insight.id,target:"case",reason:"Promote"});
+  store.db.prepare("UPDATE knowledge_candidate_insights SET scope_snapshot_json=NULL WHERE id=?").run(insight.id);
+  const sources=(environment:string)=>loadRelayContextSources({store,userId:7,projectId:"p1",query:"pump",intent:{objective:"pump",projectId:"p1",environment,sampleManagerVersion:"21.3"},limit:10});
+  assert.equal(review.get({actorId:7,id:insight.id}).scopeReviewRequired,true);
+  assert.throws(()=>review.promote({actorId:7,id:insight.id,target:"case",reason:"Replay"}),/scope review/i);
+  assert.equal((await sources("prod")).confirmedKnowledge.length,0); assert.equal((await sources("nonprod")).confirmedKnowledge.length,1);
+  const session=new WorkSessionService(store).get({actorId:7,sessionId})!;
+  assert.throws(()=>review.reviewScope({actorId:7,id:insight.id,reason:"Review",expectedSessionUpdatedAt:"stale"}),/refresh|changed/i);
+  assert.throws(()=>review.reviewScope({actorId:8,id:insight.id,reason:"Review"}),/denied|reviewer/i);
+  const repaired=review.reviewScope({actorId:7,id:insight.id,reason:"Rechecked the original evidence in current Session scope",expectedSessionUpdatedAt:session.updatedAt});
+  assert.equal(repaired.scopeReviewRequired,false); assert.equal(repaired.sourceScope?.environment,"nonprod");
+  assert.equal((await sources("prod")).confirmedKnowledge.length,0); assert.equal((await sources("nonprod")).confirmedKnowledge.length,1);
+  review.reviewScope({actorId:7,id:insight.id,reason:"Replay",expectedSessionUpdatedAt:session.updatedAt});
+  const audits=store.db.prepare("SELECT details_json FROM knowledge_audit WHERE entity_id=? AND action='candidate_insight.review_scope'").all(insight.id) as any[];
+  assert.equal(audits.length,1); assert.equal(JSON.parse(audits[0].details_json).before.caseScope?.environment ?? null,null);
+  review.reject({actorId:7,id:insight.id,reason:"Evidence invalidated"});
+  assert.equal((await sources("nonprod")).confirmedKnowledge.length,1);
+  assert.throws(()=>review.reviewScope({actorId:7,id:insight.id,reason:"Must not reaccept"}),/rejected|new Candidate/i);
+}, {environment:"nonprod",sampleManagerVersion:"21.3",module:"samples"}, "case"));
+
+test("Candidate Case scope cannot be widened by a legacy global binding; unrelated global Memory remains visible", () => withFixture(async ({store,insight,review}) => {
+  review.confirm({actorId:7,id:insight.id,reason:"Confirm"});
+  const promotion=review.promote({actorId:7,id:insight.id,target:"case",reason:"Promote"});
+  store.upsertDocument({id:"unrelated-global",kind:"case",title:"pump reference",body:"pump reference",lifecycle:"approved",projectId:"p1",visibility:"global",locator:"manual:global",createdAt:insight.createdAt,updatedAt:insight.updatedAt});
+  store.grantAcl("p2",8,false);
+  const result=await searchKnowledge(store,{userId:8,projectId:"p2",query:"pump",kinds:["case"],memoryTypes:["Case"]});
+  assert.equal(result.results.some(row=>row.id===promotion.targetId),false);
+  assert.equal(result.results.some(row=>row.id==="unrelated-global"),true);
+}, {}, "case"));
+
+test("Candidate review rechecks reviewer ACL after a second store revokes access", () => withFixture(({store,insight,review}) => {
+  const other=createKnowledgeStore({dbPath:store.db.name}), transaction=store.db.transaction.bind(store.db); let raced=false;
+  (store.db as any).transaction=(fn:Function)=>{if(!raced){raced=true;other.db.prepare("UPDATE knowledge_acl SET can_review=0 WHERE project_id='p1' AND user_id=7").run();}return transaction(fn as any);};
+  try{assert.throws(()=>review.confirm({actorId:7,id:insight.id,reason:"Stale grant"}),/reviewer/i);assert.equal(review.get({actorId:7,id:insight.id}).status,"draft");}
+  finally{(store.db as any).transaction=transaction;other.close();}
+}));
+
+test("Migration 041 preserves legacy Candidate content and leaves scope untrusted across reopen", () => withFixture(({store,insight}) => {
+  store.db.exec("ALTER TABLE knowledge_candidate_insights DROP COLUMN scope_snapshot_json");
+  store.db.prepare("DELETE FROM schema_migrations WHERE version='041-candidate-scope'").run();
+  for(let attempt=0;attempt<2;attempt++){
+    const reopened=createKnowledgeStore({dbPath:store.db.name});
+    try{
+      const legacy=new CandidateInsightReviewService(reopened).get({actorId:7,id:insight.id});
+      assert.equal(legacy.statement,insight.statement);assert.deepEqual(legacy.evidenceRefs,insight.evidenceRefs);
+      assert.equal(legacy.scopeReviewRequired,true);assert.equal(legacy.sourceScope,undefined);
+      assert.equal(reopened.db.prepare("SELECT COUNT(*) n FROM schema_migrations WHERE version='041-candidate-scope'").get().n,1);
+    }finally{reopened.close();}
+  }
 }));

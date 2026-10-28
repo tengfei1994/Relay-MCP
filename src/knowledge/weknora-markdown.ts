@@ -6,6 +6,8 @@
  * code blocks, images and links. The output is stable across runs of the
  * same source so normalized hashes stay comparable.
  */
+import {renderProductHtml,protectCanonicalHtmlTables} from "./html-markdown.js";
+
 export interface StructuredMarkdown {
   markdown: string;
   title?: string;
@@ -79,12 +81,72 @@ function convertList(tag: "ul" | "ol", body: string): string {
   return `\n\n${lines.join("\n")}\n\n`;
 }
 
+/** Mask source code before HTML processing; restore after cleanup. */
+function protectedMarkdown(source: string) {
+  let prefix = "\uE000RELAY_LITERAL_";
+  while (source.includes(prefix)) prefix += "_";
+  const values: string[] = [];
+  const keep = (value: string) => prefix + (values.push(value) - 1) + "\uE001";
+  const lines = source.split(/(?<=\n)/), parts: string[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    const opening = lines[index].replace(/\r?\n$/, "").match(/^[ \t]{0,3}(\x60{3,}|~{3,})([^\r\n]*)$/);
+    if (!opening || (opening[1][0] === "\x60" && opening[2].includes("\x60"))) { parts.push(lines[index]); continue; }
+    const block = [lines[index]];
+    while (++index < lines.length) {
+      block.push(lines[index]);
+      const closing = lines[index].replace(/\r?\n$/, "").match(/^[ \t]{0,3}(\x60+|~+)[ \t]*$/);
+      if (closing && closing[1][0] === opening[1][0] && closing[1].length >= opening[1].length) break;
+    }
+    parts.push(keep(block.join("")));
+  }
+  const text = parts.join("").replace(/(?<!\x60)(\x60+)(?!\x60)([\s\S]*?)(?<!\x60)\1(?!\x60)/g, match => keep(match));
+  return { text, keep, restore: (value: string) => values.reduceRight((result, literal, index) => result.split(prefix + index + "\uE001").join(literal), value) };
+}
+
+function removeNonContentMarkup(source: string): string {
+  return source.replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<script\b[\s\S]*?<\/script\s*>|<style\b[\s\S]*?<\/style\s*>/gi, "")
+    .replace(/<(nav|aside|footer|header)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "");
+}
+
+const CANONICAL_ANCHOR = /<a\s+id="([^"]*)"\s*><\/a>/gi;
+const HTML_CONTENT_TAG = /<!doctype\s+html\b|<\/?(?:html|head|body|h[1-6]|p|pre|code|div|section|article|table|thead|tbody|tr|td|th|ul|ol|li|blockquote|br|hr|script|style|nav|aside|header|footer|a|img|strong|em|b|i)\b[^>]*>/i;
+
+/** Imported Product bodies are Markdown even if their original path is HTML.
+ * Detect markup outside literals; retain HTML cleanup for actual HTML. */
+export function normalizeProductMarkup(source: string): string {
+  const literals = protectedMarkdown(source);
+  const structuredHtml = protectCanonicalHtmlTables(literals.text, literals.keep);
+  // Angle-delimited Markdown destinations (including spaces) are not HTML.
+  // Protect only the destination after ](, leaving ordinary raw HTML cleanup
+  // and the immutable legacy replay algorithm unchanged.
+  const structured = structuredHtml.replace(/(?<!\\)(\]\([ \t]*)<([^<>\r\n]*)>(?=[ \t]*(?:\)|["'(]))/g,
+    (_match, prefix: string, destination: string) => prefix + literals.keep(`<${destination}>`));
+  if (HTML_CONTENT_TAG.test(structured.replace(CANONICAL_ANCHOR, ""))) return htmlToStructuredMarkdown(source).markdown;
+  let text = removeNonContentMarkup(structured);
+  text = text.replace(CANONICAL_ANCHOR, match => literals.keep(match));
+  // Unrecognized raw HTML remains stripped outside literal code. Markdown
+  // entities, indentation, blank lines and link syntax retain their meaning.
+  return literals.restore(text.replace(/<[^>]+>/g, "")).trim();
+}
+
 export function htmlToStructuredMarkdown(source: string): StructuredMarkdown {
+  return renderProductHtml(source);
+}
+
+/** Compatibility proof only: reproduce the old normalization to recognize an
+ * immutable same-parser mapping. Never use this output for uploads or repair. */
+export function legacyProductMarkupForReplay(source: string): string {
+  return convertProductHtml(source, false).markdown;
+}
+
+function convertProductHtml(source: string, preserveCode: boolean): StructuredMarkdown {
   const links: string[] = [];
   const images: string[] = [];
   const anchors: string[] = [];
 
-  let text = source
+  const literals = preserveCode ? protectedMarkdown(source) : { text: source, keep: (value: string) => value, restore: (value: string) => value };
+  let text = preserveCode ? removeNonContentMarkup(literals.text) : source
     .replace(/<!--[\s\S]*?-->/g, "")
     .replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, "")
     .replace(/<(?:nav|aside|footer|header)[^>]*>[\s\S]*?<\/(?:nav|aside|footer|header)>/gi, "");
@@ -93,8 +155,9 @@ export function htmlToStructuredMarkdown(source: string): StructuredMarkdown {
   text = text.replace(/<pre([^>]*)>([\s\S]*?)<\/pre>/gi, (_m, attrs: string, body: string) => {
     const codeAttrs = body.match(/<code([^>]*)>/i)?.[1] ?? "";
     const language = attr(`${attrs} ${codeAttrs}`, "class")?.match(/(?:language|lang)-([A-Za-z0-9]+)/)?.[1] ?? "";
-    const code = decodeEntities(body.replace(/<\/?code[^>]*>/gi, "").replace(/<[^>]+>/g, "")).replace(/^\n+|\n+$/g, "");
-    return `\n\n\`\`\`${language}\n${code}\n\`\`\`\n\n`;
+    const code = decodeEntities(literals.restore(body).replace(/<\/?code[^>]*>/gi, "").replace(/<[^>]+>/g, "")).replace(/^\n+|\n+$/g, "");
+    const fence = "\x60".repeat(preserveCode ? Math.max(3, ...[...code.matchAll(/\x60+/g)].map(match => match[0].length + 1)) : 3);
+    return "\n\n" + literals.keep(fence + language + "\n" + code + "\n" + fence) + "\n\n";
   });
 
   // Tables, innermost first so nested markup collapses deterministically.
@@ -139,13 +202,13 @@ export function htmlToStructuredMarkdown(source: string): StructuredMarkdown {
       links.push(href);
       return `[${label || href}](${href})`;
     })
-    .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_m, body: string) => `\`${stripTags(body)}\``)
+    .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_m, body: string) => { const code = stripTags(literals.restore(body)); const ticks = "\x60".repeat(preserveCode ? Math.max(1, ...[...code.matchAll(/\x60+/g)].map(match => match[0].length + 1)) : 1); return literals.keep(ticks + code + ticks); })
     .replace(/<(?:br|hr)\s*\/?\s*>/gi, "\n")
     .replace(/<\/(?:p|div|section|article|blockquote|figure|figcaption)>/gi, "\n\n")
     .replace(/<[^>]+>/g, "");
 
   let inFence = false;
-  const markdown = decodeEntities(text)
+  const normalized = decodeEntities(text)
     .replace(/\r\n?/g, "\n")
     .split("\n")
     .map((line) => {
@@ -160,6 +223,7 @@ export function htmlToStructuredMarkdown(source: string): StructuredMarkdown {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
+  const markdown = literals.restore(normalized).trim();
   const title = markdown.match(/^#{1,6}\s+(.+)$/m)?.[1]?.trim() || undefined;
   return { markdown, title, anchors: [...new Set(anchors)], links: [...new Set(links)], images: [...new Set(images)] };
 }

@@ -29,7 +29,7 @@ test("HTTP Product Knowledge boundaries enforce project scope and topic ACLs", a
       data: [
         { id: "chunk-p1", knowledge_id: "ext-p1", content: "p1 result", score: 0.9, metadata: { sourcePath: "p1.md" } },
         { id: "chunk-p2", knowledge_id: "ext-p2", content: "p2 result", score: 0.8, metadata: { sourcePath: "p2.md" } },
-      ],
+      ].filter(ref=>seenKnowledgeIds.includes(ref.knowledge_id)),
     }), { status: 200, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
 
@@ -38,6 +38,7 @@ test("HTTP Product Knowledge boundaries enforce project scope and topic ACLs", a
   const { knowledgeRoutes } = await import("../src/server/routes/knowledge.js");
   const { getKnowledgeStore } = await import("../src/server/knowledge-context.js");
   const { KnowledgeRepository } = await import("../src/knowledge/repository.js");
+  const { EvidenceStore } = await import("../src/knowledge/evidence-store.js");
   const { ConfirmedMemoryService } = await import("../src/knowledge/confirmed-memory.js");
   const { WeKnoraIngestor } = await import("../src/knowledge/weknora-ingest.js");
 
@@ -46,11 +47,11 @@ test("HTTP Product Knowledge boundaries enforce project scope and topic ACLs", a
   store.grantAcl("p1", 7, true);
   const now = "2026-10-23T00:00:00.000Z";
   const repository = new KnowledgeRepository(store);
-  store.db.prepare("INSERT INTO knowledge_evidence(id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,source_locator,retention,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run("evidence-p1", "sha-p1", "memory://evidence-p1", "text/plain", 5, "log", "p1", "test:evidence-p1", "standard", now);
-  store.db.prepare("INSERT INTO knowledge_evidence_acl(evidence_id,project_id,created_at) VALUES (?,?,?)").run("evidence-p1", "p1", now);
-  new ConfirmedMemoryService(store).save({ id: "case-p1", type: "Case", title: "Cache case", statement: "cache failure confirmed", details: { symptoms: "cache failure", rootCause: "stale cache", resolution: "refresh cache", verification: "reloaded" }, scope: { projectId: "p1", scopeType: "project", scopeKey: "p1", visibility: "project" }, evidenceRefs: ["evidence-p1"], source: { kind: "manual", locator: "case:p1" }, confirmedBy: 7, confirmedAt: now, audit: { action: "manual", reason: "reviewed" }, createdAt: now, updatedAt: now });
-  const p1 = new WeKnoraIngestor(store, { upsertDocument: async () => ({ externalDocumentId: "ext-p1" }) });
-  const p2 = new WeKnoraIngestor(store, { upsertDocument: async () => ({ externalDocumentId: "ext-p2" }) });
+  const evidence = new EvidenceStore(store, join(root, "evidence")).put({ content: Buffer.from("cache failure confirmed"), mimeType: "text/plain", sourceKind: "log", projectId: "p1", environment: "nonprod", locator: "case:p1" });
+  const memories = new ConfirmedMemoryService(store);
+  memories.save({ id: "case-p1", type: "Case", title: "Cache case", statement: "cache failure confirmed", details: { symptoms: "cache failure", rootCause: "fixture", resolution: "reviewed", verification: "confirmed" }, scope: { projectId: "p1", environment: "nonprod", scopeType: "environment", scopeKey: "nonprod", visibility: "project" }, evidenceRefs: [evidence.id], source: { kind: "manual", locator: "case:p1" }, confirmedBy: 7, confirmedAt: now, audit: { action: "manual", reason: "fixture" } });
+  const p1 = new WeKnoraIngestor(store, { upsertDocument: async () => ({ knowledgeBaseId:"kb-test", externalDocumentId: "ext-p1", parseStatus: "completed", externalChunkIds: ["chunk-p1"] }) });
+  const p2 = new WeKnoraIngestor(store, { upsertDocument: async () => ({ knowledgeBaseId:"kb-test", externalDocumentId: "ext-p2", parseStatus: "completed", externalChunkIds: ["chunk-p2"] }) });
   const p1Document = await p1.stage({ idempotencyKey: "p1", title: "P1", content: "P1", projectId: "p1", parserVersion: "test" });
   const p2Document = await p2.stage({ idempotencyKey: "p2", title: "P2", content: "P2", projectId: "p2", parserVersion: "test" });
   p1.publish(p1Document.id, 7);
@@ -75,11 +76,53 @@ test("HTTP Product Knowledge boundaries enforce project scope and topic ACLs", a
     assert.deepEqual(scopedBody.references.map((reference: { documentId: string }) => reference.documentId), ["ext-p1"]);
     assert.deepEqual(scopedBody.contextPack.confirmedKnowledge.map((item: { id: string }) => item.id), ["case-p1"]);
 
+    const prodEvidence = new EvidenceStore(store, join(root, "evidence")).put({ content: Buffer.from("cache failure confirmed in prod"), mimeType: "text/plain", sourceKind: "log", projectId: "p1", environment: "prod", locator: "case:prod" });
+    memories.save({ id: "case-prod", type: "Case", title: "Cache production case", statement: "cache failure confirmed in prod", details: { symptoms: "cache failure", rootCause: "fixture", resolution: "reviewed", verification: "confirmed" }, scope: { projectId: "p1", environment: "prod", scopeType: "environment", scopeKey: "prod", visibility: "project" }, evidenceRefs: [prodEvidence.id], source: { kind: "manual", locator: "case:prod" }, confirmedBy: 7, confirmedAt: now, audit: { action: "manual", reason: "fixture" } });
+    const scopedPack=await app.inject({method:"POST",url:"/api/knowledge/weknora/search",payload:{query:"cache",projectId:"p1",environment:"nonprod"}});
+    assert.equal(scopedPack.statusCode,200,scopedPack.body);
+    assert.ok(!scopedPack.json().contextPack.confirmedKnowledge.some((item:any)=>item.id==="case-prod"),"no-session ContextPack must respect explicit environment");
+    const healthyFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error("Simulated private upstream failure"); };
+    try {
+      const outage = await app.inject({ method: "POST", url: "/api/knowledge/weknora/search", payload: { query: "cache", projectId: "p1" } });
+      assert.equal(outage.statusCode, 200, outage.body);
+      assert.deepEqual(outage.json().references, []);
+      assert.equal(outage.json().contextPack.degraded.productKnowledge, "unavailable");
+      assert.ok(outage.json().contextPack.confirmedKnowledge.some((item: any) => item.id === "case-p1"));
+      assert.ok(!outage.body.includes("private upstream"));
+    } finally { globalThis.fetch = healthyFetch; }
     const topicList = await app.inject({ url: "/api/knowledge/product-topics" });
     assert.equal(topicList.statusCode, 200);
     assert.equal(topicList.json().page.total, 0);
     const foreignTopic = await app.inject({ url: "/api/knowledge/product-topics/topic-p2" });
     assert.equal(foreignTopic.statusCode, 403);
+    for(const path of ["product-docs","product-documents"]) {
+      const list=await app.inject({url:`/api/knowledge/${path}?projectId=p1`});
+      assert.equal(list.statusCode,200,list.body);
+      assert.equal(list.json().documents.length,0,"foreign Product must not leak via "+path);
+    }
+    store.db.prepare("INSERT INTO knowledge_integration_settings(key,value,updated_at) VALUES ('product_provider','weknora',?)").run(now);
+    for(const path of ["product-docs","product-documents"]) {
+      const list=await app.inject({url:`/api/knowledge/${path}?projectId=p1`});
+      assert.equal(list.statusCode,200,list.body);
+      assert.ok(!list.body.includes("P2 doc"),"legacy Product must not leak after cutover via "+path);
+      for(const status of ["approved","published","draft","deprecated","staged"]){
+        const filtered=await app.inject({url:`/api/knowledge/${path}?projectId=p1&status=${status}`});
+        assert.equal(filtered.statusCode,200,filtered.body);
+        const expected=["approved","published"].includes(status)?1:0;
+        assert.equal(filtered.json().documents.length,expected,path+":"+status);
+        assert.equal(filtered.json().page.total,expected,path+":"+status+":total");
+        assert.ok(filtered.json().documents.every((doc:any)=>doc.lifecycle==="approved"));
+      }
+    }
+
+    const template=store.db.prepare("SELECT * FROM knowledge_weknora_documents WHERE id=?").get(p1Document.id) as Record<string,unknown>;
+    const insert=store.db.prepare(`INSERT INTO knowledge_weknora_documents(${Object.keys(template).join(",")}) VALUES (${Object.keys(template).map(()=>"?").join(",")})`);
+    store.db.transaction(()=>{for(let i=0;i<500;i++){const copy={...template,id:`page-${i}`,external_document_id:`page-external-${i}`,idempotency_key:`page-${i}`,identity_hash:`page-${i}`};insert.run(...Object.values(copy));}})();
+    for(const path of ["product-docs","product-documents"]) {
+      const page=await app.inject({url:`/api/knowledge/${path}?projectId=p1&offset=500&limit=100`});
+      assert.equal(page.statusCode,200,page.body);assert.equal(page.json().page.total,501);assert.equal(page.json().page.offset,500);assert.equal(page.json().documents.length,1);
+    }
   } finally {
     await app.close();
     store.close();

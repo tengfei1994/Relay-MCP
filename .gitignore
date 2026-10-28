@@ -8,3 +8,12 @@ data/
 logs/
 *.log
 .DS_Store
+.playwright-cli/
+output/playwright/
+
+# Managed engine state, encrypted credentials and compiled artifacts
+runtime/
+*.log
+wire-engine.py
+__pycache__/
+*.py[cod]

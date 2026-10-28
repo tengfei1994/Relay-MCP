@@ -29,9 +29,10 @@ class FailingManagedProvider implements ManagedCandidateInsightProvider {
   }
 }
 
+// This exercises store/service integration with contract fixtures, not a live WeKnora engine.
 const fakeWriter: WeKnoraDocumentWriter = {
   async upsertDocument(input) {
-    return { externalDocumentId: `ext-${input.idempotencyKey}`, knowledgeBaseId: "kb-1" };
+    return { externalDocumentId: `ext-${input.idempotencyKey}`, knowledgeBaseId: "kb-1", parseStatus: "completed", externalChunkIds: [`chunk-${input.idempotencyKey}`] };
   },
 };
 

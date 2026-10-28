@@ -51,7 +51,7 @@ test("timeout terminates the child and records failure; startup does not replay 
     await runPendingIngestJobs(store);
     const row = store.db.prepare("SELECT status,error FROM knowledge_ingest_jobs WHERE id=?").get(job.id) as any;
     assert.equal(row.status, "failed"); assert.match(row.error, /exceeded/);
-    store.db.prepare("UPDATE knowledge_ingest_jobs SET status='running' WHERE id=?").run(job.id);
+    store.db.prepare("UPDATE knowledge_ingest_jobs SET status='running',owner_token=NULL,owner_pid=NULL WHERE id=?").run(job.id);
     recoverInterruptedIngestJobs(store);
     assert.equal((store.db.prepare("SELECT status FROM knowledge_ingest_jobs WHERE id=?").get(job.id) as any).status, "failed");
   } finally { if (previous === undefined) delete process.env.RELAY_INGEST_TIMEOUT_MS; else process.env.RELAY_INGEST_TIMEOUT_MS = previous; store.close(); rmSync(root, { recursive: true, force: true }); }

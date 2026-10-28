@@ -1,0 +1,428 @@
+{
+  "format": "knowledge-request-benchmark/v1",
+  "recordedAt": "2026-10-27T00:20:06.151Z",
+  "isolation": {
+    "database": "new temporary SQLite app and knowledge databases",
+    "transport": "Fastify inject through registered production routes",
+    "productionData": false
+  },
+  "provider": {
+    "kind": "deterministic-weknora-http-replay",
+    "actualModel": false,
+    "paidCalls": 0,
+    "externalNetwork": false,
+    "replayCalls": 3
+  },
+  "measurementSemantics": {
+    "timing": "wall time around each Fastify inject request; response validation excluded",
+    "cache": "cold means before this scenario's warm-up; hot means after warm-up. Process, OS, and SQLite caches are not purged."
+  },
+  "data": {
+    "productDocuments": 50000,
+    "candidateInsights": 1,
+    "evidence": 1,
+    "confirmedKnowledge": 1,
+    "candidates": 1,
+    "currentFacts": 1
+  },
+  "endpoints": {
+    "weknoraSearch": {
+      "method": "POST",
+      "path": "/api/knowledge/weknora/search",
+      "samples": 1,
+      "concurrency": 1,
+      "cache": {
+        "coldRepetitions": 1,
+        "hotRepetitions": 0,
+        "samplesPerRepetition": 1,
+        "warmupRequests": 0,
+        "description": "cold means before this scenario's warm-up; hot means after warm-up. Process, OS, and SQLite caches are not purged."
+      },
+      "provider": {
+        "kind": "deterministic-weknora-http-replay",
+        "actualModel": false,
+        "paidCalls": 0,
+        "replayCalls": 1
+      },
+      "latencyMs": {
+        "p50": 2739.425,
+        "p95": 2739.425,
+        "max": 2739.425
+      },
+      "phaseLatencyMs": {
+        "cold": {
+          "samples": 1,
+          "p50": 2739.425,
+          "p95": 2739.425,
+          "max": 2739.425
+        },
+        "hot": null
+      },
+      "statusErrors": {},
+      "integrityErrors": {},
+      "defaultLimit": 10,
+      "boundaries": {
+        "maximumLimit": {
+          "limit": 100,
+          "expectation": "results",
+          "samples": 1,
+          "concurrency": 1,
+          "cache": {
+            "coldRepetitions": 1,
+            "hotRepetitions": 0,
+            "samplesPerRepetition": 1,
+            "warmupRequests": 0,
+            "description": "cold means before this scenario's warm-up; hot means after warm-up. Process, OS, and SQLite caches are not purged."
+          },
+          "provider": {
+            "kind": "deterministic-weknora-http-replay",
+            "actualModel": false,
+            "paidCalls": 0,
+            "replayCalls": 1
+          },
+          "latencyMs": {
+            "p50": 2783.217,
+            "p95": 2783.217,
+            "max": 2783.217
+          },
+          "phaseLatencyMs": {
+            "cold": {
+              "samples": 1,
+              "p50": 2783.217,
+              "p95": 2783.217,
+              "max": 2783.217
+            },
+            "hot": null
+          },
+          "statusErrors": {},
+          "integrityErrors": {}
+        },
+        "noResults": {
+          "limit": 10,
+          "expectation": "noResults",
+          "samples": 1,
+          "concurrency": 1,
+          "cache": {
+            "coldRepetitions": 1,
+            "hotRepetitions": 0,
+            "samplesPerRepetition": 1,
+            "warmupRequests": 0,
+            "description": "cold means before this scenario's warm-up; hot means after warm-up. Process, OS, and SQLite caches are not purged."
+          },
+          "provider": {
+            "kind": "deterministic-weknora-http-replay",
+            "actualModel": false,
+            "paidCalls": 0,
+            "replayCalls": 1
+          },
+          "latencyMs": {
+            "p50": 2555.745,
+            "p95": 2555.745,
+            "max": 2555.745
+          },
+          "phaseLatencyMs": {
+            "cold": {
+              "samples": 1,
+              "p50": 2555.745,
+              "p95": 2555.745,
+              "max": 2555.745
+            },
+            "hot": null
+          },
+          "statusErrors": {},
+          "integrityErrors": {}
+        }
+      }
+    },
+    "candidateInsights": {
+      "method": "GET",
+      "path": "/api/knowledge/candidate-insights",
+      "samples": 1,
+      "concurrency": 1,
+      "cache": {
+        "coldRepetitions": 1,
+        "hotRepetitions": 0,
+        "samplesPerRepetition": 1,
+        "warmupRequests": 0,
+        "description": "cold means before this scenario's warm-up; hot means after warm-up. Process, OS, and SQLite caches are not purged."
+      },
+      "provider": {
+        "kind": "none-sqlite-route-only",
+        "actualModel": false,
+        "paidCalls": 0,
+        "replayCalls": 0
+      },
+      "latencyMs": {
+        "p50": 2.944,
+        "p95": 2.944,
+        "max": 2.944
+      },
+      "phaseLatencyMs": {
+        "cold": {
+          "samples": 1,
+          "p50": 2.944,
+          "p95": 2.944,
+          "max": 2.944
+        },
+        "hot": null
+      },
+      "statusErrors": {},
+      "integrityErrors": {},
+      "defaultLimit": 50,
+      "boundaries": {
+        "maximumLimit": {
+          "limit": 200,
+          "expectation": "results",
+          "samples": 1,
+          "concurrency": 1,
+          "cache": {
+            "coldRepetitions": 1,
+            "hotRepetitions": 0,
+            "samplesPerRepetition": 1,
+            "warmupRequests": 0,
+            "description": "cold means before this scenario's warm-up; hot means after warm-up. Process, OS, and SQLite caches are not purged."
+          },
+          "provider": {
+            "kind": "none-sqlite-route-only",
+            "actualModel": false,
+            "paidCalls": 0,
+            "replayCalls": 0
+          },
+          "latencyMs": {
+            "p50": 1.467,
+            "p95": 1.467,
+            "max": 1.467
+          },
+          "phaseLatencyMs": {
+            "cold": {
+              "samples": 1,
+              "p50": 1.467,
+              "p95": 1.467,
+              "max": 1.467
+            },
+            "hot": null
+          },
+          "statusErrors": {},
+          "integrityErrors": {}
+        },
+        "deepOffset": {
+          "limit": 50,
+          "offset": 0,
+          "expectation": "results",
+          "samples": 1,
+          "concurrency": 1,
+          "cache": {
+            "coldRepetitions": 1,
+            "hotRepetitions": 0,
+            "samplesPerRepetition": 1,
+            "warmupRequests": 0,
+            "description": "cold means before this scenario's warm-up; hot means after warm-up. Process, OS, and SQLite caches are not purged."
+          },
+          "provider": {
+            "kind": "none-sqlite-route-only",
+            "actualModel": false,
+            "paidCalls": 0,
+            "replayCalls": 0
+          },
+          "latencyMs": {
+            "p50": 1.122,
+            "p95": 1.122,
+            "max": 1.122
+          },
+          "phaseLatencyMs": {
+            "cold": {
+              "samples": 1,
+              "p50": 1.122,
+              "p95": 1.122,
+              "max": 1.122
+            },
+            "hot": null
+          },
+          "statusErrors": {},
+          "integrityErrors": {}
+        },
+        "noResults": {
+          "limit": 50,
+          "offset": 1001,
+          "expectation": "noResults",
+          "samples": 1,
+          "concurrency": 1,
+          "cache": {
+            "coldRepetitions": 1,
+            "hotRepetitions": 0,
+            "samplesPerRepetition": 1,
+            "warmupRequests": 0,
+            "description": "cold means before this scenario's warm-up; hot means after warm-up. Process, OS, and SQLite caches are not purged."
+          },
+          "provider": {
+            "kind": "none-sqlite-route-only",
+            "actualModel": false,
+            "paidCalls": 0,
+            "replayCalls": 0
+          },
+          "latencyMs": {
+            "p50": 0.957,
+            "p95": 0.957,
+            "max": 0.957
+          },
+          "phaseLatencyMs": {
+            "cold": {
+              "samples": 1,
+              "p50": 0.957,
+              "p95": 0.957,
+              "max": 0.957
+            },
+            "hot": null
+          },
+          "statusErrors": {},
+          "integrityErrors": {}
+        }
+      }
+    },
+    "evidence": {
+      "method": "GET",
+      "path": "/api/knowledge/evidence",
+      "samples": 1,
+      "concurrency": 1,
+      "cache": {
+        "coldRepetitions": 1,
+        "hotRepetitions": 0,
+        "samplesPerRepetition": 1,
+        "warmupRequests": 0,
+        "description": "cold means before this scenario's warm-up; hot means after warm-up. Process, OS, and SQLite caches are not purged."
+      },
+      "provider": {
+        "kind": "none-sqlite-route-only",
+        "actualModel": false,
+        "paidCalls": 0,
+        "replayCalls": 0
+      },
+      "latencyMs": {
+        "p50": 4.961,
+        "p95": 4.961,
+        "max": 4.961
+      },
+      "phaseLatencyMs": {
+        "cold": {
+          "samples": 1,
+          "p50": 4.961,
+          "p95": 4.961,
+          "max": 4.961
+        },
+        "hot": null
+      },
+      "statusErrors": {},
+      "integrityErrors": {},
+      "defaultLimit": 100,
+      "boundaries": {
+        "maximumLimit": {
+          "limit": 500,
+          "expectation": "results",
+          "samples": 1,
+          "concurrency": 1,
+          "cache": {
+            "coldRepetitions": 1,
+            "hotRepetitions": 0,
+            "samplesPerRepetition": 1,
+            "warmupRequests": 0,
+            "description": "cold means before this scenario's warm-up; hot means after warm-up. Process, OS, and SQLite caches are not purged."
+          },
+          "provider": {
+            "kind": "none-sqlite-route-only",
+            "actualModel": false,
+            "paidCalls": 0,
+            "replayCalls": 0
+          },
+          "latencyMs": {
+            "p50": 1.401,
+            "p95": 1.401,
+            "max": 1.401
+          },
+          "phaseLatencyMs": {
+            "cold": {
+              "samples": 1,
+              "p50": 1.401,
+              "p95": 1.401,
+              "max": 1.401
+            },
+            "hot": null
+          },
+          "statusErrors": {},
+          "integrityErrors": {}
+        },
+        "deepOffset": {
+          "limit": 100,
+          "offset": 0,
+          "expectation": "results",
+          "samples": 1,
+          "concurrency": 1,
+          "cache": {
+            "coldRepetitions": 1,
+            "hotRepetitions": 0,
+            "samplesPerRepetition": 1,
+            "warmupRequests": 0,
+            "description": "cold means before this scenario's warm-up; hot means after warm-up. Process, OS, and SQLite caches are not purged."
+          },
+          "provider": {
+            "kind": "none-sqlite-route-only",
+            "actualModel": false,
+            "paidCalls": 0,
+            "replayCalls": 0
+          },
+          "latencyMs": {
+            "p50": 1.173,
+            "p95": 1.173,
+            "max": 1.173
+          },
+          "phaseLatencyMs": {
+            "cold": {
+              "samples": 1,
+              "p50": 1.173,
+              "p95": 1.173,
+              "max": 1.173
+            },
+            "hot": null
+          },
+          "statusErrors": {},
+          "integrityErrors": {}
+        },
+        "noResults": {
+          "limit": 100,
+          "offset": 1001,
+          "expectation": "noResults",
+          "samples": 1,
+          "concurrency": 1,
+          "cache": {
+            "coldRepetitions": 1,
+            "hotRepetitions": 0,
+            "samplesPerRepetition": 1,
+            "warmupRequests": 0,
+            "description": "cold means before this scenario's warm-up; hot means after warm-up. Process, OS, and SQLite caches are not purged."
+          },
+          "provider": {
+            "kind": "none-sqlite-route-only",
+            "actualModel": false,
+            "paidCalls": 0,
+            "replayCalls": 0
+          },
+          "latencyMs": {
+            "p50": 0.791,
+            "p95": 0.791,
+            "max": 0.791
+          },
+          "phaseLatencyMs": {
+            "cold": {
+              "samples": 1,
+              "p50": 0.791,
+              "p95": 0.791,
+              "max": 0.791
+            },
+            "hot": null
+          },
+          "statusErrors": {},
+          "integrityErrors": {}
+        }
+      }
+    }
+  }
+}

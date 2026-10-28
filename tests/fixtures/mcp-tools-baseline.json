@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "generatedFrom": "McpServer tools/list",
   "sourceVersion": {
-    "gitCommit": "50fac661eca45985a765d818ae993b2e8248f6f4",
+    "gitCommit": "30d9baa8c2fe7a1db00a3b9dc12d521752967531",
     "mcpSdkVersion": "1.32.2",
     "generationCommand": "npm run generate:mcp-baseline",
-    "generatedAt": "2026-10-27T17:15:26.094Z",
+    "generatedAt": "2026-10-28T01:44:28.628Z",
     "worktreeDirty": true
   },
   "tools": [
@@ -653,11 +653,35 @@
           },
           "async": {
             "type": "boolean"
+          },
+          "retry": {
+            "type": "boolean"
           }
         },
         "required": [
           "sessionId",
           "evidenceRefs"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_candidate_insight_job_get",
+      "description": "Read an asynchronous Candidate compilation job after Session ACL enforcement.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
         ],
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
@@ -878,6 +902,9 @@
             "type": "string"
           },
           "project": {
+            "type": "string"
+          },
+          "workSessionId": {
             "type": "string"
           }
         },
@@ -1156,10 +1183,13 @@
     },
     {
       "name": "knowledge_search",
-      "description": "Search ACL- and scope-filtered Confirmed Memory. Candidate Insights and Approved Operations require explicit tools or filters.",
+      "description": "Search ACL- and Scope-filtered Confirmed Memory. Candidate Insights and Playbooks require explicit filters.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "workSessionId": {
+            "type": "string"
+          },
           "project": {
             "type": "string"
           },
@@ -1189,6 +1219,21 @@
           },
           "scopeKey": {
             "type": "string"
+          },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "candidate",
+                "case",
+                "pattern",
+                "playbook",
+                "fact",
+                "decision",
+                "confirmed_memory"
+              ]
+            }
           },
           "memoryTypes": {
             "type": "array",
@@ -1690,6 +1735,11 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 200
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000
           },
           "sessionId": {
             "type": "string"
@@ -5942,6 +5992,10 @@
     },
     {
       "name": "knowledge_candidate_insight_compile",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_candidate_insight_job_get",
       "category": "context"
     },
     {

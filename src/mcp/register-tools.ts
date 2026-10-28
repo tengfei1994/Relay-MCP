@@ -19,6 +19,7 @@ import type { JobRecord } from "../shared/job-store.js";
 import type { ProjectLinkSummary, ProjectSelector, RunnerConnection, SampleManagerDatabaseTarget } from "./tool-context.js";
 import type { ProjectInfo } from "./project-registry.js";
 import type { KnowledgeStore } from "../knowledge/store.js";
+import { WorkSessionService } from "../knowledge/work-session.js";
 import "dotenv/config";
 
 const RELAY_PUBLIC_URL = (process.env.RELAY_PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 3000}`).replace(/\/$/, "");
@@ -235,7 +236,15 @@ export function registerToolsForUser(user: McpUser, dependencies: ToolRegistrati
 
   registerProjectTools({ server, user, registry, listAllowedProjects, projectLinkSummaries, resolveProjectName, getRunner, assertServerAllowed, relayRoute, relayMcpVersion: RELAY_MCP_VERSION, mcpPort: MCP_PORT });
   const domainContext = { server, user, resolveProjectName, getRunner, relayRoute };
-  registerRemoteTools({ ...domainContext, executionForJob, waitForTrackedJob, getSampleManagerDatabaseTarget });
+  registerRemoteTools({
+    ...domainContext, executionForJob, waitForTrackedJob, getSampleManagerDatabaseTarget,
+    assertWorkSession: ({ workSessionId, projectId, environment }) => {
+      if (!dependencies.knowledge) throw new Error("Knowledge Plane is unavailable");
+      new WorkSessionService(dependencies.knowledge).assertSessionUsable({
+        actorId: user.id, sessionId: workSessionId, projectId, environment,
+      });
+    },
+  });
   registerWorkspaceTools({ ...domainContext, registry, relayPublicUrl: RELAY_PUBLIC_URL });
   registerPlaywrightTools({ ...domainContext, executionForJob, waitForTrackedJob, relayPublicUrl: RELAY_PUBLIC_URL });
   registerSampleManagerTools({ ...domainContext, registry, executionForJob, getSampleManagerDatabaseTarget });
@@ -245,6 +254,18 @@ export function registerToolsForUser(user: McpUser, dependencies: ToolRegistrati
   registerJobTools({ server, user, resolveProjectName });
 
   registerDiagnosticTools({ server, user, knowledge: dependencies.knowledge, resolveProjectName, getRunner, registry });
-  registerKnowledgeTools({ server, user, knowledge: dependencies.knowledge, resolveProjectName });
+  registerKnowledgeTools({
+    server, user, knowledge: dependencies.knowledge, resolveProjectName,
+    resolveProjectNameToId: (name) => {
+      const project = registry.getProject(user.id, resolveProjectName(name));
+      if (!project) throw new Error("Project is not allowed for this MCP token");
+      return String(project.id);
+    },
+    resolveProjectId: (projectId) => {
+      const project = listAllowedProjects().find((candidate) => String(candidate.id) === projectId);
+      if (!project) throw new Error("Project is not allowed for this MCP token");
+      return String(project.id);
+    },
+  });
   return server;
 }

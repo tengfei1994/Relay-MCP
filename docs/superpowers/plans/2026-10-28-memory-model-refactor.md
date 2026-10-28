@@ -32,7 +32,7 @@
 ### Task 1: Typed domain model and additive migration
 
 **Files:**
-- Create: `src/knowledge/migrations/039-confirmed-memory.ts`
+- Create: `src/knowledge/migrations/047-confirmed-memory.ts`
 - Modify: `src/knowledge/domain.ts`
 - Modify: `src/knowledge/candidate-insight.ts`
 - Modify: `src/knowledge/store.ts`

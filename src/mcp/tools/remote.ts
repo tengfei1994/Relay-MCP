@@ -15,6 +15,8 @@ export interface RemoteToolsContext {
   getRunner: GetRunner;
   relayRoute: (tool: string, extra?: Record<string, unknown>) => Record<string, unknown>;
   executionForJob: (context?: JobContext) => Record<string, unknown>;
+  /** Composition-root ACL check, required when a caller supplies a Work Session. */
+  assertWorkSession?: (input: { workSessionId: string; projectId: string; environment: string }) => void;
   waitForTrackedJob: WaitForTrackedJob;
   getSampleManagerDatabaseTarget: (project?: string, environment?: string, database?: string, selector?: ProjectSelector) => SampleManagerDatabaseTarget;
 }
@@ -23,6 +25,11 @@ export interface RemoteToolsContext {
 export function registerRemoteTools(context: RemoteToolsContext, legacy?: (context: RemoteToolsContext) => void): void {
   if (legacy) { legacy(context); return; }
   const { server, user, resolveProjectName, getRunner, relayRoute, executionForJob, waitForTrackedJob, getSampleManagerDatabaseTarget } = context;
+  const assertSession = (workSessionId: string | undefined, projectId: number, environment: string) => {
+    if (!workSessionId) return;
+    if (!context.assertWorkSession) throw new Error("Work Session validation is unavailable");
+    context.assertWorkSession({ workSessionId, projectId: String(projectId), environment });
+  };
   // Optional Work Session correlation. Async executions persist validated
   // references on the Job record and its relay events; synchronous executions
   // carry the same safe references in the audit payload.
@@ -48,7 +55,10 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
     },
     async ({ project: projectName, command, environment, serverId, serverName, timeoutMs = 60000, async = false, workSessionId, intentStep, objectiveRef, acceptanceCriterionRef }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { ps, runner } = getRunner(projectName, environment, { serverId, serverName });
+      const { project, ps, runner } = getRunner(projectName, environment, { serverId, serverName });
+      // getRunner has already checked the token's project and server scopes.
+      // Validate the actual selected target before either sync transport or Job creation.
+      assertSession(workSessionId, project.id, ps.environment);
       const targetLabel = ps.server.host || ps.server.agentId || ps.server.name;
       const work = async (context?: JobContext) => {
         const result = await runner.exec(command, timeoutMs, executionForJob(context));
@@ -73,7 +83,7 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
         return `[${targetLabel} | env=${ps.environment} | server=${ps.server.name}#${ps.server.id}]\n${summarizeExec(command, result)}`;
       };
       if (async) {
-        const job = startJob(user, resolvedProjectName, "exec_remote", { command, environment, serverId, serverName, timeoutMs, workSessionId, intentStep, objectiveRef, acceptanceCriterionRef }, work);
+        const job = startJob(user, resolvedProjectName, "exec_remote", { command, environment: ps.environment, serverId, serverName, timeoutMs, workSessionId, intentStep, objectiveRef, acceptanceCriterionRef }, work);
         return {
           content: [{
             type: "text",
@@ -126,7 +136,10 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
       acceptanceCriterionRef,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { ps, runner } = getRunner(projectName, environment, { serverId, serverName });
+      const { project, ps, runner } = getRunner(projectName, environment, { serverId, serverName });
+      // getRunner has already checked the token's project and server scopes.
+      // Validate the actual selected target before either sync transport or Job creation.
+      assertSession(workSessionId, project.id, ps.environment);
       const targetLabel = ps.server.host || ps.server.agentId || ps.server.name;
       const work = async (context?: JobContext) => {
         const result = await runner.execPowerShell(script, timeoutMs, executionForJob(context));
@@ -189,7 +202,7 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
       };
       if (async) {
         const job = startJob(user, resolvedProjectName, "exec_remote_powershell", {
-          environment,
+          environment: ps.environment,
           serverId,
           serverName,
           timeoutMs,
@@ -253,7 +266,10 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
       acceptanceCriterionRef,
     }) => {
       const resolvedProjectName = resolveProjectName(projectName);
-      const { ps, runner } = getRunner(projectName, environment, { serverId, serverName });
+      const { project, ps, runner } = getRunner(projectName, environment, { serverId, serverName });
+      // getRunner has already checked the token's project and server scopes.
+      // Validate the actual selected target before either sync transport or Job creation.
+      assertSession(workSessionId, project.id, ps.environment);
       const targetLabel = ps.server.host || ps.server.agentId || ps.server.name;
       const work = async (context?: JobContext) => {
         const result = await runner.execPowerShellScript(script, {
@@ -290,7 +306,7 @@ export function registerRemoteTools(context: RemoteToolsContext, legacy?: (conte
         ].join("\n");
       };
       const job = startJob(user, resolvedProjectName, "exec_remote_script", {
-        environment,
+        environment: ps.environment,
         serverId,
         serverName,
         remotePath,

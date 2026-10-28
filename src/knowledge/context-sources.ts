@@ -1,6 +1,7 @@
 import type { ContextPackIntent } from "./context-pack.js";
 import { searchKnowledge, type KnowledgeSearchResult } from "./retriever.js";
 import type { KnowledgeStore } from "./store.js";
+import { ConfirmedMemoryService } from "./confirmed-memory.js";
 
 export interface RelayContextSourceInput {
   store: KnowledgeStore;
@@ -33,10 +34,16 @@ export async function loadRelayContextSources(input: RelayContextSourceInput): P
     providers: { embedding: undefined, rerank: undefined },
   } as const;
   const [confirmed, candidates, facts] = await Promise.all([
-    searchKnowledge(input.store, { ...requestBase, kinds: ["case", "pattern", "playbook"] }),
+    searchKnowledge(input.store, { ...requestBase, kinds: ["confirmed_memory"] }),
     searchKnowledge(input.store, { ...requestBase, kinds: ["candidate"] }),
     searchKnowledge(input.store, { ...requestBase, kinds: ["fact"] }),
   ]);
   const degraded = confirmed.degraded || candidates.degraded || facts.degraded ? { relayMemory: "fts_only" } : undefined;
-  return { confirmedKnowledge: confirmed.results.filter((item) => ["verified", "approved"].includes(item.lifecycle)), candidates: candidates.results, currentFacts: facts.results, degraded };
+  const memories = new ConfirmedMemoryService(input.store).list({ actorId: input.userId, projectId: input.projectId, environment: input.intent?.environment, limit: input.limit });
+  const confirmedMemoryResults = memories.map((memory) => ({
+    id: memory.id, kind: "confirmed_memory", memoryType: memory.type, title: memory.title, summary: memory.statement, score: 1, lifecycle: "confirmed", versionMatch: true,
+    matchReasons: ["confirmed memory"], applicability: { environment: memory.scope.environment }, evidenceRefs: memory.evidenceRefs,
+    scope: { scopeType: memory.scope.scopeType, scopeKey: memory.scope.scopeKey, visibility: memory.scope.visibility, specificity: memory.scope.scopeType === "environment" ? 5 : 4 },
+  }));
+  return { confirmedKnowledge: confirmedMemoryResults, candidates: candidates.results.filter((item) => item.kind === "candidate"), currentFacts: facts.results.filter((item) => item.kind === "fact"), degraded };
 }

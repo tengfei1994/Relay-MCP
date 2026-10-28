@@ -98,37 +98,29 @@ test("Reject is terminal for confirmation and idempotent", () => withFixture(asy
   assert.throws(() => review.confirm({ actorId: 7, id: insight.id, reason: "changed my mind" }), /rejected/);
 }));
 
-test("Promotion to Case reuses the repository projection and is idempotent", () => withFixture(async ({ store, insight, review }) => {
-  assert.throws(() => review.promote({ actorId: 7, id: insight.id, target: "case", reason: "premature" }), /confirmed/);
+test("Promotion to Confirmed Fact is typed, evidence-backed and idempotent", () => withFixture(async ({ store, insight, review }) => {
+  assert.throws(() => review.promote({ actorId: 7, id: insight.id, target: "fact", reason: "premature" }), /confirmed/);
   review.confirm({ actorId: 7, id: insight.id, reason: "Verified" });
-  const promotion = review.promote({ actorId: 7, id: insight.id, target: "case", reason: "Ready for the casebook" });
+  const promotion = review.promote({ actorId: 7, id: insight.id, target: "fact", reason: "Ready for memory" });
   assert.equal(promotion.mode, "persisted");
-  assert.equal(promotion.targetId, `case-${insight.id}`);
-  const document = store.db.prepare("SELECT kind, lifecycle, project_id FROM knowledge_documents WHERE id = ?").get(promotion.targetId) as Record<string, unknown>;
-  assert.equal(document.kind, "case");
-  assert.equal(document.lifecycle, "draft");
-  const caseRow = store.db.prepare("SELECT evidence_refs_json FROM knowledge_cases WHERE id = ?").get(promotion.targetId) as { evidence_refs_json: string };
-  assert.deepEqual(JSON.parse(caseRow.evidence_refs_json), [insight.evidenceRefs[0]]);
-  const links = store.db.prepare("SELECT evidence_id FROM knowledge_entity_evidence WHERE entity_type = 'case' AND entity_id = ?").all(promotion.targetId);
+  assert.equal(promotion.targetId, `memory-fact-${insight.id}`);
+  const memory = store.db.prepare("SELECT memory_type, project_id, evidence_refs_json, confirmed_by FROM knowledge_confirmed_memories WHERE id = ?").get(promotion.targetId) as Record<string, unknown>;
+  assert.equal(memory.memory_type, "Fact");
+  assert.equal(memory.project_id, "p1");
+  assert.deepEqual(JSON.parse(String(memory.evidence_refs_json)), [insight.evidenceRefs[0]]);
+  assert.equal(memory.confirmed_by, 7);
+  const links = store.db.prepare("SELECT evidence_id FROM knowledge_entity_evidence WHERE entity_type = 'confirmed_memory' AND entity_id = ?").all(promotion.targetId);
   assert.equal(links.length, 1);
-  const replay = review.promote({ actorId: 7, id: insight.id, target: "case", reason: "Ready for the casebook" });
+  const replay = review.promote({ actorId: 7, id: insight.id, target: "fact", reason: "Ready for memory" });
   assert.equal(replay.targetId, promotion.targetId);
   const stored = review.get({ actorId: 7, id: insight.id });
-  assert.equal((stored.promotion as { target?: string })?.target, "case");
+  assert.equal((stored.promotion as { target?: string })?.target, "fact");
 }));
 
-test("Promotion to Decision records explicit metadata without a store entity", () => withFixture(async ({ store, insight, review }) => {
+test("Mismatched promotion target is rejected instead of implicitly converting a Fact", () => withFixture(async ({ store, insight, review }) => {
   review.confirm({ actorId: 7, id: insight.id, reason: "Verified" });
-  const promotion = review.promote({ actorId: 7, id: insight.id, target: "decision", reason: "Record the call" });
-  assert.equal(promotion.mode, "metadata_only");
-  assert.ok(promotion.note);
-  const documents = store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_documents").get() as { count: number };
-  assert.equal(documents.count, 0);
-  const stored = review.get({ actorId: 7, id: insight.id });
-  assert.equal((stored.promotion as { mode?: string })?.mode, "metadata_only");
-  const replay = review.promote({ actorId: 7, id: insight.id, target: "decision", reason: "Record the call" });
-  assert.equal(replay.mode, "metadata_only");
-  assert.equal(review.reviewHistory({ actorId: 7, id: insight.id }).filter((row) => row.action === "promote").length, 1);
+  assert.throws(() => review.promote({ actorId: 7, id: insight.id, target: "decision", reason: "Record the call" }), /cannot be promoted/);
+  assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_confirmed_memories").get().count, 0);
 }));
 
 function withWorkerStore(fn: (store: KnowledgeStore, sessionId: string, evidenceId: string) => Promise<void>): Promise<void> {

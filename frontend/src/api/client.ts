@@ -58,7 +58,7 @@ export const api = {
     ),
 
   // Knowledge governance plane
-  knowledgeSearch: (params: { projectId: number; q: string; limit?: number; sampleManagerVersion?: string; solution?: string; module?: string; environment?: string; scopeType?: string; scopeKey?: string; kinds?: string; includeDeprecated?: boolean }) => {
+  knowledgeSearch: (params: { projectId: number; q: string; limit?: number; sampleManagerVersion?: string; solution?: string; module?: string; environment?: string; scopeType?: string; scopeKey?: string; kinds?: string; memoryTypes?: string; includeDeprecated?: boolean }) => {
     const query = new URLSearchParams({ projectId: String(params.projectId), q: params.q });
     for (const key of ["limit", "sampleManagerVersion", "solution", "module", "environment", "scopeType", "scopeKey", "kinds", "includeDeprecated"] as const) {
       const value = params[key];
@@ -161,7 +161,9 @@ export const api = {
   knowledgeCandidateInsightConfirm: (id: string, reason: string) => request<{ insight: any }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/confirm`, { reason }),
   knowledgeCandidateInsightReject: (id: string, reason: string) => request<{ insight: any }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/reject`, { reason }),
   knowledgeCandidateInsightEdit: (id: string, patch: Record<string, unknown>, reason: string) => request<{ insight: any }>("PATCH", `/knowledge/candidate-insights/${encodeURIComponent(id)}`, { patch, reason }),
-  knowledgeCandidateInsightPromote: (id: string, body: { target: "case" | "decision"; reason: string; title?: string }) => request<{ promotion: any }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/promote`, body),
+  knowledgeCandidateInsightPromote: (id: string, body: { target: "fact" | "decision" | "case" | "pattern"; reason: string; title?: string }) => request<{ promotion: any }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/promote`, body),
+  knowledgeConfirmedMemories: (projectId: string | number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ memories: any[] }>("GET", `/knowledge/confirmed-memories?${query.toString()}`); },
+  knowledgeConfirmedMemory: (id: string) => request<{ memory: any }>("GET", `/knowledge/confirmed-memories/${encodeURIComponent(id)}`),
   knowledgeWikiPages: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ items: any[]; total: number; limit: number; offset: number }>("GET", `/knowledge/wiki?${query.toString()}`); },
   knowledgeWikiCreate: (body: Record<string, unknown>) => request<{ page: any }>("POST", "/knowledge/wiki", body),
   knowledgeWikiPage: (id: string) => request<{ page: any }>("GET", `/knowledge/wiki/${encodeURIComponent(id)}`),

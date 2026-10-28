@@ -50,17 +50,9 @@ export function ScopeBanner({ project, environment, scope = "project runtime", a
   </div>;
 }
 
-const pipeline = [
-  ["Evidence", "/knowledge/evidence", ShieldCheck],
-  ["Observation", "/knowledge/observations", Clock3],
-  ["Candidate", "/knowledge/candidates", FileText],
-  ["Case", "/knowledge/cases", CheckCircle2],
-  ["Pattern", "/knowledge/patterns", GitBranch],
-  ["Playbook", "/knowledge/playbooks", Database],
-] as const;
-
 export function LifecyclePipeline({ current }: { current?: string }) {
-  return <div className="flex flex-wrap items-center gap-2 rounded-xl border border-gray-800 bg-gray-950/50 p-3">{pipeline.map(([label, to, Icon], index) => <span key={label} className="flex items-center gap-2">{index > 0 && <span className="text-gray-700">→</span>}<NavLink to={to} className={({ isActive }) => `inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs ${isActive || current?.toLowerCase() === label.toLowerCase() ? "bg-indigo-600/20 text-indigo-200 ring-1 ring-indigo-500/50" : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"}`}><Icon size={13} />{label}</NavLink></span>)}</div>;
+  const tabs = [["Sessions", "/knowledge/sessions"], ["Evidence", "/knowledge/evidence"], ["Observations", "/knowledge/observations"], ["Candidate Insights", "/knowledge/candidate-insights"], ["Confirmed Memory", "/knowledge/confirmed-memory"]] as const;
+  return <div className="flex flex-wrap gap-2 rounded-xl border border-gray-800 bg-gray-950/50 p-3" aria-label="Memory workspace">{tabs.map(([label, to]) => <NavLink key={label} to={to} className={({ isActive }) => `inline-flex items-center rounded-md px-2.5 py-1.5 text-xs ${isActive || current?.toLowerCase() === label.toLowerCase() ? "bg-indigo-600/20 text-indigo-200 ring-1 ring-indigo-500/50" : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"}`}>{label}</NavLink>)}</div>;
 }
 
 export function formatDate(value: unknown): string { const date = new Date(String(value ?? "")); return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString(); }

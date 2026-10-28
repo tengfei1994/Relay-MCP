@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { assertReviewer } from "./domain.js";
 import type { KnowledgeStore } from "./store.js";
-import { KnowledgeRepository } from "./repository.js";
+import { ConfirmedMemoryService, type ConfirmedMemoryType } from "./confirmed-memory.js";
 import {
   CANDIDATE_INSIGHT_KINDS,
   candidateInsightFromRow,
@@ -23,9 +23,9 @@ export interface CandidateInsightReviewRecord {
 }
 
 export interface CandidateInsightPromotion {
-  target: "case" | "decision";
-  mode: "persisted" | "metadata_only";
-  targetId?: string;
+  target: "fact" | "decision" | "case" | "pattern";
+  mode: "persisted";
+  targetId: string;
   reason: string;
   promotedBy: number;
   promotedAt: string;
@@ -200,59 +200,42 @@ export class CandidateInsightReviewService {
     return this.load(input.id);
   }
 
-  /**
-   * Promote an accepted insight. Cases reuse the existing repository
-   * projection; Decisions have no store-level entity yet, so the promotion is
-   * recorded as explicit metadata for the future Decision integration.
-   */
-  promote(input: { actorId: number; id: string; target: "case" | "decision"; reason: string; title?: string }): CandidateInsightPromotion {
+  /** Promote an accepted insight into a distinct, typed Confirmed Memory. */
+  promote(input: { actorId: number; id: string; target: "fact" | "decision" | "case" | "pattern"; reason: string; title?: string }): CandidateInsightPromotion {
     const reason = requireReason(input.reason);
     const insight = this.load(input.id);
     this.assertProjectReviewer(input.actorId, insight.projectId);
     if (insight.status !== "accepted") throw new Error("Only an explicitly confirmed Candidate Insight can be promoted");
     const existing = insight.promotion as CandidateInsightPromotion | undefined;
     if (existing && existing.target === input.target) return existing;
+    if (insight.kind !== input.target) throw new Error(`Candidate Insight kind '${insight.kind}' cannot be promoted as '${input.target}'`);
     const now = this.clock().toISOString();
-    let promotion: CandidateInsightPromotion;
-    if (input.target === "case") {
-      const caseId = `case-${insight.id}`;
-      const present = this.store.db.prepare("SELECT id FROM knowledge_documents WHERE id = ?").get(caseId) as { id?: string } | undefined;
-      promotion = { target: "case", mode: "persisted", targetId: caseId, reason, promotedBy: input.actorId, promotedAt: now };
-      if (!present) {
-        this.store.db.transaction(() => {
-          const body = [
-            `Statement: ${insight.statement}`,
-            `Why proposed: ${insight.whyProposed}`,
-            insight.confirmedFacts.length ? `Confirmed facts: ${insight.confirmedFacts.join("; ")}` : undefined,
-            insight.observedBehavior.length ? `Observed behavior: ${insight.observedBehavior.join("; ")}` : undefined,
-            insight.hypothesis ? `Hypothesis: ${insight.hypothesis}` : undefined,
-            insight.unknowns.length ? `Unknowns: ${insight.unknowns.join("; ")}` : undefined,
-            insight.reusableStatement ? `Reusable statement: ${insight.reusableStatement.statement}` : undefined,
-          ].filter((line): line is string => typeof line === "string").join("\n");
-          new KnowledgeRepository(this.store).saveCase({
-            id: caseId, kind: "case", title: input.title?.trim().slice(0, 300) || `Case: ${insight.statement.slice(0, 180)}`, body,
-            lifecycle: "draft", projectId: insight.projectId, evidenceRefs: insight.evidenceRefs, confidence: insight.confidence,
-            createdBy: input.actorId, locator: `candidate-insight:${insight.id}`, createdAt: now, updatedAt: now,
-          });
-          this.store.db.prepare("UPDATE knowledge_candidate_insights SET promotion_json = ?, reviewed_by = ?, review_reason = ?, reviewed_at = ?, updated_at = ? WHERE id = ?")
-            .run(JSON.stringify(promotion), input.actorId, reason, now, now, insight.id);
-          this.store.db.prepare("INSERT INTO knowledge_candidate_insight_reviews(id,insight_id,reviewer_id,action,reason,before_json,after_json,created_at) VALUES (?,?,?,?,?,?,?,?)")
-            .run(randomUUID(), insight.id, input.actorId, "promote", reason, JSON.stringify({ promotion: null }), JSON.stringify(promotion), now);
-          this.store.audit({ actorId: input.actorId, projectId: insight.projectId, action: "candidate_insight.promote", entityType: "candidate_insight", entityId: insight.id, details: { reason, target: "case", targetId: caseId, evidenceCount: insight.evidenceRefs.length } });
-        })();
-      }
-      return promotion;
-    }
-    promotion = {
-      target: "decision", mode: "metadata_only", reason, promotedBy: input.actorId, promotedAt: now,
-      note: "The Knowledge store has no Decision entity yet; the promotion decision is recorded as explicit metadata for the future Decision integration.",
-    };
+    const targetType = input.target[0].toUpperCase() + input.target.slice(1) as ConfirmedMemoryType;
+    const session = this.store.db.prepare("SELECT environment FROM knowledge_work_sessions WHERE id = ?").get(insight.workSessionId) as { environment?: string | null } | undefined;
+    const details = input.target === "fact"
+      ? { subject: input.title?.trim() || "Reviewed fact", value: insight.statement }
+      : input.target === "decision"
+        ? { decision: insight.statement, rationale: insight.whyProposed, alternatives: insight.unknowns }
+        : input.target === "case"
+        ? (() => {
+          if (!insight.hypothesis?.trim() || !insight.confirmedFacts.length) throw new Error("Case promotion requires a reviewed hypothesis and confirmed verification facts");
+          return { symptoms: insight.observedBehavior.join("; ") || insight.statement, rootCause: insight.hypothesis, resolution: insight.reusableStatement?.statement || insight.statement, verification: insight.confirmedFacts.join("; ") };
+        })()
+          : { statement: insight.reusableStatement?.statement || insight.statement, applicability: String(insight.reuseBoundary.applicability ?? insight.reuseBoundary.scope ?? "project"), signals: insight.confirmedFacts, exceptions: insight.unknowns };
+    const memoryId = `memory-${input.target}-${insight.id}`;
+    const promotion: CandidateInsightPromotion = { target: input.target, mode: "persisted", targetId: memoryId, reason, promotedBy: input.actorId, promotedAt: now };
+    new ConfirmedMemoryService(this.store, this.clock).save({
+      id: memoryId, type: targetType, title: input.title?.trim().slice(0, 300) || `${targetType}: ${insight.statement.slice(0, 180)}`,
+      statement: insight.statement, details, scope: { projectId: insight.projectId, environment: session?.environment ?? undefined, scopeType: session?.environment ? "environment" : "project", scopeKey: session?.environment ?? insight.projectId, visibility: "project" },
+      evidenceRefs: insight.evidenceRefs, source: { kind: "candidate_insight", id: insight.id, locator: `candidate-insight:${insight.id}` },
+      confirmedBy: input.actorId, confirmedAt: now, audit: { action: "promote", reason }, createdAt: now, updatedAt: now,
+    });
     this.store.db.transaction(() => {
       this.store.db.prepare("UPDATE knowledge_candidate_insights SET promotion_json = ?, reviewed_by = ?, review_reason = ?, reviewed_at = ?, updated_at = ? WHERE id = ?")
         .run(JSON.stringify(promotion), input.actorId, reason, now, now, insight.id);
       this.store.db.prepare("INSERT INTO knowledge_candidate_insight_reviews(id,insight_id,reviewer_id,action,reason,before_json,after_json,created_at) VALUES (?,?,?,?,?,?,?,?)")
         .run(randomUUID(), insight.id, input.actorId, "promote", reason, JSON.stringify({ promotion: null }), JSON.stringify(promotion), now);
-      this.store.audit({ actorId: input.actorId, projectId: insight.projectId, action: "candidate_insight.promote", entityType: "candidate_insight", entityId: insight.id, details: { reason, target: "decision", mode: "metadata_only" } });
+      this.store.audit({ actorId: input.actorId, projectId: insight.projectId, action: "candidate_insight.promote", entityType: "candidate_insight", entityId: insight.id, details: { reason, target: input.target, targetId: memoryId } });
     })();
     return promotion;
   }

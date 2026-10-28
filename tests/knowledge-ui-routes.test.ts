@@ -44,3 +44,21 @@ test("Knowledge planes keep global Product and project runtime scope distinct", 
   assert.match(operations, /Last call/);
   assert.match(operations, /Error rate/);
 });
+
+test("Memory workspace is non-linear and separates Candidate Insights from Confirmed Memory", () => {
+  const app = readFileSync(join(root, "App.tsx"), "utf8");
+  const layout = readFileSync(join(root, "components", "Layout.tsx"), "utf8");
+  const primitives = readFileSync(join(root, "components", "KnowledgePrimitives.tsx"), "utf8");
+  const memory = readFileSync(join(root, "pages", "KnowledgeMemory.tsx"), "utf8");
+  const overview = readFileSync(join(root, "pages", "KnowledgeOverview.tsx"), "utf8");
+  for (const route of ["knowledge/memory", "knowledge/sessions", "knowledge/candidate-insights", "knowledge/confirmed-memory"]) assert.ok(app.includes(route), `missing ${route}`);
+  assert.match(layout, /Memory workspace/);
+  assert.match(layout, /Candidate Insights/);
+  assert.match(layout, /Confirmed Memory/);
+  assert.match(memory, /Approved Operations/);
+  assert.match(memory, /Confirmed by/);
+  assert.match(memory, /Audit/);
+  assert.match(overview, /to="\/knowledge\/memory"/);
+  assert.doesNotMatch(overview, /to="\/knowledge\/candidates"/);
+  assert.doesNotMatch(primitives, /Evidence.*→.*Observation.*→.*Candidate.*→.*Case.*→.*Pattern.*→.*Playbook/);
+});

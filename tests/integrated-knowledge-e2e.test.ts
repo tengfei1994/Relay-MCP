@@ -72,14 +72,14 @@ test("integrated store/service flow ends release-ready with correlated metrics a
     assert.equal(insight.fallbackReason, "unavailable");
     assert.deepEqual(insight.evidenceRefs, [evidence.id]);
 
-    // 4. Reviewer confirms and promotes the insight to a Case.
+    // 4. Reviewer confirms and promotes the fact insight to Confirmed Memory.
     const review = new CandidateInsightReviewService(store, clock);
     const confirmed = review.confirm({ actorId: 7, id: insight.id, reason: "Verified against the run log" });
     assert.equal(confirmed.status, "accepted");
-    const promotion = review.promote({ actorId: 7, id: insight.id, target: "case", reason: "Reusable root cause", title: "Pump power supply fault" });
+    const promotion = review.promote({ actorId: 7, id: insight.id, target: "fact", reason: "Reusable fact", title: "Pump power supply fact" });
     assert.equal(promotion.mode, "persisted");
-    assert.ok(promotion.targetId?.startsWith("case-"));
-    assert.ok(store.db.prepare("SELECT id FROM knowledge_documents WHERE id=?").get(promotion.targetId));
+    assert.ok(promotion.targetId?.startsWith("memory-fact-"));
+    assert.ok(store.db.prepare("SELECT id FROM knowledge_confirmed_memories WHERE id=?").get(promotion.targetId));
 
     // 5. Create and publish a Wiki page with source references.
     const wiki = new WikiService(store, clock);

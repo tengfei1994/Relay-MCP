@@ -42,6 +42,7 @@ import { INTEGRATION_ROUTING_MIGRATION } from "./migrations/038-integration-rout
 import { WEKNORA_INGEST_IDENTITY_MIGRATION } from "./migrations/035-weknora-ingest-identity.js";
 import { PROVIDER_RUNTIME_MIGRATION, PROVIDER_RUNTIME_MIGRATION_RECOVERY_SQL } from "./migrations/034-provider-runtime.js";
 import { WORK_SESSION_OPS_MIGRATION } from "./migrations/033-work-session-ops.js";
+import { CONFIRMED_MEMORY_MIGRATION } from "./migrations/039-confirmed-memory.js";
 import { randomUUID } from "crypto";
 import { createHash } from "crypto";
 import { assertLifecycleTransition, KNOWLEDGE_LIFECYCLE, type CandidateCard, type KnowledgeDocument, type KnowledgeLifecycle, type KnowledgeRedactionStatus, type KnowledgeScopeBinding, type KnowledgeScopeType, type KnowledgeVisibility } from "./domain.js";
@@ -96,6 +97,7 @@ const KNOWLEDGE_MIGRATIONS = [
     CANDIDATE_INSIGHT_REVIEW_MIGRATION,
     WIKI_MIGRATION,
     INTEGRATION_ROUTING_MIGRATION,
+    CONFIRMED_MEMORY_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(
@@ -257,7 +259,7 @@ export class KnowledgeStore {
     // Databases created by the early P01 preview may already carry the
     // 002-domain marker but not the type projections introduced later. Make
     // this additive repair safe and idempotent without rewriting user data.
-    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions", "knowledge_topics", "knowledge_product_document_bindings", "knowledge_artifact_sets", "knowledge_artifacts", "knowledge_source_baselines", "knowledge_source_files", "knowledge_project_snapshots", "knowledge_project_snapshot_files", "knowledge_source_chunks", "knowledge_source_chunks_fts", "knowledge_artifact_publications", "knowledge_ingest_jobs", "knowledge_product_revisions"];
+    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions", "knowledge_topics", "knowledge_product_document_bindings", "knowledge_artifact_sets", "knowledge_artifacts", "knowledge_source_baselines", "knowledge_source_files", "knowledge_project_snapshots", "knowledge_project_snapshot_files", "knowledge_source_chunks", "knowledge_source_chunks_fts", "knowledge_artifact_publications", "knowledge_ingest_jobs", "knowledge_product_revisions", "knowledge_confirmed_memories"];
     const missingTable = requiredTables.some((name) => !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
     if (missingTable) this.db.exec(KNOWLEDGE_DOMAIN_MIGRATION.sql);
     const columns: Record<string, Array<[string, string]>> = {
@@ -281,6 +283,9 @@ export class KnowledgeStore {
     // The 035 identity indexes depend on repair-added columns; apply them here
     // (idempotent) so fresh and recovered databases converge.
     this.db.exec(WEKNORA_INGEST_IDENTITY_MIGRATION.sql);
+    // The confirmed-memory migration is additive; this repair keeps an older
+    // database readable if its migration marker was written before a crash.
+    this.db.exec(CONFIRMED_MEMORY_MIGRATION.sql);
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_weknora_documents_identity ON knowledge_weknora_documents(identity_hash)");
     this.db.exec(`CREATE TABLE IF NOT EXISTS knowledge_observations (
       id TEXT PRIMARY KEY, event_id TEXT NOT NULL UNIQUE, project_id TEXT, event_class TEXT NOT NULL,

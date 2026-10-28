@@ -1,10 +1,23 @@
 import { randomUUID } from "node:crypto";
 import type { Case, Candidate, Evidence, Fact, Feedback, Pattern, Playbook, Relation, Review, KnowledgeAcl, KnowledgeKind } from "./domain.js";
 import type { KnowledgeStore } from "./store.js";
+import { ConfirmedMemoryService, type ConfirmedMemory, type ConfirmedMemoryInput, type ConfirmedMemoryType } from "./confirmed-memory.js";
 
 /** Repository facade for type-specific Knowledge projections. */
 export class KnowledgeRepository {
   constructor(private readonly store: KnowledgeStore) {}
+
+  saveConfirmedMemory(value: ConfirmedMemoryInput): ConfirmedMemory {
+    return new ConfirmedMemoryService(this.store).save(value);
+  }
+
+  getConfirmedMemory(actorId: number, id: string): ConfirmedMemory {
+    return new ConfirmedMemoryService(this.store).get({ actorId, id });
+  }
+
+  listConfirmedMemories(input: { actorId: number; projectId: string; type?: ConfirmedMemoryType; environment?: string; limit?: number }): ConfirmedMemory[] {
+    return new ConfirmedMemoryService(this.store).list(input);
+  }
 
   saveCase(value: Case): Case {
     this.store.upsertDocument(value);
@@ -131,6 +144,16 @@ export class KnowledgeRepository {
   }
 
   attachEvidence(entityType: KnowledgeKind, entityId: string, evidenceId: string): void {
+    if (entityType === "confirmed_memory") {
+      const memory = this.store.db.prepare("SELECT id,project_id,evidence_refs_json FROM knowledge_confirmed_memories WHERE id = ?").get(entityId) as { id?: string; project_id?: string; evidence_refs_json?: string } | undefined;
+      const evidence = this.store.db.prepare("SELECT id,project_id FROM knowledge_evidence WHERE id = ? AND deleted_at IS NULL").get(evidenceId) as { id?: string; project_id?: string } | undefined;
+      if (!memory || !evidence) throw new Error("Knowledge entity or evidence not found");
+      if (memory.project_id !== evidence.project_id && !this.store.db.prepare("SELECT 1 FROM knowledge_evidence_acl WHERE evidence_id = ? AND project_id = ?").get(evidenceId, memory.project_id)) throw new Error("Knowledge evidence ACL denied");
+      this.store.db.prepare("INSERT OR IGNORE INTO knowledge_entity_evidence(entity_type,entity_id,evidence_id,created_at) VALUES (?,?,?,?)").run(entityType, entityId, evidenceId, new Date().toISOString());
+      let refs: string[] = []; try { const parsed = JSON.parse(String(memory.evidence_refs_json ?? "[]")); if (Array.isArray(parsed)) refs = parsed.filter((value): value is string => typeof value === "string"); } catch { /* retain empty list */ }
+      this.store.db.prepare("UPDATE knowledge_confirmed_memories SET evidence_refs_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify([...new Set([...refs, evidenceId])]), new Date().toISOString(), entityId);
+      return;
+    }
     const entity = this.store.db.prepare("SELECT id,kind,project_id FROM knowledge_documents WHERE id = ?").get(entityId) as { id?: string; kind?: string; project_id?: string } | undefined;
     if (!entity || entity.kind !== entityType) throw new Error("Knowledge entity not found or kind mismatch");
     const evidence = this.store.db.prepare("SELECT id,project_id FROM knowledge_evidence WHERE id = ? AND deleted_at IS NULL").get(evidenceId) as { id?: string; project_id?: string } | undefined;
@@ -148,6 +171,16 @@ export class KnowledgeRepository {
   }
 
   detachEvidence(entityType: KnowledgeKind, entityId: string, evidenceId: string): void {
+    if (entityType === "confirmed_memory") {
+      const memory = this.store.db.prepare("SELECT id,evidence_refs_json FROM knowledge_confirmed_memories WHERE id = ?").get(entityId) as { id?: string; evidence_refs_json?: string } | undefined;
+      if (!memory) throw new Error("Confirmed Memory not found");
+      let refs: string[] = []; try { const parsed = JSON.parse(String(memory.evidence_refs_json ?? "[]")); if (Array.isArray(parsed)) refs = parsed.filter((value): value is string => typeof value === "string"); } catch { /* retain empty list */ }
+      if (refs.length <= 1 && refs.includes(evidenceId)) throw new Error("Confirmed Memory requires at least one Evidence reference");
+      refs = refs.filter((value) => value !== evidenceId);
+      this.store.db.prepare("DELETE FROM knowledge_entity_evidence WHERE entity_type = ? AND entity_id = ? AND evidence_id = ?").run(entityType, entityId, evidenceId);
+      this.store.db.prepare("UPDATE knowledge_confirmed_memories SET evidence_refs_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(refs), new Date().toISOString(), entityId);
+      return;
+    }
     const entity = this.store.db.prepare("SELECT id,kind FROM knowledge_documents WHERE id = ?").get(entityId) as { id?: string; kind?: string } | undefined;
     if (!entity || entity.kind !== entityType) throw new Error("Knowledge entity not found or kind mismatch");
     this.store.db.prepare("DELETE FROM knowledge_entity_evidence WHERE entity_type = ? AND entity_id = ? AND evidence_id = ?").run(entityType, entityId, evidenceId);

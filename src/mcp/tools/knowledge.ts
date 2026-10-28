@@ -20,6 +20,7 @@ import { resolveRetrievalProjectId } from "../../knowledge/weknora-scope.js";
 import { canReadTopicBinding } from "../../knowledge/topic-access.js";
 import { CandidateInsightCompiler, type ManagedCandidateInsightProvider } from "../../knowledge/candidate-insight.js";
 import { CandidateInsightReviewService } from "../../knowledge/candidate-review.js";
+import { ConfirmedMemoryService, CONFIRMED_MEMORY_TYPES } from "../../knowledge/confirmed-memory.js";
 import { enqueueCandidateInsight } from "../../knowledge/candidate-worker.js";
 import { WikiService, WIKI_PAGE_STATUSES } from "../../knowledge/wiki.js";
 import { EnvironmentSecretResolver } from "../../knowledge/provider-secret.js";
@@ -95,13 +96,13 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
       return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
     } catch { return []; }
   };
-  server.tool("knowledge_search", "Search ACL- and Scope-filtered Case, Pattern, Playbook, and Candidate knowledge.", { project: z.string().optional(), query: z.string().min(1), limit: z.number().int().min(1).max(100).optional(), sampleManagerVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), environment: z.string().optional(), scopeType: z.string().optional(), scopeKey: z.string().optional() }, async ({ project: projectName, query, limit, sampleManagerVersion, solution, module, environment, scopeType, scopeKey }) => {
+  server.tool("knowledge_search", "Search ACL- and scope-filtered Confirmed Memory. Candidate Insights and Approved Operations require explicit tools or filters.", { project: z.string().optional(), query: z.string().min(1), limit: z.number().int().min(1).max(100).optional(), sampleManagerVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), environment: z.string().optional(), scopeType: z.string().optional(), scopeKey: z.string().optional(), memoryTypes: z.array(z.enum(["Fact", "Decision", "Case", "Pattern"])).optional() }, async ({ project: projectName, query, limit, sampleManagerVersion, solution, module, environment, scopeType, scopeKey, memoryTypes }) => {
     const store = requireKnowledge();
     const projectNameResolved = project(projectName);
     if (!projectNameResolved) throw new Error("No project selected");
     const projectId = user.defaultProjectId && projectNameResolved === user.defaultProject ? String(user.defaultProjectId) : projectNameResolved;
     store.grantAcl(projectId, user.id, false);
-    return { content: [{ type: "text", text: summarizeJson(await searchKnowledge(store, { userId: user.id, projectId, query, limit, sampleManagerVersion, solution, module, environment, scopeType, scopeKey })) }] };
+    return { content: [{ type: "text", text: summarizeJson(await searchKnowledge(store, { userId: user.id, projectId, query, limit, sampleManagerVersion, solution, module, environment, scopeType, scopeKey, memoryTypes })) }] };
   });
   server.tool("knowledge_get", "Read a complete Knowledge document by id after project/scope ACL enforcement.", { documentId: z.string(), project: z.string().optional() }, async ({ documentId, project: projectName }) => {
     const store = requireKnowledge();
@@ -224,13 +225,21 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
     const insights = new CandidateInsightReviewService(requireKnowledge()).list({ actorId: user.id, ...input });
     return { content: [{ type: "text", text: summarizeJson({ insights }) }] };
   });
-  server.tool("knowledge_candidate_insight_review", "Explicitly confirm, edit, reject, or promote a Candidate Insight; every action requires a reason.", { insightId: z.string(), action: z.enum(["confirm", "edit", "reject", "promote"]), reason: z.string().min(1).max(2000), patch: z.record(z.unknown()).optional(), target: z.enum(["case", "decision"]).optional(), title: z.string().max(300).optional() }, async ({ insightId, action, reason, patch, target, title }) => {
+  server.tool("knowledge_candidate_insight_review", "Explicitly confirm, edit, reject, or promote a Candidate Insight; every action requires a reason.", { insightId: z.string(), action: z.enum(["confirm", "edit", "reject", "promote"]), reason: z.string().min(1).max(2000), patch: z.record(z.unknown()).optional(), target: z.enum(["fact", "decision", "case", "pattern"]).optional(), title: z.string().max(300).optional() }, async ({ insightId, action, reason, patch, target, title }) => {
     const service = new CandidateInsightReviewService(requireKnowledge());
     const result = action === "confirm" ? service.confirm({ actorId: user.id, id: insightId, reason })
       : action === "reject" ? service.reject({ actorId: user.id, id: insightId, reason })
       : action === "edit" ? service.edit({ actorId: user.id, id: insightId, patch: patch as never, reason })
-      : service.promote({ actorId: user.id, id: insightId, target: target ?? "case", title, reason });
+      : service.promote({ actorId: user.id, id: insightId, target: target ?? "fact", title, reason });
     return { content: [{ type: "text", text: summarizeJson({ result }) }] };
+  });
+  server.tool("knowledge_confirmed_memory_list", "List ACL-scoped Confirmed Memory records; Candidate Insights and Playbooks are excluded by default.", { projectId: z.string(), type: z.enum(CONFIRMED_MEMORY_TYPES).optional(), environment: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }, async (input) => {
+    const memories = new ConfirmedMemoryService(requireKnowledge()).list({ actorId: user.id, ...input });
+    return { content: [{ type: "text", text: summarizeJson({ memories }) }] };
+  });
+  server.tool("knowledge_confirmed_memory_get", "Read one Confirmed Memory with Evidence, scope, source, confirmer and audit metadata.", { memoryId: z.string() }, async ({ memoryId }) => {
+    const memory = new ConfirmedMemoryService(requireKnowledge()).get({ actorId: user.id, id: memoryId });
+    return { content: [{ type: "text", text: summarizeJson({ memory }) }] };
   });
   server.tool("knowledge_wiki_search", "Search Relay-native Wiki pages with ACL, version, topic, solution and module filters.", { projectId: z.string().optional(), query: z.string().optional(), status: z.enum(WIKI_PAGE_STATUSES).optional(), productVersion: z.string().optional(), topicId: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), limit: z.number().int().min(1).max(200).optional(), offset: z.number().int().min(0).optional() }, async (input) => {
     const result = new WikiService(requireKnowledge()).list({ actorId: user.id, projectId: input.projectId, status: input.status, productVersion: input.productVersion, topicId: input.topicId, solution: input.solution, module: input.module, search: input.query, limit: input.limit, offset: input.offset });

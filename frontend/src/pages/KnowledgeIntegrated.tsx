@@ -182,7 +182,7 @@ function ProvidersPane({ isAdmin }: { isAdmin: boolean }) {
 }
 
 const INSIGHT_STATUSES = ["draft", "accepted", "edited", "rejected"] as const;
-const INSIGHT_KINDS = ["fact", "pattern", "case", "playbook", "decision", "observation"] as const;
+const INSIGHT_KINDS = ["fact", "decision", "case", "pattern"] as const;
 const PAGE_LIMIT = 20;
 
 function CandidatesPane({ isAdmin }: { isAdmin: boolean }) {
@@ -195,7 +195,7 @@ function CandidatesPane({ isAdmin }: { isAdmin: boolean }) {
   const [selected, setSelected] = useState<any>();
   const [history, setHistory] = useState<any[]>([]);
   const [edit, setEdit] = useState<{ statement: string; kind: string }>({ statement: "", kind: "" });
-  const [promoteTarget, setPromoteTarget] = useState<"case" | "decision">("case");
+  const [promoteTarget, setPromoteTarget] = useState<"fact" | "decision" | "case" | "pattern">("fact");
   const [promoteTitle, setPromoteTitle] = useState("");
   useEffect(() => { api.listProjects().then((result) => { setProjects(result.projects ?? []); const stored = Number(localStorage.getItem("knowledge.projectId")); setProjectId(result.projects?.find((project: any) => project.id === stored)?.id ?? result.projects?.[0]?.id); }).catch((err) => setError(errText(err, "Unable to load projects"))); }, []);
   const load = (nextOffset = offset) => {
@@ -267,7 +267,7 @@ function CandidatesPane({ isAdmin }: { isAdmin: boolean }) {
           </div>
         </>}
         {selected.status === "accepted" && <div className="flex flex-wrap items-center gap-2">
-          <select className={inputClass} value={promoteTarget} onChange={(event) => setPromoteTarget(event.target.value as "case" | "decision")}><option value="case">case</option><option value="decision">decision</option></select>
+          <select className={inputClass} value={promoteTarget} onChange={(event) => setPromoteTarget(event.target.value as "fact" | "decision" | "case" | "pattern")}><option value="fact">fact</option><option value="decision">decision</option><option value="case">case</option><option value="pattern">pattern</option></select>
           <input className={`${inputClass} w-56`} placeholder="Promotion title (optional)" value={promoteTitle} onChange={(event) => setPromoteTitle(event.target.value)} />
           <ReasonAction label="Promote" onRun={async (reason) => { const result = await api.knowledgeCandidateInsightPromote(selected.id, { target: promoteTarget, reason, title: promoteTitle.trim() || undefined }); setSelected({ ...selected, promotion: result.promotion }); }} />
         </div>}

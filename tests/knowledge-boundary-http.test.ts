@@ -38,14 +38,17 @@ test("HTTP Product Knowledge boundaries enforce project scope and topic ACLs", a
   const { knowledgeRoutes } = await import("../src/server/routes/knowledge.js");
   const { getKnowledgeStore } = await import("../src/server/knowledge-context.js");
   const { KnowledgeRepository } = await import("../src/knowledge/repository.js");
+  const { ConfirmedMemoryService } = await import("../src/knowledge/confirmed-memory.js");
   const { WeKnoraIngestor } = await import("../src/knowledge/weknora-ingest.js");
 
   runMigrations();
   const store = getKnowledgeStore();
-  store.grantAcl("p1", 7);
+  store.grantAcl("p1", 7, true);
   const now = "2026-10-23T00:00:00.000Z";
   const repository = new KnowledgeRepository(store);
-  repository.saveCase({ id: "case-p1", kind: "case", title: "Cache case", body: "cache failure confirmed", lifecycle: "approved", projectId: "p1", locator: "case:p1", createdAt: now, updatedAt: now } as any);
+  store.db.prepare("INSERT INTO knowledge_evidence(id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,source_locator,retention,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run("evidence-p1", "sha-p1", "memory://evidence-p1", "text/plain", 5, "log", "p1", "test:evidence-p1", "standard", now);
+  store.db.prepare("INSERT INTO knowledge_evidence_acl(evidence_id,project_id,created_at) VALUES (?,?,?)").run("evidence-p1", "p1", now);
+  new ConfirmedMemoryService(store).save({ id: "case-p1", type: "Case", title: "Cache case", statement: "cache failure confirmed", details: { symptoms: "cache failure", rootCause: "stale cache", resolution: "refresh cache", verification: "reloaded" }, scope: { projectId: "p1", scopeType: "project", scopeKey: "p1", visibility: "project" }, evidenceRefs: ["evidence-p1"], source: { kind: "manual", locator: "case:p1" }, confirmedBy: 7, confirmedAt: now, audit: { action: "manual", reason: "reviewed" }, createdAt: now, updatedAt: now });
   const p1 = new WeKnoraIngestor(store, { upsertDocument: async () => ({ externalDocumentId: "ext-p1" }) });
   const p2 = new WeKnoraIngestor(store, { upsertDocument: async () => ({ externalDocumentId: "ext-p2" }) });
   const p1Document = await p1.stage({ idempotencyKey: "p1", title: "P1", content: "P1", projectId: "p1", parserVersion: "test" });

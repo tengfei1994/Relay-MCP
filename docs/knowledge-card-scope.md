@@ -17,7 +17,11 @@ metadata. Raw Event and Evidence rows are never overwritten.
 
 ## Scope and visibility
 
-`knowledge_scope_bindings` separates source ownership from applicability:
+`knowledge_scope_bindings` separates source ownership from applicability. New
+durable memory uses the additive `knowledge_confirmed_memories` table and the
+`confirmed_memory` Evidence links; legacy Case/Pattern/Playbook rows remain
+readable through adapters and are not write targets for Candidate Insight
+promotion.
 
 - `project`/`environment` bindings remain private to the source Project ACL;
 - `version`, `solution`, `module`, `organization` and `system` bindings can be

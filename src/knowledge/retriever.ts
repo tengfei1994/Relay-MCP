@@ -13,7 +13,9 @@ export interface KnowledgeSearchRequest {
   environment?: string;
   scopeType?: string;
   scopeKey?: string;
-  kinds?: Array<"candidate" | "case" | "pattern" | "playbook" | "fact">;
+  kinds?: Array<"candidate" | "case" | "pattern" | "playbook" | "fact" | "decision" | "confirmed_memory">;
+  /** Explicit Confirmed Memory type filters. Omitted means all four types. */
+  memoryTypes?: Array<"Fact" | "Decision" | "Case" | "Pattern">;
   includeDeprecated?: boolean;
   typeQuotas?: Partial<Record<"candidate" | "case" | "pattern" | "playbook" | "fact", number>>;
   providers?: KnowledgeProviders;
@@ -35,6 +37,7 @@ export interface KnowledgeSearchResult {
     applicability: { sampleManagerVersion?: string; solution?: string; module?: string; environment?: string };
     evidenceRefs: string[];
     scope: { scopeType?: string; scopeKey?: string; visibility?: string; sourceProjectId?: string; redactionStatus?: string; specificity: number };
+    memoryType?: "Fact" | "Decision" | "Case" | "Pattern";
   }>;
 }
 
@@ -88,6 +91,10 @@ function readRows(store: KnowledgeStore, request: KnowledgeSearchRequest): Array
   if (request.environment) { conditions.push("(d.environment IS NULL OR d.environment = @environment)"); params.environment = request.environment; }
   if (request.scopeType) { conditions.push("EXISTS (SELECT 1 FROM knowledge_scope_bindings sf WHERE sf.document_id = d.id AND sf.scope_type = @scopeType)"); params.scopeType = request.scopeType; }
   if (request.scopeKey) { conditions.push("EXISTS (SELECT 1 FROM knowledge_scope_bindings sk WHERE sk.document_id = d.id AND sk.scope_key = @scopeKey)"); params.scopeKey = request.scopeKey; }
+  // Candidate Insights and Playbooks are opt-in sections. They are never
+  // part of the default durable-memory search surface.
+  if (!request.kinds?.includes("candidate")) conditions.push("d.kind <> 'candidate'");
+  if (!request.kinds?.includes("playbook")) conditions.push("d.kind <> 'playbook'");
   const documentKinds = request.kinds?.filter((kind) => kind !== "fact");
   if (request.kinds?.length && documentKinds?.length === 0) {
     // The caller explicitly requested facts only; avoid broadening the ACL
@@ -129,6 +136,26 @@ function readRows(store: KnowledgeStore, request: KnowledgeSearchRequest): Array
   }
 }
 
+function readConfirmedMemoryRows(store: KnowledgeStore, request: KnowledgeSearchRequest): Array<Record<string, unknown>> {
+  const requested = request.memoryTypes ?? request.kinds?.filter((kind): kind is "fact" | "decision" | "case" | "pattern" => ["fact", "decision", "case", "pattern"].includes(kind)).map((kind) => kind === "fact" ? "Fact" : kind === "decision" ? "Decision" : kind === "case" ? "Case" : "Pattern") as Array<"Fact" | "Decision" | "Case" | "Pattern">;
+  const params: unknown[] = [request.projectId];
+  const conditions = ["(project_id = ? OR json_extract(scope_json, '$.visibility') IN ('global','organization'))", "status = 'confirmed'"];
+  if (request.environment) { conditions.push("(environment IS NULL OR environment = ?)"); params.push(request.environment); }
+  if (requested?.length) { conditions.push(`memory_type IN (${requested.map(() => "?").join(",")})`); params.push(...requested); }
+  const rows = store.db.prepare(`SELECT * FROM knowledge_confirmed_memories WHERE ${conditions.join(" AND ")} ORDER BY confirmed_at DESC LIMIT ?`).all(...params, Math.max(1, Math.min((request.limit ?? 20) * 5, 100))) as Array<Record<string, unknown>>;
+  const tokens = new Set(tokenize(request.query));
+  return rows.filter((row) => {
+    const sourceProjectId = String(row.project_id ?? "");
+    if (sourceProjectId === String(request.projectId)) return true;
+    let refs: string[] = [];
+    try { const parsed = JSON.parse(String(row.evidence_refs_json ?? "[]")); refs = Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : []; } catch { return false; }
+    return refs.every((evidenceId) => Boolean(store.db.prepare("SELECT 1 FROM knowledge_evidence_acl WHERE evidence_id = ? AND project_id = ?").get(evidenceId, request.projectId)));
+  }).filter((row) => tokenize(`${String(row.title)} ${String(row.statement)} ${String(row.details_json)}`).some((token) => tokens.has(token))).map((row) => ({
+    ...row, id: row.id, kind: "confirmed_memory", title: row.title, body: row.statement, lifecycle: "confirmed", memory_type: row.memory_type,
+    source_locator: `confirmed-memory:${String(row.id)}`, project_id: row.project_id, samplemanager_version: null, solution: null, module: null, environment: row.environment,
+  }));
+}
+
 function readFactRows(store: KnowledgeStore, request: KnowledgeSearchRequest): Array<Record<string, unknown>> {
   const limit = Math.max(1, Math.min(request.limit ?? 20, 100));
   const terms = tokenize(request.query).slice(0, 8);
@@ -146,7 +173,8 @@ export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeS
   if (!store.canRead(request.userId, request.projectId)) throw new Error("Knowledge access denied for project");
   const retrievalRunId = `retrieval-${randomUUID()}`;
   const providers = { ...defaultKnowledgeProviders(), ...(request.providers ?? {}) };
-  const rows = readRows(store, request);
+  const includeConfirmed = !request.kinds?.length || Boolean(request.memoryTypes?.length) || request.kinds.includes("confirmed_memory") || request.kinds.some((kind) => ["fact", "decision", "case", "pattern"].includes(kind));
+  const rows = [...readRows(store, request), ...(includeConfirmed ? readConfirmedMemoryRows(store, request) : [])];
   const queryTokens = new Set(tokenize(request.query));
   let degraded = false;
   const vectorScores = new Map<string, number>();
@@ -196,8 +224,9 @@ export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeS
       id: String(row.id), kind: String(row.kind), title, summary: body.length > 500 ? `${body.slice(0, 500)}…` : body,
       score, lifecycle: String(row.lifecycle), versionMatch, matchReasons: reasons,
       applicability: { sampleManagerVersion: row.samplemanager_version ? String(row.samplemanager_version) : undefined, solution: row.solution ? String(row.solution) : undefined, module: row.module ? String(row.module) : undefined, environment: row.environment ? String(row.environment) : undefined },
-      evidenceRefs: visibleEvidenceRefs(store, row, request, scope),
+      evidenceRefs: String(row.kind) === "confirmed_memory" ? (() => { try { return JSON.parse(String(row.evidence_refs_json ?? "[]")); } catch { return []; } })() : visibleEvidenceRefs(store, row, request, scope),
       scope,
+      memoryType: String(row.memory_type ?? "") as "Fact" | "Decision" | "Case" | "Pattern" | undefined,
     };
   });
   if (providers.rerank && resultRows.length > 1) {

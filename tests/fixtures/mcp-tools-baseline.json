@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "generatedFrom": "McpServer tools/list",
   "sourceVersion": {
-    "gitCommit": "c0c79b1e2a61bbb33053a8c1bf39b4c858e20a8a",
-    "mcpSdkVersion": "1.29.0",
+    "gitCommit": "50fac661eca45985a765d818ae993b2e8248f6f4",
+    "mcpSdkVersion": "1.32.2",
     "generationCommand": "npm run generate:mcp-baseline",
-    "generatedAt": "2026-10-23T13:30:54.032Z",
+    "generatedAt": "2026-10-27T17:15:26.094Z",
     "worktreeDirty": true
   },
   "tools": [
@@ -736,8 +736,10 @@
           "target": {
             "type": "string",
             "enum": [
+              "fact",
+              "decision",
               "case",
-              "decision"
+              "pattern"
             ]
           },
           "title": {
@@ -749,6 +751,65 @@
           "insightId",
           "action",
           "reason"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_confirmed_memory_get",
+      "description": "Read one Confirmed Memory with Evidence, scope, source, confirmer and audit metadata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "memoryId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "memoryId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_confirmed_memory_list",
+      "description": "List ACL-scoped Confirmed Memory records; Candidate Insights and Playbooks are excluded by default.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "Fact",
+              "Decision",
+              "Case",
+              "Pattern"
+            ]
+          },
+          "environment": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "projectId"
         ],
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
@@ -1095,7 +1156,7 @@
     },
     {
       "name": "knowledge_search",
-      "description": "Search ACL- and Scope-filtered Case, Pattern, Playbook, and Candidate knowledge.",
+      "description": "Search ACL- and scope-filtered Confirmed Memory. Candidate Insights and Approved Operations require explicit tools or filters.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1128,6 +1189,18 @@
           },
           "scopeKey": {
             "type": "string"
+          },
+          "memoryTypes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "Fact",
+                "Decision",
+                "Case",
+                "Pattern"
+              ]
+            }
           }
         },
         "required": [
@@ -5877,6 +5950,14 @@
     },
     {
       "name": "knowledge_candidate_insight_review",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_confirmed_memory_list",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_confirmed_memory_get",
       "category": "context"
     },
     {

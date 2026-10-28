@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { KnowledgeStore } from "./store.js";
 import { WorkSessionService, type WorkSession } from "./work-session.js";
 
-export const CANDIDATE_INSIGHT_KINDS = ["fact", "pattern", "case", "playbook", "decision", "observation"] as const;
+export const CANDIDATE_INSIGHT_KINDS = ["fact", "decision", "case", "pattern"] as const;
 export type CandidateInsightKind = typeof CANDIDATE_INSIGHT_KINDS[number];
 export type CandidateInsightStatus = "draft" | "accepted" | "edited" | "rejected";
 
@@ -378,7 +378,7 @@ export class CandidateInsightCompiler {
 
   private fallbackDraft(session: WorkSession, evidenceRefs: string[], context: Record<string, unknown>, reason: string): CandidateInsightFields {
     return {
-      kind: "observation",
+      kind: "fact",
       statement: text(context.statement, "Evidence requires human review"),
       whyProposed: "Deterministic fallback: the managed provider could not produce a validated insight",
       evidenceRefs,

@@ -34,6 +34,7 @@ import { runReleaseGates } from "../../knowledge/release-gates.js";
 import { CandidateInsightCompiler } from "../../knowledge/candidate-insight.js";
 import { createCandidateInsightProvider } from "../../knowledge/candidate-provider.js";
 import { CandidateInsightReviewService } from "../../knowledge/candidate-review.js";
+import { ConfirmedMemoryService, CONFIRMED_MEMORY_TYPES } from "../../knowledge/confirmed-memory.js";
 import { enqueueCandidateInsight, getCandidateInsightJob } from "../../knowledge/candidate-worker.js";
 import { WIKI_PAGE_STATUSES } from "../../knowledge/wiki.js";
 import { WeKnoraError } from "../../knowledge/weknora.js";
@@ -397,11 +398,11 @@ function knowledgeProviderSummary(store: ReturnType<typeof getKnowledgeStore>): 
   ];
 }
 
-function parseKinds(raw: unknown): Array<"candidate" | "case" | "pattern" | "playbook" | "fact"> | undefined {
+function parseKinds(raw: unknown): Array<"candidate" | "case" | "pattern" | "playbook" | "fact" | "decision" | "confirmed_memory"> | undefined {
   const value = raw === undefined || raw === null ? undefined : String(raw);
   if (!value) return undefined;
-  const allowed = new Set(["candidate", "case", "pattern", "playbook", "fact"]);
-  const kinds = value.split(",").map((item) => item.trim()).filter((item): item is "candidate" | "case" | "pattern" | "playbook" | "fact" => allowed.has(item));
+  const allowed = new Set(["candidate", "case", "pattern", "playbook", "fact", "decision", "confirmed_memory"]);
+  const kinds = value.split(",").map((item) => item.trim()).filter((item): item is "candidate" | "case" | "pattern" | "playbook" | "fact" | "decision" | "confirmed_memory" => allowed.has(item));
   return kinds.length ? kinds : undefined;
 }
 
@@ -452,6 +453,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
         scopeType: queryValue(query, "scopeType"),
         scopeKey: queryValue(query, "scopeKey"),
         kinds: parseKinds(query.kinds),
+        memoryTypes: String(query.memoryTypes ?? "").split(",").map((value) => value.trim()).filter((value): value is "Fact" | "Decision" | "Case" | "Pattern" => ["Fact", "Decision", "Case", "Pattern"].includes(value)),
         includeDeprecated: parseBoolean(query.includeDeprecated) ?? false,
       });
       if(session)scopedWorkSessions(store).get({actorId:request.user.id,sessionId:session.id});
@@ -1445,7 +1447,17 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     try { return reply.send({ insight: new CandidateInsightReviewService(getKnowledgeStore()).reviewScope({ actorId: request.user.id, id: String((request.params as { id: string }).id), ...body.data }) }); }
     catch (error) { return sendError(reply, error, 403); }
   });
-  app.post("/api/knowledge/candidate-insights/:id/promote", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ target: z.enum(["case", "decision"]), reason: z.string().trim().min(1).max(2_000), title: z.string().max(300).optional() }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid promotion request" }); try { return reply.send({ promotion: new CandidateInsightReviewService(getKnowledgeStore()).promote({ actorId: request.user.id, id: String((request.params as { id: string }).id), ...body.data }) }); } catch (error) { return sendError(reply, error, 403); } });
+  app.post("/api/knowledge/candidate-insights/:id/promote", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ target: z.enum(["fact", "decision", "case", "pattern"]), reason: z.string().trim().min(1).max(2_000), title: z.string().max(300).optional() }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid promotion request" }); try { return reply.send({ promotion: new CandidateInsightReviewService(getKnowledgeStore()).promote({ actorId: request.user.id, id: String((request.params as { id: string }).id), ...body.data }) }); } catch (error) { return sendError(reply, error, 403); } });
+
+  app.get("/api/knowledge/confirmed-memories", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    const body = z.object({ projectId: z.string().min(1), type: z.enum(CONFIRMED_MEMORY_TYPES).optional(), environment: z.string().optional(), limit: z.coerce.number().int().min(1).max(100).optional() }).safeParse(query);
+    if (!body.success) return reply.status(400).send({ error: "projectId is required" });
+    try { return reply.send({ memories: new ConfirmedMemoryService(getKnowledgeStore()).list({ actorId: request.user.id, ...body.data }) }); } catch (error) { return sendError(reply, error, 403); }
+  });
+  app.get("/api/knowledge/confirmed-memories/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
+    try { return reply.send({ memory: new ConfirmedMemoryService(getKnowledgeStore()).get({ actorId: request.user.id, id: String((request.params as { id: string }).id) }) }); } catch (error) { return sendError(reply, error, 404); }
+  });
 
   app.get("/api/knowledge/wiki", { onRequest: [app.authenticate] }, async (request, reply) => { const query = request.query as Record<string, unknown>; const status = typeof query.status === "string" && WIKI_PAGE_STATUSES.includes(query.status as never) ? query.status as never : undefined; try { return reply.send(await activeWikiService(getKnowledgeStore()).list({ actorId: request.user.id, projectId: query.projectId ? String(query.projectId) : undefined, environment: query.environment ? String(query.environment) : undefined, status, productVersion: query.productVersion ? String(query.productVersion) : undefined, topicId: query.topicId ? String(query.topicId) : undefined, solution: query.solution ? String(query.solution) : undefined, module: query.module ? String(query.module) : undefined, search: query.search ? String(query.search) : undefined, limit: parseBoundedInt(query.limit, 50, 1, 200), offset: parseBoundedInt(query.offset, 0, 0, 1_000_000) })); } catch (error) { return sendError(reply, error, 403); } });
   app.post("/api/knowledge/wiki", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ environment: z.string().optional(), pageKey: z.string().min(1).max(300), title: z.string().min(1).max(500), body: z.string().min(1), projectId: z.string().optional(), productVersion: z.string().optional(), topicId: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), sourceRefs: z.array(z.string()).max(100).optional(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Wiki page" }); try { return reply.status(201).send({ page: await activeWikiService(getKnowledgeStore()).create({ actorId: request.user.id, ...body.data }) }); } catch (error) { return sendError(reply, error, 403); } });

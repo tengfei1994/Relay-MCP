@@ -354,7 +354,7 @@ Knowledge 审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [`d
 | Jobs | `job_cancel` | 请求取消运行中的 SSH job。 |
 | Context | `context_record_fact` | 保存持久化 Project fact。 |
 | Context | `context_search` | 搜索持久化 Project fact。 |
-| Context | `knowledge_search` | 按 Project、SampleManager 版本、解决方案、模块和环境检索 Case、Pattern、Playbook、Candidate 与 Fact。 |
+| Context | `knowledge_search` | 按 Project、SampleManager 版本、解决方案、模块和环境检索 Confirmed Memory；Candidate Insight 与 Approved Operation 需要显式入口。 |
 | Context | `knowledge_get` | 在 Project ACL 校验后读取 Knowledge 文档完整正文和来源。 |
 | Context | `knowledge_playbook_get` | 读取 Playbook 的步骤、回滚说明、生命周期和提议的 Skill diff。 |
 | Context | `knowledge_evidence_get` | 读取 Evidence 元数据；内容通过受控、审计的下载路径访问。 |
@@ -377,6 +377,8 @@ Knowledge 审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [`d
 | Context | `knowledge_candidate_insight_job_get` | 检查异步 Candidate 编译任务状态及结果，验证 Session 访问权限。 |
 | Context | `knowledge_candidate_insight_list` | 按 Project ACL 列出待人工审核或已处理的 Candidate Insight。 |
 | Context | `knowledge_candidate_insight_review` | 使用必填理由确认、编辑、拒绝或晋级 Candidate Insight。 |
+| Context | `knowledge_confirmed_memory_list` | 列出按 ACL 过滤的 Fact、Decision、Case、Pattern Confirmed Memory。 |
+| Context | `knowledge_confirmed_memory_get` | 读取包含 Evidence、范围、来源、确认人和审计信息的 Confirmed Memory。 |
 | Context | `knowledge_wiki_search` | 按 ACL、版本、主题、Solution 和模块搜索 Relay Wiki。 |
 | Context | `knowledge_wiki_get` | 读取 Wiki 页面、修订历史或两个修订的 unified diff。 |
 | Context | `knowledge_wiki_write` | 幂等创建 Wiki 页面或追加受审核编辑修订。 |

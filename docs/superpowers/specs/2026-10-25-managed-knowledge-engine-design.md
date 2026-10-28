@@ -23,3 +23,28 @@ User direction: complete true WeKnora integration and replacement, reuse Relay m
 5. Existing MCP/API contracts work across switch/rollback; evidence/memory unchanged, staged/deprecated/foreign environment excluded.
 6. Full tests/build, real E2E logs, IDs, request metrics and sensitive-field scan recorded. Bulk document/quality claims require their own measured reports.
 7. Reopened issues remain open for missing evidence, unsupported upstream operations, external model limitations or unverified scale.
+
+## Long-term memory model
+
+Relay's durable memory is separate from the Product and Wiki planes. Its
+objects are Work Session / IntentEnvelope, Evidence, Observation, Candidate
+Insight, and Confirmed Memory. These relationships describe provenance, not a
+mandatory promotion pipeline; Candidate Insight is never default context and
+Playbook is an independently approved executable operation plan.
+
+Candidate Insight is restricted to `fact | decision | case | pattern`.
+Confirmed Memory is a distinct typed entity with `Fact | Decision | Case |
+Pattern`. Each Confirmed Memory stores Evidence references, project and
+environment scope, source, confirmer, confirmation time, and audit metadata.
+The details schema is discriminated: Fact has subject/value, Decision has
+rationale/alternatives, Case has symptoms/root cause/resolution/verification,
+and Pattern has applicability/signals/exceptions. Types are immutable and
+cannot be implicitly converted.
+
+Migration `047-confirmed-memory` adds the additive confirmed-memory table and
+indexes. Legacy Case/Pattern/Playbook rows remain readable, while new
+Candidate promotion writes only Confirmed Memory. Default retrieval and
+Context Pack exclude Candidates and Playbooks and enforce Evidence ACL,
+project, and environment isolation. The Memory workspace presents Sessions,
+Evidence, Observations, Candidate Insights, and Confirmed Memory separately;
+Approved Operations remains the independent Playbook area.

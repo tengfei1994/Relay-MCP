@@ -25,13 +25,13 @@ test('Candidate queue omits nested hidden reasoning before persistence and prese
 }));
 
 test('synchronous Candidate compilation omits hidden context before provider and persistence',()=>fixture(async({store,input})=>{
- let prompt='';const compiler=new CandidateInsightCompiler(store,{providerId:'fixture',modelId:'synthetic',complete:async(request)=>{prompt=request.prompt;return JSON.stringify({kind:'observation',statement:'Observed fixture behavior',whyProposed:'Evidence exists',evidenceRefs:input.evidenceRefs,intentRefs:[],unknowns:[],reuseBoundary:{projectId:'p1'},confirmedFacts:[],observedBehavior:['Observed fixture behavior']});}});
+ let prompt='';const compiler=new CandidateInsightCompiler(store,{providerId:'fixture',modelId:'synthetic',complete:async(request)=>{prompt=request.prompt;return JSON.stringify({kind:'fact',statement:'Observed fixture behavior',whyProposed:'Evidence exists',evidenceRefs:input.evidenceRefs,intentRefs:[],unknowns:[],reuseBoundary:{projectId:'p1'},confirmedFacts:[],observedBehavior:['Observed fixture behavior']});}});
  const result=await compiler.compile(input);assert.equal(prompt.includes(hidden),false,'hidden context must not be sent to provider');assert.ok(prompt.includes('fixture://source'));assert.ok(prompt.includes('Needs verification'));assert.equal(result.generatedBy,'managed-candidate-llm:fixture/synthetic');
  const persisted=JSON.stringify(store.db.prepare('SELECT * FROM knowledge_candidate_insights').all());assert.equal(persisted.includes(hidden),false);
 }));
 
 test('ignored hidden context cannot change queued idempotency or provoke another model call',()=>fixture(async({store,input})=>{
  const first=enqueueCandidateInsight(store,input),second=enqueueCandidateInsight(store,{...input,context:expected});assert.equal(second.job.id,first.job.id);assert.equal(second.enqueued,false);
- let calls=0;const compiler=new CandidateInsightCompiler(store,{providerId:'fixture',modelId:'synthetic',complete:async()=>{calls++;return JSON.stringify({kind:'observation',statement:'Observed fixture behavior',whyProposed:'Evidence exists',evidenceRefs:input.evidenceRefs,unknowns:[],reuseBoundary:{projectId:'p1'}});}});
+ let calls=0;const compiler=new CandidateInsightCompiler(store,{providerId:'fixture',modelId:'synthetic',complete:async()=>{calls++;return JSON.stringify({kind:'fact',statement:'Observed fixture behavior',whyProposed:'Evidence exists',evidenceRefs:input.evidenceRefs,unknowns:[],reuseBoundary:{projectId:'p1'}});}});
  const a=await compiler.compile(input),b=await compiler.compile({...input,context:expected});assert.equal(a.id,b.id);assert.equal(calls,1);
 }));

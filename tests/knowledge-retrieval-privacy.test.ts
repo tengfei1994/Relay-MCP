@@ -7,11 +7,15 @@ import test from "node:test";
 import {createKnowledgeStore} from "../src/knowledge/store.ts";
 import {searchKnowledge} from "../src/knowledge/retriever.ts";
 import {loadRelayContextSources} from "../src/knowledge/context-sources.ts";
+import {EvidenceStore} from "../src/knowledge/evidence-store.ts";
+import {ConfirmedMemoryService} from "../src/knowledge/confirmed-memory.ts";
 
 function fixture(){
  const root=mkdtempSync(join(tmpdir(),"retrieval-privacy-")),store=createKnowledgeStore({dbPath:join(root,"knowledge.db")});store.grantAcl("p1",7,true);
  const now=new Date().toISOString();
- for(const id of ["case-1","case-2"])store.upsertDocument({id,kind:"case",title:`cache private_title_${id}`,body:`cache private_body_${id}`,lifecycle:"verified",projectId:"p1",environment:"nonprod",locator:`case:${id}`,createdAt:now,updatedAt:now});
+ const evidence=new EvidenceStore(store,join(root,"evidence")).put({content:Buffer.from("cache private evidence"),mimeType:"text/plain",sourceKind:"log",projectId:"p1",environment:"nonprod",locator:"fixture:memory"});
+ const memories=new ConfirmedMemoryService(store);
+ for(const id of ["case-1","case-2"])memories.save({id,type:"Case",title:`cache private_title_${id}`,statement:`cache private_body_${id}`,details:{symptoms:"cache",rootCause:"fixture",resolution:"reviewed",verification:"confirmed"},scope:{projectId:"p1",environment:"nonprod",scopeType:"environment",scopeKey:"nonprod",visibility:"project"},evidenceRefs:[evidence.id],source:{kind:"manual",locator:`case:${id}`},confirmedBy:7,confirmedAt:now,audit:{action:"manual",reason:"fixture"}});
  return {store,clean(){store.close();rmSync(root,{recursive:true,force:true});}};
 }
 function telemetry(store:ReturnType<typeof createKnowledgeStore>){return JSON.stringify({runs:store.db.prepare("SELECT * FROM knowledge_retrieval_runs").all(),audit:store.db.prepare("SELECT entity_id,details_json FROM knowledge_audit WHERE action='knowledge.search'").all()});}

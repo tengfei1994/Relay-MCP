@@ -2,6 +2,7 @@ import { WorkSessionService } from "./work-session.js";
 import { MigrationController } from "./migration-control.js";
 import { CANDIDATE_CASE_SCOPE_GUARD_SQL } from "./candidate-scope.js";
 import { searchProductBackend } from "./product-backend.js";
+import type { ConfirmedMemoryType } from "./confirmed-memory.js";
 import { createHash, randomUUID } from "crypto";
 import type { KnowledgeStore } from "./store.js";
 import { defaultKnowledgeProviders, tokenize, type KnowledgeProviders } from "./providers.js";
@@ -18,9 +19,10 @@ export interface KnowledgeSearchRequest {
   environment?: string;
   scopeType?: string;
   scopeKey?: string;
-  kinds?: Array<"candidate" | "case" | "pattern" | "playbook" | "fact">;
+  kinds?: Array<"candidate" | "case" | "pattern" | "playbook" | "fact" | "decision" | "confirmed_memory">;
+  memoryTypes?: ConfirmedMemoryType[];
   includeDeprecated?: boolean;
-  typeQuotas?: Partial<Record<"candidate" | "case" | "pattern" | "playbook" | "fact", number>>;
+  typeQuotas?: Partial<Record<"candidate" | "case" | "pattern" | "playbook" | "fact" | "decision" | "confirmed_memory", number>>;
   providers?: KnowledgeProviders;
 }
 
@@ -41,6 +43,7 @@ export interface KnowledgeSearchResult {
     applicability: { sampleManagerVersion?: string; solution?: string; module?: string; environment?: string };
     evidenceRefs: string[];
     scope: { scopeType?: string; scopeKey?: string; visibility?: string; sourceProjectId?: string; redactionStatus?: string; specificity: number };
+    memoryType?: ConfirmedMemoryType;
   }>;
 }
 
@@ -67,9 +70,13 @@ function evidenceRefs(store: KnowledgeStore, row: Record<string, unknown>): stri
 
 function scopeFor(store: KnowledgeStore, row: Record<string, unknown>): { scopeType?: string; scopeKey?: string; visibility?: string; sourceProjectId?: string; redactionStatus?: string; specificity: number } {
   const binding = store.getScopeBinding(String(row.id));
-  const scopeType = binding?.scopeType;
+  let memoryScope: { scopeType?: string; scopeKey?: string; visibility?: string } | undefined;
+  if (String(row.kind ?? "") === "confirmed_memory") {
+    try { memoryScope = JSON.parse(String(row.scope_json ?? "{}")); } catch { /* legacy malformed metadata remains readable */ }
+  }
+  const scopeType = binding?.scopeType ?? memoryScope?.scopeType;
   const specificity = scopeType === "environment" ? 5 : scopeType === "project" ? 4 : scopeType === "module" || scopeType === "solution" ? 3 : scopeType === "version" ? 2 : scopeType === "system" ? 1 : 0;
-  return { scopeType, scopeKey: binding?.scopeKey, visibility: binding?.visibility, sourceProjectId: binding?.sourceProjectId, redactionStatus: binding?.redactionStatus, specificity };
+  return { scopeType, scopeKey: binding?.scopeKey ?? memoryScope?.scopeKey, visibility: binding?.visibility ?? memoryScope?.visibility, sourceProjectId: binding?.sourceProjectId ?? (row.project_id ? String(row.project_id) : undefined), redactionStatus: binding?.redactionStatus, specificity };
 }
 
 function isCrossProjectGlobal(row: Record<string, unknown>, request: KnowledgeSearchRequest, scope: ReturnType<typeof scopeFor>): boolean {
@@ -159,6 +166,26 @@ function readFactRows(store: KnowledgeStore, request: KnowledgeSearchRequest): A
   }
 }
 
+function readConfirmedMemoryRows(store: KnowledgeStore, request: KnowledgeSearchRequest): Array<Record<string, unknown>> {
+  const requested = request.memoryTypes ?? request.kinds?.filter((kind): kind is "fact" | "decision" | "case" | "pattern" => ["fact", "decision", "case", "pattern"].includes(kind)).map((kind) => kind === "fact" ? "Fact" : kind === "decision" ? "Decision" : kind === "case" ? "Case" : "Pattern") as ConfirmedMemoryType[];
+  const params: unknown[] = [request.projectId];
+  const conditions = ["(project_id = ? OR json_extract(scope_json, '$.visibility') IN ('global','organization'))", "status = 'confirmed'"];
+  if (request.environment) { conditions.push("(environment IS NULL OR environment = ?)"); params.push(request.environment); }
+  if (requested?.length) { conditions.push(`memory_type IN (${requested.map(() => "?").join(",")})`); params.push(...requested); }
+  const rows = store.db.prepare(`SELECT * FROM knowledge_confirmed_memories WHERE ${conditions.join(" AND ")} ORDER BY confirmed_at DESC LIMIT ?`).all(...params, Math.max(1, Math.min((request.limit ?? 20) * 5, 100))) as Array<Record<string, unknown>>;
+  const tokens = new Set(tokenize(request.query));
+  return rows.filter((row) => {
+    const sourceProjectId = String(row.project_id ?? "");
+    if (sourceProjectId === String(request.projectId)) return true;
+    let refs: string[] = [];
+    try { const parsed = JSON.parse(String(row.evidence_refs_json ?? "[]")); refs = Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : []; } catch { return false; }
+    return refs.every((evidenceId) => Boolean(store.db.prepare("SELECT 1 FROM knowledge_evidence_acl WHERE evidence_id = ? AND project_id = ?").get(evidenceId, request.projectId)));
+  }).filter((row) => tokenize(`${String(row.title)} ${String(row.statement)} ${String(row.details_json)}`).some((token) => tokens.has(token))).map((row) => ({
+    ...row, id: row.id, kind: "confirmed_memory", title: row.title, body: row.statement, lifecycle: "confirmed", memory_type: row.memory_type,
+    source_locator: `confirmed-memory:${String(row.id)}`, project_id: row.project_id, samplemanager_version: null, solution: null, module: null, environment: row.environment,
+  }));
+}
+
 export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeSearchRequest): Promise<KnowledgeSearchResult> {
   if (!store.canRead(request.userId, request.projectId)) throw new Error("Knowledge access denied for project");
   if (request.workSessionId) new WorkSessionService(store).assertSessionUsable({actorId:request.userId,sessionId:request.workSessionId,projectId:request.projectId,environment:request.environment});
@@ -166,7 +193,8 @@ export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeS
   const retrievalRunId = `retrieval-${randomUUID()}`;
   const providers = { ...defaultKnowledgeProviders(), ...(request.providers ?? {}) };
   const engineProduct = new MigrationController(store).activeProductProvider() === "weknora";
-  const rows = readRows(store, request).filter(row => !engineProduct || row.kind !== "product_document");
+  const includeConfirmed = !request.kinds?.length || Boolean(request.memoryTypes?.length) || request.kinds.includes("confirmed_memory") || request.kinds.some((kind) => ["fact", "decision", "case", "pattern"].includes(kind));
+  const rows = [...readRows(store, request), ...(includeConfirmed ? readConfirmedMemoryRows(store, request) : [])].filter(row => !engineProduct || row.kind !== "product_document");
   const queryTokens = new Set(tokenize(request.query));
   let degraded = false;
   let degradedReasons: KnowledgeSearchResult["degradedReasons"];
@@ -178,7 +206,7 @@ export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeS
     try {
       embeddingModelId = providers.embedding.capabilities.modelId;
       const [queryVector] = await providers.embedding.embed([request.query]);
-      const documents = rows.filter((row) => String(row.kind) !== "fact");
+      const documents = rows.filter((row) => !["fact", "confirmed_memory"].includes(String(row.kind)));
       const missing = documents.filter((row) => {
         const cached = store.db.prepare("SELECT model_id,dimensions,vector_json,source_sha256 FROM knowledge_embeddings WHERE document_id = ?").get(String(row.id)) as { model_id?: string; dimensions?: number; vector_json?: string; source_sha256?: string } | undefined;
         const fingerprint = documentFingerprint(row);
@@ -219,6 +247,7 @@ export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeS
       applicability: { sampleManagerVersion: row.samplemanager_version ? String(row.samplemanager_version) : undefined, solution: row.solution ? String(row.solution) : undefined, module: row.module ? String(row.module) : undefined, environment: row.environment ? String(row.environment) : undefined },
       evidenceRefs: visibleEvidenceRefs(store, row, request, scope),
       scope,
+      ...(row.memory_type ? { memoryType: String(row.memory_type) as ConfirmedMemoryType } : {}),
     };
   });
   if (providers.rerank && resultRows.length > 1) {

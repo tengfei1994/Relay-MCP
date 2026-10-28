@@ -37,7 +37,7 @@ const provider=createServer(async(req,res)=>{
   if(mode==='timeout')return;
   if(attempts[mode]===1)await new Promise<void>(yes=>release.set(mode,yes));
   if(mode==='rate_limited'||mode==='retry_recovery'&&attempts[mode]===1){res.writeHead(429,{'retry-after':'0'}).end(JSON.stringify({error:{message:privateValues.errorBody}}));return;}
-  const content=mode==='invalid_json'?'{broken':JSON.stringify({kind:'observation',statement:'A controlled fixture completed.',whyProposed:'The visible Evidence records the fixture.',evidenceRefs:[evidenceId],intentRefs:[],unknowns:['Production applicability is untested.'],reuseBoundary:{projectId:'1',environment:'nonprod'},confidence:0.8,confirmedFacts:[],observedBehavior:['The fixture was observed.']});
+  const content=mode==='invalid_json'?'{broken':JSON.stringify({kind:'fact',statement:'A controlled fixture completed.',whyProposed:'The visible Evidence records the fixture.',evidenceRefs:[evidenceId],intentRefs:[],unknowns:['Production applicability is untested.'],reuseBoundary:{projectId:'1',environment:'nonprod'},confidence:0.8,confirmedFacts:[],observedBehavior:['The fixture was observed.']});
   res.end(JSON.stringify({choices:[{message:{content},finish_reason:'stop'}],usage:{prompt_tokens:10,completion_tokens:20,total_tokens:30}}));
  }catch{if(!res.headersSent)res.writeHead(500);res.end('{}');}
 });

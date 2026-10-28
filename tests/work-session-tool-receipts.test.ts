@@ -30,7 +30,7 @@ test('knowledge_get and impact analysis persist only authorized Session receipts
  try{
   await t.test('get optional schema leaves catalog size and old no-Session output intact',async()=>{
    const schema=(server as any)._registeredTools.knowledge_get.inputSchema;assert.ok(schema.shape.workSessionId?.isOptional());
-   assert.equal(Object.keys((server as any)._registeredTools).length,121);const plain=await parsed('knowledge_get',{documentId:document.id});assert.equal(plain.body,document.body);assert.equal(events().length,0);
+   assert.equal(Object.keys((server as any)._registeredTools).length,123);const plain=await parsed('knowledge_get',{documentId:document.id});assert.equal(plain.body,document.body);assert.equal(events().length,0);
    const correlated=await parsed('knowledge_get',{documentId:document.id,project:'Receipt project',workSessionId:session.id});assert.deepEqual(correlated,plain);
   });
   await t.test('get records a document_read receipt once per actual document version without content',async()=>{

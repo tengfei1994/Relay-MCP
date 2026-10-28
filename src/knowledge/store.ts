@@ -40,6 +40,7 @@ import { MIGRATION_WITHDRAWAL_MIGRATION } from "./migrations/043-migration-withd
 import { PROVIDER_ADMISSION_MIGRATION } from "./migrations/044-provider-admission.js";
 import { INGEST_OWNERSHIP_MIGRATION } from "./migrations/045-ingest-ownership.js";
 import { PRODUCT_REVISION_PARSER_IDENTITY_MIGRATION, PARSER_SCOPED_PRODUCT_REVISIONS_SCHEMA } from "./migrations/046-product-revision-parser-identity.js";
+import { CONFIRMED_MEMORY_MIGRATION } from "./migrations/047-confirmed-memory.js";
 import { PROVIDER_SECRETS_MIGRATION } from "./migrations/039-provider-secrets.js";
 import { WEKNORA_DOCUMENT_MIGRATION } from "./migrations/031-weknora-documents.js";
 import { WORK_SESSION_MIGRATION } from "./migrations/029-work-sessions.js";
@@ -112,6 +113,7 @@ const KNOWLEDGE_MIGRATIONS: Array<{ version: string; sql: string; requiresForeig
     PROVIDER_ADMISSION_MIGRATION,
     INGEST_OWNERSHIP_MIGRATION,
     PRODUCT_REVISION_PARSER_IDENTITY_MIGRATION,
+    CONFIRMED_MEMORY_MIGRATION,
 ];
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(
@@ -293,7 +295,7 @@ export class KnowledgeStore {
     // Databases created by the early P01 preview may already carry the
     // 002-domain marker but not the type projections introduced later. Make
     // this additive repair safe and idempotent without rewriting user data.
-    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions", "knowledge_topics", "knowledge_product_document_bindings", "knowledge_artifact_sets", "knowledge_artifacts", "knowledge_source_baselines", "knowledge_source_files", "knowledge_project_snapshots", "knowledge_project_snapshot_files", "knowledge_source_chunks", "knowledge_source_chunks_fts", "knowledge_artifact_publications", "knowledge_ingest_jobs", "knowledge_product_revisions"];
+    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_confirmed_memories", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions", "knowledge_topics", "knowledge_product_document_bindings", "knowledge_artifact_sets", "knowledge_artifacts", "knowledge_source_baselines", "knowledge_source_files", "knowledge_project_snapshots", "knowledge_project_snapshot_files", "knowledge_source_chunks", "knowledge_source_chunks_fts", "knowledge_artifact_publications", "knowledge_ingest_jobs", "knowledge_product_revisions"];
     const missingTable = requiredTables.some((name) => !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
     if (missingTable) this.db.exec(KNOWLEDGE_DOMAIN_MIGRATION.sql);
     const columns: Record<string, Array<[string, string]>> = {

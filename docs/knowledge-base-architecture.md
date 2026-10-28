@@ -1,5 +1,13 @@
 # Relay MCP 知识库功能设计
 
+> **Memory model update (2026-10-28):** The durable-memory plane is now
+> Work Session / IntentEnvelope → Evidence → Observation → Candidate Insight →
+> Confirmed Memory. Candidate Insight kinds are `fact|decision|case|pattern`;
+> Confirmed Memory kinds are `Fact|Decision|Case|Pattern`. The legacy
+> Case/Pattern/Playbook tables remain readable for compatibility. Playbooks are
+> Approved Operations and are never the default memory endpoint or Context Pack
+> section. Product Knowledge, Wiki and WeKnora remain separate planes.
+
 **文档版本**：v1.1  
 **日期**：2026-09-02  
 **适用范围**：Relay MCP、SampleManager LIMS 技术案例库、PT/EM/Global Pharma 等解决方案扩展
@@ -12,7 +20,7 @@
 
 ```text
 Relay MCP Control Plane       权限、Project、Server、LIMS Instance、Job、Deployment、Audit
-Knowledge Plane               Case、Pattern、Playbook、Evidence、Relation、RAG
+Knowledge Plane               Work Session、Evidence、Observation、Candidate Insight、Confirmed Memory、Relation、RAG
 Execution Plane               SQL、Form、Assembly、Build、Deploy、Cache、Restart、Playwright
 Model Provider Layer          Embedding、Rerank、结构化抽取、脱敏
 ```
@@ -120,7 +128,7 @@ Codex / Claude / Cursor / Web UI / CLI
 
 ```text
 src/knowledge/
-  domain/          Case、Pattern、Playbook、Evidence、Relation 类型和 Schema
+  domain/          Memory、Evidence、Observation、Relation 类型和 Schema；旧 Case/Pattern/Playbook 仅作兼容读取
   repositories/    数据库、Git 文件和附件访问
   ingestion/       Markdown/YAML、日志、Job、Deployment 导入
   retrieval/       FTS、向量、混合检索、重排序
@@ -318,10 +326,10 @@ L0 只记录事件
 L1 自动生成候选知识
 L2 自动分类、去重和索引
 L3 自动生成带证据的案例草稿
-L4 自动批准 Pattern/Playbook/Skill
+L4 自动批准 Confirmed Memory 或 Playbook/Skill
 ```
 
-默认开启 L0～L3，默认关闭 L4。涉及 GMP、结构、权限、审计、生产部署或业务规则时必须人工确认。
+默认开启 L0～L3，默认关闭 L4。Candidate Insight 不能自动进入 Confirmed Memory；Playbook 只有在批准后才可作为操作方案。涉及 GMP、结构、权限、审计、生产部署或业务规则时必须人工确认。
 
 ## 6. RAG 检索设计
 
@@ -373,7 +381,7 @@ samplemanager_diagnose
 samplemanager_impact_analysis
 ```
 
-`knowledge_search` 返回 Case/Pattern/Playbook 的摘要、匹配分数、版本匹配、状态、证据引用和适用边界；完整正文通过 `knowledge_get` 或 Resource URI 按需读取。
+`knowledge_search` 默认返回 ACL、Project、Environment 和 Evidence 过滤后的 Confirmed Memory；Candidate Insight 与 Approved Operations 必须显式请求。结果包含类型、摘要、匹配分数、状态、证据引用和适用边界；完整正文通过对应的 Memory/Playbook API 按需读取。
 
 推荐 Resource URI：
 
@@ -488,7 +496,7 @@ INSTANCE --uses--> CACHE
 - 原始 Evidence 追加式保存，删除要保留审计记录。
 - Evidence 使用 SHA-256 内容寻址并对重复附件去重；大型 DLL、日志、源码快照和部署产物必须配置 retention policy。
 - 第一版允许手动清理，但清理前必须记录审计事件；生产/GMP 证据默认禁止自动删除。
-- Case、Pattern、Playbook 必须有状态、作者、审核者和版本。
+- Confirmed Memory 必须有稳定类型、Evidence、范围、来源、确认人、确认时间和审计记录；旧 Case、Pattern、Playbook 行只读兼容。
 - 已弃用知识不能参与默认召回，但应可追溯。
 - 模型输出不得绕过部署审批、结构变更流程或生产权限。
 - 记录 `traceId`、`projectId`、`knowledgeQueryId`、`retrievalRunId`、`jobId` 和 `deploymentId`。
@@ -497,7 +505,7 @@ INSTANCE --uses--> CACHE
 
 ### 阶段 0：数据契约和边界
 
-- 定义 Case、Pattern、Playbook、Evidence、Fact Schema；
+- 定义 Work Session、Evidence、Observation、Candidate Insight 和 Confirmed Memory Schema；Playbook 单独作为 Approved Operations；
 - 定义版本、解决方案、模块、环境和状态字段；
 - 定义证据引用、脱敏和 ACL 规则；
 - 定义晋级门槛和审核角色。
@@ -511,7 +519,7 @@ INSTANCE --uses--> CACHE
 - 新增 `knowledge.db`；
 - 在 Job Store、Deployment Store 等关键生命周期点增加最小领域事件发射点和 outbox；
 - 从领域事件、`writeAudit`、Job Store、Deployment Store 和 SampleManager 工具采集事件；
-- 生成 Observation、Evidence 和 Case Candidate；
+- 生成 Observation、Evidence 和四类 Candidate Insight；
 - 将现有 JSONL facts 导入 `kind=fact`，保留可回滚副本。
 
 ### 阶段 2：关键词检索
@@ -540,7 +548,7 @@ INSTANCE --uses--> CACHE
 
 - 实现 `samplemanager_diagnose` 和 `samplemanager_impact_analysis`；
 - 增加候选知识审核、证据对比、接受/拒绝和 Git diff；
-- 增加 Pattern/Playbook 晋级流程；
+- 增加 Candidate Insight 到同类型 Confirmed Memory 的晋级流程；Playbook 仅保留独立的审批流程；
 - 增加人工反馈闭环；
 - 复用现有 React/Vite/Tailwind 管理后台、Fastify routes 和 JWT 认证，不新建独立前端工程。
 
@@ -555,7 +563,7 @@ INSTANCE --uses--> CACHE
 
 第一版可交付的最低标准：
 
-1. 一个真实开发任务可以自动产生 Observation、Evidence 和 Case Candidate。
+1. 一个真实开发任务可以自动产生 Work Session、Observation、Evidence 和四类 Candidate Insight。
 2. 每个候选案例都能回溯到 Job、Deployment、文件或日志证据。
 3. `knowledge_search` 能按 Project、SampleManager 版本、解决方案和模块过滤。
 4. 关键词检索结果不依赖大模型也能正常工作。
@@ -577,7 +585,7 @@ Relay MCP
   = 权限、项目上下文、远程执行、部署、审计
 
 Knowledge Plane
-  = Casebook、Evidence、Pattern、Playbook、RAG、关系查询
+  = Work Session、Evidence、Observation、Candidate Insight、Confirmed Memory、RAG、关系查询
 
 Knowledge Worker
   = 自动采集、模型抽取、Embedding、索引和审核队列

@@ -1,18 +1,23 @@
 # Knowledge governance and release boundary
 
-This repository treats the Casebook and Evidence ledger as factual sources. SQLite FTS/vector indexes and relation projections are derived data and may be rebuilt. A review action never rewrites the original Evidence.
+This repository treats Work Sessions, Evidence and Observations as the traceable capture boundary. Candidate Insights are reviewable hypotheses; Confirmed Memory is the durable memory boundary. SQLite FTS/vector indexes and relation projections are derived data and may be rebuilt. A review action never rewrites the original Evidence.
 
 ## Lifecycle and promotion gates
 
 | Object | Draft entry | Required promotion evidence | Default retrieval |
 |---|---|---|---|
-| Candidate | capture worker or import | source event, bounded Evidence refs, project ACL | yes, unless deprecated |
-| Case | reviewed candidate or Casebook import | reproducible symptom/fix and verification evidence | yes, unless deprecated |
-| Pattern | verified Case promotion | one or more verified Case refs, reviewer reason, inherited Evidence refs | yes, unless deprecated |
-| Playbook | reviewer proposal | approved steps, rollback, target/version scope and regression evidence | only when explicitly approved |
+| Legacy Candidate document | capture worker or import | source event, bounded Evidence refs, project ACL | explicit legacy filter only |
+| Candidate Insight | Work Session + Evidence + Observation | `fact`, `decision`, `case`, or `pattern`; always a draft until explicitly reviewed | never in default Context Pack |
+| Confirmed Memory / Fact | reviewed Candidate Insight or manual review | subject/value, Evidence, scope, source, confirmer, confirmation time and audit | yes, unless deprecated |
+| Confirmed Memory / Decision | reviewed Candidate Insight or manual review | decision, rationale, alternatives plus the common provenance fields | yes, unless deprecated |
+| Confirmed Memory / Case | reviewed Candidate Insight or manual review | symptoms, root cause, resolution and verification plus the common provenance fields | yes, unless deprecated |
+| Confirmed Memory / Pattern | reviewed Candidate Insight or manual review | applicability, signals and exceptions plus the common provenance fields | yes, unless deprecated |
+| Approved Operation / Playbook | separate reviewer proposal | approved steps, rollback, target/version scope and regression evidence | only when explicitly approved |
 | Skill diff | Playbook proposal output | Git diff review and release approval | never applied automatically |
 
-Allowed lifecycle transitions are enforced in `src/knowledge/domain.ts`. Reviewers must provide a non-empty reason; every action stores reviewer, timestamp, before/after JSON and audit metadata.
+Allowed lifecycle transitions are enforced in `src/knowledge/domain.ts`. Candidate Insight kind validation is strict and does not allow `observation` or `playbook`. Reviewers must provide a non-empty reason; every action stores reviewer, timestamp, before/after JSON and audit metadata. A Confirmed Memory must reference visible Evidence, scope, source, confirmer, confirmation time and an audit reason.
+
+Candidate confirmation and memory promotion are separate actions. Confirming a Candidate Insight records reviewer acceptance; promoting creates a typed `knowledge_confirmed_memories` row. A promoted Fact cannot be read or edited as a Decision, Case or Pattern through implicit conversion. Default search and Context Pack read only confirmed memory and never include Candidate Insights or Playbooks unless an explicit filter requests those sections.
 
 ## Publication boundary
 
@@ -30,6 +35,6 @@ Feedback is attached to the Knowledge document and audited. Golden queries live 
 
 ## Templates
 
-- [Case template](templates/knowledge-case.md)
-- [Pattern template](templates/knowledge-pattern.md)
-- [Playbook template](templates/knowledge-playbook.md)
+- [Case template](templates/knowledge-case.md) (legacy import/read compatibility)
+- [Pattern template](templates/knowledge-pattern.md) (legacy import/read compatibility)
+- [Playbook template](templates/knowledge-playbook.md) (Approved Operations only)

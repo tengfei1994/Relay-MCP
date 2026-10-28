@@ -5,6 +5,8 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createKnowledgeStore} from '../src/knowledge/store.ts';
 import {registerKnowledgeTools} from '../src/mcp/tools/knowledge.ts';
+import {EvidenceStore} from '../src/knowledge/evidence-store.ts';
+import {ConfirmedMemoryService} from '../src/knowledge/confirmed-memory.ts';
 
 test('MCP knowledge_get preserves structured source citations for documents larger than the general output preview limit',async()=>{
   const root=mkdtempSync(join(tmpdir(),'knowledge-mcp-output-')),store=createKnowledgeStore({dbPath:join(root,'k.db')});
@@ -37,7 +39,8 @@ test('MCP engine outage preserves confirmed Relay memory and reports an empty de
   try{
     store.grantAcl('p1',7,true);
     const now=new Date().toISOString();
-    store.upsertDocument({id:'verified-memory',kind:'case',title:'pump sentinel',body:'pump sentinel evidence',lifecycle:'verified',projectId:'p1',environment:'nonprod',locator:'manual:sentinel',createdAt:now,updatedAt:now});
+    const evidence=new EvidenceStore(store,join(root,'evidence')).put({content:Buffer.from('pump sentinel evidence'),mimeType:'text/plain',sourceKind:'log',projectId:'p1',environment:'nonprod',locator:'manual:sentinel'});
+    new ConfirmedMemoryService(store).save({id:'verified-memory',type:'Case',title:'pump sentinel',statement:'pump sentinel evidence',details:{symptoms:'pump stopped',rootCause:'fixture',resolution:'reviewed',verification:'confirmed'},scope:{projectId:'p1',environment:'nonprod',scopeType:'environment',scopeKey:'nonprod',visibility:'project'},evidenceRefs:[evidence.id],source:{kind:'manual',locator:'manual:sentinel'},confirmedBy:7,confirmedAt:now,audit:{action:'manual',reason:'fixture'}});
     store.db.prepare("INSERT INTO knowledge_weknora_documents(id,external_document_id,external_knowledge_base_id,external_chunk_ids_json,title,normalized_content_sha256,parser_version,product_version,source_path,project_id,environment,status,idempotency_key,created_at,updated_at,upstream_verified_at,upstream_parse_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run('mapping','external','kb','["chunk"]','pump','hash','v1','21.3','pump.html','p1','nonprod','published','mapping',now,now,now,'completed');
     const callbacks=new Map<string,Function>();
     registerKnowledgeTools({server:{tool:(name:string,...args:any[])=>callbacks.set(name,args.at(-1)),resource:()=>undefined}as any,user:{id:7,username:'test',defaultProject:'p1',defaultProjectId:'p1',defaultEnvironment:'nonprod'}as any,knowledge:store});

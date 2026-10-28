@@ -35,10 +35,10 @@ export async function loadRelayContextSources(input: RelayContextSourceInput): P
     providers: { embedding: undefined, rerank: undefined },
   } as const;
   const [confirmed, candidates, facts] = await Promise.all([
-    searchKnowledge(input.store, { ...requestBase, kinds: ["case", "pattern", "playbook"] }),
+    searchKnowledge(input.store, { ...requestBase, kinds: ["confirmed_memory"] }),
     searchKnowledge(input.store, { ...requestBase, kinds: ["candidate"] }),
     searchKnowledge(input.store, { ...requestBase, kinds: ["fact"] }),
   ]);
   const degraded = confirmed.degraded || candidates.degraded || facts.degraded ? { relayMemory: "fts_only" } : undefined;
-  return { confirmedKnowledge: confirmed.results.filter((item) => ["verified", "approved"].includes(item.lifecycle)), candidates: candidates.results, currentFacts: facts.results, degraded };
+  return { confirmedKnowledge: confirmed.results.filter((item) => item.kind === "confirmed_memory"), candidates: candidates.results.filter((item) => item.kind === "candidate"), currentFacts: facts.results.filter((item) => item.kind === "fact"), degraded };
 }

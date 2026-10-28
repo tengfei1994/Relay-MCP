@@ -13,7 +13,7 @@ test('HTTP and MCP Candidate adapters preserve typed JSON and real model provena
   const calls: any[] = []; let invalidTypes = false; let evidenceId = '';
   globalThis.fetch = (async (_url, init) => {
     const body = JSON.parse(String(init?.body)); calls.push(body);
-    const output: any = { kind: 'observation', statement: 'The sentinel was observed.', whyProposed: 'The supplied evidence records the sentinel.', evidenceRefs: [evidenceId], intentRefs: [], unknowns: [], reuseBoundary: { scope: 'project' }, confidence: 0.8, confirmedFacts: [], observedBehavior: ['The isolated sentinel exists.'] };
+    const output: any = { kind: 'fact', statement: 'The sentinel was observed.', whyProposed: 'The supplied evidence records the sentinel.', evidenceRefs: [evidenceId], intentRefs: [], unknowns: [], reuseBoundary: { scope: 'project' }, confidence: 0.8, confirmedFacts: [], observedBehavior: ['The isolated sentinel exists.'] };
     if (invalidTypes) Object.assign(output, { reuseBoundary: 'project', confidence: '0.8', observedBehavior: 'sentinel', hypothesis: null, reusableStatement: null });
     return Response.json({ choices: [{ message: { content: JSON.stringify(output) }, finish_reason: 'stop' }] });
   }) as typeof fetch;

@@ -1,7 +1,8 @@
 /** States shared by every promotable knowledge object. */
 export const KNOWLEDGE_LIFECYCLE = ["draft", "reproduced", "verified", "approved", "deprecated"] as const;
 export type KnowledgeLifecycle = typeof KNOWLEDGE_LIFECYCLE[number];
-export type KnowledgeKind = "candidate" | "case" | "pattern" | "playbook" | "product_document" | "fact" | "evidence" | "relation";
+export type KnowledgeKind = "candidate" | "candidate_insight" | "confirmed_memory" | "case" | "pattern" | "playbook" | "product_document" | "fact" | "evidence" | "relation";
+export type { ConfirmedMemory, ConfirmedMemoryAudit, ConfirmedMemoryDetails, ConfirmedMemoryInput, ConfirmedMemoryScope, ConfirmedMemorySource, ConfirmedMemoryStatus, ConfirmedMemoryType } from "./confirmed-memory.js";
 
 const transitions: Record<KnowledgeLifecycle, readonly KnowledgeLifecycle[]> = {
   draft: ["reproduced", "deprecated"],

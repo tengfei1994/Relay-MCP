@@ -38,14 +38,18 @@ test("HTTP Product Knowledge boundaries enforce project scope and topic ACLs", a
   const { knowledgeRoutes } = await import("../src/server/routes/knowledge.js");
   const { getKnowledgeStore } = await import("../src/server/knowledge-context.js");
   const { KnowledgeRepository } = await import("../src/knowledge/repository.js");
+  const { EvidenceStore } = await import("../src/knowledge/evidence-store.js");
+  const { ConfirmedMemoryService } = await import("../src/knowledge/confirmed-memory.js");
   const { WeKnoraIngestor } = await import("../src/knowledge/weknora-ingest.js");
 
   runMigrations();
   const store = getKnowledgeStore();
-  store.grantAcl("p1", 7);
+  store.grantAcl("p1", 7, true);
   const now = "2026-10-23T00:00:00.000Z";
   const repository = new KnowledgeRepository(store);
-  repository.saveCase({ id: "case-p1", kind: "case", title: "Cache case", body: "cache failure confirmed", lifecycle: "approved", projectId: "p1", locator: "case:p1", createdAt: now, updatedAt: now } as any);
+  const evidence = new EvidenceStore(store, join(root, "evidence")).put({ content: Buffer.from("cache failure confirmed"), mimeType: "text/plain", sourceKind: "log", projectId: "p1", environment: "nonprod", locator: "case:p1" });
+  const memories = new ConfirmedMemoryService(store);
+  memories.save({ id: "case-p1", type: "Case", title: "Cache case", statement: "cache failure confirmed", details: { symptoms: "cache failure", rootCause: "fixture", resolution: "reviewed", verification: "confirmed" }, scope: { projectId: "p1", environment: "nonprod", scopeType: "environment", scopeKey: "nonprod", visibility: "project" }, evidenceRefs: [evidence.id], source: { kind: "manual", locator: "case:p1" }, confirmedBy: 7, confirmedAt: now, audit: { action: "manual", reason: "fixture" } });
   const p1 = new WeKnoraIngestor(store, { upsertDocument: async () => ({ knowledgeBaseId:"kb-test", externalDocumentId: "ext-p1", parseStatus: "completed", externalChunkIds: ["chunk-p1"] }) });
   const p2 = new WeKnoraIngestor(store, { upsertDocument: async () => ({ knowledgeBaseId:"kb-test", externalDocumentId: "ext-p2", parseStatus: "completed", externalChunkIds: ["chunk-p2"] }) });
   const p1Document = await p1.stage({ idempotencyKey: "p1", title: "P1", content: "P1", projectId: "p1", parserVersion: "test" });
@@ -72,7 +76,8 @@ test("HTTP Product Knowledge boundaries enforce project scope and topic ACLs", a
     assert.deepEqual(scopedBody.references.map((reference: { documentId: string }) => reference.documentId), ["ext-p1"]);
     assert.deepEqual(scopedBody.contextPack.confirmedKnowledge.map((item: { id: string }) => item.id), ["case-p1"]);
 
-    repository.saveCase({id:"case-prod",kind:"case",title:"Cache production case",body:"cache failure confirmed in prod",lifecycle:"approved",projectId:"p1",environment:"prod",locator:"case:prod",createdAt:now,updatedAt:now} as any);
+    const prodEvidence = new EvidenceStore(store, join(root, "evidence")).put({ content: Buffer.from("cache failure confirmed in prod"), mimeType: "text/plain", sourceKind: "log", projectId: "p1", environment: "prod", locator: "case:prod" });
+    memories.save({ id: "case-prod", type: "Case", title: "Cache production case", statement: "cache failure confirmed in prod", details: { symptoms: "cache failure", rootCause: "fixture", resolution: "reviewed", verification: "confirmed" }, scope: { projectId: "p1", environment: "prod", scopeType: "environment", scopeKey: "prod", visibility: "project" }, evidenceRefs: [prodEvidence.id], source: { kind: "manual", locator: "case:prod" }, confirmedBy: 7, confirmedAt: now, audit: { action: "manual", reason: "fixture" } });
     const scopedPack=await app.inject({method:"POST",url:"/api/knowledge/weknora/search",payload:{query:"cache",projectId:"p1",environment:"nonprod"}});
     assert.equal(scopedPack.statusCode,200,scopedPack.body);
     assert.ok(!scopedPack.json().contextPack.confirmedKnowledge.some((item:any)=>item.id==="case-prod"),"no-session ContextPack must respect explicit environment");

@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "generatedFrom": "McpServer tools/list",
   "sourceVersion": {
-    "gitCommit": "b25ee02cfc0b82cfb54b044a035390c097e8781e",
+    "gitCommit": "30d9baa8c2fe7a1db00a3b9dc12d521752967531",
     "mcpSdkVersion": "1.32.2",
     "generationCommand": "npm run generate:mcp-baseline",
-    "generatedAt": "2026-10-25T10:33:51.249Z",
+    "generatedAt": "2026-10-28T01:44:28.628Z",
     "worktreeDirty": true
   },
   "tools": [
@@ -760,8 +760,10 @@
           "target": {
             "type": "string",
             "enum": [
+              "fact",
+              "decision",
               "case",
-              "decision"
+              "pattern"
             ]
           },
           "title": {
@@ -773,6 +775,65 @@
           "insightId",
           "action",
           "reason"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_confirmed_memory_get",
+      "description": "Read one Confirmed Memory with Evidence, scope, source, confirmer and audit metadata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "memoryId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "memoryId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "knowledge_confirmed_memory_list",
+      "description": "List ACL-scoped Confirmed Memory records; Candidate Insights and Playbooks are excluded by default.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "Fact",
+              "Decision",
+              "Case",
+              "Pattern"
+            ]
+          },
+          "environment": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "projectId"
         ],
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
@@ -1122,10 +1183,13 @@
     },
     {
       "name": "knowledge_search",
-      "description": "Search ACL- and Scope-filtered Case, Pattern, Playbook, and Candidate knowledge.",
+      "description": "Search ACL- and Scope-filtered Confirmed Memory. Candidate Insights and Playbooks require explicit filters.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "workSessionId": {
+            "type": "string"
+          },
           "project": {
             "type": "string"
           },
@@ -1156,8 +1220,32 @@
           "scopeKey": {
             "type": "string"
           },
-          "workSessionId": {
-            "type": "string"
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "candidate",
+                "case",
+                "pattern",
+                "playbook",
+                "fact",
+                "decision",
+                "confirmed_memory"
+              ]
+            }
+          },
+          "memoryTypes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "Fact",
+                "Decision",
+                "Case",
+                "Pattern"
+              ]
+            }
           }
         },
         "required": [
@@ -1648,13 +1736,13 @@
             "minimum": 1,
             "maximum": 200
           },
-          "sessionId": {
-            "type": "string"
-          },
           "offset": {
             "type": "integer",
             "minimum": 0,
             "maximum": 1000000
+          },
+          "sessionId": {
+            "type": "string"
           }
         },
         "additionalProperties": false,
@@ -5916,6 +6004,14 @@
     },
     {
       "name": "knowledge_candidate_insight_review",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_confirmed_memory_list",
+      "category": "context"
+    },
+    {
+      "name": "knowledge_confirmed_memory_get",
       "category": "context"
     },
     {

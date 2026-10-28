@@ -7,7 +7,8 @@ const knowledgeGroups = [
   ["", [["Overview", "/knowledge"], ["Integrated control plane", "/knowledge/integrated"]]],
   ["Product Knowledge", [["Product Documents", "/knowledge/product-docs"], ["Topics", "/knowledge/product-docs/topics"], ["Import Runs", "/knowledge/product-docs/imports"], ["Versions & Diffs", "/knowledge/product-docs/versions"], ["Product Search", "/knowledge/product-docs/search"]]],
   ["Solution Knowledge", [["Artifacts & Source", "/knowledge/solution"]]],
-  ["Project Knowledge", [["Evidence", "/knowledge/evidence"], ["Observations", "/knowledge/observations"], ["Candidate Inbox", "/knowledge/candidates"], ["Cases", "/knowledge/cases"], ["Patterns", "/knowledge/patterns"], ["Playbooks", "/knowledge/playbooks"]]],
+  ["Memory", [["Memory workspace", "/knowledge/memory"], ["Sessions", "/knowledge/sessions"], ["Evidence", "/knowledge/evidence"], ["Observations", "/knowledge/observations"], ["Candidate Insights", "/knowledge/candidate-insights"], ["Confirmed Memory", "/knowledge/confirmed-memory"]]],
+  ["Approved Operations", [["Playbooks", "/knowledge/playbooks"]]],
   ["Operations", [["Capture Health", "/knowledge/operations/capture"], ["Ingest Runs", "/knowledge/operations/ingest"], ["Index & Providers", "/knowledge/operations/index"]]],
 ] as const;
 

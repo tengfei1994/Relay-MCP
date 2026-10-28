@@ -217,6 +217,10 @@ function seedData(store: KnowledgeStore, repository: KnowledgeRepository, config
     (id,sha256,storage_path,mime_type,size_bytes,source_kind,project_id,source_locator,retention,created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?)`);
   const insertEvidenceAcl = store.db.prepare("INSERT INTO knowledge_evidence_acl(evidence_id,project_id,created_at) VALUES (?,?,?)");
+  const insertMemory = store.db.prepare(`INSERT INTO knowledge_confirmed_memories
+    (id,memory_type,title,statement,details_json,project_id,environment,scope_json,evidence_refs_json,source_json,confirmed_by,confirmed_at,audit_json,status,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const insertEntityEvidence = store.db.prepare("INSERT INTO knowledge_entity_evidence(entity_type,entity_id,evidence_id,created_at) VALUES ('confirmed_memory',?,?,?)");
   store.db.prepare(`INSERT INTO knowledge_work_sessions
     (id,actor_id,project_id,status,intent_json,idempotency_key,created_at,updated_at)
     VALUES (?,?,?,?,?,?,?,?)`).run("benchmark-session", ACTOR_ID, PROJECT_ID, "open", JSON.stringify({ objective: "Synthetic benchmark", projectId: PROJECT_ID }), "benchmark-session", now, now);
@@ -236,6 +240,8 @@ function seedData(store: KnowledgeStore, repository: KnowledgeRepository, config
       insertEvidence.run(`benchmark-evidence-${index}`, index.toString(16).padStart(64, "0"), `synthetic-storage-${index}`, "text/plain", 32, "log", PROJECT_ID, `synthetic:evidence:${index}`, "standard", timestamp);
       insertEvidenceAcl.run(`benchmark-evidence-${index}`, PROJECT_ID, timestamp);
     }
+    insertMemory.run("benchmark-case", "Case", "Synthetic confirmed benchmark cache", `${MATCH_QUERY} confirmed synthetic memory`, JSON.stringify({ symptoms: MATCH_QUERY, rootCause: "benchmark fixture", resolution: "reviewed", verification: "confirmed" }), PROJECT_ID, "nonprod", JSON.stringify({ projectId: PROJECT_ID, environment: "nonprod", scopeType: "environment", scopeKey: "nonprod", visibility: "project" }), JSON.stringify(["benchmark-evidence-0"]), JSON.stringify({ kind: "manual", locator: "synthetic:case" }), ACTOR_ID, now, JSON.stringify({ action: "manual", reason: "benchmark fixture" }), "confirmed", now, now);
+    insertEntityEvidence.run("benchmark-case", "benchmark-evidence-0", now);
   })();
   store.db.pragma("optimize");
 }

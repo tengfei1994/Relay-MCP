@@ -267,6 +267,10 @@ export class KnowledgeStore {
     }
   }
 
+  private needsLegacyDocumentCheckRepair(): boolean {
+    const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='knowledge_documents'").get() as { sql?: string } | undefined;
+    return /\bCHECK\s*\(\s*kind\s+IN\s*\(\s*"/i.test(String(row?.sql ?? ""));
+  }
   private migrationsComplete(): boolean {
     try {
       const hasMigrationTable = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get();
@@ -289,7 +293,7 @@ export class KnowledgeStore {
 
   migrate(): void {
     withMigrationRetry(() => {
-      this.repairLegacyDocumentCheckSchema();
+      if (this.needsLegacyDocumentCheckRepair()) this.repairLegacyDocumentCheckSchema();
       if (this.migrationsComplete()) return;
       this.migrateOnce();
     });

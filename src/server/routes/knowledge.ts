@@ -25,7 +25,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolveWorkspacePath } from "../../shared/workspace-path.js";
 import { relayEventSpoolHealth } from "../../knowledge/event-sink.js";
 import { evidenceDisplaySummary, evidenceDisplayTitle, lifecycleHumanStatus } from "../../knowledge/display-projection.js";
-import { WorkSessionService, validateIntentEnvelope } from "../../knowledge/work-session.js";
+import { WorkSessionService, validateIntentEnvelope, type IntentEnvelope } from "../../knowledge/work-session.js";
 import { ProviderRegistry } from "../../knowledge/provider-registry.js";
 import { createManagedProviderRegistry, ProviderSetupService } from "../../knowledge/provider-setup.js";
 import { ManagedProviderError } from "../../knowledge/provider-probe.js";
@@ -1733,7 +1733,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
         const contextPack = new ContextPackService({ provider: "weknora" }).build({ intent: effectiveIntent, authoritativeDocs: [], confirmedKnowledge: relaySources.confirmedKnowledge, candidates: relaySources.candidates, currentFacts: relaySources.currentFacts, degraded: { ...relaySources.degraded, productKnowledge: "no_published_documents" }, acl: { documentIds: [] }, maxItemsPerSection: body.data.limit ?? 10 });
         return reply.send({ retrievalRunId: "local-scope-empty", references: [], degraded: contextPack.degraded, contextPack });
       }
-      const result = await searchEngineProductReferences(store, { userId: request.user.id, isAdmin: request.user.isAdmin, projectId, environment, query: body.data.query, sampleManagerVersion: body.data.productVersion ?? session?.intent.sampleManagerVersion, solution: body.data.solution ?? session?.intent.solution, module: body.data.module ?? session?.intent.module, language: body.data.language, limit: body.data.limit });
+      const result = await searchEngineProductReferences(store, { userId: request.user.id, isAdmin: request.user.isAdmin, projectId, environment, query: body.data.query, intent: effectiveIntent as Partial<IntentEnvelope>, sampleManagerVersion: body.data.productVersion ?? session?.intent.sampleManagerVersion, solution: body.data.solution ?? session?.intent.solution, module: body.data.module ?? session?.intent.module, language: body.data.language, limit: body.data.limit });
       if (session) {
         if (!projectId) throw new Error("Work Session project is required");
         sessions.recordRetrieval({ actorId: request.user.id, sessionId: session.id, projectId, environment, query: body.data.query, sourceRunId: result.retrievalRunId, resultCount: result.references.length, degraded: Boolean(result.degraded) });

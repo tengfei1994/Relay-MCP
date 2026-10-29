@@ -12,7 +12,7 @@ import { serializeKnowledgeResult } from "../knowledge-output.js";
 import { EvidenceStore } from "../../knowledge/evidence-store.js";
 import { compareSourceBaselines, type SourceManifest } from "../../knowledge/source-baseline.js";
 import { compareSourceUpgradeWithSymbols } from "../../knowledge/source-symbol.js";
-import { WorkSessionService, validateIntentEnvelope } from "../../knowledge/work-session.js";
+import { WorkSessionService, validateIntentEnvelope, type IntentEnvelope } from "../../knowledge/work-session.js";
 import { MigrationController } from "../../knowledge/migration-control.js";
 import { runReleaseGates } from "../../knowledge/release-gates.js";
 
@@ -347,7 +347,7 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
       const contextPack = new ContextPackService({ provider: "weknora" }).build({ intent: effectiveIntent, authoritativeDocs: [], confirmedKnowledge: relaySources.confirmedKnowledge, candidates: relaySources.candidates, currentFacts: relaySources.currentFacts, degraded: { ...relaySources.degraded, productKnowledge: "no_published_documents" }, acl: { documentIds: [] }, maxItemsPerSection: limit ?? 10 });
       return { content: [{ type: "text", text: serializeKnowledgeResult({ retrievalRunId: "local-scope-empty", references: [], degraded: contextPack.degraded, contextPack }) }] };
     }
-    const result = await searchEngineProductReferences(requireKnowledge(), { userId: user.id, isAdmin: user.isAdmin, projectId: scope.projectId, environment: scope.environment, query, sampleManagerVersion: productVersion ?? scope.session?.intent.sampleManagerVersion, solution: solution ?? scope.session?.intent.solution, module: module ?? scope.session?.intent.module, language, limit });
+    const result = await searchEngineProductReferences(requireKnowledge(), { userId: user.id, isAdmin: user.isAdmin, projectId: scope.projectId, environment: scope.environment, query, intent: effectiveIntent as Partial<IntentEnvelope>, sampleManagerVersion: productVersion ?? scope.session?.intent.sampleManagerVersion, solution:solution ?? scope.session?.intent.solution, module:module ?? scope.session?.intent.module, language, limit });
     if (scope.session) {
       if (!scope.projectId) throw new Error("Work Session project is required");
       workSessions().recordRetrieval({ actorId: user.id, sessionId: scope.session.id, projectId: scope.projectId, environment: scope.environment, query, sourceRunId: result.retrievalRunId, resultCount: result.references.length, degraded: Boolean(result.degraded) });

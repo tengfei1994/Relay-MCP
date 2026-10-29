@@ -42,6 +42,7 @@ import { INGEST_OWNERSHIP_MIGRATION } from "./migrations/045-ingest-ownership.js
 import { PRODUCT_REVISION_PARSER_IDENTITY_MIGRATION, PARSER_SCOPED_PRODUCT_REVISIONS_SCHEMA } from "./migrations/046-product-revision-parser-identity.js";
 import { CONFIRMED_MEMORY_MIGRATION } from "./migrations/047-confirmed-memory.js";
 import { PRODUCT_TOPIC_QUERY_INDEXES_MIGRATION } from "./migrations/048-product-topic-query-indexes.js";
+import { PRODUCT_GRAPH_MIGRATION } from "./migrations/049-product-graph.js";
 import { PROVIDER_SECRETS_MIGRATION } from "./migrations/039-provider-secrets.js";
 import { WEKNORA_DOCUMENT_MIGRATION } from "./migrations/031-weknora-documents.js";
 import { WORK_SESSION_MIGRATION } from "./migrations/029-work-sessions.js";
@@ -116,6 +117,7 @@ const KNOWLEDGE_MIGRATIONS: Array<{ version: string; sql: string; requiresForeig
     PRODUCT_REVISION_PARSER_IDENTITY_MIGRATION,
     CONFIRMED_MEMORY_MIGRATION,
   PRODUCT_TOPIC_QUERY_INDEXES_MIGRATION,
+  PRODUCT_GRAPH_MIGRATION,
 ];
 
 const KNOWLEDGE_BUSY_TIMEOUT_MS = parseBoundedNumber(
@@ -359,9 +361,10 @@ export class KnowledgeStore {
       const postRepairMarker = "knowledge-post-repair-backfill-v2";
       const postRepairNeeded = !this.db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(postRepairMarker);
       if (postRepairNeeded) {
-      const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_confirmed_memories", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions", "knowledge_topics", "knowledge_product_document_bindings", "knowledge_artifact_sets", "knowledge_artifacts", "knowledge_source_baselines", "knowledge_source_files", "knowledge_project_snapshots", "knowledge_project_snapshot_files", "knowledge_source_chunks", "knowledge_source_chunks_fts", "knowledge_artifact_publications", "knowledge_ingest_jobs", "knowledge_product_revisions"];
-    const missingTable = requiredTables.some((name) => !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
-    if (missingTable) this.db.exec(KNOWLEDGE_DOMAIN_MIGRATION.sql);
+      const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_confirmed_memories", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions", "knowledge_topics", "knowledge_product_document_bindings", "knowledge_artifact_sets", "knowledge_artifacts", "knowledge_source_baselines", "knowledge_source_files", "knowledge_project_snapshots", "knowledge_project_snapshot_files", "knowledge_source_chunks", "knowledge_source_chunks_fts", "knowledge_artifact_publications", "knowledge_ingest_jobs", "knowledge_product_revisions", "knowledge_product_graph_entities", "knowledge_product_graph_relations"];
+      const missingTable = requiredTables.some((name) => !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+      if (missingTable) this.db.exec(KNOWLEDGE_DOMAIN_MIGRATION.sql);
+      if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_product_graph_entities'").get() || !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_product_graph_relations'").get() || !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_product_graph_entities_scope'").get() || !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_product_graph_relations_scope'").get()) this.db.exec(PRODUCT_GRAPH_MIGRATION.sql);
     const columns: Record<string, Array<[string, string]>> = {
       knowledge_cases: [["status", "TEXT NOT NULL DEFAULT 'draft'"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"], ["source_candidate_id", "TEXT"], ["event_id", "TEXT"], ["business_context_json", "TEXT"]],
       knowledge_patterns: [["status", "TEXT NOT NULL DEFAULT 'draft'"], ["samplemanager_version", "TEXT"], ["solution", "TEXT"], ["module", "TEXT"], ["environment", "TEXT"]],

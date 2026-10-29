@@ -23,7 +23,7 @@ Product document reads/searches and generated Wiki use the pinned internal WeKno
 - Upgrade analysis includes deterministic C#/SQL/VGL/XML symbol changes with line spans and old/project/next chunk references alongside the existing file-level result; unsupported languages remain file-level.
 - Local migration accepts exact `localDocumentIds` for bounded batches while preserving the same idempotency/checkpoint semantics. Empty selections import nothing, reruns stage only newly added documents, and no 10,000-document prefix is silently reused across batches.
 - Product bindings below 0.8 match confidence enter `pending_review`; administrators can approve/reject with a required audited reason in Topics. Existing reviewed binding identity is preserved when a same-version revision advances.
-- The isolated request benchmark covers complete Context Pack HTTP assembly, Candidate Insights and Evidence with cold/hot distributions and pagination boundaries. It uses deterministic replay, has no inferred release threshold, and does not replace real-provider latency acceptance.
+- Product Knowledge now has a deterministic graph retrieval layer: Product headings, stable identifiers, links, metadata and explicitly labelled relations are stored with source locator/SHA, version and extraction provenance. The existing Product vector/keyword search routes relation/entity intents through ACL-scoped graph expansion; no standalone graph-search entry point is added. `scripts/rebuild-product-graph.ts` performs resumable, idempotent backfill for existing Product documents.
 
 ## Upgrade and rollback
 

@@ -16,6 +16,8 @@ test("knowledge product operations preserve old revisions and search globally", 
     const first = importKnowledgeProducts(store, { root: source, sampleManagerVersion: "21.1", product: "SampleManager", documentFamilyId: "stability-guide" });
     assert.equal(first.imported, 1);
     const oldId = first.documents[0];
+    const graph = store.db.prepare("SELECT COUNT(*) AS entities, (SELECT COUNT(*) FROM knowledge_product_graph_relations WHERE document_id=?) AS relations, MIN(source_sha256) AS source_sha256 FROM knowledge_product_graph_entities WHERE document_id=?").get(oldId, oldId) as { entities: number; relations: number; source_sha256: string };
+    assert.ok(graph.entities >= 3); assert.ok(graph.relations >= 2); assert.match(graph.source_sha256, /^[a-f0-9]{64}$/);
     const oldRow = store.db.prepare("SELECT revision_id FROM knowledge_product_documents WHERE id=?").get(oldId) as { revision_id: string };
     const oldRevision = oldRow.revision_id;
     writeFileSync(file, "# Stability Guide\n\n## Setup\nRun command B.\n", "utf8");

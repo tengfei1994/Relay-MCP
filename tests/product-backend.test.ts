@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { createKnowledgeStore, type KnowledgeStore } from "../src/knowledge/store.ts";
 import { MigrationController } from "../src/knowledge/migration-control.ts";
 import { searchProductBackend, getProductBackend, diffProductBackend, listEngineProductBackend, productCatalogVisibility, type ProductBackendControlPlane } from "../src/knowledge/product-backend.ts";
+import { persistProductGraph, type ProductGraph } from "../src/knowledge/product-graph.ts";
 import {updateProductDocumentLifecycle,correctProductMetadata} from "../src/knowledge/knowledge-products.ts";
 import { WeKnoraClient } from "../src/knowledge/weknora.ts";
 import type { KnowledgeReference, WeKnoraDocumentRead, WeKnoraSearchInput } from "../src/knowledge/weknora.ts";
@@ -312,4 +313,29 @@ test("no-ACL global engine search, read, and catalog stay global-only", () => fi
   assert.equal((await getProductBackend(store, { ...input, documentId: "global" }, control)).body, "Actual engine body");
   await assert.rejects(getProductBackend(store, { ...input, documentId: "private" }, control), /denied|not found/i);
   await assert.rejects(getProductBackend(store, { ...input, documentId: "environment-only" }, control), /denied|not found/i);
+}));
+test("local Product backend excludes draft sources from search, catalog, and direct reads", () => fixture(async ({ store, control }) => {
+  local(store, "draft"); local(store, "verified");
+  store.db.prepare("UPDATE knowledge_documents SET lifecycle='draft' WHERE id='draft'").run();
+  store.db.prepare("UPDATE knowledge_documents SET lifecycle='verified' WHERE id='verified'").run();
+  assert.deepEqual((await searchProductBackend(store, { userId: 7 }, control)).map((row) => row.id), ["verified"]);
+  assert.deepEqual((await productCatalogVisibility(store, { userId: 7 }, control)).documents.map((row) => row.documentId), ["verified"]);
+  await assert.rejects(getProductBackend(store, { userId: 7, documentId: "draft" }, control), /denied|not found/i);
+}));
+test("Product search augments keyword results with ACL-scoped graph neighbors", () => fixture(async ({ store, control }) => {
+  local(store, "graph-a", "p1", "dev"); local(store, "graph-b", "p1", "dev");
+  store.db.prepare("UPDATE knowledge_documents SET title='Cache guide',body='Cache configuration' WHERE id='graph-b'").run();
+  const graph: ProductGraph = {
+    entities: [
+      { id: "graph-entity-a", canonicalKey: "component:pump", name: "Pump", kind: "component", documentId: "graph-a", sourceLocator: "graph-a#pump", sourceSha256: "a".repeat(64), projectId: "p1", environment: "dev", confidence: 1, extractionVersion: "test" },
+      { id: "graph-entity-link", canonicalKey: "setting:cache", name: "Cache", kind: "setting", documentId: "graph-a", sourceLocator: "graph-a#cache", sourceSha256: "a".repeat(64), projectId: "p1", environment: "dev", confidence: 0.9, extractionVersion: "test" },
+      { id: "graph-entity-b", canonicalKey: "setting:cache", name: "Cache", kind: "setting", documentId: "graph-b", sourceLocator: "graph-b#cache", sourceSha256: "b".repeat(64), projectId: "p1", environment: "dev", confidence: 0.9, extractionVersion: "test" },
+    ],
+    relations: [{ id: "graph-relation", fromEntityId: "graph-entity-a", toEntityId: "graph-entity-link", relationType: "related_to", documentId: "graph-a", sourceLocator: "graph-a#pump", sourceSha256: "a".repeat(64), projectId: "p1", environment: "dev", confidence: 1, verified: true, extractionVersion: "test" }],
+  };
+  persistProductGraph(store, { entities: [graph.entities[2]], relations: [] });
+  persistProductGraph(store, { entities: [graph.entities[0], graph.entities[1]], relations: graph.relations });
+  const rows = await searchProductBackend(store, { userId: 7, projectId: "p1", environment: "dev", query: "pump", limit: 10 }, control);
+  assert.ok(rows.some((row) => row.id === "graph-a"));
+  assert.ok(rows.some((row) => row.id === "graph-b" && (row.matchReasons as string[]).includes("Product graph neighbor")));
 }));

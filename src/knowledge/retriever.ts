@@ -1,4 +1,5 @@
 import { WorkSessionService } from "./work-session.js";
+import type { IntentEnvelope } from "./work-session.js";
 import { MigrationController } from "./migration-control.js";
 import { CANDIDATE_CASE_SCOPE_GUARD_SQL } from "./candidate-scope.js";
 import { searchProductBackend } from "./product-backend.js";
@@ -19,6 +20,7 @@ export interface KnowledgeSearchRequest {
   environment?: string;
   scopeType?: string;
   scopeKey?: string;
+  intent?: Partial<IntentEnvelope>;
   kinds?: Array<"candidate" | "case" | "pattern" | "playbook" | "fact" | "decision" | "confirmed_memory">;
   memoryTypes?: ConfirmedMemoryType[];
   includeDeprecated?: boolean;
@@ -260,8 +262,24 @@ export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeS
   }
   if (engineProduct && !request.kinds?.length) {
     try {
-      const products = await searchProductBackend(store, {userId:request.userId,projectId:request.projectId,environment:request.environment,query:request.query,sampleManagerVersion:request.sampleManagerVersion,solution:request.solution,module:request.module,limit:request.limit});
-      for (const product of products) resultRows.push({...product,id:String(product.id),kind:"product_document",title:String(product.title),summary:String(product.snippet??product.summary??""),score:Number(product.score??0.5),lifecycle:"approved",versionMatch:true,matchReasons:["Published Product Knowledge engine"],applicability:{sampleManagerVersion:product.sampleManagerVersion?String(product.sampleManagerVersion):undefined,solution:product.solution?String(product.solution):undefined,module:product.module?String(product.module):undefined,environment:product.environment?String(product.environment):undefined},evidenceRefs:[],scope:{specificity:0}});
+      const products = await searchProductBackend(store, {userId:request.userId,projectId:request.projectId,environment:request.environment,query:request.query,intent:request.intent,sampleManagerVersion:request.sampleManagerVersion,solution:request.solution,module:request.module,limit:request.limit});
+      for (const product of products) {
+        const graphReasons = Array.isArray(product.matchReasons) ? product.matchReasons.filter((reason): reason is string => typeof reason === "string") : [];
+        resultRows.push({
+          ...product,
+          id: String(product.id),
+          kind: "product_document",
+          title: String(product.title),
+          summary: String(product.snippet ?? product.summary ?? ""),
+          score: Number(product.score ?? 0.5),
+          lifecycle: "approved",
+          versionMatch: true,
+          matchReasons: [...new Set(["Published Product Knowledge engine", ...graphReasons])],
+          applicability: {sampleManagerVersion:product.sampleManagerVersion ? String(product.sampleManagerVersion) : undefined,solution:product.solution ? String(product.solution) : undefined,module:product.module ? String(product.module) : undefined,environment:product.environment ? String(product.environment) : undefined},
+          evidenceRefs: [],
+          scope: {specificity:0},
+        });
+      }
       resultRows.sort((a,b)=>b.score-a.score);
     } catch { degraded=true;degradedReasons={productKnowledge:"unavailable"}; }
   }

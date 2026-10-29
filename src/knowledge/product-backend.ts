@@ -1,16 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
 import { diffLines } from "diff";
 import type { KnowledgeStore } from "./store.js";
+import type { IntentEnvelope } from "./work-session.js";
 import { MigrationController } from "./migration-control.js";
 import { searchKnowledgeProducts, diffKnowledgeProducts, type ProductDocumentDiff, type ProductDocumentSearchRequest } from "./knowledge-products.js";
 import { WeKnoraError, type WeKnoraClient, type WeKnoraReferenceMetadata, type KnowledgeReference } from "./weknora.js";
 
+import { routeProductSearchIntent } from "./search-intent.js";
+import { queryAndAugmentProductCandidates, type ProductGraphCandidate } from "./product-graph-augment.js";
 export interface ProductBackendControlPlane {
   knowledgeBaseId: string;
   client: Pick<WeKnoraClient, "search" | "readDocument">;
 }
 export interface ProductBackendScope { userId: number; isAdmin?: boolean; projectId?: string; environment?: string; }
-export type ProductBackendSearchInput = ProductDocumentSearchRequest & ProductBackendScope & {engineOnly?: boolean};
+export type ProductBackendSearchInput = ProductDocumentSearchRequest & ProductBackendScope & {engineOnly?: boolean; productVersion?: string; intent?: Partial<IntentEnvelope>};
 type Row = Record<string, unknown>;
 function text(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
 function parse(value: unknown, fallback: unknown): unknown { try { return JSON.parse(String(value)); } catch { return fallback; } }
@@ -124,12 +127,69 @@ function citation(row: Row, chunkId?: string, locators?: KnowledgeReference["sou
     sourceLocator: locatedSource(row, locators), sourceSha256: source.sourceSha256, version: source.version, topicId: source.topicId, sourceLocators: locators };
 }
 
+type GraphProductRow = Row & ProductGraphCandidate;
+
+async function augmentProductRows(store: KnowledgeStore, input: ProductBackendSearchInput, rows: Row[], injected?: ProductBackendControlPlane): Promise<Row[]> {
+  const query = input.query?.trim();
+  if (!query) return rows;
+  const intent = routeProductSearchIntent({
+    query,
+    intent: input.intent,
+    filters: {
+      projectId: input.projectId,
+      environment: input.environment,
+      product: input.product,
+      productVersion: input.productVersion,
+      sampleManagerVersion: input.sampleManagerVersion,
+      solution: input.solution,
+      module: input.module,
+    },
+  });
+  if (!intent.graphExpansion.enabled) return rows;
+  const candidates = rows.map((row) => ({
+    ...row,
+    id: String(row.id),
+    score: typeof row.score === "number" ? row.score : 0.5,
+    matchReasons: Array.isArray(row.matchReasons) ? row.matchReasons.filter((value): value is string => typeof value === "string") : [],
+  })) as GraphProductRow[];
+  const augmented = await queryAndAugmentProductCandidates(store, {
+    actorId: input.userId,
+    isAdmin: input.isAdmin,
+    projectId: input.projectId ?? "",
+    environment: input.environment,
+    productVersion: input.productVersion ?? input.sampleManagerVersion,
+    solution: input.solution,
+    module: input.module,
+    query,
+    limit: Math.max(1, Math.min(input.limit ?? 50, 100)),
+    maxHops: intent.graphExpansion.maxHops,
+    relationTypes: intent.graphExpansion.relationTypes,
+  }, candidates, {
+    maxNeighbors: intent.graphExpansion.maxEntities,
+    maxHops: intent.graphExpansion.maxHops,
+    maxAdded: Math.min(12, intent.graphExpansion.maxEntities),
+    loadCandidates: async (documentIds) => {
+      const loaded: GraphProductRow[] = [];
+      for (const documentId of documentIds) {
+        try {
+          const row = await getProductBackend(store, { ...input, documentId }, injected);
+          loaded.push({ ...row, id: String(row.id), score: typeof row.score === "number" ? row.score : 0.25, matchReasons: ["Product graph neighbor"] } as GraphProductRow);
+        } catch {
+          // Graph expansion is advisory; an unreadable source remains excluded.
+        }
+      }
+      return loaded;
+    },
+  });
+  return augmented?.candidates ?? rows;
+}
+
 /** Catalog metadata must describe the same published, scoped corpus as content reads. */
 export async function productCatalogVisibility(store: KnowledgeStore, input: ProductBackendScope, injected?: ProductBackendControlPlane): Promise<{ provider: "relay_local" | "weknora"; documents: Array<{ documentId: string; productVersion?: string }> }> {
   assertScope(store, input);
   const provider = new MigrationController(store).activeProductProvider();
   if (provider === "relay_local") {
-    const rows = store.db.prepare("SELECT id,project_id,environment FROM knowledge_documents WHERE kind='product_document'").all() as Row[];
+    const rows = store.db.prepare("SELECT id,project_id,environment FROM knowledge_documents WHERE kind='product_document' AND lifecycle IN ('approved','verified')").all() as Row[];
     return { provider, documents: rows.filter(row => localAllowed(store, row, input)).map(row => ({ documentId: String(row.id) })) };
   }
   const control = await controlPlane(store, injected); assertScope(store, input);
@@ -152,10 +212,11 @@ export async function searchProductBackend(store: KnowledgeStore, input: Product
   assertScope(store, input);
   const limit = Math.max(1, Math.min(500, Math.trunc(input.limit ?? 50)));
   if (!input.engineOnly && new MigrationController(store).activeProductProvider() === "relay_local") {
-    return searchKnowledgeProducts(store, { ...input, scope: { projectId: text(input.projectId), environment: text(input.environment) }, limit: 500 }).filter(result => {
+    const localRows = searchKnowledgeProducts(store, { ...input, scope: { projectId: text(input.projectId), environment: text(input.environment) }, limit: 500 }).filter(result => {
       const row = store.db.prepare("SELECT project_id,environment FROM knowledge_documents WHERE id=?").get(result.id) as Row | undefined;
       return Boolean(row && localAllowed(store, row, input));
     }).slice(0, limit);
+    return (await augmentProductRows(store, input, localRows, injected)).slice(0, limit);
   }
   const control = await controlPlane(store, injected), rows = publishedRows(store, input, control.knowledgeBaseId);
   if (!rows.length) return [];
@@ -176,7 +237,7 @@ export async function searchProductBackend(store: KnowledgeStore, input: Product
     if (previous) (previous.citations as Row[]).push(citation(row, ref.chunkId, ref.sourceLocators));
     else found.set(ref.documentId, { ...dto(row, ref), citations: [citation(row, ref.chunkId, ref.sourceLocators)] });
   }
-  return [...found.values()].slice(0, limit);
+  return (await augmentProductRows(store, input, [...found.values()], injected)).slice(0, limit);
 }
 
 export async function getProductBackend(store: KnowledgeStore, input: ProductBackendScope & { documentId: string }, injected?: ProductBackendControlPlane): Promise<Row> {
@@ -186,7 +247,7 @@ export async function getProductBackend(store: KnowledgeStore, input: ProductBac
     WHERE (id=? OR external_document_id=?) AND project_id IS NULL AND environment IS NULL`).get(input.documentId, input.documentId));
   if (provider === "relay_local" && !directEngine) {
     const row = store.db.prepare(`SELECT d.*,p.document_family_id,p.document_type,p.language,p.authority,p.source_path,p.version,p.sections_json,p.metadata_json,p.diff_review_status
-      FROM knowledge_documents d LEFT JOIN knowledge_product_documents p ON p.id=d.id WHERE d.id=? AND d.kind='product_document'`).get(input.documentId) as Row | undefined;
+      FROM knowledge_documents d LEFT JOIN knowledge_product_documents p ON p.id=d.id WHERE d.id=? AND d.kind='product_document' AND d.lifecycle IN ('approved','verified')`).get(input.documentId) as Row | undefined;
     if (!row || !localAllowed(store, row, input)) throw new Error("Product document not found or access denied");
     return { id: row.id, kind: "product_document", provider: "relay_local", title: row.title, body: row.body, lifecycle: row.lifecycle,
       projectId: text(row.project_id), environment: text(row.environment), projectNameSnapshot: row.project_name_snapshot,
@@ -240,16 +301,20 @@ export async function searchEngineProductReferences(store:KnowledgeStore,input:P
     // ACL errors and malformed/unverified source references remain fail-closed.
     return {retrievalRunId:randomUUID(),references:[],degraded:{productKnowledge:error.code}};
   }
-  const references:KnowledgeReference[]=products.map(row=>({
+  const references: KnowledgeReference[]=products.map(row=>{
+    const matchReasons = [row.matchReason, ...(Array.isArray(row.matchReasons)?row.matchReasons:[])].filter((reason): reason is string => typeof reason === "string" && Boolean(reason.trim()));
+    return {
     provider:"weknora",documentId:String(row.externalDocumentId),chunkId:row.chunkId?String(row.chunkId):undefined,
     title:String(row.title),snippet:row.snippet?String(row.snippet):undefined,score:typeof row.score==="number"?row.score:undefined,
     version:row.version?String(row.version):undefined,solution:row.solution?String(row.solution):undefined,module:row.module?String(row.module):undefined,
     topicId:row.topicId?String(row.topicId):undefined,language:row.language?String(row.language):undefined,
     projectId:row.projectId?String(row.projectId):undefined,environment:row.environment?String(row.environment):undefined,
     sourceLocator:row.sourceLocator?String(row.sourceLocator):undefined,sourceSha256:row.sourceSha256?String(row.sourceSha256):undefined,
-    sourcePath:row.sourcePath?String(row.sourcePath):undefined,sourceLocators:row.sourceLocators as KnowledgeReference["sourceLocators"],matchReason:row.matchReason?String(row.matchReason):undefined,
+    sourcePath:row.sourcePath?String(row.sourcePath):undefined,sourceLocators:row.sourceLocators as KnowledgeReference["sourceLocators"],
+    matchReason:[...new Set(matchReasons)].join("; ")||undefined,
     citation:row.citation?String(row.citation):undefined,retrievalRunId:String(row.retrievalRunId??"engine-empty")
-  }));
+    };
+  });
   return {retrievalRunId:references[0]?.retrievalRunId??"engine-empty",references};
 }
 

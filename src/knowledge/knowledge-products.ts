@@ -9,6 +9,7 @@ import type { KnowledgeStore } from "./store.js";
 import type { KnowledgeDocument } from "./domain.js";
 import { parseHelpHtml, parseToc, parsePdfBytes, type ParsedHelpHtml } from "./parsers.js";
 import { resolveChmExtractor, chmExtractionArguments } from "./chm-extractor.js";
+import { extractProductGraph, persistProductGraph } from "./product-graph.js";
 
 const SUPPORTED = new Set([".md", ".markdown", ".html", ".htm", ".pdf", ".chm"]);
 
@@ -326,12 +327,25 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
       // entry merely because the old text-only normalizer collapsed them.
       const normalizedContentSha256 = sha256(parsed.body);
       const proposedRevisionId = `product-revision-${sha256(`${HTML_PARSER_VERSION}\0${normalizedContentSha256}`).slice(0, 32)}`;
+      const id = `product-document-${sha256(`${familyId}\0${version}\0${relativePath}\0${sourceHash}${htmlParsed?`\0${HTML_PARSER_VERSION}`:""}`).slice(0, 32)}`;
+      const graphInput = {
+        documentId: id,
+        title: parsed.title,
+        body: parsed.body,
+        metadata: { stableIdentifiers: parsed.stableIdentifiers, links: htmlParsed?.links ?? [], references: htmlParsed?.links ?? [] },
+        sourceLocator: `product-doc:${relativePath}`,
+        sourceSha256: sourceHash,
+        product: local.product,
+        productVersion: version,
+        solution: local.solution,
+        module: parsed.module ?? local.module,
+      };
+      let priorDocumentId: string | undefined;
       store.db.transaction(() => {
       store.db.prepare(`INSERT INTO knowledge_product_revisions(id,normalized_content_sha256,raw_sha256,title,body,sections_json,parser_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(normalized_content_sha256,parser_version) DO UPDATE SET updated_at=excluded.updated_at`).run(proposedRevisionId, normalizedContentSha256, sourceHash, parsed.title, parsed.body, JSON.stringify(parsed.sections), HTML_PARSER_VERSION, now, now);
       // Restored or seeded revisions may have an earlier ID for these exact
       // bytes. Reference the persisted identity rather than the proposed ID.
       const revisionId = (store.db.prepare("SELECT id FROM knowledge_product_revisions WHERE normalized_content_sha256=? AND parser_version=?").get(normalizedContentSha256, HTML_PARSER_VERSION) as {id:string}).id;
-      const id = `product-document-${sha256(`${familyId}\0${version}\0${relativePath}\0${sourceHash}${htmlParsed?`\0${HTML_PARSER_VERSION}`:""}`).slice(0, 32)}`;
       const existing = store.db.prepare("SELECT source_sha256 FROM knowledge_product_documents WHERE id = ?").get(id) as { source_sha256?: string } | undefined;
       if (existing) {
         advanceCurrentProductBinding(store, id, familyId, version, relativePath, now);
@@ -383,11 +397,14 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
           VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
           .run(`binding-${sha256(`${bindingTopicId}\0${version}\0${id}`).slice(0, 24)}`, bindingTopicId, id, local.product ?? null, version, relativePath, titleMatch ? "title_module" : "family_id", matchConfidence, matchConfidence < 0.8 ? "pending_review" : "active", createdAt, createdAt);
       }
-      if (prior?.id) { store.db.prepare("UPDATE knowledge_documents SET lifecycle='deprecated',updated_at=? WHERE id=? AND lifecycle<>'deprecated'").run(now, prior.id); report.deprecated++; }
+      if (prior?.id) { priorDocumentId = prior.id; store.db.prepare("UPDATE knowledge_documents SET lifecycle='deprecated',updated_at=? WHERE id=? AND lifecycle<>'deprecated'").run(now, prior.id); report.deprecated++; }
       if (prior?.id) report.updated++; else report.imported++;
       report.documents.push(id); report.items.push({ path: relativePath, id, status: prior?.id ? "updated" : "imported" });
       if (hasBatchTables) store.db.prepare("INSERT OR REPLACE INTO knowledge_product_document_items(id,run_id,relative_path,document_id,status,source_sha256,metadata_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").run(`${runId}:${relativePath}`, runId, relativePath, id, prior?.id ? "updated" : "imported", sourceHash, JSON.stringify(metadata), now, now);
       })();
+      try { persistProductGraph(store, extractProductGraph(graphInput)); }
+      catch (error) { report.warnings.push(`Product graph extraction skipped for ${relativePath}: ${error instanceof Error ? error.message : String(error)}`); }
+      if (priorDocumentId) invalidateEngineProductMappings(store, [priorDocumentId], now);
     }
     progress();
     report.status = report.failed ? (report.imported || report.updated ? "partial" : "failed") : "succeeded";
@@ -416,7 +433,7 @@ export function searchKnowledgeProducts(store: KnowledgeStore, request: ProductD
   }
   const filters: Array<[string, string, string]> = [["d.samplemanager_version", "sampleManagerVersion", "version"], ["d.project_name_snapshot", "product", "product"], ["d.solution", "solution", "solution"], ["d.module", "module", "module"], ["p.document_type", "documentType", "documentType"], ["p.language", "language", "language"], ["p.authority", "authority", "authority"]];
   for (const [column, key] of filters) { const value = request[key as keyof ProductDocumentSearchRequest]; if (value) { conditions.push(`${column}=@${key}`); params[key] = value; } }
-  if (!request.includeDeprecated) conditions.push("d.lifecycle<>'deprecated'");
+  conditions.push(request.includeDeprecated ? "d.lifecycle IN ('approved','verified','deprecated')" : "d.lifecycle IN ('approved','verified')");
   const limit = Math.max(1, Math.min(500, Math.trunc(request.limit ?? 50)));
   let rows: Array<Record<string, unknown>> = [];
   if (request.query?.trim()) {

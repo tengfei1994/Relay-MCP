@@ -380,14 +380,17 @@ export function queryProductGraph(store: KnowledgeStore, request: ProductGraphQu
   if (projectId && !request.isAdmin && request.actorId !== undefined && !store.canRead(request.actorId, projectId)) throw new Error("Knowledge access denied for project");
   const clauses = ["e.document_id=d.id", "d.kind='product_document'", "e.project_id IS d.project_id", "e.environment IS d.environment"];
   const params: unknown[] = [];
+  if (projectId) {
+    clauses.push("((e.project_id=? AND (e.environment IS ? OR (e.environment IS NULL AND ? IS NULL))) OR (e.project_id IS NULL AND e.environment IS NULL))");
+    params.push(projectId, environment ?? null, environment ?? null);
+  } else clauses.push("e.project_id IS NULL AND e.environment IS NULL");
   if (!request.includeDeprecated) clauses.push("d.lifecycle IN ('approved','verified')");
-  // A Product projection must be approved when the type-specific row exists.
-  clauses.push("(p.id IS NULL OR p.review_status='approved')");
+  clauses.push("p.review_status='approved'");
   if (projectId) { clauses.push("((d.project_id=? AND (d.environment IS ? OR (d.environment IS NULL AND ? IS NULL))) OR (d.project_id IS NULL AND d.environment IS NULL))"); params.push(projectId, environment ?? null, environment ?? null); }
-  else { clauses.push("d.project_id IS NULL AND d.environment IS NULL"); }
+  else clauses.push("d.project_id IS NULL AND d.environment IS NULL");
   for (const [column, value] of [["e.product_version", request.productVersion], ["e.solution", request.solution], ["e.module", request.module]] as Array<[string, unknown]>) if (optional(value)) { clauses.push(`${column}=?`); params.push(String(value)); }
   if (optional(request.relationType)) { /* applied to relations below */ }
-  const rows = store.db.prepare(`SELECT e.* FROM knowledge_product_graph_entities e JOIN knowledge_documents d ON ${clauses[0]} LEFT JOIN knowledge_product_documents p ON p.id=d.id WHERE ${clauses.slice(1).join(" AND ")} ORDER BY e.canonical_key,e.id LIMIT ?`).all(...params, 500) as Array<Record<string, unknown>>;
+  const rows = store.db.prepare(`SELECT e.* FROM knowledge_product_graph_entities e JOIN knowledge_documents d ON ${clauses[0]} JOIN knowledge_product_documents p ON p.id=d.id WHERE ${clauses.slice(1).join(" AND ")} ORDER BY e.canonical_key,e.id LIMIT ?`).all(...params, 500) as Array<Record<string, unknown>>;
   let entities = rows.map(entityFromRow);
   const terms = optional(request.query)?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
   if (terms.length) entities = entities.filter((entity) => terms.every((term) => `${entity.name} ${entity.canonicalKey} ${entity.kind}`.toLowerCase().includes(term)));
@@ -395,8 +398,12 @@ export function queryProductGraph(store: KnowledgeStore, request: ProductGraphQu
   entities = entities.slice(0, limit);
   const visible = new Set(entities.map((entity) => entity.id));
   const relationClauses = ["r.document_id=d.id", "d.kind='product_document'", "r.project_id IS d.project_id", "r.environment IS d.environment"]; const relationParams: unknown[] = [];
+  if (projectId) {
+    relationClauses.push("((r.project_id=? AND (r.environment IS ? OR (r.environment IS NULL AND ? IS NULL))) OR (r.project_id IS NULL AND r.environment IS NULL))");
+    relationParams.push(projectId, environment ?? null, environment ?? null);
+  } else relationClauses.push("r.project_id IS NULL AND r.environment IS NULL");
   if (!request.includeDeprecated) relationClauses.push("d.lifecycle IN ('approved','verified')");
-  relationClauses.push("(p.id IS NULL OR p.review_status='approved')");
+  relationClauses.push("p.review_status='approved'");
   if (projectId) { relationClauses.push("((d.project_id=? AND (d.environment IS ? OR (d.environment IS NULL AND ? IS NULL))) OR (d.project_id IS NULL AND d.environment IS NULL))"); relationParams.push(projectId, environment ?? null, environment ?? null); }
   else relationClauses.push("d.project_id IS NULL AND d.environment IS NULL");
   if (optional(request.relationType)) { relationClauses.push("r.relation_type=?"); relationParams.push(String(request.relationType)); }
@@ -410,7 +417,7 @@ export function queryProductGraph(store: KnowledgeStore, request: ProductGraphQu
   relationClauses.push(`(r.from_entity_id IN (${endpointPlaceholders}) OR r.to_entity_id IN (${endpointPlaceholders}))`);
   relationParams.push(...visibleIds, ...visibleIds);
   const relationLimit = Math.min(5000, Math.max(100, limit * 8));
-  const relationRows = store.db.prepare(`SELECT r.* FROM knowledge_product_graph_relations r JOIN knowledge_documents d ON ${relationClauses[0]} LEFT JOIN knowledge_product_documents p ON p.id=d.id WHERE ${relationClauses.slice(1).join(" AND ")} ORDER BY r.id LIMIT ?`).all(...relationParams, relationLimit) as Array<Record<string, unknown>>;
+  const relationRows = store.db.prepare(`SELECT r.* FROM knowledge_product_graph_relations r JOIN knowledge_documents d ON ${relationClauses[0]} JOIN knowledge_product_documents p ON p.id=d.id WHERE ${relationClauses.slice(1).join(" AND ")} ORDER BY r.id LIMIT ?`).all(...relationParams, relationLimit) as Array<Record<string, unknown>>;
   const relations = relationRows.map(relationFromRow).filter((relation) => visible.has(relation.fromEntityId) && visible.has(relation.toEntityId));
   return { entities, relations };
 }

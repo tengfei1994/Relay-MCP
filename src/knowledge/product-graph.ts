@@ -397,15 +397,11 @@ export function queryProductGraph(store: KnowledgeStore, request: ProductGraphQu
   const limit = Math.max(1, Math.min(500, Math.trunc(request.limit ?? 100)));
   entities = entities.slice(0, limit);
   const visible = new Set(entities.map((entity) => entity.id));
-  const relationClauses = ["r.document_id=d.id", "d.kind='product_document'", "r.project_id IS d.project_id", "r.environment IS d.environment"]; const relationParams: unknown[] = [];
+  const relationClauses: string[] = []; const relationParams: unknown[] = [];
   if (projectId) {
     relationClauses.push("((r.project_id=? AND (r.environment IS ? OR (r.environment IS NULL AND ? IS NULL))) OR (r.project_id IS NULL AND r.environment IS NULL))");
     relationParams.push(projectId, environment ?? null, environment ?? null);
   } else relationClauses.push("r.project_id IS NULL AND r.environment IS NULL");
-  if (!request.includeDeprecated) relationClauses.push("d.lifecycle IN ('approved','verified')");
-  relationClauses.push("p.review_status='approved'");
-  if (projectId) { relationClauses.push("((d.project_id=? AND (d.environment IS ? OR (d.environment IS NULL AND ? IS NULL))) OR (d.project_id IS NULL AND d.environment IS NULL))"); relationParams.push(projectId, environment ?? null, environment ?? null); }
-  else relationClauses.push("d.project_id IS NULL AND d.environment IS NULL");
   if (optional(request.relationType)) { relationClauses.push("r.relation_type=?"); relationParams.push(String(request.relationType)); }
   else {
     const relationTypes = (request.relationTypes ?? []).map(optional).filter((value): value is string => Boolean(value)).slice(0, 16);
@@ -414,10 +410,23 @@ export function queryProductGraph(store: KnowledgeStore, request: ProductGraphQu
   const visibleIds = [...visible].slice(0, 500);
   if (!visibleIds.length) return { entities, relations: [] };
   const endpointPlaceholders = visibleIds.map(() => "?").join(",");
-  relationClauses.push(`(r.from_entity_id IN (${endpointPlaceholders}) OR r.to_entity_id IN (${endpointPlaceholders}))`);
-  relationParams.push(...visibleIds, ...visibleIds);
   const relationLimit = Math.min(5000, Math.max(100, limit * 8));
-  const relationRows = store.db.prepare(`SELECT r.* FROM knowledge_product_graph_relations r JOIN knowledge_documents d ON ${relationClauses[0]} JOIN knowledge_product_documents p ON p.id=d.id WHERE ${relationClauses.slice(1).join(" AND ")} ORDER BY r.id LIMIT ?`).all(...relationParams, relationLimit) as Array<Record<string, unknown>>;
-  const relations = relationRows.map(relationFromRow).filter((relation) => visible.has(relation.fromEntityId) && visible.has(relation.toEntityId));
+  const relationSql = (endpoint: "from_entity_id" | "to_entity_id") => `SELECT r.* FROM knowledge_product_graph_relations r INDEXED BY ${endpoint === "from_entity_id" ? "idx_product_graph_relations_from_endpoint" : "idx_product_graph_relations_to_endpoint"} WHERE ${[...relationClauses, `r.${endpoint} IN (${endpointPlaceholders})`].join(" AND ")} ORDER BY r.id LIMIT ?`;
+  const fromRows = store.db.prepare(relationSql("from_entity_id")).all(...relationParams, ...visibleIds, relationLimit) as Array<Record<string, unknown>>;
+  const toRows = store.db.prepare(relationSql("to_entity_id")).all(...relationParams, ...visibleIds, relationLimit) as Array<Record<string, unknown>>;
+  const relationRows = [...new Map([...fromRows, ...toRows].map((row) => [String(row.id), row])).values()].sort((left, right) => String(left.id).localeCompare(String(right.id))).slice(0, relationLimit);
+  if (!relationRows.length) return { entities, relations: [] };
+  const sourceIds = [...new Set(relationRows.map((row) => String(row.document_id)))];
+  const sourcePlaceholders = sourceIds.map(() => "?").join(",");
+  const sourceClauses = [`d.id IN (${sourcePlaceholders})`, "d.kind='product_document'"];
+  const sourceParams: unknown[] = [...sourceIds];
+  if (!request.includeDeprecated) sourceClauses.push("d.lifecycle IN ('approved','verified')");
+  sourceClauses.push("p.review_status='approved'");
+  if (projectId) { sourceClauses.push("((d.project_id=? AND (d.environment IS ? OR (d.environment IS NULL AND ? IS NULL))) OR (d.project_id IS NULL AND d.environment IS NULL))"); sourceParams.push(projectId, environment ?? null, environment ?? null); }
+  else sourceClauses.push("d.project_id IS NULL AND d.environment IS NULL");
+  const sourceRows = store.db.prepare(`SELECT d.id,d.project_id,d.environment FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE ${sourceClauses.join(" AND ")}`).all(...sourceParams) as Array<Record<string, unknown>>;
+  const validSources = new Map(sourceRows.map((row) => [String(row.id), row]));
+  const sameScope = (row: Record<string, unknown>, source: Record<string, unknown>): boolean => (optional(row.projectId ?? row.project_id) === optional(source.project_id)) && (optional(row.environment) === optional(source.environment));
+  const relations = relationRows.map(relationFromRow).filter((relation) => visible.has(relation.fromEntityId) && visible.has(relation.toEntityId) && validSources.has(relation.documentId) && sameScope(relation as unknown as Record<string, unknown>, validSources.get(relation.documentId)!));
   return { entities, relations };
 }

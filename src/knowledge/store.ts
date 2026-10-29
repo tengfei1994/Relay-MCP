@@ -275,8 +275,13 @@ export class KnowledgeStore {
       if (![...KNOWLEDGE_MIGRATIONS.map((migration) => migration.version), KNOWLEDGE_POST_REPAIR_MARKER].every((version) => applied.has(version))) return false;
       const pendingScopes = this.db.prepare("SELECT 1 FROM knowledge_documents d WHERE NOT EXISTS (SELECT 1 FROM knowledge_scope_bindings s WHERE s.document_id=d.id) LIMIT 1").get();
       if (pendingScopes) return false;
-      const pendingTopics = this.db.prepare("SELECT 1 FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE d.kind='product_document' AND NOT EXISTS (SELECT 1 FROM knowledge_product_document_bindings b WHERE b.document_id=d.id) LIMIT 1").get();
-      return !pendingTopics;
+      const pendingTopics = this.db.prepare("SELECT p.document_family_id,p.version FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE d.kind='product_document' AND NOT EXISTS (SELECT 1 FROM knowledge_product_document_bindings b WHERE b.document_id=d.id)").all() as Array<{ document_family_id?: string; version?: string }>;
+      for (const row of pendingTopics) {
+        const canonicalKey = `product:${String(row.document_family_id ?? "")}`;
+        const topic = this.db.prepare("SELECT id FROM knowledge_topics WHERE canonical_key=?").get(canonicalKey) as { id?: string } | undefined;
+        if (!topic?.id || !this.db.prepare("SELECT 1 FROM knowledge_product_document_bindings WHERE topic_id=? AND product_version=?").get(topic.id, String(row.version ?? ""))) return false;
+      }
+      return true;
     } catch {
       return false;
     }

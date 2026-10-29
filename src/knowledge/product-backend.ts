@@ -20,16 +20,19 @@ function chunkIds(row: Row): string[] {
   return ids;
 }
 function assertScope(store: KnowledgeStore, input: ProductBackendScope): void {
-  if (input.isAdmin) return;
-  const allowed = input.projectId ? store.canRead(input.userId, input.projectId)
-    : Boolean(store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id=? AND can_read=1 LIMIT 1").get(input.userId));
-  if (!allowed) throw new Error("Knowledge access denied");
+  const projectId = text(input.projectId), environment = text(input.environment);
+  if (environment && !projectId) throw new Error("environment requires projectId");
+  if (!projectId || input.isAdmin) return;
+  if (!store.canRead(input.userId, projectId)) throw new Error("Knowledge access denied");
 }
+export function assertProductScope(store: KnowledgeStore, input: ProductBackendScope): void { assertScope(store, input); }
+export function productDocumentVisible(store: KnowledgeStore, row: Row, input: ProductBackendScope): boolean { return localAllowed(store, row, input); }
 function localAllowed(store: KnowledgeStore, row: Row, input: ProductBackendScope): boolean {
   const projectId = text(row.project_id), environment = text(row.environment);
-  if (projectId && input.projectId && projectId !== input.projectId) return false;
-  if (environment && environment !== text(input.environment)) return false;
-  return Boolean(input.isAdmin || (projectId ? store.canRead(input.userId, projectId) : store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id=? AND can_read=1 LIMIT 1").get(input.userId)));
+  const requestedProject = text(input.projectId), requestedEnvironment = text(input.environment);
+  if (!projectId && !environment) return true;
+  if (!requestedProject || projectId !== requestedProject || environment !== requestedEnvironment) return false;
+  return Boolean(input.isAdmin || store.canRead(input.userId, requestedProject));
 }
 async function engine<T>(run: () => Promise<T>): Promise<T> {
   try { return await run(); }
@@ -64,18 +67,26 @@ function legacyMetadataByDocument(store: KnowledgeStore): Map<string, Row> {
   return result;
 }
 function publishedRows(store: KnowledgeStore, input: ProductBackendSearchInput, knowledgeBaseId: string): Row[] {
-  const conditions = ["status='published'", "upstream_verified_at IS NOT NULL", "upstream_verified_at<>''", "external_knowledge_base_id=?", "((project_id IS ? AND environment IS ?) OR (project_id IS NULL AND environment IS NULL))"];
-  const params: Array<string | null> = [knowledgeBaseId, text(input.projectId) ?? null, text(input.environment) ?? null];
-  for (const [key, column] of [["sampleManagerVersion", "product_version"], ["solution", "solution"], ["module", "module"], ["language", "language"]] as const) {
-    const value = text(input[key]); if (value) { conditions.push(column + "=?"); params.push(value); }
+  const projectId = text(input.projectId), environment = text(input.environment);
+  const conditions = ["status='published'", "upstream_verified_at IS NOT NULL", "upstream_verified_at<>''", "external_knowledge_base_id=?"];
+  const params: Array<string | null> = [knowledgeBaseId];
+  if (!projectId) conditions.push("project_id IS NULL", "environment IS NULL");
+  else {
+    conditions.push("((project_id IS ? AND environment IS ?) OR (project_id IS NULL AND environment IS NULL))");
+    params.push(projectId, environment ?? null);
   }
   const legacy = legacyMetadataByDocument(store);
   return (store.db.prepare("SELECT * FROM knowledge_weknora_documents WHERE " + conditions.join(" AND ") + " ORDER BY updated_at DESC,id").all(...params) as Row[])
     .map(row => ({ ...row, legacy: legacy.get(String(row.id)) ?? {} }))
     .filter(row => {
-      const metadata = row.legacy as Row;
+      const source = row as Row, metadata = source.legacy as Row;
       return (!input.product || metadata.project_name_snapshot === input.product) &&
-        (!input.documentType || metadata.document_type === input.documentType) && (!input.authority || metadata.authority === input.authority);
+        (!input.sampleManagerVersion || text(source.product_version) === input.sampleManagerVersion) &&
+        (!input.solution || text(source.solution) === input.solution) &&
+        (!input.module || text(source.module) === input.module) &&
+        (!input.language || text(source.language) === input.language) &&
+        (!input.documentType || metadata.document_type === input.documentType) &&
+        (!input.authority || metadata.authority === input.authority);
     });
 }
 function metadata(row: Row): WeKnoraReferenceMetadata {
@@ -141,7 +152,7 @@ export async function searchProductBackend(store: KnowledgeStore, input: Product
   assertScope(store, input);
   const limit = Math.max(1, Math.min(500, Math.trunc(input.limit ?? 50)));
   if (!input.engineOnly && new MigrationController(store).activeProductProvider() === "relay_local") {
-    return searchKnowledgeProducts(store, { ...input, limit: 500 }).filter(result => {
+    return searchKnowledgeProducts(store, { ...input, scope: { projectId: text(input.projectId), environment: text(input.environment) }, limit: 500 }).filter(result => {
       const row = store.db.prepare("SELECT project_id,environment FROM knowledge_documents WHERE id=?").get(result.id) as Row | undefined;
       return Boolean(row && localAllowed(store, row, input));
     }).slice(0, limit);
@@ -170,7 +181,10 @@ export async function searchProductBackend(store: KnowledgeStore, input: Product
 
 export async function getProductBackend(store: KnowledgeStore, input: ProductBackendScope & { documentId: string }, injected?: ProductBackendControlPlane): Promise<Row> {
   assertScope(store, input);
-  if (new MigrationController(store).activeProductProvider() === "relay_local") {
+  const provider = new MigrationController(store).activeProductProvider();
+  const directEngine = provider === "relay_local" && Boolean(store.db.prepare(`SELECT 1 FROM knowledge_weknora_documents
+    WHERE (id=? OR external_document_id=?) AND project_id IS NULL AND environment IS NULL`).get(input.documentId, input.documentId));
+  if (provider === "relay_local" && !directEngine) {
     const row = store.db.prepare(`SELECT d.*,p.document_family_id,p.document_type,p.language,p.authority,p.source_path,p.version,p.sections_json,p.metadata_json,p.diff_review_status
       FROM knowledge_documents d LEFT JOIN knowledge_product_documents p ON p.id=d.id WHERE d.id=? AND d.kind='product_document'`).get(input.documentId) as Row | undefined;
     if (!row || !localAllowed(store, row, input)) throw new Error("Product document not found or access denied");

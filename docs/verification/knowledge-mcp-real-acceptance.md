@@ -15,7 +15,7 @@
 
 1. Actual HTTP health and MCP tools/list/connect with existing private admin/foreign JWT files.
 2. Positive HTTP local Case search using `kinds=case` and a dynamic confirmed Memory title term plus unique sentinel. Product retrieval is excluded; deterministic local providers remain available. The response must still carry its query, a retrievalRunId and the selected Memory result.
-3. Actual MCP `knowledge_search` with a dynamically absent Product version, proving a usable response with no engine Product results; plus `knowledge_source_search` with explicit missing-baseline/snapshot rejection (not a successful source-code lookup). These exercise the real MCP handler/audit path without a remote embedding search.
+3. Actual MCP `knowledge_search` with a dynamically absent Product version, proving a usable response with no engine Product results; plus `knowledge_source_search` with explicit missing-baseline/snapshot rejection (not a successful source-code lookup). These exercise the real MCP Product search handler/audit path without a remote embedding search.
 4. Unknown-route and malformed-JSON HTTP requests with synthetic URL/header/body sentinels. The latter catches Fastify errors that otherwise duplicate truncated body text into log messages.
 5. Every frozen real source is read through formal HTTP routes, with correct source hash/version/citations and foreign actor/environment denial. Sources in the token's default environment are also read through actual MCP; CHM's other environment is not impersonated by modifying JWT claims.
 6. Up to three actual staged/failed/deprecated mappings are denied through HTTP and MCP. At least one such fixture is required; the driver does not manufacture publication states.

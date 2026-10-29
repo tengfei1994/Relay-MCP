@@ -41,6 +41,7 @@ import { PROVIDER_ADMISSION_MIGRATION } from "./migrations/044-provider-admissio
 import { INGEST_OWNERSHIP_MIGRATION } from "./migrations/045-ingest-ownership.js";
 import { PRODUCT_REVISION_PARSER_IDENTITY_MIGRATION, PARSER_SCOPED_PRODUCT_REVISIONS_SCHEMA } from "./migrations/046-product-revision-parser-identity.js";
 import { CONFIRMED_MEMORY_MIGRATION } from "./migrations/047-confirmed-memory.js";
+import { PRODUCT_TOPIC_QUERY_INDEXES_MIGRATION } from "./migrations/048-product-topic-query-indexes.js";
 import { PROVIDER_SECRETS_MIGRATION } from "./migrations/039-provider-secrets.js";
 import { WEKNORA_DOCUMENT_MIGRATION } from "./migrations/031-weknora-documents.js";
 import { WORK_SESSION_MIGRATION } from "./migrations/029-work-sessions.js";
@@ -114,7 +115,51 @@ const KNOWLEDGE_MIGRATIONS: Array<{ version: string; sql: string; requiresForeig
     INGEST_OWNERSHIP_MIGRATION,
     PRODUCT_REVISION_PARSER_IDENTITY_MIGRATION,
     CONFIRMED_MEMORY_MIGRATION,
+  PRODUCT_TOPIC_QUERY_INDEXES_MIGRATION,
 ];
+
+const KNOWLEDGE_BUSY_TIMEOUT_MS = parseBoundedNumber(
+  process.env.KNOWLEDGE_BUSY_TIMEOUT_MS,
+  5_000,
+  250,
+  30_000,
+);
+const KNOWLEDGE_MIGRATION_RETRY_LIMIT = parseBoundedNumber(
+  process.env.KNOWLEDGE_MIGRATION_RETRY_LIMIT,
+  8,
+  1,
+  20,
+);
+const KNOWLEDGE_MIGRATION_RETRY_BASE_MS = parseBoundedNumber(
+  process.env.KNOWLEDGE_MIGRATION_RETRY_BASE_MS,
+  100,
+  10,
+  2_000,
+);
+const migrationWaitBuffer = new Int32Array(new SharedArrayBuffer(4));
+
+function isSqliteLockError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return (typeof code === "string" && (code === "SQLITE_BUSY" || code.startsWith("SQLITE_BUSY_") || code === "SQLITE_LOCKED" || code.startsWith("SQLITE_LOCKED_")))
+    || /(?:database|table) is locked|sqlite_busy|sqlite_locked/i.test(error instanceof Error ? error.message : String(error));
+}
+
+function waitForMigrationRetry(attempt: number): void {
+  const delay = Math.min(2_000, KNOWLEDGE_MIGRATION_RETRY_BASE_MS * (2 ** attempt));
+  Atomics.wait(migrationWaitBuffer, 0, 0, delay);
+}
+
+function withMigrationRetry<T>(operation: () => T): T {
+  let attempt = 0;
+  for (;;) {
+    try { return operation(); }
+    catch (error) {
+      if (!isSqliteLockError(error) || attempt >= KNOWLEDGE_MIGRATION_RETRY_LIMIT - 1) throw error;
+      waitForMigrationRetry(attempt);
+      attempt += 1;
+    }
+  }
+}
 
 const DEFAULT_CONSUMER_HEARTBEAT_MS = parseBoundedNumber(
   process.env.KNOWLEDGE_CONSUMER_HEARTBEAT_MS,
@@ -193,10 +238,13 @@ export class KnowledgeStore {
     let opened: Database.Database | undefined;
     try {
       mkdirSync(dirname(dbPath), { recursive: true });
-      opened = new Database(dbPath);
+      opened = new Database(dbPath, { timeout: KNOWLEDGE_BUSY_TIMEOUT_MS });
+      opened.pragma(`busy_timeout = ${KNOWLEDGE_BUSY_TIMEOUT_MS}`);
       this.db = opened;
-      this.db.pragma("journal_mode = WAL");
-      this.db.pragma("foreign_keys = ON");
+      withMigrationRetry(() => {
+        this.db.pragma("journal_mode = WAL");
+        this.db.pragma("foreign_keys = ON");
+      });
       this.casebookRoot = options.casebookRoot;
       this.evidenceRoot = options.evidenceRoot;
       this.now = options.clock ?? (() => new Date());
@@ -215,6 +263,10 @@ export class KnowledgeStore {
   }
 
   migrate(): void {
+    withMigrationRetry(() => this.migrateOnce());
+  }
+
+  private migrateOnce(): void {
     // Bootstrap before querying it: migration must work on a brand-new database.
     this.db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)");
     this.repairLegacyDocumentCheckSchema();
@@ -292,10 +344,22 @@ export class KnowledgeStore {
     } finally {
       if (rebuildsReferencedTable && foreignKeysEnabled) this.db.pragma("foreign_keys = ON");
     }
-    // Databases created by the early P01 preview may already carry the
-    // 002-domain marker but not the type projections introduced later. Make
-    // this additive repair safe and idempotent without rewriting user data.
-    const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_confirmed_memories", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions", "knowledge_topics", "knowledge_product_document_bindings", "knowledge_artifact_sets", "knowledge_artifacts", "knowledge_source_baselines", "knowledge_source_files", "knowledge_project_snapshots", "knowledge_project_snapshot_files", "knowledge_source_chunks", "knowledge_source_chunks_fts", "knowledge_artifact_publications", "knowledge_ingest_jobs", "knowledge_product_revisions"];
+    let postRepairTransaction = false;
+    try {
+      // Keep additive repairs and legacy backfills under the same writer lock.
+      // A second opener therefore observes either the complete migration or
+      // the pre-repair state and can safely retry the whole operation.
+      this.db.exec("BEGIN IMMEDIATE");
+      postRepairTransaction = true;
+      // Databases created by the early P01 preview may already carry the
+      // 002-domain marker but not the type projections introduced later. Make
+      // this additive repair safe and idempotent without rewriting user data.
+      // Increment this marker for a new one-time repair generation; old
+      // generations remain evidence that their repair completed.
+      const postRepairMarker = "knowledge-post-repair-backfill-v2";
+      const postRepairNeeded = !this.db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(postRepairMarker);
+      if (postRepairNeeded) {
+      const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_confirmed_memories", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions", "knowledge_topics", "knowledge_product_document_bindings", "knowledge_artifact_sets", "knowledge_artifacts", "knowledge_source_baselines", "knowledge_source_files", "knowledge_project_snapshots", "knowledge_project_snapshot_files", "knowledge_source_chunks", "knowledge_source_chunks_fts", "knowledge_artifact_publications", "knowledge_ingest_jobs", "knowledge_product_revisions"];
     const missingTable = requiredTables.some((name) => !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
     if (missingTable) this.db.exec(KNOWLEDGE_DOMAIN_MIGRATION.sql);
     const columns: Record<string, Array<[string, string]>> = {
@@ -372,8 +436,16 @@ export class KnowledgeStore {
       DELETE FROM knowledge_product_documents
       WHERE id NOT IN (SELECT id FROM knowledge_documents);
     `);
-    this.backfillDefaultScopes();
-    this.backfillProductTopics();
+      }
+      this.backfillDefaultScopes();
+      this.backfillProductTopics();
+      if (postRepairNeeded) insert.run(postRepairMarker, this.now().toISOString());
+      this.db.exec("COMMIT");
+      postRepairTransaction = false;
+    } finally {
+      if (postRepairTransaction && this.db.inTransaction) this.db.exec("ROLLBACK");
+    }
+
   }
 
   /**
@@ -385,15 +457,15 @@ export class KnowledgeStore {
    * rows, indexes and triggers are retained and the operation is idempotent.
    */
   private repairLegacyDocumentCheckSchema(): void {
-    const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='knowledge_documents'").get() as { sql?: string } | undefined;
-    const sql = String(row?.sql ?? "");
-    if (!/CHECK\s*\(\s*kind\s+IN\s*\(\s*\"candidate\"/i.test(sql)) return;
-    const columns = ["id", "kind", "title", "body", "lifecycle", "project_id", "project_name_snapshot", "samplemanager_version", "solution", "module", "environment", "source_locator", "source_commit", "source_sha256", "created_at", "updated_at"];
-    const indexesAndTriggers = this.db.prepare("SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL AND ((type='index' AND tbl_name='knowledge_documents') OR (type='trigger' AND tbl_name='knowledge_documents'))").all() as Array<{ type: string; name: string; sql: string }>;
     const foreignKeysEnabled = this.db.pragma("foreign_keys", { simple: true }) === 1;
     if (foreignKeysEnabled) this.db.pragma("foreign_keys = OFF");
     try {
       const repair = this.db.transaction(() => {
+        const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='knowledge_documents'").get() as { sql?: string } | undefined;
+        const sql = String(row?.sql ?? "");
+        if (!/CHECK\s*\(\s*kind\s+IN\s*\(\s*\"candidate\"/i.test(sql)) return;
+        const columns = ["id", "kind", "title", "body", "lifecycle", "project_id", "project_name_snapshot", "samplemanager_version", "solution", "module", "environment", "source_locator", "source_commit", "source_sha256", "created_at", "updated_at"];
+        const indexesAndTriggers = this.db.prepare("SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL AND ((type='index' AND tbl_name='knowledge_documents') OR (type='trigger' AND tbl_name='knowledge_documents'))").all() as Array<{ type: string; name: string; sql: string }>;
         this.db.exec("DROP TABLE IF EXISTS knowledge_documents_legacy_repair");
         this.db.exec(`CREATE TABLE knowledge_documents_legacy_repair (
           id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,

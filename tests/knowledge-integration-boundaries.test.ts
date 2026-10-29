@@ -11,9 +11,10 @@ import { canReadTopicBinding } from "../src/knowledge/topic-access.ts";
 import { EvidenceStore } from "../src/knowledge/evidence-store.ts";
 import { ConfirmedMemoryService } from "../src/knowledge/confirmed-memory.ts";
 
-test("WeKnora retrieval requires an explicit project or a Work Session scope", () => {
-  assert.throws(() => resolveRetrievalProjectId({}), /projectId or workSessionId/i);
-  assert.equal(resolveRetrievalProjectId({ projectId: "p1", sessionProjectId: "p2" }), "p1");
+test("WeKnora retrieval is global by default and adopts a Work Session scope when present", () => {
+  assert.equal(resolveRetrievalProjectId({}), undefined);
+  assert.throws(() => resolveRetrievalProjectId({ projectId: "p1", sessionProjectId: "p2" }), /does not match/i);
+  assert.equal(resolveRetrievalProjectId({ projectId: "p1", sessionProjectId: "p1" }), "p1");
   assert.equal(resolveRetrievalProjectId({ sessionProjectId: "p2" }), "p2");
 });
 
@@ -39,14 +40,14 @@ test("Context Pack sources include ACL-scoped Relay memory, candidates and facts
   }
 });
 
-test("topic bindings are readable only through the bound project ACL", () => {
+test("topic bindings use project ACLs while global bindings require no ACL", () => {
   const root = mkdtempSync(join(tmpdir(), "relay-topic-acl-"));
   const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });
   try {
     store.grantAcl("p1", 7, true);
     assert.equal(canReadTopicBinding(store, 7, "p1"), true);
     assert.equal(canReadTopicBinding(store, 7, "p2"), false);
-    assert.equal(canReadTopicBinding(store, 7, undefined), true);
+    assert.equal(canReadTopicBinding(store, 99, undefined), true);
   } finally {
     store.close();
     rmSync(root, { recursive: true, force: true });

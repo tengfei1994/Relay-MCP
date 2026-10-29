@@ -66,10 +66,12 @@ test("HTTP Product Knowledge boundaries enforce project scope and topic ACLs", a
   app.decorate("authenticate", async (req: any) => { req.user = { id: 7, isAdmin: false }; });
   await app.register(knowledgeRoutes);
   try {
-    const missingScope = await app.inject({ method: "POST", url: "/api/knowledge/weknora/search", payload: { query: "cache" } });
-    assert.equal(missingScope.statusCode, 403);
+    const missingScope = await app.inject({ method: "POST", url: "/api/knowledge/search", payload: { query: "cache" } });
+    assert.equal(missingScope.statusCode, 200, missingScope.body);
+    assert.deepEqual(missingScope.json().references, []);
+    assert.deepEqual(missingScope.json().contextPack.confirmedKnowledge, []);
 
-    const scopedSearch = await app.inject({ method: "POST", url: "/api/knowledge/weknora/search", payload: { query: "cache", projectId: "p1" } });
+    const scopedSearch = await app.inject({ method: "POST", url: "/api/knowledge/search", payload: { query: "cache", projectId: "p1" } });
     assert.equal(scopedSearch.statusCode, 200, scopedSearch.body);
     assert.deepEqual(seenKnowledgeIds, ["ext-p1"]);
     const scopedBody = scopedSearch.json();
@@ -78,13 +80,13 @@ test("HTTP Product Knowledge boundaries enforce project scope and topic ACLs", a
 
     const prodEvidence = new EvidenceStore(store, join(root, "evidence")).put({ content: Buffer.from("cache failure confirmed in prod"), mimeType: "text/plain", sourceKind: "log", projectId: "p1", environment: "prod", locator: "case:prod" });
     memories.save({ id: "case-prod", type: "Case", title: "Cache production case", statement: "cache failure confirmed in prod", details: { symptoms: "cache failure", rootCause: "fixture", resolution: "reviewed", verification: "confirmed" }, scope: { projectId: "p1", environment: "prod", scopeType: "environment", scopeKey: "prod", visibility: "project" }, evidenceRefs: [prodEvidence.id], source: { kind: "manual", locator: "case:prod" }, confirmedBy: 7, confirmedAt: now, audit: { action: "manual", reason: "fixture" } });
-    const scopedPack=await app.inject({method:"POST",url:"/api/knowledge/weknora/search",payload:{query:"cache",projectId:"p1",environment:"nonprod"}});
+    const scopedPack=await app.inject({method:"POST",url:"/api/knowledge/search",payload:{query:"cache",projectId:"p1",environment:"nonprod"}});
     assert.equal(scopedPack.statusCode,200,scopedPack.body);
     assert.ok(!scopedPack.json().contextPack.confirmedKnowledge.some((item:any)=>item.id==="case-prod"),"no-session ContextPack must respect explicit environment");
     const healthyFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error("Simulated private upstream failure"); };
     try {
-      const outage = await app.inject({ method: "POST", url: "/api/knowledge/weknora/search", payload: { query: "cache", projectId: "p1" } });
+      const outage = await app.inject({ method: "POST", url: "/api/knowledge/search", payload: { query: "cache", projectId: "p1" } });
       assert.equal(outage.statusCode, 200, outage.body);
       assert.deepEqual(outage.json().references, []);
       assert.equal(outage.json().contextPack.degraded.productKnowledge, "unavailable");

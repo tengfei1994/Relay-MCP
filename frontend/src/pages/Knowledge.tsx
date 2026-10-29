@@ -99,7 +99,7 @@ export default function KnowledgePage() {
     if (!projectId || !query.trim()) return;
     setLoading(true); setError(""); setMessage("");
     try {
-      const response = await api.knowledgeSearch({ projectId, q: query.trim(), sampleManagerVersion: version || undefined, solution: solution || undefined, module: moduleName || undefined, environment: environment || undefined, limit: 50 });
+      const response = await api.memorySearch({ projectId, q: query.trim(), sampleManagerVersion: version || undefined, solution: solution || undefined, module: moduleName || undefined, environment: environment || undefined, limit: 50 });
       setResults(response.results);
       if (response.degraded) setMessage("Search is running in degraded FTS mode; semantic provider is unavailable.");
     } catch (err) { setError(err instanceof Error ? err.message : "Knowledge search failed"); }

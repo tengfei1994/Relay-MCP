@@ -29,7 +29,7 @@ The benchmark creates a temporary isolated Knowledge DB and deletes it after the
 
 ## Context Pack, Candidate and Evidence request benchmark
 
-Run `node --import tsx/esm scripts/knowledge-request-benchmark.ts` for the isolated full-route benchmark. It measures `POST /api/knowledge/weknora/search` including Context Pack assembly, `GET /api/knowledge/candidate-insights`, and `GET /api/knowledge/evidence`, with default/max limits, deep offsets and empty results. The report contains data sizes, concurrency, separate cold/hot samples and P50/P95/max. Cold means before scenario warm-up; process, OS and SQLite caches are not purged.
+Run `node --import tsx/esm scripts/knowledge-request-benchmark.ts` for the isolated full-route benchmark. It measures `POST /api/knowledge/search` including Context Pack assembly, `GET /api/knowledge/candidate-insights`, and `GET /api/knowledge/evidence`, with default/max limits, deep offsets and empty results. The report contains data sizes, concurrency, separate cold/hot samples and P50/P95/max. Cold means before scenario warm-up; process, OS and SQLite caches are not purged.
 
 The Product provider is deterministic WeKnora HTTP replay. Fastify `inject` excludes real socket transport, and replay excludes actual model latency. Candidate and Evidence routes use only new temporary SQLite databases. The benchmark blocks unexpected network requests and makes no paid calls. It is not a substitute for a separately required real-provider measurement.
 

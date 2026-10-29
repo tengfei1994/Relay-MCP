@@ -81,7 +81,7 @@ A newly promoted Case is a draft. Open its Case link, review the Evidence, then 
 
 The public catalog contains121 tools, including `knowledge_candidate_insight_job_get`. Existing Knowledge tool names and legacy Product document IDs remain available. Knowledge read/search responses retain complete structured JSON/citations with a16MiB bound; oversized payloads fail explicitly instead of becoming a non-JSON preview.
 
-`knowledge_weknora_search` and the corresponding HTTP search combine Product citations with Relay confirmed memory. On Product availability/timeout/rate-limit/upstream-authentication failure, `references` and authoritativeDocs are empty and `contextPack.degraded.productKnowledge` identifies the category; authorized Relay Memory remains available. A Relay ACL violation or malformed/unverified source reference still fails closed. Product-only reads fail explicitly during an outage and never silently use stale local content.
+`knowledge_search` and the corresponding HTTP search combine Product citations with Relay confirmed memory. On Product availability/timeout/rate-limit/upstream-authentication failure, `references` and authoritativeDocs are empty and `contextPack.degraded.productKnowledge` identifies the category; authorized Relay Memory remains available. A Relay ACL violation or malformed/unverified source reference still fails closed. Product-only reads fail explicitly during an outage and never silently use stale local content.
 
 
 ## Durable Candidate jobs

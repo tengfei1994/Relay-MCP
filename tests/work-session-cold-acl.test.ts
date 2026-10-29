@@ -124,9 +124,9 @@ test('HTTP and MCP Work Session creation mirrors only current control-plane proj
   });
   await t.test('standard HTTP and MCP search persist Session-scoped retrieval receipts',async()=>{
    const before=(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_work_session_events WHERE session_id=? AND event_type='knowledge.retrieval'").get(revoked.id) as any).n;
-   const run=(server as any)._registeredTools.knowledge_search.handler;
+   const run=(server as any)._registeredTools.memory_search.handler;
    await run({workSessionId:revoked.id,query:'private-summary-search'});
-   const http=await app.inject({method:'GET',url:'/api/knowledge/search?projectId=3&workSessionId='+revoked.id+'&q=private-summary-search'});assert.equal(http.statusCode,200,http.body);
+   const http=await app.inject({method:'GET',url:'/api/memory/search?projectId=3&workSessionId='+revoked.id+'&q=private-summary-search'});assert.equal(http.statusCode,200,http.body);
    const after=(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_work_session_events WHERE session_id=? AND event_type='knowledge.retrieval'").get(revoked.id) as any).n;assert.equal(after-before,2);
    await assert.rejects(()=>run({workSessionId:'missing-session',query:'never-execute'}),/not found|access/i);
   });

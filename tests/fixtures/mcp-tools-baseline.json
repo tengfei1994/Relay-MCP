@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "generatedFrom": "McpServer tools/list",
   "sourceVersion": {
-    "gitCommit": "30d9baa8c2fe7a1db00a3b9dc12d521752967531",
+    "gitCommit": "8c363373a922d0c1d92b5a73e503fcaaa5956987",
     "mcpSdkVersion": "1.32.2",
     "generationCommand": "npm run generate:mcp-baseline",
-    "generatedAt": "2026-10-28T01:44:28.628Z",
+    "generatedAt": "2026-10-29T02:21:02.698Z",
     "worktreeDirty": true
   },
   "tools": [
@@ -906,6 +906,9 @@
           },
           "workSessionId": {
             "type": "string"
+          },
+          "environment": {
+            "type": "string"
           }
         },
         "required": [
@@ -1183,26 +1186,24 @@
     },
     {
       "name": "knowledge_search",
-      "description": "Search ACL- and Scope-filtered Confirmed Memory. Candidate Insights and Playbooks require explicit filters.",
+      "description": "Search published global Product Knowledge by default; explicit Project scope is required only for private Product sources.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "workSessionId": {
-            "type": "string"
-          },
-          "project": {
-            "type": "string"
-          },
           "query": {
             "type": "string",
             "minLength": 1
           },
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100
+          "workSessionId": {
+            "type": "string"
           },
-          "sampleManagerVersion": {
+          "projectId": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "productVersion": {
             "type": "string"
           },
           "solution": {
@@ -1211,41 +1212,13 @@
           "module": {
             "type": "string"
           },
-          "environment": {
+          "language": {
             "type": "string"
           },
-          "scopeType": {
-            "type": "string"
-          },
-          "scopeKey": {
-            "type": "string"
-          },
-          "kinds": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "candidate",
-                "case",
-                "pattern",
-                "playbook",
-                "fact",
-                "decision",
-                "confirmed_memory"
-              ]
-            }
-          },
-          "memoryTypes": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "Fact",
-                "Decision",
-                "Case",
-                "Pattern"
-              ]
-            }
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
           }
         },
         "required": [
@@ -1381,6 +1354,12 @@
           },
           "toVersion": {
             "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
           }
         },
         "required": [
@@ -1404,55 +1383,16 @@
         "properties": {
           "topicId": {
             "type": "string"
-          }
-        },
-        "required": [
-          "topicId"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_weknora_search",
-      "description": "Search published Product Knowledge through Relay's ACL-checked internal WeKnora boundary.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "query": {
-            "type": "string",
-            "minLength": 1
-          },
-          "workSessionId": {
-            "type": "string"
           },
           "projectId": {
             "type": "string"
           },
-          "productVersion": {
+          "environment": {
             "type": "string"
-          },
-          "solution": {
-            "type": "string"
-          },
-          "module": {
-            "type": "string"
-          },
-          "language": {
-            "type": "string"
-          },
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100
           }
         },
         "required": [
-          "query"
+          "topicId"
         ],
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
@@ -1469,6 +1409,12 @@
         "type": "object",
         "properties": {
           "pageId": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "environment": {
             "type": "string"
           },
           "includeRevisions": {
@@ -1501,6 +1447,12 @@
         "type": "object",
         "properties": {
           "pageId": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "environment": {
             "type": "string"
           },
           "action": {
@@ -1536,11 +1488,14 @@
     },
     {
       "name": "knowledge_wiki_search",
-      "description": "Search Relay-native Wiki pages with ACL, version, topic, solution and module filters.",
+      "description": "Search Relay-native Wiki pages with global Product Wiki access by default; explicit project scope remains supported.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "projectId": {
+            "type": "string"
+          },
+          "environment": {
             "type": "string"
           },
           "query": {
@@ -1607,6 +1562,9 @@
             "minLength": 1
           },
           "projectId": {
+            "type": "string"
+          },
+          "environment": {
             "type": "string"
           },
           "productVersion": {
@@ -1878,6 +1836,84 @@
             "description": "Maximum entries returned; default 500, maximum 5000"
           }
         },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": null,
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "memory_search",
+      "description": "Search ACL- and scope-filtered Relay Memory. Candidate Insights and Playbooks require explicit filters.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "workSessionId": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "sampleManagerVersion": {
+            "type": "string"
+          },
+          "solution": {
+            "type": "string"
+          },
+          "module": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "scopeType": {
+            "type": "string"
+          },
+          "scopeKey": {
+            "type": "string"
+          },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "candidate",
+                "case",
+                "pattern",
+                "playbook",
+                "fact",
+                "decision",
+                "confirmed_memory"
+              ]
+            }
+          },
+          "memoryTypes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "Fact",
+                "Decision",
+                "Case",
+                "Pattern"
+              ]
+            }
+          }
+        },
+        "required": [
+          "query"
+        ],
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
@@ -5915,7 +5951,7 @@
       "category": "context"
     },
     {
-      "name": "knowledge_search",
+      "name": "memory_search",
       "category": "context"
     },
     {
@@ -6051,7 +6087,7 @@
       "category": "context"
     },
     {
-      "name": "knowledge_weknora_search",
+      "name": "knowledge_search",
       "category": "context"
     },
     {

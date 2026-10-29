@@ -115,7 +115,7 @@ test("List supports pagination, filters, LIKE search and hides foreign projects"
   assert.deepEqual(globalOnly.items.map((item) => item.pageKey), ["global-faq"]);
   assert.equal(wiki.list({ actorId: 9 }).total, 0);
   store.grantAcl("p2", 9, false);
-  assert.equal(wiki.list({ actorId: 9 }).total, 2); // p2 page + global page
+  assert.equal(wiki.list({ actorId: 9 }).total, 1); // unscoped reads remain global-only; p2 requires explicit scope
 }));
 
 test("Edit appends a revision, requires a reviewer and never stores secrets", () => withFixture(({ store, wiki }) => {

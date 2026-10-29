@@ -3,6 +3,7 @@ import { createTwoFilesPatch } from "diff";
 import { scanCandidateContent } from "./candidate-insight.js";
 import type { KnowledgeStore } from "./store.js";
 import type { WikiPage, WikiPageListQuery, WikiPageRevision, WikiPageStatus } from "./wiki.js";
+import { canonicalWikiRow, isCanonicalWikiRow } from "./wiki-identity.js";
 
 /** Auth is owned by the managed engine; this callback must return the raw parsed JSON. */
 export type EngineWikiTransport = (method: "GET" | "POST" | "PUT", path: string, body?: unknown) => Promise<unknown>;
@@ -14,10 +15,10 @@ export interface EngineWikiCitation {
 export interface EngineWikiPage extends WikiPage { environment?: string; citations: EngineWikiCitation[]; }
 export type EngineWikiPageSummary = Omit<EngineWikiPage, "body">;
 type Row = Record<string, unknown>;
-type Scope = { projectId?: string; environment?: string; productVersion?: string; topicId?: string; solution?: string; module?: string };
-type PageInput = { actorId: number; id: string; projectId?: string; environment?: string };
-type ChangeInput = PageInput & { reason: string };
 type Source = { row: Row; chunks: string[] };
+type Scope = { projectId?: string; environment?: string; productVersion?: string; topicId?: string; solution?: string; module?: string };
+type PageInput = { actorId: number; isAdmin?: boolean; id: string; projectId?: string; environment?: string };
+type ChangeInput = PageInput & { reason: string };
 class WikiSourceError extends Error {}
 export class EngineWikiError extends Error {
   constructor(readonly code: "unavailable" | "invalid_response" | "conflict", message: string) { super(message); this.name = "EngineWikiError"; }
@@ -79,33 +80,46 @@ export class EngineWikiService {
   }
   private global(scope: Scope): boolean { return !scope.projectId && !scope.environment; }
   private inContext(scope: Scope, context: Pick<Scope, "projectId" | "environment">): boolean {
-    return this.global(scope) || (scope.environment === optional(context.environment) &&
-      (!optional(context.projectId) || scope.projectId === optional(context.projectId)));
+    const projectId = optional(context.projectId), environment = optional(context.environment);
+    if (!projectId) return this.global(scope) && !environment;
+    return this.global(scope) || (scope.environment === environment && scope.projectId === projectId);
   }
   private canRead(actorId: number, projectId?: string): boolean {
-    return projectId ? this.store.canRead(actorId, projectId) : Boolean(this.store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id=? AND can_read=1 LIMIT 1").get(actorId));
+    return projectId ? this.store.canRead(actorId, projectId) : true;
   }
-  private reviewer(actorId: number, projectId?: string): boolean {
+  private reviewer(actorId: number, projectId?: string, isAdmin = false): boolean {
+    if (!projectId && isAdmin) return true;
     const row = projectId
       ? this.store.db.prepare("SELECT can_review FROM knowledge_acl WHERE user_id=? AND project_id=? AND can_read=1").get(actorId, projectId)
       : this.store.db.prepare("SELECT can_review FROM knowledge_acl WHERE user_id=? AND can_read=1 AND can_review=1 LIMIT 1").get(actorId);
     return Number((row as Row | undefined)?.can_review) === 1;
   }
-  private assertReviewer(actorId: number, projectId?: string): void {
+  private assertReviewer(actorId: number, projectId?: string, isAdmin = false): void {
     if (!this.canRead(actorId, projectId)) throw new Error("Knowledge access denied");
-    if (!this.reviewer(actorId, projectId)) throw new Error("Wiki changes require reviewer permission");
+    if (!this.reviewer(actorId, projectId, isAdmin)) throw new Error("Wiki changes require reviewer permission");
   }
   private load(input: PageInput, write = false): Row {
     const row = this.store.db.prepare("SELECT * FROM knowledge_wiki_pages WHERE id=?").get(input.id) as Row | undefined;
     if (!row || !String(row.id).startsWith(this.prefix)) throw new Error("Engine Wiki page not found; local pages require explicit migration");
     const scope = this.scope(row);
-    if (!this.canRead(input.actorId, scope.projectId) || !this.inContext(scope, input) ||
+    const strictScope = input.isAdmin !== undefined;
+    const context = strictScope ? input : { projectId: input.projectId ?? scope.projectId, environment: input.environment ?? scope.environment };
+    if (!this.canRead(input.actorId, scope.projectId) || !this.inContext(scope, context) ||
         (input.projectId && !this.canRead(input.actorId, input.projectId))) throw new Error("Knowledge access denied");
-    if (write) this.assertReviewer(input.actorId, scope.projectId);
-    else if (!this.reviewer(input.actorId, scope.projectId) && row.status !== "published") throw new Error("Wiki page is not published");
+    if (write) this.assertReviewer(input.actorId, scope.projectId, input.isAdmin);
+    else if (!this.reviewer(input.actorId, scope.projectId, input.isAdmin) && row.status !== "published") throw new Error("Wiki page is not published");
     return row;
   }
   private slug(row: Row): string { return optional(row.external_slug) ?? "relay-" + String(row.id).slice(this.prefix.length); }
+  private engineRows(): Row[] {
+    return this.store.db.prepare("SELECT rowid AS __wiki_rowid,* FROM knowledge_wiki_pages WHERE id LIKE ?").all(this.prefix + "%") as Row[];
+  }
+
+  private duplicateOf(row: Row): string | undefined {
+    const canonical = canonicalWikiRow(this.engineRows(), row);
+    return String(canonical.id) === String(row.id) ? undefined : String(canonical.id);
+  }
+
   private sourceRows(refs: string[], external = false): Source[] {
     return [...new Set(refs)].map(ref => {
       const identity = external ? ref.split("|", 1)[0] : ref;
@@ -129,14 +143,14 @@ export class EngineWikiService {
       return source;
     });
   }
-  private hydrate(row: Row, remote: Row, actorId: number): EngineWikiPage {
+  private hydrate(row: Row, remote: Row, actorId: number, isAdmin = false): EngineWikiPage {
     const current = this.store.db.prepare("SELECT * FROM knowledge_wiki_pages WHERE id=?").get(row.id) as Row | undefined;
     if (current) {
       if (optional(current.project_id) !== optional(row.project_id) || optional(current.environment) !== optional(row.environment)) throw new Error("Knowledge access denied");
       row = current;
     }
     if (!this.canRead(actorId, optional(row.project_id))) throw new Error("Knowledge access denied");
-    if (!this.reviewer(actorId, optional(row.project_id)) && row.status !== "published") throw new Error("Wiki page is not published");
+    if (!this.reviewer(actorId, optional(row.project_id), isAdmin) && row.status !== "published") throw new Error("Wiki page is not published");
     if (remote.slug !== this.slug(row) || (remote.knowledge_base_id !== undefined && remote.knowledge_base_id !== this.options.knowledgeBaseId) ||
         typeof remote.title !== "string" || typeof remote.content !== "string") throw new EngineWikiError("invalid_response", "Knowledge engine returned a mismatched Wiki page");
     const currentRevision = version(remote.version);
@@ -146,7 +160,7 @@ export class EngineWikiService {
     const knownChunks = new Set([...byId.values()].flatMap(source => source.chunks));
     const citedChunks = new Set(strings(remote.chunk_refs));
     if ([...citedChunks].some(chunk => !knownChunks.has(chunk))) throw new WikiSourceError("Wiki chunk citation is unknown or outside the authorized source documents");
-    if (row.status === "published" && Number(row.current_revision) !== currentRevision && !this.reviewer(actorId, scope.projectId)) throw new Error("Wiki revision has changed and requires review");
+    if (row.status === "published" && Number(row.current_revision) !== currentRevision && !this.reviewer(actorId, scope.projectId, isAdmin)) throw new Error("Wiki revision has changed and requires review");
     const status = row.status === "published" && Number(row.current_revision) !== currentRevision ? "draft" : row.status as WikiPageStatus;
     safeContent({ title: remote.title, body: remote.content });
     return {
@@ -160,6 +174,7 @@ export class EngineWikiService {
         sourceSha256: optional(source.raw_sha256) ?? optional(source.normalized_content_sha256),
         productVersion: optional(source.product_version), topicId: optional(source.topic_id), chunkIds: chunks.filter(chunk => citedChunks.has(chunk)),
       })),
+      ...(this.duplicateOf(row) ? { duplicateOf: this.duplicateOf(row) } : {}),
     };
   }
   private readRemote(row: Row): Promise<Row> { return this.request("GET", "/pages/" + encodeURIComponent(this.slug(row))); }
@@ -169,20 +184,20 @@ export class EngineWikiService {
   async get(input: PageInput): Promise<EngineWikiPage> {
     const row = this.load(input), remote = await this.readRemote(row);
     this.load(input); // Recheck the caller's project context after awaiting the engine.
-    return this.hydrate(row, remote, input.actorId);
+    return this.hydrate(row, remote, input.actorId, input.isAdmin);
   }
-  async getByKey(input: { actorId: number; pageKey: string; projectId?: string; environment?: string }): Promise<EngineWikiPage> {
+  async getByKey(input: { actorId: number; isAdmin?: boolean; pageKey: string; projectId?: string; environment?: string }): Promise<EngineWikiPage> {
     const row = this.store.db.prepare("SELECT id FROM knowledge_wiki_pages WHERE page_key=?").get(input.pageKey) as Row | undefined;
     if (!row) throw new Error("Wiki page not found");
     return this.get({ ...input, id: String(row.id) });
   }
-  async create(input: Scope & { actorId: number; pageKey: string; title: string; body: string; sourceRefs?: string[]; reason: string }): Promise<EngineWikiPage> {
-    this.assertReviewer(input.actorId, input.projectId);
+  async create(input: Scope & { actorId: number; isAdmin?: boolean; pageKey: string; title: string; body: string; sourceRefs?: string[]; reason: string }): Promise<EngineWikiPage> {
+    this.assertReviewer(input.actorId, input.projectId, input.isAdmin);
     const changeReason = reason(input.reason), pageKey = input.pageKey?.trim(), title = input.title?.trim();
     if (!pageKey || pageKey.length > 300 || !title || title.length > 500 || !input.body?.trim()) throw new Error("Wiki page key, title and body are required");
     safeContent({ title, body: input.body });
     const existing = this.store.db.prepare("SELECT id FROM knowledge_wiki_pages WHERE page_key=?").get(pageKey) as Row | undefined;
-    if (existing) return this.get({ actorId: input.actorId, id: String(existing.id), projectId: input.projectId, environment: input.environment });
+    if (existing) return this.get({ actorId: input.actorId, isAdmin: input.isAdmin, id: String(existing.id), projectId: input.projectId, environment: input.environment });
     const refs = [...new Set(input.sourceRefs ?? [])];
     if (refs.length > 100) throw new Error("Too many Wiki source citations");
     const sourceRows = this.sources(refs, input);
@@ -191,10 +206,13 @@ export class EngineWikiService {
       product_version: input.productVersion ?? null, topic_id: input.topicId ?? null, solution: input.solution ?? null, module: input.module ?? null,
       source_refs_json: JSON.stringify(refs), current_revision: 1, created_by: input.actorId, created_at: now, updated_at: now };
     row.external_slug = this.slug(row);
+    const existingTopics = this.engineRows().filter(candidate => canonicalWikiRow([candidate, row], candidate).id === candidate.id);
+    const canonical = existingTopics.length ? canonicalWikiRow(existingTopics, row) : row;
+    if (String(canonical.id) !== id) return this.get({ actorId: input.actorId, isAdmin: input.isAdmin, id: String(canonical.id), projectId: input.projectId, environment: input.environment });
     const remote = await this.request("POST", "/pages", { slug: this.slug(row), title, content: input.body, page_type: "concept",
       source_refs: sourceRows.map(({ row: source }) => String(source.external_document_id) + "|" + String(source.title)),
       chunk_refs: [...new Set(sourceRows.flatMap(source => source.chunks))] });
-    const page = this.hydrate(row, remote, input.actorId);
+    const page = this.hydrate(row, remote, input.actorId, input.isAdmin);
     this.store.db.transaction(() => {
       this.store.db.prepare("INSERT INTO knowledge_wiki_pages(id,page_key,title,body,status,project_id,environment,product_version,topic_id,solution,module,source_refs_json,current_revision,created_by,created_at,updated_at,external_slug) VALUES (?,?,?,'','draft',?,?,?,?,?,?,?,?,?,?,?,?)")
         .run(id, pageKey, page.title, input.projectId ?? null, input.environment ?? null, input.productVersion ?? null, input.topicId ?? null, input.solution ?? null, input.module ?? null, JSON.stringify(page.sourceRefs), page.currentRevision, input.actorId, now, now, row.external_slug);
@@ -204,19 +222,19 @@ export class EngineWikiService {
   }
 
   /** Adopt a synthesized page only after all sources prove its Relay review scope. */
-  async adopt(input: Scope & { actorId: number; slug: string; reason: string }): Promise<EngineWikiPage> {
+  async adopt(input: Scope & { actorId: number; isAdmin?: boolean; slug: string; reason: string }): Promise<EngineWikiPage> {
     return this.adoptFromEngine(input, false);
   }
-  private async adoptFromEngine(input: Scope & { actorId: number; slug: string; reason: string }, fromList: boolean): Promise<EngineWikiPage> {
-    this.assertReviewer(input.actorId, input.projectId);
+  private async adoptFromEngine(input: Scope & { actorId: number; isAdmin?: boolean; slug: string; reason: string }, fromList: boolean): Promise<EngineWikiPage> {
+    this.assertReviewer(input.actorId, input.projectId, input.isAdmin);
     const changeReason = reason(input.reason), slug = input.slug?.trim();
     if (!slug || slug.length > 255 || /[\r\n]/.test(slug)) throw new Error("A valid upstream Wiki slug is required");
     const existing = this.store.db.prepare("SELECT id FROM knowledge_wiki_pages WHERE external_slug=? AND id LIKE ?").get(slug, this.prefix + "%") as Row | undefined;
-    if (existing) return this.get({ actorId: input.actorId, id: String(existing.id), projectId: input.projectId, environment: input.environment });
+    if (existing) return this.get({ actorId: input.actorId, isAdmin: input.isAdmin, id: String(existing.id), projectId: input.projectId, environment: input.environment });
     const remote = await this.request("GET", "/pages/" + encodeURIComponent(slug));
     const refs = strings(remote.source_refs);
     if (!refs.length || refs.length > 100) throw new WikiSourceError("Generated Wiki requires bounded, verified source citations");
-    this.assertReviewer(input.actorId, input.projectId);
+    this.assertReviewer(input.actorId, input.projectId, input.isAdmin);
     const sources = this.sourceRows(refs, true);
     const scoped = sources.map(source => this.scope(source.row)).filter(scope => !this.global(scope));
     const scopes = new Map(scoped.map(scope => [JSON.stringify([scope.projectId ?? null, scope.environment ?? null]), scope]));
@@ -224,7 +242,7 @@ export class EngineWikiService {
     const sourceScope = [...scopes.values()][0] ?? {};
     if ((!this.global(sourceScope) && ((input.projectId && sourceScope.projectId !== input.projectId) ||
           (input.environment && sourceScope.environment !== input.environment))) ||
-        (fromList && !this.inContext(sourceScope, input)) || !this.reviewer(input.actorId, sourceScope.projectId)) {
+        (fromList && !this.inContext(sourceScope, input)) || !this.reviewer(input.actorId, sourceScope.projectId, input.isAdmin)) {
       throw new WikiSourceError("Generated Wiki source citations are outside the authorized review scope");
     }
     const common = (column: string): string | undefined => {
@@ -241,29 +259,43 @@ export class EngineWikiService {
       topic_id: binding.topicId ?? null, solution: binding.solution ?? null, module: binding.module ?? null,
       source_refs_json: JSON.stringify([...new Set(sources.map(source => String(source.row.id)))]),
       current_revision: remote.version, created_by: input.actorId, created_at: now, updated_at: now };
-    const page = this.hydrate(row, remote, input.actorId);
+    const existingTopics = this.engineRows().filter(candidate => canonicalWikiRow([candidate, row], candidate).id === candidate.id);
+    const canonical = existingTopics.length ? canonicalWikiRow(existingTopics, row) : row;
+    const duplicateOf = String(canonical.id) === id ? undefined : String(canonical.id);
+    const page = this.hydrate(row, remote, input.actorId, input.isAdmin);
     this.store.db.transaction(() => {
       const present = this.store.db.prepare("SELECT id FROM knowledge_wiki_pages WHERE id=?").get(id);
       if (present) return;
       this.store.db.prepare("INSERT INTO knowledge_wiki_pages(id,page_key,title,body,status,project_id,environment,product_version,topic_id,solution,module,source_refs_json,current_revision,created_by,created_at,updated_at,external_slug) VALUES (?,?,?,'','draft',?,?,?,?,?,?,?,?,?,?,?,?)")
         .run(id, row.page_key, page.title, row.project_id, row.environment, row.product_version, row.topic_id, row.solution, row.module,
           JSON.stringify(page.sourceRefs), page.currentRevision, input.actorId, now, now, slug);
-      this.audit(input.actorId, row, "wiki.discover", changeReason, page.currentRevision);
+      this.audit(input.actorId, row, duplicateOf ? "wiki.discover_duplicate" : "wiki.discover", changeReason, page.currentRevision,
+        duplicateOf ? { canonicalId: duplicateOf } : {});
+      if (duplicateOf) {
+        const existing = this.store.db.prepare("SELECT source_refs_json FROM knowledge_wiki_pages WHERE id=?").get(duplicateOf) as Row | undefined;
+        if (existing) {
+          const refs = [...new Set([...storedStrings(existing.source_refs_json), ...page.sourceRefs])];
+          this.store.db.prepare("UPDATE knowledge_wiki_pages SET source_refs_json=?,updated_at=? WHERE id=?").run(JSON.stringify(refs), now, duplicateOf);
+        }
+      }
     })();
-    return page;
+    if (!duplicateOf) return page;
+    const canonicalRow = this.store.db.prepare("SELECT * FROM knowledge_wiki_pages WHERE id=?").get(duplicateOf) as Row | undefined;
+    if (!canonicalRow) throw new Error("Canonical Wiki page disappeared during adoption");
+    return this.hydrate(canonicalRow, await this.readRemote(canonicalRow), input.actorId, input.isAdmin);
   }
 
   async edit(input: ChangeInput & { title?: string; body?: string }): Promise<EngineWikiPage> {
     const row = this.load(input, true), changeReason = reason(input.reason);
-    if (row.status === "deprecated") throw new Error("A deprecated Wiki page cannot be edited");
-    const page = this.hydrate(row, await this.readRemote(row), input.actorId);
+    const remote = await this.readRemote(row);
+    const page = this.hydrate(row, remote, input.actorId, input.isAdmin);
     const title = input.title?.trim() ?? page.title, body = input.body ?? page.body;
     if (!title || title.length > 500 || !body.trim()) throw new Error("Wiki title and body are required");
     safeContent({ title, body });
     this.assertMutationSnapshot(input, row, page);
     if (title === page.title && body === page.body) return this.store.db.transaction(() => { this.assertMutationSnapshot(input, row, page); return page; }).immediate();
-    const remote = await this.request("PUT", "/pages/" + encodeURIComponent(this.slug(row)), { title, content: body, version: page.currentRevision });
-    const changed = this.hydrate({ ...row, status: "draft" }, remote, input.actorId);
+    const updated = await this.request("PUT", "/pages/" + encodeURIComponent(this.slug(row)), { title, content: body, version: page.currentRevision });
+    const changed = this.hydrate({ ...row, status: "draft" }, updated, input.actorId, input.isAdmin);
     this.recordChange(input, row, changed, "wiki.edit", changeReason);
     return changed;
   }
@@ -294,8 +326,8 @@ export class EngineWikiService {
   async deprecate(input: ChangeInput): Promise<EngineWikiPage> { return this.changeStatus(input, "deprecated"); }
   private async changeStatus(input: ChangeInput, status: "published" | "deprecated"): Promise<EngineWikiPage> {
     const row = this.load(input, true), changeReason = reason(input.reason);
-    if (row.status === "deprecated" && status !== "deprecated") throw new Error("A deprecated Wiki page cannot be published");
-    const page = this.hydrate(row, await this.readRemote(row), input.actorId);
+    if (status === "published" && this.duplicateOf(row)) throw new Error(`Duplicate Wiki page cannot be published; canonical page is ${this.duplicateOf(row)}`);
+    const page = this.hydrate(row, await this.readRemote(row), input.actorId, input.isAdmin);
     if (page.status === "deprecated" && status === "published") throw new Error("A deprecated Wiki page cannot be published");
     if (status === "published" && !page.sourceRefs.length) throw new Error("Wiki publication requires at least one verified source citation");
     const now = this.clock().toISOString();
@@ -314,9 +346,9 @@ export class EngineWikiService {
     const audits = this.store.db.prepare("SELECT details_json FROM knowledge_audit WHERE entity_id=? AND action='wiki.publish'").all(row.id) as Row[];
     return new Set(audits.flatMap(audit => { try { const rev = JSON.parse(String(audit.details_json)).revision; return Number.isSafeInteger(rev) ? [rev] : []; } catch { return []; } }));
   }
-  private async revision(row: Row, revision: number, actorId: number, current: Row): Promise<WikiPageRevision> {
+  private async revision(row: Row, revision: number, actorId: number, current: Row, isAdmin = false): Promise<WikiPageRevision> {
     version(revision);
-    if (!this.reviewer(actorId, optional(row.project_id)) && !this.publishedVersions(row).has(revision)) throw new Error("Wiki revision has not been reviewed");
+    if (!this.reviewer(actorId, optional(row.project_id), isAdmin) && !this.publishedVersions(row).has(revision)) throw new Error("Wiki revision has not been reviewed");
     // v0.8.3 stores only superseded snapshots. The current body belongs to the page.
     const remote = revision === version(current.version) ? current : await this.request("GET", "/revisions/" + encodeURIComponent(this.slug(row)) + "?version=" + revision);
     if (remote.slug !== this.slug(row) || version(remote.version) !== revision || typeof remote.content !== "string" || typeof remote.title !== "string") throw new EngineWikiError("invalid_response", "Knowledge engine returned a mismatched Wiki revision");
@@ -329,9 +361,10 @@ export class EngineWikiService {
   async listRevisions(input: PageInput & { limit?: number; offset?: number }): Promise<WikiPageRevision[]> {
     const row = this.load(input);
     const current = await this.readRemote(row);
-    const page = this.hydrate(row, current, input.actorId);
+    const page = this.hydrate(row, current, input.actorId, input.isAdmin);
     const limit = Math.max(1, Math.min(100, Math.trunc(input.limit ?? 50))), offset = Math.max(0, Math.trunc(input.offset ?? 0));
-    const allowed = this.reviewer(input.actorId, optional(row.project_id)) ? undefined : this.publishedVersions(row);
+    const revisions: WikiPageRevision[] = [];
+    const allowed = this.reviewer(input.actorId, optional(row.project_id), input.isAdmin) ? undefined : this.publishedVersions(row);
     const visible = !allowed || allowed.has(page.currentRevision) ? [page.currentRevision] : [];
     const seen = new Set([page.currentRevision]);
     let historyOffset = 0, previous = page.currentRevision;
@@ -352,17 +385,16 @@ export class EngineWikiService {
       if (historyOffset >= Number(result.total)) break;
       if (!result.revisions.length) throw new EngineWikiError("invalid_response", "Wiki history ended before its reported total");
     }
-    const revisions: WikiPageRevision[] = [];
-    for (const rev of visible.slice(offset, offset + limit)) revisions.push(await this.revision(row, rev, input.actorId, current));
+    for (const rev of visible.slice(offset, offset + limit)) revisions.push(await this.revision(row, rev, input.actorId, current, input.isAdmin));
     this.load(input);
-    this.hydrate(row, current, input.actorId);
+    this.hydrate(row, current, input.actorId, input.isAdmin);
     return revisions;
   }
   async diffRevisions(input: PageInput & { fromRevision: number; toRevision: number }): Promise<string> {
     const row = this.load(input);
     const current = await this.readRemote(row);
-    this.hydrate(row, current, input.actorId);
-    const from = await this.revision(row, input.fromRevision, input.actorId, current), to = await this.revision(row, input.toRevision, input.actorId, current);
+    this.hydrate(row, current, input.actorId, input.isAdmin);
+    const from = await this.revision(row, input.fromRevision, input.actorId, current, input.isAdmin), to = await this.revision(row, input.toRevision, input.actorId, current, input.isAdmin);
     this.load(input);
     return createTwoFilesPatch(String(row.page_key) + "@r" + from.revision, String(row.page_key) + "@r" + to.revision, from.body, to.body, "", "");
   }
@@ -370,29 +402,29 @@ export class EngineWikiService {
     const row = this.load(input, true), changeReason = reason(input.reason);
     if (row.status === "deprecated") throw new Error("A deprecated Wiki page cannot be rolled back");
     const current = await this.readRemote(row);
-    const page = this.hydrate(row, current, input.actorId);
+    const page = this.hydrate(row, current, input.actorId, input.isAdmin);
     version(input.revision);
     this.assertMutationSnapshot(input, row, page);
     if (input.revision === page.currentRevision) return this.store.db.transaction(() => { this.assertMutationSnapshot(input, row, page); return page; }).immediate();
-    await this.revision(row, input.revision, input.actorId, current);
+    await this.revision(row, input.revision, input.actorId, current, input.isAdmin);
     const remote = await this.request("POST", "/revert", { slug: this.slug(row), version: input.revision });
-    const changed = this.hydrate({ ...row, status: "draft" }, remote, input.actorId);
+    const changed = this.hydrate({ ...row, status: "draft" }, remote, input.actorId, input.isAdmin);
     this.recordChange(input, row, changed, "wiki.rollback", changeReason, { rolledBackTo: input.revision });
     return changed;
   }
   async list(input: WikiPageListQuery & { environment?: string }): Promise<{ items: EngineWikiPageSummary[]; total: number; limit: number; offset: number }> {
-    if (!this.canRead(input.actorId, input.projectId)) throw new Error("Knowledge access denied");
     const limit = Math.max(1, Math.min(200, Math.trunc(input.limit ?? 50))), offset = Math.max(0, Math.min(1_000_000, Math.trunc(input.offset ?? 0)));
-    const candidates = this.store.db.prepare("SELECT * FROM knowledge_wiki_pages WHERE id LIKE ?").all(this.prefix + "%") as Row[];
+    const candidates = this.store.db.prepare("SELECT rowid AS __wiki_rowid,* FROM knowledge_wiki_pages WHERE id LIKE ?").all(this.prefix + "%") as Row[];
     const knownSlugs = new Set(candidates.map(row => this.slug(row)));
     const bySlug = new Map(candidates.filter(row => {
       const scope = this.scope(row);
-      return this.canRead(input.actorId, scope.projectId) && this.inContext(scope, input) &&
-        (!input.status || row.status === input.status) && (this.reviewer(input.actorId, scope.projectId) || row.status === "published") &&
+      return isCanonicalWikiRow(candidates, row) && this.canRead(input.actorId, scope.projectId) && this.inContext(scope, input) &&
+        (!input.status || row.status === input.status) && (this.reviewer(input.actorId, scope.projectId, input.isAdmin) || row.status === "published") &&
         (["productVersion", "topicId", "solution", "module"] as const).every(key => !input[key] || scope[key] === input[key]);
     }).map(row => [this.slug(row), row]));
     const items: EngineWikiPageSummary[] = [];
     let total = 0;
+    const seenCanonical = new Set<string>();
     const maxPages = Math.max(1, Math.min(1000, this.options.maxListPages ?? 100));
     for (let page = 1; page <= maxPages; page++) {
       const params = new URLSearchParams({ page: String(page), page_size: "100", sort_by: "updated_at", sort_order: "desc" });
@@ -403,18 +435,20 @@ export class EngineWikiService {
       for (const value of result.pages) {
         const remote = object(value);
         let row = bySlug.get(String(remote.slug));
-        if (!row && !knownSlugs.has(String(remote.slug)) && this.reviewer(input.actorId, input.projectId)) {
+        if (!row && !knownSlugs.has(String(remote.slug)) && this.reviewer(input.actorId, input.projectId, input.isAdmin)) {
           try {
-            const discovered = await this.adoptFromEngine({ actorId: input.actorId, slug: String(remote.slug), projectId: input.projectId, environment: input.environment,
+            const discovered = await this.adoptFromEngine({ actorId: input.actorId, isAdmin: input.isAdmin, slug: String(remote.slug), projectId: input.projectId, environment: input.environment,
               productVersion: input.productVersion, topicId: input.topicId, solution: input.solution, module: input.module, reason: "Discovered source-verified engine Wiki draft" }, true);
-            row = this.load({ actorId: input.actorId, id: discovered.id, projectId: input.projectId, environment: input.environment });
+            row = this.load({ actorId: input.actorId, isAdmin: input.isAdmin, id: discovered.id, projectId: input.projectId, environment: input.environment });
             bySlug.set(String(remote.slug), row); knownSlugs.add(String(remote.slug));
           } catch (error) { if (error instanceof WikiSourceError) continue; throw error; }
         }
         if (!row) continue;
         if (!this.canRead(input.actorId, input.projectId)) throw new Error("Knowledge access denied");
-        const hydrated = this.hydrate(row, remote, input.actorId);
+        if (seenCanonical.has(String(row.id))) continue;
+        const hydrated = this.hydrate(row, this.slug(row) === String(remote.slug) ? remote : await this.readRemote(row), input.actorId, input.isAdmin);
         if (input.status && hydrated.status !== input.status) continue;
+        seenCanonical.add(String(row.id));
         const { body: _body, ...summary } = hydrated;
         if (total >= offset && items.length < limit) items.push(summary);
         total++;

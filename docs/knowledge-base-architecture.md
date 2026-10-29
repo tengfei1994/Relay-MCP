@@ -178,8 +178,8 @@ workspace/indexes/      FTS 和向量索引的派生文件
 
 - 通过 `userId + project name` 查找现有 `projects.id`；
 - 找不到对应 Project 时保留 `project_name_snapshot`，标记为 `unresolved`，不得强行归属；
-- 第一版保留旧接口的默认行为，新增 `knowledge_search` 提供 FTS、向量和版本过滤；
-- 后续如需切换检索实现，应提供显式模式参数或版本开关，避免存量调用方出现隐式语义变化；
+- `context_search` 继续服务持久化 Project fact；历史案例和记忆统一通过 `memory_search` 检索，并提供 FTS、向量和版本过滤；
+- 调用方必须迁移到明确的工具语义，禁止用旧的通用 `knowledge_search` 名称承载 Memory 检索，避免产品文档与历史记忆混淆；
 - JSONL 原文件在迁移完成并验证前保留为可回滚来源。
 
 ### 4.3 最小数据表
@@ -369,7 +369,7 @@ Embedding 语义召回
 建议增加：
 
 ```text
-knowledge_search
+memory_search
 knowledge_get
 knowledge_evidence_get
 knowledge_relation_query
@@ -381,7 +381,7 @@ samplemanager_diagnose
 samplemanager_impact_analysis
 ```
 
-`knowledge_search` 默认返回 ACL、Project、Environment 和 Evidence 过滤后的 Confirmed Memory；Candidate Insight 与 Approved Operations 必须显式请求。结果包含类型、摘要、匹配分数、状态、证据引用和适用边界；完整正文通过对应的 Memory/Playbook API 按需读取。
+`memory_search` 默认返回 ACL、Project、Environment 和 Evidence 过滤后的 Confirmed Memory；Candidate Insight 与 Approved Operations 必须显式请求。结果包含类型、摘要、匹配分数、状态、证据引用和适用边界；完整正文通过对应的 Memory/Playbook API 按需读取。
 
 推荐 Resource URI：
 
@@ -429,7 +429,7 @@ Provider 配置应按组织、Project 或环境策略管理，API Key 通过安�
 
 #### 模式 A：模型在 MCP Host
 
-Codex/Claude 调用 `knowledge_search`，由 Host 自己总结和决定后续工具调用。Relay 不持有模型密钥，适合交互式问答。
+Codex/Claude 调用 `memory_search`，由 Host 自己总结和决定后续工具调用。Relay 不持有模型密钥，适合交互式问答。
 
 #### 模式 B：Relay Knowledge Worker
 
@@ -526,7 +526,7 @@ INSTANCE --uses--> CACHE
 
 - 实现 Markdown/YAML 导入和 Schema 校验；
 - 建立 SQLite FTS5；
-- 实现 `knowledge_search`、`knowledge_get`；
+- 实现 `memory_search`、`knowledge_get`；
 - 增加 Project、版本、模块和状态过滤；
 - 建立真实问题黄金测试集。
 
@@ -565,7 +565,7 @@ INSTANCE --uses--> CACHE
 
 1. 一个真实开发任务可以自动产生 Work Session、Observation、Evidence 和四类 Candidate Insight。
 2. 每个候选案例都能回溯到 Job、Deployment、文件或日志证据。
-3. `knowledge_search` 能按 Project、SampleManager 版本、解决方案和模块过滤。
+3. `memory_search` 能按 Project、SampleManager 版本、解决方案和模块过滤。
 4. 关键词检索结果不依赖大模型也能正常工作。
 5. 模型不可直接修改 Skill、Playbook 或生产配置。
 6. `context_record_fact` 和 `context_search` 仍保持兼容。

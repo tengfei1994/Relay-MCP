@@ -72,7 +72,7 @@ try{
 
  await step('formal_local_retrieval_receipt',async()=>{
   const params=new URLSearchParams({projectId:String(state.projectId),environment:state.environment,workSessionId:state.sessionId,kinds:'candidate,case,pattern,playbook,fact',q:query,limit:'20'});
-  const before=expectedRows().retrievals.length,r=await http('GET','/api/knowledge/search?'+params);sourceRetrieval=r.retrievalRunId;must(typeof sourceRetrieval==='string','retrieval_id_missing');must(r.results.every(x=>x.kind!=='product_document'),'unexpected_product_result');
+  const before=expectedRows().retrievals.length,r=await http('GET','/api/memory/search?'+params);sourceRetrieval=r.retrievalRunId;must(typeof sourceRetrieval==='string','retrieval_id_missing');must(r.results.every(x=>x.kind!=='product_document'),'unexpected_product_result');
   const rows=expectedRows().retrievals;must(rows.length===before+1,'receipt_missing');const receipt=rows.find(x=>JSON.parse(x.results_json).sourceRunIdHash===hash(sourceRetrieval));must(receipt&&receipt.query==='sha256:'+hash(query),'receipt_hash_wrong');must(!JSON.stringify(receipt).includes(query),'raw_query_persisted');
   return {sourceRetrievalRunId:sourceRetrieval,receiptId:receipt.id,resultCount:r.results.length,resultIds:r.results.map(x=>x.id),querySha256:hash(query),localOnly:true};
  });

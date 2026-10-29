@@ -5,7 +5,7 @@ export interface ContextPackIntent {
   objective: string;
   actions?: readonly string[];
   phase?: string;
-  projectId: string;
+  projectId?: string;
   environment?: string;
   sampleManagerVersion?: string;
   solution?: string;
@@ -44,7 +44,7 @@ export interface ContextPackConflicts {
 
 export interface ContextPack {
   provider: string;
-  intent?: { objective: string; actions: string[]; phase?: string; projectId: string; sampleManagerVersion?: string; solution?: string; module?: string };
+  intent?: { objective: string; actions: string[]; phase?: string; projectId?: string; sampleManagerVersion?: string; solution?: string; module?: string };
   authoritativeDocs: KnowledgeReference[];
   confirmedKnowledge: unknown[];
   candidates: unknown[];

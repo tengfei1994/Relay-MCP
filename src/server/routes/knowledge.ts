@@ -1,5 +1,5 @@
 import { completeVerifiedEngineReindex } from "../../knowledge/engine-reindex.js";
-import { searchProductBackend, getProductBackend, listEngineProductBackend, diffProductBackend, searchEngineProductReferences, productCatalogVisibility } from "../../knowledge/product-backend.js";
+import { assertProductScope, searchProductBackend, getProductBackend, listEngineProductBackend, diffProductBackend, searchEngineProductReferences, productCatalogVisibility } from "../../knowledge/product-backend.js";
 import { managedControlPlane, activeWikiService } from "../../knowledge/engine-service.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { and, eq } from "drizzle-orm";
@@ -42,7 +42,6 @@ import { WeKnoraIngestor } from "../../knowledge/weknora-ingest.js";
 import { ContextPackService } from "../../knowledge/context-pack.js";
 import { loadRelayContextSources } from "../../knowledge/context-sources.js";
 import { resolveRetrievalProjectId } from "../../knowledge/weknora-scope.js";
-import { canReadTopicBinding } from "../../knowledge/topic-access.js";
 import {
   acceptCandidate,
   deprecateDocument,
@@ -434,7 +433,7 @@ function loadDocumentForUser(store: ReturnType<typeof getKnowledgeStore>, userId
 }
 
 export async function knowledgeRoutes(app: FastifyInstance) {
-  app.get("/api/knowledge/search", { onRequest: [app.authenticate] }, async (request, reply) => {
+  app.get("/api/memory/search", { onRequest: [app.authenticate] }, async (request, reply) => {
     const query = request.query as Record<string, unknown>;
     try {
       const workSessionId=queryValue(query,"workSessionId");
@@ -857,7 +856,6 @@ export async function knowledgeRoutes(app: FastifyInstance) {
 
   app.get("/api/knowledge/product-docs/search", { onRequest: [app.authenticate] }, async (request, reply) => {
     const query = request.query as Record<string, unknown>; const store = getKnowledgeStore();
-    if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     const value = (key: string) => queryValue(query, key);
     const results = await searchProductBackend(store, {userId:request.user.id,isAdmin:request.user.isAdmin,projectId:value("projectId"),environment:value("environment"), query: value("q") ?? value("query"), sampleManagerVersion: value("sampleManagerVersion"), product: value("product"), solution: value("solution"), module: value("module"), documentType: value("documentType"), language: value("language"), authority: value("authority"), limit: parseBoundedInt(query.limit, 50, 1, 500), includeDeprecated: value("includeDeprecated") === "true" });
     return reply.send({ query: value("q") ?? value("query") ?? "", results });
@@ -874,7 +872,6 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   app.get("/api/knowledge/product-docs/:id/diff", { onRequest: [app.authenticate] }, async (request, reply) => {
     const id = String((request.params as { id: string }).id); const against = queryValue(request.query as Record<string, unknown>, "against"); if (!against) return reply.status(400).send({ error: "against is required" });
     const store = getKnowledgeStore(); const exists = store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_product_documents WHERE id IN (?,?)").get(id, against) as { count?: number }; if (Number(exists.count) !== 2) return reply.status(404).send({ error: "Product document not found" });
-    if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     try {return reply.send(await diffProductBackend(store,{leftId:id,rightId:against,userId:request.user.id,isAdmin:request.user.isAdmin,projectId:queryValue(request.query as Record<string,unknown>,"projectId"),environment:queryValue(request.query as Record<string,unknown>,"environment")}));}catch(error){return sendError(reply,error,error instanceof WeKnoraError?503:404);}
   });
 
@@ -1014,50 +1011,163 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   // multiple product versions without duplicating its content.
   app.get("/api/knowledge/product-topics", { onRequest: [app.authenticate] }, async (request, reply) => {
     const store = getKnowledgeStore();
-    if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     const query = request.query as Record<string, unknown>;
     const limit = parseBoundedInt(query.limit, 100, 1, 500);
     const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
     const version = queryValue(query, "productVersion") ?? queryValue(query, "sampleManagerVersion");
     const search = queryValue(query, "q");
+    const includeReview = request.user.isAdmin && queryValue(query, "includeReview") === "true";
+    const requestedProject = queryValue(query, "projectId");
+    const requestedEnvironment = queryValue(query, "environment");
     let visibility;
-    try { visibility = await productCatalogVisibility(store, { userId: request.user.id, isAdmin: request.user.isAdmin, projectId: queryValue(query, "projectId"), environment: queryValue(query, "environment") }); }
+    try {
+      if (requestedEnvironment && !requestedProject) return reply.status(400).send({ error: "environment requires projectId" });
+      const provider = new MigrationController(store).activeProductProvider();
+      if (provider === "relay_local") {
+        if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
+        if (requestedProject && !request.user.isAdmin && !store.canRead(request.user.id, requestedProject)) return reply.status(403).send({ error: "Knowledge access denied" });
+        visibility = { provider: "relay_local" as const, documents: [] };
+      } else visibility = await productCatalogVisibility(store, { userId: request.user.id, isAdmin: request.user.isAdmin, projectId: requestedProject, environment: requestedEnvironment });
+    }
     catch (error) { return sendError(reply, error, error instanceof WeKnoraError ? 503 : 403); }
-    const where = ["EXISTS (SELECT 1 FROM json_each(?) visible WHERE json_extract(visible.value,'$.documentId')=d.id AND (?='relay_local' OR json_extract(visible.value,'$.productVersion') IS b.product_version))"];
-    const params: unknown[] = [JSON.stringify(visibility.documents), visibility.provider];
-    if (version) { where.push("b.product_version = ?"); params.push(version); }
+    // The local provider has an explicit scope predicate, avoiding a JSON scan
+    // over every binding. Engine visibility still carries product-version
+    // mappings and therefore uses the authorized JSON projection.
+    const documentKindWhere = "d.kind = 'product_document'";
+    const visibilityWhere = visibility.provider === "relay_local"
+      ? `${documentKindWhere} AND ${requestedProject ? "(d.project_id IS NULL AND d.environment IS NULL OR d.project_id=? AND d.environment IS ?)" : "d.project_id IS NULL AND d.environment IS NULL"}`
+      : `${documentKindWhere} AND EXISTS (SELECT 1 FROM json_each(?) visible WHERE json_extract(visible.value,'$.documentId')=d.id AND json_extract(visible.value,'$.productVersion') IS b.product_version)`;
+    const visibilityParams: unknown[] = visibility.provider === "relay_local"
+      ? requestedProject ? [requestedProject, requestedEnvironment ?? null] : []
+      : [JSON.stringify(visibility.documents)];
+    const where = [visibilityWhere];
+    const params: unknown[] = [...visibilityParams];
+    const aggregateWhere = [visibilityWhere];
+    const aggregateParams: unknown[] = [...visibilityParams];
+    if (!includeReview) {
+      where.push("b.status = 'active'");
+      aggregateWhere.push("b.status = 'active'");
+    }
+    if (version) {
+      where.push("b.product_version = ?");
+      params.push(version);
+      aggregateWhere.push("b.product_version = ?");
+      aggregateParams.push(version);
+    }
     if (search) { where.push("(lower(t.canonical_title) LIKE ? OR lower(t.canonical_key) LIKE ?)"); params.push(`%${search.toLowerCase()}%`, `%${search.toLowerCase()}%`); }
-    const rows = store.db.prepare(`SELECT t.id,t.canonical_key,t.canonical_title,t.kind,t.domain,t.metadata_json,
-      COUNT(DISTINCT b.product_version) AS version_count, COUNT(DISTINCT COALESCE(json_extract(p.metadata_json, '$.normalizedContentSha256'), b.document_id)) AS revision_count,
-      MAX(b.updated_at) AS updated_at,
-      GROUP_CONCAT(DISTINCT b.product_version) AS versions
-      FROM knowledge_topics t JOIN knowledge_product_document_bindings b ON b.topic_id=t.id JOIN knowledge_product_documents p ON p.id=b.document_id JOIN knowledge_documents d ON d.id=b.document_id
-      WHERE ${where.join(" AND ")} GROUP BY t.id ORDER BY t.canonical_title LIMIT ? OFFSET ?`).all(...params, limit, offset) as KnowledgeRow[];
-    const total = store.db.prepare(`SELECT COUNT(*) AS count FROM (SELECT t.id FROM knowledge_topics t JOIN knowledge_product_document_bindings b ON b.topic_id=t.id JOIN knowledge_documents d ON d.id=b.document_id WHERE ${where.join(" AND ")} GROUP BY t.id)`).get(...params) as { count?: number };
-    return reply.send({ topics: rows.map((row) => ({ ...row, versions: String(row.versions ?? "").split(",").filter(Boolean), versionCount: Number(row.version_count ?? 0), revisionCount: Number(row.revision_count ?? 0), metadata: safeRows(() => JSON.parse(String(row.metadata_json ?? "{}")), {}) })), page: { limit, offset, total: Number(total.count ?? 0) } });
+    let rows: KnowledgeRow[];
+    let total = 0;
+    if (visibility.provider === "relay_local") {
+      // Walk the title index to find the requested page, then aggregate only
+      // the bindings for those topic ids. The old grouped query had to join
+      // and distinct all visible bindings before LIMIT could be applied.
+      const matchingBinding = `EXISTS (
+        SELECT 1
+        FROM knowledge_product_document_bindings b INDEXED BY idx_product_bindings_topic_version_document
+        JOIN knowledge_product_documents p ON p.id=b.document_id
+        JOIN knowledge_documents d ON d.id=b.document_id
+        WHERE b.topic_id=t.id AND ${where.join(" AND ")}
+      )`;
+      rows = store.db.prepare(`SELECT t.id,t.canonical_key,t.canonical_title,t.kind,t.domain,t.metadata_json
+        FROM knowledge_topics t
+        WHERE ${matchingBinding}
+        ORDER BY t.canonical_title,t.id LIMIT ? OFFSET ?`).all(...params, limit, offset) as KnowledgeRow[];
+      const count = store.db.prepare(`SELECT COUNT(*) AS count
+        FROM knowledge_topics t
+        WHERE ${matchingBinding}`).get(...params) as { count?: number };
+      total = Number(count.count ?? 0);
+      const topicIds = rows.map((row) => String(row.id));
+      if (topicIds.length) {
+        const placeholders = topicIds.map(() => "?").join(",");
+        const aggregateRows = store.db.prepare(`SELECT b.topic_id,
+          COUNT(DISTINCT b.product_version) AS version_count,
+          COUNT(DISTINCT COALESCE(json_extract(p.metadata_json, '$.normalizedContentSha256'), b.document_id)) AS revision_count,
+          MAX(b.updated_at) AS updated_at
+          FROM knowledge_product_document_bindings b
+          JOIN knowledge_product_documents p ON p.id=b.document_id
+          JOIN knowledge_documents d ON d.id=b.document_id
+          WHERE b.topic_id IN (${placeholders}) AND ${aggregateWhere.join(" AND ")}
+          GROUP BY b.topic_id`).all(...topicIds, ...aggregateParams) as Array<{ topic_id: string; version_count?: number; revision_count?: number; updated_at?: string }>;
+        const aggregatesByTopic = new Map(aggregateRows.map((row) => [row.topic_id, row]));
+        rows = rows.map((row) => {
+          const aggregate = aggregatesByTopic.get(String(row.id));
+          return { ...row, version_count: aggregate?.version_count ?? 0, revision_count: aggregate?.revision_count ?? 0, updated_at: aggregate?.updated_at };
+        });
+      }
+    } else {
+      rows = store.db.prepare(`SELECT t.id,t.canonical_key,t.canonical_title,t.kind,t.domain,t.metadata_json,
+        COUNT(DISTINCT b.product_version) AS version_count, COUNT(DISTINCT COALESCE(json_extract(p.metadata_json, '$.normalizedContentSha256'), b.document_id)) AS revision_count,
+        MAX(b.updated_at) AS updated_at, COUNT(*) OVER() AS total_count
+        FROM knowledge_topics t JOIN knowledge_product_document_bindings b ON b.topic_id=t.id JOIN knowledge_product_documents p ON p.id=b.document_id JOIN knowledge_documents d ON d.id=b.document_id
+        WHERE ${where.join(" AND ")} GROUP BY t.id ORDER BY t.canonical_title,t.id LIMIT ? OFFSET ?`).all(...params, limit, offset) as KnowledgeRow[];
+      total = Number(rows[0]?.total_count ?? 0);
+      if (!rows.length && offset > 0) {
+        const count = store.db.prepare(`SELECT COUNT(DISTINCT t.id) AS count FROM knowledge_topics t JOIN knowledge_product_document_bindings b ON b.topic_id=t.id JOIN knowledge_product_documents p ON p.id=b.document_id JOIN knowledge_documents d ON d.id=b.document_id WHERE ${where.join(" AND ")}`).get(...params) as { count?: number };
+        total = Number(count.count ?? 0);
+      }
+    }
+    const topicIds = rows.map((row) => String(row.id));
+    const versionsByTopic = new Map<string, string[]>();
+    if (topicIds.length) {
+      const placeholders = topicIds.map(() => "?").join(",");
+      const versionRows = store.db.prepare(`SELECT topic_id,product_version FROM (
+        SELECT b.topic_id,b.product_version,ROW_NUMBER() OVER (PARTITION BY b.topic_id ORDER BY b.product_version) AS version_rank
+        FROM knowledge_product_document_bindings b JOIN knowledge_documents d ON d.id=b.document_id JOIN knowledge_product_documents p ON p.id=b.document_id
+        WHERE b.topic_id IN (${placeholders}) AND ${visibilityWhere}${version ? " AND b.product_version=?" : ""}${includeReview ? "" : " AND b.status='active'"}
+      ) WHERE version_rank<=? ORDER BY topic_id,product_version`).all(...topicIds, ...visibilityParams, ...(version ? [version] : []), 100) as Array<{ topic_id: string; product_version: string }>;
+      for (const row of versionRows) (versionsByTopic.get(row.topic_id) ?? (versionsByTopic.set(row.topic_id, []), versionsByTopic.get(row.topic_id)!)).push(row.product_version);
+    }
+    return reply.send({ topics: rows.map(({ total_count: _total, ...row }) => {
+      const versionCount = Number(row.version_count ?? 0);
+      return { ...row, versions: versionsByTopic.get(String(row.id)) ?? [], versionsTruncated: versionCount > 100, versionCount, revisionCount: Number(row.revision_count ?? 0), metadata: safeRows(() => JSON.parse(String(row.metadata_json ?? "{}")), {}) };
+    }), page: { limit, offset, total } });
   });
 
   app.get("/api/knowledge/product-topics/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
     const id = String((request.params as { id: string }).id);
     const store = getKnowledgeStore();
-    if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     const topic = store.db.prepare("SELECT * FROM knowledge_topics WHERE id=?").get(id) as KnowledgeRow | undefined;
     if (!topic) return reply.status(404).send({ error: "Product topic not found" });
     const query = request.query as Record<string, unknown>;
+    const limit = parseBoundedInt(query.limit, 100, 1, 200);
+    const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
+    const requestedProject = queryValue(query, "projectId");
+    const requestedEnvironment = queryValue(query, "environment");
+    const includeReview = request.user.isAdmin && queryValue(query, "includeReview") === "true";
     let visibility;
-    try { visibility = await productCatalogVisibility(store, { userId: request.user.id, isAdmin: request.user.isAdmin, projectId: queryValue(query, "projectId"), environment: queryValue(query, "environment") }); }
-    catch (error) { return sendError(reply, error, error instanceof WeKnoraError ? 503 : 403); }
-    const rows = store.db.prepare(`SELECT b.*,d.title,d.body,d.lifecycle,d.source_locator,d.source_sha256,d.project_id AS document_project_id,d.updated_at AS document_updated_at,
-      p.document_family_id,p.document_type,p.language,p.authority,p.sections_json,p.metadata_json
-      FROM knowledge_product_document_bindings b JOIN knowledge_documents d ON d.id=b.document_id
-      JOIN knowledge_product_documents p ON p.id=d.id WHERE b.topic_id=? AND EXISTS (SELECT 1 FROM json_each(?) visible WHERE json_extract(visible.value,'$.documentId')=d.id AND (?='relay_local' OR json_extract(visible.value,'$.productVersion') IS b.product_version)) ORDER BY b.product_version`).all(id, JSON.stringify(visibility.documents), visibility.provider) as KnowledgeRow[];
-    const bindings = request.user.isAdmin ? rows : rows.filter((row) => canReadTopicBinding(store, request.user.id, row.document_project_id));
-    if (!request.user.isAdmin && !bindings.length) return reply.status(403).send({ error: "Knowledge access denied" });
-    if(visibility.provider==="weknora") {
-      const versions=await Promise.all(bindings.map(async row=>({topic_id:row.topic_id,document_id:row.document_id,product_version:row.product_version,match_method:row.match_method,match_confidence:row.match_confidence,...await getProductBackend(store,{documentId:String(row.document_id),userId:request.user.id,isAdmin:request.user.isAdmin,projectId:row.document_project_id?String(row.document_project_id):undefined,environment:queryValue(request.query as Record<string,unknown>,"environment")})})));
-      return reply.send({topic,versions});
+    try {
+      if (requestedEnvironment && !requestedProject) return reply.status(400).send({ error: "environment requires projectId" });
+      const provider = new MigrationController(store).activeProductProvider();
+      if (provider === "relay_local") {
+        if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
+        if (requestedProject && !request.user.isAdmin && !store.canRead(request.user.id, requestedProject)) return reply.status(403).send({ error: "Knowledge access denied" });
+        visibility = { provider: "relay_local" as const, documents: [] };
+      } else visibility = await productCatalogVisibility(store, { userId: request.user.id, isAdmin: request.user.isAdmin, projectId: requestedProject, environment: requestedEnvironment });
     }
-    return reply.send({ topic: { ...topic, metadata: safeRows(() => JSON.parse(String(topic.metadata_json ?? "{}")), {}) }, versions: bindings.map(({ document_project_id: _project, ...row }) => ({ ...row, metadata: safeRows(() => JSON.parse(String(row.metadata_json ?? "{}")), {}), sections: safeRows(() => JSON.parse(String(row.sections_json ?? "[]")), []) })) });
+    catch (error) { return sendError(reply, error, error instanceof WeKnoraError ? 503 : 403); }
+    const documentKindWhere = "d.kind = 'product_document'";
+    const visibilityWhere = visibility.provider === "relay_local"
+      ? `${documentKindWhere} AND ${requestedProject ? "(d.project_id IS NULL AND d.environment IS NULL OR d.project_id=? AND d.environment IS ?)" : "d.project_id IS NULL AND d.environment IS NULL"}`
+      : `${documentKindWhere} AND EXISTS (SELECT 1 FROM json_each(?) visible WHERE json_extract(visible.value,'$.documentId')=d.id AND json_extract(visible.value,'$.productVersion') IS b.product_version)`;
+    const visibilityParams: unknown[] = visibility.provider === "relay_local"
+      ? requestedProject ? [requestedProject, requestedEnvironment ?? null] : []
+      : [JSON.stringify(visibility.documents)];
+    const statusWhere = includeReview ? "" : " AND b.status='active'";
+    const rows = store.db.prepare(`SELECT b.*,d.title,d.body,d.lifecycle,d.source_locator,d.source_sha256,d.project_id AS document_project_id,d.updated_at AS document_updated_at,
+      p.document_family_id,p.document_type,p.language,p.authority,p.sections_json,p.metadata_json,COUNT(*) OVER() AS total_count
+      FROM knowledge_product_document_bindings b JOIN knowledge_documents d ON d.id=b.document_id
+      JOIN knowledge_product_documents p ON p.id=d.id WHERE b.topic_id=? AND ${visibilityWhere}${statusWhere} ORDER BY b.product_version LIMIT ? OFFSET ?`).all(id, ...visibilityParams, limit, offset) as KnowledgeRow[];
+    let total = Number(rows[0]?.total_count ?? 0);
+    if (!rows.length && offset > 0) {
+      const count = store.db.prepare(`SELECT COUNT(*) AS count FROM knowledge_product_document_bindings b JOIN knowledge_documents d ON d.id=b.document_id JOIN knowledge_product_documents p ON p.id=b.document_id WHERE b.topic_id=? AND ${visibilityWhere}${statusWhere}`).get(id, ...visibilityParams) as { count?: number };
+      total = Number(count.count ?? 0);
+    }
+    if (!request.user.isAdmin && !rows.length) return reply.status(403).send({ error: "Knowledge access denied" });
+    if(visibility.provider==="weknora") {
+      const versions=await Promise.all(rows.map(async ({ total_count: _total, ...row })=>({topic_id:row.topic_id,document_id:row.document_id,product_version:row.product_version,match_method:row.match_method,match_confidence:row.match_confidence,...await getProductBackend(store,{documentId:String(row.document_id),userId:request.user.id,isAdmin:request.user.isAdmin,projectId:requestedProject,environment:requestedEnvironment})})));
+      return reply.send({topic,versions,page:{limit,offset,total}});
+    }
+    return reply.send({ topic: { ...topic, metadata: safeRows(() => JSON.parse(String(topic.metadata_json ?? "{}")), {}) }, versions: rows.map(({ document_project_id: _project, total_count: _total, ...row }) => ({ ...row, metadata: safeRows(() => JSON.parse(String(row.metadata_json ?? "{}")), {}), sections: safeRows(() => JSON.parse(String(row.sections_json ?? "[]")), []) })), page: { limit, offset, total } });
   });
   app.post("/api/knowledge/product-topic-bindings/:id/review", { onRequest: [app.authenticate] }, async (request, reply) => {
     if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
@@ -1076,7 +1186,6 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   // backwards-compatible alias for existing clients.
   app.get("/api/knowledge/product-documents", { onRequest: [app.authenticate] }, async (request, reply) => {
     const query = request.query as Record<string, unknown>; const store = getKnowledgeStore();
-    if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     if(new MigrationController(store).activeProductProvider()==="weknora") {
       const value=(key:string)=>queryValue(query,key),limit=parseBoundedInt(query.limit,100,1,500),offset=parseBoundedInt(query.offset,0,0,1_000_000);
       return reply.send(await listEngineProductBackend(store,{userId:request.user.id,isAdmin:request.user.isAdmin,projectId:value("projectId"),environment:value("environment"),sampleManagerVersion:value("sampleManagerVersion"),product:value("product"),solution:value("solution"),module:value("module"),documentType:value("documentType"),language:value("language"),authority:value("authority"),status:value("status"),limit,offset}));
@@ -1086,9 +1195,8 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     for (const [column, key] of filters) { const value = queryValue(query, key); if (value) { where.push(`${column} = ?`); params.push(value); } }
     const status = queryValue(query, "status"); if (status) { where.push("d.lifecycle = ?"); params.push(status); }
     const requestedProject=queryValue(query,"projectId"),requestedEnvironment=queryValue(query,"environment");
-    if(requestedProject){if(!request.user.isAdmin&&!store.canRead(request.user.id,requestedProject))return reply.status(403).send({error:"Knowledge access denied"});where.push("(d.project_id IS NULL OR d.project_id=?)");params.push(requestedProject);}
-    if(!request.user.isAdmin){where.push("(d.project_id IS NULL OR EXISTS (SELECT 1 FROM knowledge_acl a WHERE a.project_id=d.project_id AND a.user_id=? AND a.can_read=1))");params.push(request.user.id);}
-    where.push("(d.environment IS NULL OR d.environment IS ?)");params.push(requestedEnvironment??null);
+    if(requestedProject){if(!request.user.isAdmin&&!store.canRead(request.user.id,requestedProject))return reply.status(403).send({error:"Knowledge access denied"});where.push("((d.project_id IS NULL AND d.environment IS NULL) OR (d.project_id=? AND d.environment IS ?))");params.push(requestedProject,requestedEnvironment??null);}
+    else {if(requestedEnvironment)return reply.status(400).send({error:"environment requires projectId"});where.push("d.project_id IS NULL AND d.environment IS NULL");}
     const sortColumn = ({ updatedAt: "d.updated_at", title: "d.title", version: "p.version", sourcePath: "p.source_path" } as Record<string, string>)[queryValue(query, "sort") ?? "updatedAt"] ?? "d.updated_at";
     const order = String(queryValue(query, "order") ?? "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
     const rows = store.db.prepare(`SELECT d.id,d.title,d.body,d.lifecycle,d.project_id,d.project_name_snapshot,d.samplemanager_version,d.solution,d.module,d.environment,d.source_locator,d.source_commit,d.source_sha256,d.created_at,d.updated_at,p.document_family_id,p.document_type,p.language,p.authority,p.source_path,p.version,p.sections_json,p.metadata_json,p.diff_review_status,p.diff_reviewed_at,(SELECT COUNT(*) FROM knowledge_chunks c WHERE c.document_id=d.id) AS chunk_count FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE ${where.join(" AND ")} ORDER BY ${sortColumn} ${order} LIMIT ? OFFSET ?`).all(...params, limit, offset) as KnowledgeRow[];
@@ -1119,14 +1227,14 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/knowledge/product-documents/imports", { onRequest: [app.authenticate] }, async (request, reply) => {
-    const store = getKnowledgeStore(); if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" }); const query = request.query as Record<string, unknown>; const limit = parseBoundedInt(query.limit, 100, 1, 500); const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
+    const store = getKnowledgeStore(); const query = request.query as Record<string, unknown>; const limit = parseBoundedInt(query.limit, 100, 1, 500); const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
     const rows = store.db.prepare("SELECT id,source_locator,status,imported,skipped,failed,started_at,finished_at,error,operation_idempotency_key,batch_metadata_json,source_root,source_commit,source_sha256 FROM knowledge_ingest_runs ORDER BY started_at DESC LIMIT ? OFFSET ?").all(limit, offset);
     const total = store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_ingest_runs").get() as { count?: number };
     return reply.send({ runs: rows, page: { limit, offset, total: Number(total.count ?? 0) } });
   });
 
   app.get("/api/knowledge/product-documents/imports/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
-    const id = String((request.params as { id: string }).id); const store = getKnowledgeStore(); if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
+    const id = String((request.params as { id: string }).id); const store = getKnowledgeStore();
     const run = store.db.prepare("SELECT id,source_locator,status,imported,skipped,failed,started_at,finished_at,error,operation_idempotency_key,batch_metadata_json,source_root,source_commit,source_sha256 FROM knowledge_ingest_runs WHERE id=?").get(id) as KnowledgeRow | undefined;
     if (!run) return reply.status(404).send({ error: "Ingest run not found" });
     const items = safeRows(() => store.db.prepare("SELECT id,relative_path,document_id,status,source_sha256,metadata_json,warning,error,created_at,updated_at FROM knowledge_product_document_items WHERE run_id=? ORDER BY relative_path").all(id), []);
@@ -1154,20 +1262,34 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/knowledge/product-documents/versions", { onRequest: [app.authenticate] }, async (_request, reply) => {
-    const store = getKnowledgeStore(); if (!_request.user.isAdmin && !knowledgeReadAllowed(store, _request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
+    const store = getKnowledgeStore();
     const query = _request.query as Record<string, unknown>; const limit = parseBoundedInt(query.limit, 100, 1, 500); const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
-    let visibility;
-    try { visibility = await productCatalogVisibility(store, { userId: _request.user.id, isAdmin: _request.user.isAdmin, projectId: queryValue(query, "projectId"), environment: queryValue(query, "environment") }); }
-    catch (error) { return sendError(reply, error, error instanceof WeKnoraError ? 503 : 403); }
-    const where = "EXISTS (SELECT 1 FROM json_each(?) visible WHERE json_extract(visible.value,'$.documentId')=p.id AND (?='relay_local' OR json_extract(visible.value,'$.productVersion') IS p.version))";
-    const params = [JSON.stringify(visibility.documents), visibility.provider];
-    const rows = store.db.prepare(`SELECT document_family_id,version,COUNT(*) AS documents,MAX(updated_at) AS updated_at FROM knowledge_product_documents p WHERE ${where} GROUP BY document_family_id,version ORDER BY document_family_id,version LIMIT ? OFFSET ?`).all(...params, limit, offset);
-    const total = store.db.prepare(`SELECT COUNT(*) AS count FROM (SELECT document_family_id,version FROM knowledge_product_documents p WHERE ${where} GROUP BY document_family_id,version)`).get(...params) as { count?: number };
+    const requestedProject = queryValue(query, "projectId"), requestedEnvironment = queryValue(query, "environment");
+    if (requestedEnvironment && !requestedProject) return reply.status(400).send({ error: "environment requires projectId" });
+    let provider: "relay_local" | "weknora", where: string, params: unknown[];
+    try {
+      provider = new MigrationController(store).activeProductProvider();
+      if (provider === "relay_local") {
+        if (!_request.user.isAdmin && !knowledgeReadAllowed(store, _request.user.id)) throw new Error("Knowledge access denied");
+        assertProductScope(store, { userId: _request.user.id, isAdmin: _request.user.isAdmin, projectId: requestedProject, environment: requestedEnvironment });
+        where = requestedProject ? "d.kind='product_document' AND (d.project_id IS NULL AND d.environment IS NULL OR d.project_id=? AND d.environment IS ?)" : "d.kind='product_document' AND d.project_id IS NULL AND d.environment IS NULL";
+        params = requestedProject ? [requestedProject, requestedEnvironment ?? null] : [];
+      } else {
+        const visibility = await productCatalogVisibility(store, { userId: _request.user.id, isAdmin: _request.user.isAdmin, projectId: requestedProject, environment: requestedEnvironment });
+        where = "EXISTS (SELECT 1 FROM json_each(?) visible WHERE json_extract(visible.value,'$.documentId')=p.id AND json_extract(visible.value,'$.productVersion') IS p.version)";
+        params = [JSON.stringify(visibility.documents)];
+      }
+    } catch (error) { return sendError(reply, error, error instanceof WeKnoraError ? 503 : 403); }
+    const source = provider === "relay_local" ? "knowledge_product_documents p JOIN knowledge_documents d ON d.id=p.id" : "knowledge_product_documents p";
+    const rows = store.db.prepare(`SELECT p.document_family_id,p.version,COUNT(*) AS documents,MAX(p.updated_at) AS updated_at FROM ${source} WHERE ${where} GROUP BY p.document_family_id,p.version ORDER BY p.document_family_id,p.version LIMIT ? OFFSET ?`).all(...params, limit, offset);
+    const total = store.db.prepare(`SELECT COUNT(*) AS count FROM (SELECT p.document_family_id,p.version FROM ${source} WHERE ${where} GROUP BY p.document_family_id,p.version)`).get(...params) as { count?: number };
     return reply.send({ versions: rows, page: { limit, offset, total: Number(total.count ?? 0) } });
   });
 
   app.get("/api/knowledge/product-documents/diffs", { onRequest: [app.authenticate] }, async (request, reply) => {
-    const store = getKnowledgeStore(); if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" }); const query = request.query as Record<string, unknown>; const left = queryValue(query, "left"); const right = queryValue(query, "right");
+    const query = request.query as Record<string, unknown>; const requestedProject = queryValue(query, "projectId"); const requestedEnvironment = queryValue(query, "environment"); const left = queryValue(query, "left"); const right = queryValue(query, "right"); const store = getKnowledgeStore();
+    if (requestedProject && !request.user.isAdmin && !store.canRead(request.user.id, requestedProject)) return reply.status(403).send({ error: "Knowledge access denied" });
+    if (!requestedProject && requestedEnvironment) return reply.status(400).send({ error: "environment requires projectId" });
     if (left && right) {
       const exists = store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_product_documents WHERE id IN (?,?)").get(left, right) as { count?: number };
       if (Number(exists.count) !== 2) return reply.status(404).send({ error: "Product document not found" });
@@ -1175,7 +1297,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     }
     const limit = parseBoundedInt(query.limit, 100, 1, 500); const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
     const rows = store.db.prepare("SELECT id,document_id,against_document_id,report_json,review_status,reviewed_by,reviewed_at,created_at,updated_at FROM knowledge_product_document_revisions ORDER BY updated_at DESC LIMIT ? OFFSET ?").all(limit, offset).flatMap((row: any) => {
-      const allowed=(id:string)=>{const doc=store.db.prepare("SELECT project_id,environment FROM knowledge_documents WHERE id=?").get(id) as {project_id?:string;environment?:string}|undefined;return doc&&(!doc.project_id||request.user.isAdmin||store.canRead(request.user.id,doc.project_id))&&(!doc.environment||doc.environment===queryValue(query,"environment"));};
+      const allowed=(id:string)=>{const doc=store.db.prepare("SELECT project_id,environment FROM knowledge_documents WHERE id=?").get(id) as {project_id?:string|null;environment?:string|null}|undefined;if(!doc)return false;if(!requestedProject)return doc.project_id==null&&doc.environment==null;return (doc.project_id==null&&doc.environment==null)||(String(doc.project_id)===requestedProject&&(doc.environment??null)===(requestedEnvironment??null));};
       if(!allowed(row.document_id)||!allowed(row.against_document_id))return [];
       const {report_json,...metadata}=row;
       return [{...metadata,...(new MigrationController(store).activeProductProvider()==="relay_local"?{report:safeRows(()=>JSON.parse(String(report_json)),undefined)}:{requiresRefresh:true})}];
@@ -1186,7 +1308,6 @@ export async function knowledgeRoutes(app: FastifyInstance) {
 
   app.get("/api/knowledge/product-documents/search", { onRequest: [app.authenticate] }, async (request, reply) => {
     const query = request.query as Record<string, unknown>; const store = getKnowledgeStore(); const value = (key: string) => queryValue(query, key);
-    if (!request.user.isAdmin && !knowledgeReadAllowed(store, request.user.id)) return reply.status(403).send({ error: "Knowledge access denied" });
     const limit = parseBoundedInt(query.limit, 50, 1, 500); const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
     const allResults = await searchProductBackend(store, {userId:request.user.id,isAdmin:request.user.isAdmin,projectId:value("projectId"),environment:value("environment"), query: value("q") ?? value("query"), sampleManagerVersion: value("sampleManagerVersion"), product: value("product"), solution: value("solution"), module: value("module"), documentType: value("documentType"), language: value("language"), authority: value("authority"), limit: 500, includeDeprecated: value("includeDeprecated") === "true" });
     return reply.send({ query: value("q") ?? value("query") ?? "", results: allResults.slice(offset, offset + limit), page: { limit, offset, total: allResults.length } });
@@ -1459,64 +1580,136 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     try { return reply.send({ memory: new ConfirmedMemoryService(getKnowledgeStore()).get({ actorId: request.user.id, id: String((request.params as { id: string }).id) }) }); } catch (error) { return sendError(reply, error, 404); }
   });
 
-  app.get("/api/knowledge/wiki", { onRequest: [app.authenticate] }, async (request, reply) => { const query = request.query as Record<string, unknown>; const status = typeof query.status === "string" && WIKI_PAGE_STATUSES.includes(query.status as never) ? query.status as never : undefined; try { return reply.send(await activeWikiService(getKnowledgeStore()).list({ actorId: request.user.id, projectId: query.projectId ? String(query.projectId) : undefined, environment: query.environment ? String(query.environment) : undefined, status, productVersion: query.productVersion ? String(query.productVersion) : undefined, topicId: query.topicId ? String(query.topicId) : undefined, solution: query.solution ? String(query.solution) : undefined, module: query.module ? String(query.module) : undefined, search: query.search ? String(query.search) : undefined, limit: parseBoundedInt(query.limit, 50, 1, 200), offset: parseBoundedInt(query.offset, 0, 0, 1_000_000) })); } catch (error) { return sendError(reply, error, 403); } });
-  app.post("/api/knowledge/wiki", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ environment: z.string().optional(), pageKey: z.string().min(1).max(300), title: z.string().min(1).max(500), body: z.string().min(1), projectId: z.string().optional(), productVersion: z.string().optional(), topicId: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), sourceRefs: z.array(z.string()).max(100).optional(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Wiki page" }); try { return reply.status(201).send({ page: await activeWikiService(getKnowledgeStore()).create({ actorId: request.user.id, ...body.data }) }); } catch (error) { return sendError(reply, error, 403); } });
+  app.get("/api/knowledge/wiki", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    const projectId = queryValue(query, "projectId");
+    const environment = queryValue(query, "environment");
+    if (!projectId && environment) return reply.status(400).send({ error: "environment requires projectId" });
+    const status = typeof query.status === "string" && WIKI_PAGE_STATUSES.includes(query.status as never) ? query.status as never : undefined;
+    try {
+      return reply.send(await activeWikiService(getKnowledgeStore()).list({ actorId: request.user.id, isAdmin: request.user.isAdmin, projectId, environment, status, productVersion: queryValue(query, "productVersion"), topicId: queryValue(query, "topicId"), solution: queryValue(query, "solution"), module: queryValue(query, "module"), search: queryValue(query, "search"), limit: parseBoundedInt(query.limit, 50, 1, 200), offset: parseBoundedInt(query.offset, 0, 0, 1_000_000) }));
+    } catch (error) { return sendError(reply, error, 403); }
+  });
+  app.post("/api/knowledge/wiki", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const body = z.object({ environment: z.string().optional(), pageKey: z.string().min(1).max(300), title: z.string().min(1).max(500), body: z.string().min(1), projectId: z.string().optional(), productVersion: z.string().optional(), topicId: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), sourceRefs: z.array(z.string()).max(100).optional(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {});
+    if (!body.success) return reply.status(400).send({ error: "Invalid Wiki page" });
+    if (body.data.environment && !body.data.projectId) return reply.status(400).send({ error: "environment requires projectId" });
+    try { return reply.status(201).send({ page: await activeWikiService(getKnowledgeStore()).create({ actorId: request.user.id, isAdmin: request.user.isAdmin, ...body.data }) }); } catch (error) { return sendError(reply, error, 403); }
+  });
   // Resolve only an existing Relay binding. Never discover upstream content from
   // an untrusted link or use the visible list as an authorization decision.
   const assertWikiNavigationScope = (actorId: number, column: "id" | "page_key", identity: string, projectId?: string, environment?: string) => {
-    const store=getKnowledgeStore();
-    const row=store.db.prepare(`SELECT project_id,environment FROM knowledge_wiki_pages WHERE ${column}=?`).get(identity) as {project_id?:string|null;environment?:string|null}|undefined;
-    const global=!!row && !row.project_id && !row.environment;
-    if (!row || (projectId && (!store.canRead(actorId,projectId) || (!global && (row.project_id !== projectId || (row.environment || undefined) !== environment))))) throw new Error("Wiki page not found in the selected scope");
+    const store = getKnowledgeStore();
+    const row = store.db.prepare(`SELECT project_id,environment FROM knowledge_wiki_pages WHERE ${column}=?`).get(identity) as { project_id?: string | null; environment?: string | null } | undefined;
+    const global = Boolean(row && row.project_id == null && row.environment == null);
+    if (!row) throw new Error("Wiki page not found in the selected scope");
+    if (!projectId && !environment) {
+      if (!global) throw new Error("Wiki page not found in the selected scope");
+      return;
+    }
+    if (!projectId || !store.canRead(actorId, projectId)) throw new Error("Wiki page not found in the selected scope");
+    if (!global && (row.project_id !== projectId || (row.environment ?? undefined) !== environment)) throw new Error("Wiki page not found in the selected scope");
   };
-  app.get("/api/knowledge/wiki/resolve", {onRequest:[app.authenticate]}, async (request,reply) => {
-    const query=z.object({pageKey:z.string().min(1).max(300).regex(/^(?:engine-wiki:[a-f0-9]{16}:)?[\p{L}\p{N}_-]+(?:\/[\p{L}\p{N}_-]+)*$/u),projectId:z.string().trim().min(1),environment:z.string().trim().min(1).optional()}).safeParse(request.query);
-    if (!query.success) return reply.status(400).send({error:"A valid Wiki key and current project scope are required"});
+  app.get("/api/knowledge/wiki/resolve", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = z.object({ pageKey: z.string().min(1).max(300).regex(/^(?:engine-wiki:[a-f0-9]{16}:)?[\p{L}\p{N}_-]+(?:\/[\p{L}\p{N}_-]+)*$/u), projectId: z.string().trim().min(1).optional(), environment: z.string().trim().min(1).optional() }).safeParse(request.query);
+    if (!query.success) return reply.status(400).send({ error: "A valid Wiki key is required" });
+    if (query.data.environment && !query.data.projectId) return reply.status(400).send({ error: "environment requires projectId" });
     try {
-      const input={actorId:request.user.id,...query.data};
-      assertWikiNavigationScope(input.actorId,"page_key",input.pageKey,input.projectId,input.environment);
-      const page=await activeWikiService(getKnowledgeStore()).getByKey(input);
-      assertWikiNavigationScope(input.actorId,"page_key",input.pageKey,input.projectId,input.environment);
-      return reply.send({page});
-    } catch(error) {return sendError(reply,error,404);}
+      const input = { actorId: request.user.id, isAdmin: request.user.isAdmin, ...query.data };
+      assertWikiNavigationScope(input.actorId, "page_key", input.pageKey, input.projectId, input.environment);
+      const page = await activeWikiService(getKnowledgeStore()).getByKey(input);
+      assertWikiNavigationScope(input.actorId, "page_key", input.pageKey, input.projectId, input.environment);
+      return reply.send({ page });
+    } catch (error) { return sendError(reply, error, 404); }
   });
   app.get("/api/knowledge/wiki/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
-    const query=request.query as Record<string,unknown>,id=String((request.params as {id:string}).id),projectId=queryValue(query,"projectId"),environment=queryValue(query,"environment");
+    const query = request.query as Record<string, unknown>;
+    const id = String((request.params as { id: string }).id);
+    const projectId = queryValue(query, "projectId");
+    const environment = queryValue(query, "environment");
+    if (environment && !projectId) return reply.status(400).send({ error: "environment requires projectId" });
     try {
-      assertWikiNavigationScope(request.user.id,"id",id,projectId,environment);
-      const page=await activeWikiService(getKnowledgeStore()).get({actorId:request.user.id,id,projectId,environment});
-      assertWikiNavigationScope(request.user.id,"id",id,projectId,environment);
-      return reply.send({page});
-    } catch(error) {return sendError(reply,error,404);}
+      assertWikiNavigationScope(request.user.id, "id", id, projectId, environment);
+      const page = await activeWikiService(getKnowledgeStore()).get({ actorId: request.user.id, isAdmin: request.user.isAdmin, id, projectId, environment });
+      assertWikiNavigationScope(request.user.id, "id", id, projectId, environment);
+      return reply.send({ page });
+    } catch (error) { return sendError(reply, error, 404); }
   });
-  app.patch("/api/knowledge/wiki/:id", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ environment: z.string().optional(), title: z.string().min(1).max(500).optional(), body: z.string().min(1).optional(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Wiki edit" }); try { return reply.send({ page: await activeWikiService(getKnowledgeStore()).edit({ actorId: request.user.id, id: String((request.params as { id: string }).id), ...body.data }) }); } catch (error) { return sendError(reply, error, 403); } });
+  app.patch("/api/knowledge/wiki/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const body = z.object({ projectId: z.string().optional(), environment: z.string().optional(), title: z.string().min(1).max(500).optional(), body: z.string().min(1).optional(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {});
+    if (!body.success) return reply.status(400).send({ error: "Invalid Wiki edit" });
+    if (body.data.environment && !body.data.projectId) return reply.status(400).send({ error: "environment requires projectId" });
+    try { return reply.send({ page: await activeWikiService(getKnowledgeStore()).edit({ actorId: request.user.id, isAdmin: request.user.isAdmin, id: String((request.params as { id: string }).id), ...body.data }) }); } catch (error) { return sendError(reply, error, 403); }
+  });
   for (const action of ["publish", "deprecate"] as const) {
-    app.post(`/api/knowledge/wiki/:id/${action}`, { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ environment: z.string().optional(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "A reason is required" }); const service = activeWikiService(getKnowledgeStore()); try { const id = String((request.params as { id: string }).id); return reply.send({ page: action === "publish" ? await service.publish({ actorId: request.user.id, id, reason: body.data.reason, environment: body.data.environment }) : await service.deprecate({ actorId: request.user.id, id, reason: body.data.reason, environment: body.data.environment }) }); } catch (error) { return sendError(reply, error, 403); } });
+    app.post(`/api/knowledge/wiki/:id/${action}`, { onRequest: [app.authenticate] }, async (request, reply) => {
+      const body = z.object({ projectId: z.string().optional(), environment: z.string().optional(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {});
+      if (!body.success) return reply.status(400).send({ error: "A reason is required" });
+      if (body.data.environment && !body.data.projectId) return reply.status(400).send({ error: "environment requires projectId" });
+      const service = activeWikiService(getKnowledgeStore());
+      try {
+        const id = String((request.params as { id: string }).id);
+        const input = { actorId: request.user.id, isAdmin: request.user.isAdmin, id, ...body.data };
+        return reply.send({ page: action === "publish" ? await service.publish(input) : await service.deprecate(input) });
+      } catch (error) { return sendError(reply, error, 403); }
+    });
   }
-  app.get("/api/knowledge/wiki/:id/revisions", { onRequest: [app.authenticate] }, async (request, reply) => { try { return reply.send({ revisions: await activeWikiService(getKnowledgeStore()).listRevisions({ actorId: request.user.id, id: String((request.params as { id: string }).id), environment: queryValue(request.query as Record<string,unknown>, "environment") }) }); } catch (error) { return sendError(reply, error, 404); } });
-  app.get("/api/knowledge/wiki/:id/diff", { onRequest: [app.authenticate] }, async (request, reply) => { const query = request.query as Record<string, unknown>; try { return reply.send({ diff: await activeWikiService(getKnowledgeStore()).diffRevisions({ actorId: request.user.id, id: String((request.params as { id: string }).id), environment: queryValue(query, "environment"), fromRevision: parseBoundedInt(query.fromRevision, 1, 1, 1_000_000), toRevision: parseBoundedInt(query.toRevision, 1, 1, 1_000_000) }) }); } catch (error) { return sendError(reply, error, 404); } });
-  app.post("/api/knowledge/wiki/:id/rollback", { onRequest: [app.authenticate] }, async (request, reply) => { const body = z.object({ environment: z.string().optional(), revision: z.number().int().positive(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid Wiki rollback" }); try { return reply.send({ page: await activeWikiService(getKnowledgeStore()).rollback({ actorId: request.user.id, id: String((request.params as { id: string }).id), ...body.data }) }); } catch (error) { return sendError(reply, error, 403); } });
+  app.get("/api/knowledge/wiki/:id/revisions", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    const projectId = queryValue(query, "projectId");
+    const environment = queryValue(query, "environment");
+    if (environment && !projectId) return reply.status(400).send({ error: "environment requires projectId" });
+    try { return reply.send({ revisions: await activeWikiService(getKnowledgeStore()).listRevisions({ actorId: request.user.id, isAdmin: request.user.isAdmin, id: String((request.params as { id: string }).id), projectId, environment }) }); } catch (error) { return sendError(reply, error, 404); }
+  });
+  app.get("/api/knowledge/wiki/:id/diff", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    const projectId = queryValue(query, "projectId");
+    const environment = queryValue(query, "environment");
+    if (environment && !projectId) return reply.status(400).send({ error: "environment requires projectId" });
+    try { return reply.send({ diff: await activeWikiService(getKnowledgeStore()).diffRevisions({ actorId: request.user.id, isAdmin: request.user.isAdmin, id: String((request.params as { id: string }).id), projectId, environment, fromRevision: parseBoundedInt(query.fromRevision, 1, 1, 1_000_000), toRevision: parseBoundedInt(query.toRevision, 1, 1, 1_000_000) }) }); } catch (error) { return sendError(reply, error, 404); }
+  });
+  app.post("/api/knowledge/wiki/:id/rollback", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const body = z.object({ projectId: z.string().optional(), environment: z.string().optional(), revision: z.number().int().positive(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {});
+    if (!body.success) return reply.status(400).send({ error: "Invalid Wiki rollback" });
+    if (body.data.environment && !body.data.projectId) return reply.status(400).send({ error: "environment requires projectId" });
+    try { return reply.send({ page: await activeWikiService(getKnowledgeStore()).rollback({ actorId: request.user.id, isAdmin: request.user.isAdmin, id: String((request.params as { id: string }).id), ...body.data }) }); } catch (error) { return sendError(reply, error, 403); }
+  });
 
   app.get("/api/knowledge/weknora/documents", { onRequest: [app.authenticate] }, async (request, reply) => {
-    const query = request.query as Record<string, unknown>; const projectId = query.projectId ? String(query.projectId) : undefined; const store = getKnowledgeStore();
+    const query = request.query as Record<string, unknown>;
+    const projectId = queryValue(query, "projectId");
+    const environment = queryValue(query, "environment");
+    const store = getKnowledgeStore();
+    if (environment && !projectId) return reply.status(400).send({ error: "environment requires projectId" });
     if (projectId && !store.canRead(request.user.id, projectId)) return reply.status(403).send({ error: "Knowledge access denied" });
-    const conditions: string[] = query.environment ? [] : ["environment IS NULL"]; const params: unknown[] = [];
-    for (const [key, column] of [["status", "status"], ["productVersion", "product_version"], ["solution", "solution"], ["module", "module"], ["projectId", "project_id"], ["environment","environment"]] as const) { if (query[key]) { conditions.push(`${column} = ?`); params.push(String(query[key])); } }
-    if (!request.user.isAdmin && !projectId) conditions.push("(project_id IS NULL OR EXISTS(SELECT 1 FROM knowledge_acl a WHERE a.project_id=knowledge_weknora_documents.project_id AND a.user_id=? AND a.can_read=1))"), params.push(request.user.id);
-    const limit = parseBoundedInt(query.limit, 50, 1, 200); const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000); const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (projectId) {
+      conditions.push("((project_id IS NULL AND environment IS NULL) OR (project_id = ? AND environment IS ?))");
+      params.push(projectId, environment ?? null);
+    } else {
+      conditions.push("project_id IS NULL AND environment IS NULL");
+    }
+    for (const [key, column] of [["status", "status"], ["productVersion", "product_version"], ["solution", "solution"], ["module", "module"]] as const) {
+      const value = queryValue(query, key);
+      if (value) { conditions.push(`${column} = ?`); params.push(value); }
+    }
+    const limit = parseBoundedInt(query.limit, 50, 1, 200);
+    const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
+    const where = `WHERE ${conditions.join(" AND ")}`;
     const documents = store.db.prepare(`SELECT id,external_document_id,title,normalized_content_sha256,raw_sha256,parser_version,product_version,solution,module,topic_id,source_path,language,project_id,environment,external_chunk_ids_json,upstream_parse_status,upstream_verified_at,model_provenance_json,status,failure_code,failure_message,attempt_count,created_at,updated_at,published_at FROM knowledge_weknora_documents ${where} ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
     const total = (store.db.prepare(`SELECT COUNT(*) AS count FROM knowledge_weknora_documents ${where}`).get(...params) as { count: number }).count;
-    return reply.send({ documents: (documents as Array<Record<string,unknown>>).map(row=>{
-      const {model_provenance_json,external_chunk_ids_json,...safe}=row;
-      const provenance=safeRows(()=>JSON.parse(String(model_provenance_json??"{}")),{}) as Record<string,unknown>;
-      return {...safe,externalChunkIds:safeRows(()=>JSON.parse(String(external_chunk_ids_json??"[]")),[]),upstreamParseStatus:row.upstream_parse_status,upstreamVerifiedAt:row.upstream_verified_at,modelProvenance:{providerId:provenance.providerId,modelId:provenance.modelId,dimensions:provenance.dimensions,indexVersion:provenance.indexVersion}};
+    return reply.send({ documents: (documents as Array<Record<string, unknown>>).map(row => {
+      const { model_provenance_json, external_chunk_ids_json, ...safe } = row;
+      const provenance = safeRows(() => JSON.parse(String(model_provenance_json ?? "{}")), {}) as Record<string, unknown>;
+      return { ...safe, externalChunkIds: safeRows(() => JSON.parse(String(external_chunk_ids_json ?? "[]")), []), upstreamParseStatus: row.upstream_parse_status, upstreamVerifiedAt: row.upstream_verified_at, modelProvenance: { providerId: provenance.providerId, modelId: provenance.modelId, dimensions: provenance.dimensions, indexVersion: provenance.indexVersion } };
     }), page: { limit, offset, total } });
   });
   app.post("/api/knowledge/weknora/documents", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const body = z.object({ idempotencyKey: z.string().min(1).max(300), title: z.string().min(1).max(500), content: z.string().min(1), productVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), topicId: z.string().optional(), sourcePath: z.string().optional(), environment: z.string().optional(), language: z.string().optional(), projectId: z.string().optional(), parserVersion: z.string().min(1).max(100).default("relay-normalizer-v1"), rawSha256: z.string().length(64).optional(), retry: z.boolean().optional() }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid WeKnora document" }); try { const document = await weknoraControlPlane().ingestor.stage(body.data, { retry: body.data.retry }); return reply.status(201).send({ document }); } catch (error) { return sendError(reply, error, error instanceof WeKnoraError ? 502 : 400); } });
   for (const action of ["publish", "deprecate"] as const) {
     app.post(`/api/knowledge/weknora/documents/:id/${action}`, { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const writer = { upsertDocument: async () => ({ externalDocumentId: "unused" }) }; const ingestor = new WeKnoraIngestor(getKnowledgeStore(), writer); try { const id = String((request.params as { id: string }).id); return reply.send({ document: action === "publish" ? ingestor.publish(id, request.user.id) : ingestor.deprecate(id, request.user.id) }); } catch (error) { return sendError(reply, error, 400); } });
   }
-  app.post("/api/knowledge/weknora/search", { onRequest: [app.authenticate] }, async (request, reply) => {
+  app.post("/api/knowledge/search", { onRequest: [app.authenticate] }, async (request, reply) => {
     const body = z.object({ query: z.string().min(1), workSessionId: z.string().optional(), projectId: z.string().optional(), environment: z.string().optional(), productVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), language: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }).safeParse(request.body ?? {});
     if (!body.success) return reply.status(400).send({ error: "Invalid Product Knowledge search" });
     const store = getKnowledgeStore();
@@ -1524,22 +1717,29 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       const sessions = scopedWorkSessions(store);
       const session = body.data.workSessionId ? sessions.assertSessionUsable({ actorId: request.user.id, sessionId: body.data.workSessionId, projectId: body.data.projectId, environment: body.data.environment }) : undefined;
       const projectId = resolveRetrievalProjectId({ projectId: body.data.projectId, sessionProjectId: session?.projectId });
-      if (!store.canRead(request.user.id, projectId)) throw new Error("Knowledge access denied");
+      const environment = body.data.environment ?? session?.environment;
+      if (!projectId && environment) throw new Error("environment requires projectId");
+      if (projectId && !store.canRead(request.user.id, projectId)) throw new Error("Knowledge access denied");
       const ingestor = new WeKnoraIngestor(store, { upsertDocument: async () => ({ externalDocumentId: "unused" }) });
-      const environment=body.data.environment??session?.environment;
-      const effectiveIntent={objective:"",actions:[] as string[],...session?.intent,projectId,environment,sampleManagerVersion:body.data.productVersion??session?.intent.sampleManagerVersion,solution:body.data.solution??session?.intent.solution,module:body.data.module??session?.intent.module};
+      const effectiveIntent = { objective: "", actions: [] as string[], ...session?.intent, projectId, environment, sampleManagerVersion: body.data.productVersion ?? session?.intent.sampleManagerVersion, solution: body.data.solution ?? session?.intent.solution, module: body.data.module ?? session?.intent.module };
       const knowledgeIds = ingestor.retrievalKnowledgeIds({ projectId, environment, productVersion: body.data.productVersion ?? session?.intent.sampleManagerVersion, solution: body.data.solution ?? session?.intent.solution, module: body.data.module ?? session?.intent.module, language: body.data.language });
       let relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: undefined } as Awaited<ReturnType<typeof loadRelayContextSources>>;
-      try { relaySources = await loadRelayContextSources({ store, userId: request.user.id, workSessionId:session?.id, projectId, query: body.data.query, intent: effectiveIntent, limit: body.data.limit ?? 10 }); } catch { relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: { relayMemory: "unavailable" } }; }
-      if (session) sessions.get({actorId:request.user.id,sessionId:session.id});
+      if (projectId) {
+        try { relaySources = await loadRelayContextSources({ store, userId: request.user.id, workSessionId: session?.id, projectId, query: body.data.query, intent: effectiveIntent, limit: body.data.limit ?? 10 }); }
+        catch { relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: { relayMemory: "unavailable" } }; }
+      }
+      if (session) sessions.get({ actorId: request.user.id, sessionId: session.id });
       if (!knowledgeIds.length) {
         const contextPack = new ContextPackService({ provider: "weknora" }).build({ intent: effectiveIntent, authoritativeDocs: [], confirmedKnowledge: relaySources.confirmedKnowledge, candidates: relaySources.candidates, currentFacts: relaySources.currentFacts, degraded: { ...relaySources.degraded, productKnowledge: "no_published_documents" }, acl: { documentIds: [] }, maxItemsPerSection: body.data.limit ?? 10 });
         return reply.send({ retrievalRunId: "local-scope-empty", references: [], degraded: contextPack.degraded, contextPack });
       }
-      const result = await searchEngineProductReferences(store,{userId:request.user.id,projectId,environment,query:body.data.query,sampleManagerVersion:body.data.productVersion??session?.intent.sampleManagerVersion,solution:body.data.solution??session?.intent.solution,module:body.data.module??session?.intent.module,language:body.data.language,limit:body.data.limit});
-      if (session) sessions.recordRetrieval({actorId:request.user.id,sessionId:session.id,projectId,environment,query:body.data.query,sourceRunId:result.retrievalRunId,resultCount:result.references.length,degraded:Boolean(result.degraded)});
+      const result = await searchEngineProductReferences(store, { userId: request.user.id, isAdmin: request.user.isAdmin, projectId, environment, query: body.data.query, sampleManagerVersion: body.data.productVersion ?? session?.intent.sampleManagerVersion, solution: body.data.solution ?? session?.intent.solution, module: body.data.module ?? session?.intent.module, language: body.data.language, limit: body.data.limit });
+      if (session) {
+        if (!projectId) throw new Error("Work Session project is required");
+        sessions.recordRetrieval({ actorId: request.user.id, sessionId: session.id, projectId, environment, query: body.data.query, sourceRunId: result.retrievalRunId, resultCount: result.references.length, degraded: Boolean(result.degraded) });
+      }
       const visible = new Set(knowledgeIds);
-      const references = result.references.filter((reference) => visible.has(reference.documentId));
+      const references = result.references.filter(reference => visible.has(reference.documentId));
       const pack = new ContextPackService({ provider: "weknora" }).build({ intent: effectiveIntent, authoritativeDocs: references, confirmedKnowledge: relaySources.confirmedKnowledge, candidates: relaySources.candidates, currentFacts: relaySources.currentFacts, degraded: { ...relaySources.degraded, ...result.degraded }, acl: { documentIds: knowledgeIds }, maxItemsPerSection: body.data.limit ?? 10 });
       return reply.send({ ...result, references: pack.authoritativeDocs, contextPack: pack });
     } catch (error) { return sendError(reply, error, error instanceof WeKnoraError ? 502 : 403); }

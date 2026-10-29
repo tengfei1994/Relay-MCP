@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createKnowledgeStore, type KnowledgeStore } from "../src/knowledge/store.ts";
 import { MigrationController } from "../src/knowledge/migration-control.ts";
-import { searchProductBackend, getProductBackend, diffProductBackend, listEngineProductBackend, type ProductBackendControlPlane } from "../src/knowledge/product-backend.ts";
+import { searchProductBackend, getProductBackend, diffProductBackend, listEngineProductBackend, productCatalogVisibility, type ProductBackendControlPlane } from "../src/knowledge/product-backend.ts";
 import {updateProductDocumentLifecycle,correctProductMetadata} from "../src/knowledge/knowledge-products.ts";
 import { WeKnoraClient } from "../src/knowledge/weknora.ts";
 import type { KnowledgeReference, WeKnoraDocumentRead, WeKnoraSearchInput } from "../src/knowledge/weknora.ts";
@@ -273,4 +273,43 @@ test("Product source limit is applied after real client chunk-to-document projec
   const results = await searchProductBackend(store, { ...scope, query: "configuration", limit: 2 }, control);
   assert.deepEqual(results.map(row => [row.id, row.snippet]), [["dense", "Dense source 0"], ["other", "Independent source"]]);
   assert.equal((results[0].citations as any[])[0].chunkId, "dense-0");
+}));
+test("no-project Product boundaries expose global local records without ACL and exclude private or environment-only rows even for admins", () => fixture(async ({ store, control }) => {
+  local(store, "global");
+  local(store, "private", "p1", "dev");
+  local(store, "environment-only", undefined, "dev");
+  const input = { userId: 99, isAdmin: true };
+  assert.deepEqual((await searchProductBackend(store, input, control)).map(row => row.id), ["global"]);
+  assert.deepEqual((await productCatalogVisibility(store, input, control)).documents.map(row => row.documentId), ["global"]);
+  assert.equal((await getProductBackend(store, { ...input, documentId: "global" }, control)).body, "Obsolete local pump body");
+  await assert.rejects(getProductBackend(store, { ...input, documentId: "private" }, control), /denied|not found/i);
+  await assert.rejects(getProductBackend(store, { ...input, documentId: "environment-only" }, control), /denied|not found/i);
+}));
+
+test("relay_local directly reads only verified published global engine mappings by engine or external ID", () => fixture(async ({ store, control, reads }) => {
+  mapped(store, "global");
+  store.db.prepare("UPDATE knowledge_weknora_documents SET project_id=NULL,environment=NULL WHERE id='global'").run();
+  const input = { userId: 99, isAdmin: true };
+  assert.equal((await getProductBackend(store, { ...input, documentId: "global" }, control)).body, "Actual engine body");
+  assert.equal((await getProductBackend(store, { ...input, documentId: "ext-global" }, control)).body, "Actual engine body");
+  assert.deepEqual(reads, ["ext-global", "ext-global"]);
+}));
+test("no-ACL global engine search, read, and catalog stay global-only", () => fixture(async ({ store, control, refs, select }) => {
+  local(store, "global");
+  mapped(store, "global");
+  mapped(store, "private", { project: "p1", environment: "dev" });
+  mapped(store, "environment-only", { project: "p1", environment: "dev" });
+  store.db.prepare("UPDATE knowledge_weknora_documents SET project_id=NULL WHERE id='environment-only'").run();
+  store.db.prepare("UPDATE knowledge_weknora_documents SET project_id=NULL,environment=NULL WHERE id='global'").run();
+  const migration = select();
+  store.db.prepare("INSERT INTO knowledge_migration_documents(migration_id,local_document_id,document_id,idempotency_key,external_document_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run(migration, "global", "global", "global-alias", "ext-global", "published", NOW, NOW);
+  refs.push(reference("global"));
+  const input = { userId: 99, isAdmin: false };
+  assert.deepEqual((await searchProductBackend(store, { ...input, query: "pump" }, control)).map(row => row.id), ["global"]);
+  assert.deepEqual((await listEngineProductBackend(store, { ...input, limit: 50 }, control)).documents.map(row => row.id), ["global"]);
+  assert.deepEqual((await productCatalogVisibility(store, input, control)).documents.map(row => row.documentId), ["global"]);
+  assert.equal((await getProductBackend(store, { ...input, documentId: "global" }, control)).body, "Actual engine body");
+  await assert.rejects(getProductBackend(store, { ...input, documentId: "private" }, control), /denied|not found/i);
+  await assert.rejects(getProductBackend(store, { ...input, documentId: "environment-only" }, control), /denied|not found/i);
 }));

@@ -4,7 +4,7 @@ This change covers future Relay retrieval telemetry for issues #53 and #56. It d
 
 ## Entry points and compatibility
 
-- HTTP `/api/knowledge/search`, MCP `knowledge_search`, diagnostic composition and ContextPack Memory searches call `searchKnowledge`. ContextPack expands the query with its objective/actions, so those inputs require the same protection.
+- HTTP `/api/memory/search`, MCP `memory_search`, diagnostic composition and ContextPack Memory searches call `searchKnowledge`. ContextPack expands the query with its objective/actions, so those inputs require the same protection.
 - `knowledge_retrieval_runs` has one production writer and no production reader that depends on its saved query or response body. The HTTP/MCP response continues to contain its original query, selected content and `retrievalRunId`.
 - Feedback uses document IDs. The retrieval row ID and audit `entity_id` remain unchanged, and result IDs, scope metadata, ranks and scores remain available for correlation.
 - Direct Product search uses the WeKnora client, whose trace records request ID, operation/path, HTTP status, latency and counts without the query or returned snippet. Its outer MCP `tools/call` audit still needed the separate projection below.
@@ -13,9 +13,9 @@ This change covers future Relay retrieval telemetry for issues #53 and #56. It d
 
 `knowledge_retrieval_runs.query` stores `sha256:<64 hex characters>` for new rows, preserving the existing NOT NULL schema. `results_json` is a version 1 metadata envelope with query SHA-256, Unicode character/UTF-8 byte lengths, result count, elapsed time, degradation/provider/model metadata and an explicit result allowlist. Result metadata contains IDs, rank/score, lifecycle, applicability/scope, Evidence IDs and available external document/chunk/run IDs and source hashes. It excludes titles, summaries, snippets, body, arbitrary provider DTO fields and freeform match reasons.
 
-The `knowledge.search` audit uses the same request metadata and keeps its retrieval ID. It no longer supplies `queryTokens`. The existing generic audit sanitizer already masks token-named keys, but that did not protect the raw retrieval table or raw `query` fields in the MCP transport log.
+The `memory.search` audit uses the same request metadata and keeps its retrieval ID. It no longer supplies `queryTokens`. The existing generic audit sanitizer already masks token-named keys, but that did not protect the raw retrieval table or raw `query` fields in the MCP transport log.
 
-The outer MCP audit uses a dedicated allowlist only for `knowledge_search`, `knowledge_weknora_search`, `knowledge_source_search`, `knowledge_wiki_search` and `samplemanager_diagnose`. It retains known scope/correlation IDs and numeric limits, replaces the query with its hash/length, and drops unknown/nested argument fields. Actual execution receives the unchanged original arguments. Non-retrieval tool audit behavior is unchanged.
+The outer MCP audit uses a dedicated allowlist only for `memory_search`, `knowledge_search`, `knowledge_source_search`, `knowledge_wiki_search` and `samplemanager_diagnose`. It retains known scope/correlation IDs and numeric limits, replaces the query with its hash/length, and drops unknown/nested argument fields. Actual execution receives the unchanged original arguments. Non-retrieval tool audit behavior is unchanged.
 
 Fastify logs request method, path and remote endpoint metadata only. No original URL, query parameters, headers or body are copied by the request serializer. A safe 404 handler is registered even when frontend assets are absent because Fastify's default 404 log message includes the original URL and query. The real request URL/query/body remains available to route handlers. Error logging retains type/code/status metadata and uses a fixed log message: Fastify otherwise copies JSON parser errors containing truncated request text into both `err.message`/`err.stack` and `msg`. The original Error and client response are not rewritten.
 

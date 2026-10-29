@@ -13,7 +13,7 @@ const baseline={projectId:'1',environment:'nonprod',query:'sentinel SampleManage
 const matrix=[{name:'combined_product_and_memory',input:{}},{name:'version_21_1',input:{productVersion:'21.1'}},{name:'version_21_3',input:{productVersion:'21.3'}},{name:'module_match',input:{module:'samplemanager'}},{name:'version_mismatch',input:{productVersion:'unmatched-acceptance-version'},empty:true},{name:'module_mismatch',input:{module:'unmatched-acceptance-module'},empty:true},{name:'solution_mismatch',input:{solution:'unmatched-acceptance-solution'},empty:true},{name:'language_mismatch',input:{language:'unmatched-language'},empty:true},{name:'environment_mismatch',input:{environment:'other-environment'},empty:true},{name:'foreign_actor',input:{},denied:true}];
 try{
  for(const scenario of matrix){
-  const start=Date.now();const response=await fetch('http://127.0.0.1:18300/api/knowledge/weknora/search',{method:'POST',headers:{authorization:'Bearer '+(scenario.denied?foreign:token),'content-type':'application/json'},body:JSON.stringify({...baseline,...scenario.input}),signal:AbortSignal.timeout(30_000),redirect:'error'});
+  const start=Date.now();const response=await fetch('http://127.0.0.1:18300/api/knowledge/search',{method:'POST',headers:{authorization:'Bearer '+(scenario.denied?foreign:token),'content-type':'application/json'},body:JSON.stringify({...baseline,...scenario.input}),signal:AbortSignal.timeout(30_000),redirect:'error'});
   if(scenario.denied){assert.ok([403,404].includes(response.status));report.checks.push({name:scenario.name,httpStatus:response.status,status:'passed'});continue;}
   assert.equal(response.status,200);const value:any=await response.json();const refs=value.references;
   assert.ok(Array.isArray(refs));

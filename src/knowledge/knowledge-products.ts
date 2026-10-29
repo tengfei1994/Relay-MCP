@@ -402,9 +402,18 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
   return report;
 }
 
-export interface ProductDocumentSearchRequest { query?: string; sampleManagerVersion?: string; product?: string; solution?: string; module?: string; documentType?: string; language?: string; authority?: string; limit?: number; includeDeprecated?: boolean; }
+export interface ProductDocumentSearchScope { projectId?: string; environment?: string; }
+export interface ProductDocumentSearchRequest { query?: string; sampleManagerVersion?: string; product?: string; solution?: string; module?: string; documentType?: string; language?: string; authority?: string; limit?: number; includeDeprecated?: boolean; scope?: ProductDocumentSearchScope; }
 export function searchKnowledgeProducts(store: KnowledgeStore, request: ProductDocumentSearchRequest): Array<Record<string, unknown>> {
   const conditions = ["d.kind='product_document'"]; const params: Record<string, unknown> = {};
+  if (request.scope) {
+    const projectId = request.scope.projectId ?? null, environment = request.scope.environment ?? null;
+    if (projectId === null) conditions.push("d.project_id IS NULL", "d.environment IS NULL");
+    else {
+      conditions.push("((d.project_id IS @scopeProject AND d.environment IS @scopeEnvironment) OR (d.project_id IS NULL AND d.environment IS NULL))");
+      params.scopeProject = projectId; params.scopeEnvironment = environment;
+    }
+  }
   const filters: Array<[string, string, string]> = [["d.samplemanager_version", "sampleManagerVersion", "version"], ["d.project_name_snapshot", "product", "product"], ["d.solution", "solution", "solution"], ["d.module", "module", "module"], ["p.document_type", "documentType", "documentType"], ["p.language", "language", "language"], ["p.authority", "authority", "authority"]];
   for (const [column, key] of filters) { const value = request[key as keyof ProductDocumentSearchRequest]; if (value) { conditions.push(`${column}=@${key}`); params[key] = value; } }
   if (!request.includeDeprecated) conditions.push("d.lifecycle<>'deprecated'");

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { getProductBackend, searchEngineProductReferences, productCatalogVisibility } from "../../knowledge/product-backend.js";
+import { assertProductScope, getProductBackend, productDocumentVisible, searchEngineProductReferences, productCatalogVisibility } from "../../knowledge/product-backend.js";
 import { managedControlPlane, activeWikiService } from "../../knowledge/engine-service.js";
 import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { McpUser } from "../register-tools.js";
@@ -42,13 +42,15 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   const workSessions = () => new WorkSessionService(requireKnowledge(), undefined, resolveProjectId ? (_actorId, projectId) => { resolveProjectId(projectId); } : undefined);
   const managedRegistry = () => createManagedProviderRegistry(requireKnowledge());
   const candidateProvider = (providerId?: string) => createCandidateInsightProvider(requireKnowledge(),providerId);
-  const retrievalScope = (input: { workSessionId?: string; projectId?: string; productVersion?: string; solution?: string; module?: string; language?: string }) => {
+  const retrievalScope = (input: { workSessionId?: string; projectId?: string; environment?: string; productVersion?: string; solution?: string; module?: string; language?: string }) => {
     const store = requireKnowledge();
-    const session = input.workSessionId ? workSessions().assertSessionUsable({ actorId: user.id, sessionId: input.workSessionId, projectId: input.projectId, environment: user.defaultEnvironment }) : undefined;
-    const projectId = resolveRetrievalProjectId({ projectId: input.projectId, sessionProjectId: session?.projectId, fallbackProjectId: user.defaultProjectId ? String(user.defaultProjectId) : undefined, fallbackProjectName: user.defaultProject });
-    if (!store.canRead(user.id, projectId)) throw new Error("Knowledge access denied");
+    const session = input.workSessionId ? workSessions().assertSessionUsable({ actorId: user.id, sessionId: input.workSessionId, projectId: input.projectId, environment: input.environment ?? user.defaultEnvironment }) : undefined;
+    const projectId = resolveRetrievalProjectId({ projectId: input.projectId, sessionProjectId: session?.projectId });
+    const environment = input.environment ?? session?.environment ?? (projectId ? user.defaultEnvironment : undefined);
+    if (!projectId && environment) throw new Error("environment requires projectId");
+    if (projectId && !store.canRead(user.id, projectId)) throw new Error("Knowledge access denied");
     const ingestor = new WeKnoraIngestor(store, { upsertDocument: async () => ({ externalDocumentId: "unused" }) });
-    return { session, projectId, ingestor, knowledgeIds: ingestor.retrievalKnowledgeIds({ projectId, environment:session?.environment??user.defaultEnvironment, productVersion: input.productVersion ?? session?.intent.sampleManagerVersion, solution: input.solution ?? session?.intent.solution, module: input.module ?? session?.intent.module, language: input.language }) };
+    return { session, projectId, environment, ingestor, knowledgeIds: ingestor.retrievalKnowledgeIds({ projectId, environment, productVersion: input.productVersion ?? session?.intent.sampleManagerVersion, solution: input.solution ?? session?.intent.solution, module: input.module ?? session?.intent.module, language: input.language }) };
   };
   const sourceManifest = (store: KnowledgeStore, id: string, snapshot = false): SourceManifest => {
     const table = snapshot ? "knowledge_project_snapshot_files" : "knowledge_source_files"; const key = snapshot ? "snapshot_id" : "baseline_id";
@@ -88,7 +90,7 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
       return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
     } catch { return []; }
   };
-  server.tool("knowledge_search", "Search ACL- and Scope-filtered Confirmed Memory. Candidate Insights and Playbooks require explicit filters.", { workSessionId:z.string().optional(), project: z.string().optional(), query: z.string().min(1), limit: z.number().int().min(1).max(100).optional(), sampleManagerVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), environment: z.string().optional(), scopeType: z.string().optional(), scopeKey: z.string().optional(), kinds: z.array(z.enum(["candidate", "case", "pattern", "playbook", "fact", "decision", "confirmed_memory"])).optional(), memoryTypes: z.array(z.enum(CONFIRMED_MEMORY_TYPES)).optional() }, async ({ project: projectName, query, limit, sampleManagerVersion, solution, module, environment, scopeType, scopeKey, workSessionId, kinds, memoryTypes }) => {
+  server.tool("memory_search", "Search ACL- and scope-filtered Relay Memory. Candidate Insights and Playbooks require explicit filters.", { workSessionId:z.string().optional(), project: z.string().optional(), query: z.string().min(1), limit: z.number().int().min(1).max(100).optional(), sampleManagerVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), environment: z.string().optional(), scopeType: z.string().optional(), scopeKey: z.string().optional(), kinds: z.array(z.enum(["candidate", "case", "pattern", "playbook", "fact", "decision", "confirmed_memory"])).optional(), memoryTypes: z.array(z.enum(CONFIRMED_MEMORY_TYPES)).optional() }, async ({ project: projectName, query, limit, sampleManagerVersion, solution, module, environment, scopeType, scopeKey, workSessionId, kinds, memoryTypes }) => {
     const store = requireKnowledge();
     const session=workSessionId?workSessions().assertSessionUsable({actorId:user.id,sessionId:workSessionId,environment}):undefined;
     const projectNameResolved = session&&!projectName?session.projectId:project(projectName);
@@ -100,27 +102,26 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
     if(session)workSessions().get({actorId:user.id,sessionId:session.id});
     return { content: [{ type: "text", text: serializeKnowledgeResult(result) }] };
   });
-  server.tool("knowledge_get", "Read a complete Knowledge document by id after project/scope ACL enforcement.", { documentId: z.string(), project: z.string().optional(), workSessionId: z.string().optional() }, async ({ documentId, project: projectName, workSessionId }) => {
+  server.tool("knowledge_get", "Read a complete Knowledge document by id after project/scope ACL enforcement.", { documentId: z.string(), project: z.string().optional(), workSessionId: z.string().optional(), environment: z.string().optional() }, async ({ documentId, project: projectName, workSessionId, environment: requestedEnvironment }) => {
     const store = requireKnowledge();
     if (workSessionId && resolveProjectId) {
-      const stored = store.db.prepare("SELECT actor_id,project_id FROM knowledge_work_sessions WHERE id=?").get(workSessionId) as {actor_id:number;project_id:string}|undefined;
-      // Mirror a missing cold ACL only after current control-plane authorization.
-      // An existing denied ACL or reviewer grant must remain unchanged.
+      const stored = store.db.prepare("SELECT actor_id,project_id FROM knowledge_work_sessions WHERE id=?").get(workSessionId) as { actor_id: number; project_id: string } | undefined;
       if (stored?.actor_id === user.id) {
         resolveProjectId(stored.project_id);
-        if (!store.db.prepare("SELECT 1 FROM knowledge_acl WHERE project_id=? AND user_id=?").get(stored.project_id,user.id)) store.grantAcl(stored.project_id,user.id,false);
+        if (!store.db.prepare("SELECT 1 FROM knowledge_acl WHERE project_id=? AND user_id=?").get(stored.project_id, user.id)) store.grantAcl(stored.project_id, user.id, false);
       }
     }
-    const session = workSessionId ? workSessions().assertSessionUsable({actorId:user.id,sessionId:workSessionId,environment:user.defaultEnvironment}) : undefined;
-    const environment = user.defaultEnvironment ?? session?.environment;
+    const session = workSessionId ? workSessions().assertSessionUsable({ actorId: user.id, sessionId: workSessionId, environment: requestedEnvironment ?? user.defaultEnvironment }) : undefined;
+    const row = store.db.prepare("SELECT * FROM knowledge_documents WHERE id = ?").get(documentId) as Record<string, unknown> | undefined;
+    const isProduct = row?.kind === "product_document" || Boolean(store.db.prepare("SELECT 1 FROM knowledge_weknora_documents WHERE id=? OR external_document_id=?").get(documentId, documentId));
+    const environment = isProduct ? requestedEnvironment ?? session?.environment : user.defaultEnvironment ?? requestedEnvironment ?? session?.environment;
     if (session && (session.environment ?? "") !== (environment ?? "")) throw new Error("Work Session environment does not match caller");
-    const name = session && !projectName ? undefined : project(projectName);
+    const name = (session && !projectName) || (isProduct && !projectName) ? undefined : project(projectName);
     const projectId = session && !projectName ? session.projectId : session && name && resolveProjectNameToId ? resolveProjectNameToId(name) : user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name;
     if (session && session.projectId !== projectId) throw new Error("Work Session project does not match caller");
-    const row = store.db.prepare("SELECT * FROM knowledge_documents WHERE id = ?").get(documentId) as Record<string, unknown> | undefined;
-    let result: Record<string,unknown>;
-    if(row?.kind==="product_document" || store.db.prepare("SELECT 1 FROM knowledge_weknora_documents WHERE id=? OR external_document_id=?").get(documentId,documentId)) {
-      result = await getProductBackend(store,{documentId,userId:user.id,isAdmin:user.isAdmin,projectId,environment});
+    let result: Record<string, unknown>;
+    if (isProduct) {
+      result = await getProductBackend(store, { documentId, userId: user.id, isAdmin: user.isAdmin, projectId, environment });
     } else {
       if (!row || !canReadDocument(store, row, projectId)) throw new Error("Knowledge access denied");
       if (session && row.environment && row.environment !== environment) throw new Error("Knowledge document environment does not match Work Session");
@@ -128,11 +129,12 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
       result = { id: row.id, kind: row.kind, title: row.title, body: row.body, lifecycle: row.lifecycle, projectId: row.project_id, eventId: source?.event_id, jobId: source?.job_id, deploymentId: source?.deployment_id, sourceCandidateId: source?.source_candidate_id, evidenceRefs: evidenceRefs(source), scope: store.getScopeBinding(documentId), card: String(row.kind) === "candidate" ? store.getCandidateCard(documentId) : undefined, sourceLocator: row.source_locator, sourceSha256: row.source_sha256, updatedAt: row.updated_at };
     }
     if (session) {
+      if (!projectId) throw new Error("Work Session project is required");
       const service = workSessions();
-      service.assertSessionUsable({actorId:user.id,sessionId:session.id,projectId,environment});
-      const hash = (value:string) => createHash("sha256").update(value).digest("hex");
-      const revision = {documentId:result.externalDocumentId??result.id,sourceSha256:result.sourceSha256,version:result.version,parserVersion:result.parserVersion,bodySha256:hash(String(result.body??""))};
-      service.recordRetrieval({actorId:user.id,sessionId:session.id,projectId:session.projectId,environment,query:"",sourceRunId:"document-read:"+hash(JSON.stringify(revision)),resultCount:1,degraded:false,operation:"document_read"});
+      service.assertSessionUsable({ actorId: user.id, sessionId: session.id, projectId, environment });
+      const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+      const revision = { documentId: result.externalDocumentId ?? result.id, sourceSha256: result.sourceSha256, version: result.version, parserVersion: result.parserVersion, bodySha256: hash(String(result.body ?? "")) };
+      service.recordRetrieval({ actorId: user.id, sessionId: session.id, projectId: session.projectId, environment, query: "", sourceRunId: "document-read:" + hash(JSON.stringify(revision)), resultCount: 1, degraded: false, operation: "document_read" });
     }
     return { content: [{ type: "text", text: serializeKnowledgeResult(result) }] };
   });
@@ -202,28 +204,41 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
     if (!row) throw new Error("Source chunk not found"); if (baselineId && row.baseline_id !== baselineId) throw new Error("Source scope mismatch"); if (projectSnapshotId && row.snapshot_id !== projectSnapshotId) throw new Error("Source scope mismatch");
     return { content: [{ type: "text", text: serializeKnowledgeResult({ path: row.relative_path, symbol: row.symbol, lineStart: row.line_start, lineEnd: row.line_end, content: row.content, contentHash: row.content_sha256, parserVersion: row.parser_version, requestedRange: { lineStart, lineEnd } }) }] };
   });
-  server.tool("knowledge_topic_get", "Read one logical Product Knowledge topic with all version bindings and revision content.", { topicId: z.string() }, async ({ topicId }) => {
+  server.tool("knowledge_topic_get", "Read one logical Product Knowledge topic with all version bindings and revision content.", { topicId: z.string(), projectId: z.string().optional(), environment: z.string().optional() }, async ({ topicId, projectId, environment }) => {
     const store = requireKnowledge(); const topic = store.db.prepare("SELECT * FROM knowledge_topics WHERE id=?").get(topicId); if (!topic) throw new Error("Knowledge topic not found");
-    const rows = store.db.prepare(`SELECT b.topic_id,b.product,b.product_version,b.source_path,b.match_method,b.match_confidence,d.id AS document_id,d.title,d.body,d.source_locator,d.source_sha256,d.project_id AS document_project_id FROM knowledge_product_document_bindings b JOIN knowledge_documents d ON d.id=b.document_id WHERE b.topic_id=? ORDER BY b.product_version`).all(topicId) as Array<Record<string, unknown>>;
-    const scope = { userId: user.id, isAdmin: user.isAdmin, projectId: user.defaultProjectId ? String(user.defaultProjectId) : project(), environment: user.defaultEnvironment };
-    const visibility = await productCatalogVisibility(store, scope);
-    const visibleRows = rows.filter(row => visibility.documents.some(document => document.documentId === row.document_id && (visibility.provider === "relay_local" || document.productVersion === row.product_version)));
-    const bindings = await Promise.all(visibleRows.map(async ({ document_project_id: _project, ...row }) => visibility.provider === "weknora"
-      ? { topic_id: row.topic_id, document_id: row.document_id, product_version: row.product_version, match_method: row.match_method, match_confidence: row.match_confidence,
-          ...await getProductBackend(store, { ...scope, documentId: String(row.document_id) }) }
+    const bindingVisibility = user.isAdmin ? "" : " AND b.status='active'";
+    const rows = store.db.prepare(`SELECT b.topic_id,b.product,b.product_version,b.source_path,b.match_method,b.match_confidence,d.id AS document_id,d.title,d.body,d.source_locator,d.source_sha256,d.project_id AS document_project_id,d.environment AS document_environment FROM knowledge_product_document_bindings b JOIN knowledge_documents d ON d.id=b.document_id JOIN knowledge_product_documents p ON p.id=b.document_id WHERE b.topic_id=? AND d.kind='product_document'${bindingVisibility} ORDER BY b.product_version`).all(topicId) as Array<Record<string, unknown>>;
+    const scope = { userId: user.id, isAdmin: user.isAdmin, projectId, environment };
+    const provider = new MigrationController(store).activeProductProvider();
+    let visibleRows: Array<Record<string, unknown>>;
+    if (provider === "relay_local") {
+      assertProductScope(store, scope);
+      visibleRows = rows.filter(row => productDocumentVisible(store, { project_id: row.document_project_id, environment: row.document_environment }, scope));
+    } else {
+      const visibility = await productCatalogVisibility(store, scope);
+      visibleRows = rows.filter(row => visibility.documents.some(document => document.documentId === row.document_id && document.productVersion === row.product_version));
+    }
+    const bindings = await Promise.all(visibleRows.map(async ({ document_project_id: _project, document_environment: _environment, ...row }) => provider === "weknora"
+      ? { topic_id: row.topic_id, document_id: row.document_id, product_version: row.product_version, match_method: row.match_method, match_confidence: row.match_confidence, ...await getProductBackend(store, { ...scope, documentId: String(row.document_id) }) }
       : row));
     if (!user.isAdmin && !bindings.length) throw new Error("Knowledge access denied");
     return { content: [{ type: "text", text: serializeKnowledgeResult({ topic, bindings }) }] };
   });
-  server.tool("knowledge_topic_diff", "Compare the bound Product Knowledge revisions for two versions of one topic.", { topicId: z.string(), fromVersion: z.string(), toVersion: z.string() }, async ({ topicId, fromVersion, toVersion }) => {
-    const store = requireKnowledge(); const rows = store.db.prepare("SELECT b.product_version,b.document_id,d.project_id AS document_project_id FROM knowledge_product_document_bindings b JOIN knowledge_documents d ON d.id=b.document_id WHERE b.topic_id=? AND b.product_version IN (?,?)").all(topicId, fromVersion, toVersion) as Array<{ product_version: string; document_id: string; document_project_id?: string }>;
-    const scope = { userId: user.id, isAdmin: user.isAdmin, projectId: user.defaultProjectId ? String(user.defaultProjectId) : project(), environment: user.defaultEnvironment };
-    const visibility = await productCatalogVisibility(store, scope);
-    const readableRows = rows.filter(row => visibility.documents.some(document => document.documentId === row.document_id && (visibility.provider === "relay_local" || document.productVersion === row.product_version)));
-    const ids = new Map(readableRows.map((row) => [row.product_version, row.document_id])); const left = ids.get(fromVersion), right = ids.get(toVersion); if (!left || !right) throw new Error("Topic versions not found");
-    const load = async (id: string) => visibility.provider==="weknora"
-      ? getProductBackend(store,{...scope,documentId:id})
-      : store.db.prepare("SELECT sections_json FROM knowledge_product_documents WHERE id=?").get(id) as { sections_json?: string };
+  server.tool("knowledge_topic_diff", "Compare the bound Product Knowledge revisions for two versions of one topic.", { topicId: z.string(), fromVersion: z.string(), toVersion: z.string(), projectId: z.string().optional(), environment: z.string().optional() }, async ({ topicId, fromVersion, toVersion, projectId, environment }) => {
+    const bindingVisibility = user.isAdmin ? "" : " AND b.status='active'";
+    const store = requireKnowledge(); const rows = store.db.prepare(`SELECT b.product_version,b.document_id,d.project_id AS document_project_id,d.environment AS document_environment FROM knowledge_product_document_bindings b JOIN knowledge_documents d ON d.id=b.document_id JOIN knowledge_product_documents p ON p.id=b.document_id WHERE b.topic_id=? AND b.product_version IN (?,?) AND d.kind='product_document'${bindingVisibility}`).all(topicId, fromVersion, toVersion) as Array<{ product_version: string; document_id: string; document_project_id?: string; document_environment?: string }>;
+    const scope = { userId: user.id, isAdmin: user.isAdmin, projectId, environment };
+    const provider = new MigrationController(store).activeProductProvider();
+    let readableRows: typeof rows;
+    if (provider === "relay_local") {
+      assertProductScope(store, scope);
+      readableRows = rows.filter(row => productDocumentVisible(store, { project_id: row.document_project_id, environment: row.document_environment }, scope));
+    } else {
+      const visibility = await productCatalogVisibility(store, scope);
+      readableRows = rows.filter(row => visibility.documents.some(document => document.documentId === row.document_id && document.productVersion === row.product_version));
+    }
+    const ids = new Map(readableRows.map(row => [row.product_version, row.document_id])); const left = ids.get(fromVersion), right = ids.get(toVersion); if (!left || !right) throw new Error("Topic versions not found");
+    const load = async (id: string) => provider === "weknora" ? getProductBackend(store, { ...scope, documentId: id }) : store.db.prepare("SELECT sections_json FROM knowledge_product_documents WHERE id=?").get(id) as { sections_json?: string };
     return { content: [{ type: "text", text: serializeKnowledgeResult({ topicId, fromVersion, toVersion, from: await load(left), to: await load(right) }) }] };
   });
   server.tool("knowledge_solution_upgrade_analysis", "Run a published-baseline three-way upgrade comparison against a project snapshot.", { oldBaselineId: z.string(), currentProjectSnapshotId: z.string(), newBaselineId: z.string(), limit: z.number().int().min(1).max(1000).optional() }, async ({ oldBaselineId, currentProjectSnapshotId, newBaselineId, limit }) => {
@@ -288,24 +303,25 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
     const memory = new ConfirmedMemoryService(requireKnowledge()).get({ actorId: user.id, id: memoryId });
     return { content: [{ type: "text", text: serializeKnowledgeResult({ memory }) }] };
   });
-  server.tool("knowledge_wiki_search", "Search Relay-native Wiki pages with ACL, version, topic, solution and module filters.", { projectId: z.string().optional(), query: z.string().optional(), status: z.enum(WIKI_PAGE_STATUSES).optional(), productVersion: z.string().optional(), topicId: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), limit: z.number().int().min(1).max(200).optional(), offset: z.number().int().min(0).optional() }, async (input) => {
-    const result = await activeWikiService(requireKnowledge()).list({ actorId: user.id, environment: user.defaultEnvironment, projectId: input.projectId, status: input.status, productVersion: input.productVersion, topicId: input.topicId, solution: input.solution, module: input.module, search: input.query, limit: input.limit, offset: input.offset });
+  server.tool("knowledge_wiki_search", "Search Relay-native Wiki pages with global Product Wiki access by default; explicit project scope remains supported.", { projectId: z.string().optional(), environment: z.string().optional(), query: z.string().optional(), status: z.enum(WIKI_PAGE_STATUSES).optional(), productVersion: z.string().optional(), topicId: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), limit: z.number().int().min(1).max(200).optional(), offset: z.number().int().min(0).optional() }, async (input) => {
+    const result = await activeWikiService(requireKnowledge()).list({ actorId: user.id, isAdmin: user.isAdmin, environment: input.environment, projectId: input.projectId, status: input.status, productVersion: input.productVersion, topicId: input.topicId, solution: input.solution, module: input.module, search: input.query, limit: input.limit, offset: input.offset });
     return { content: [{ type: "text", text: serializeKnowledgeResult(result) }] };
   });
-  server.tool("knowledge_wiki_get", "Read a Relay-native Wiki page and optionally its revision history or unified diff.", { pageId: z.string(), includeRevisions: z.boolean().optional(), fromRevision: z.number().int().positive().optional(), toRevision: z.number().int().positive().optional() }, async ({ pageId, includeRevisions, fromRevision, toRevision }) => {
-    const wiki = activeWikiService(requireKnowledge()); const page = await wiki.get({ actorId: user.id, environment: user.defaultEnvironment, id: pageId });
-    const revisions = includeRevisions ? await wiki.listRevisions({ actorId: user.id, environment: user.defaultEnvironment, id: pageId }) : undefined;
-    const diff = fromRevision && toRevision ? await wiki.diffRevisions({ actorId: user.id, environment: user.defaultEnvironment, id: pageId, fromRevision, toRevision }) : undefined;
+  server.tool("knowledge_wiki_get", "Read a Relay-native Wiki page and optionally its revision history or unified diff.", { pageId: z.string(), projectId: z.string().optional(), environment: z.string().optional(), includeRevisions: z.boolean().optional(), fromRevision: z.number().int().positive().optional(), toRevision: z.number().int().positive().optional() }, async ({ pageId, projectId, environment, includeRevisions, fromRevision, toRevision }) => {
+    const wiki = activeWikiService(requireKnowledge()); const page = await wiki.get({ actorId: user.id, isAdmin: user.isAdmin, projectId, environment, id: pageId });
+    const revisions = includeRevisions ? await wiki.listRevisions({ actorId: user.id, isAdmin: user.isAdmin, projectId, environment, id: pageId }) : undefined;
+    const diff = fromRevision && toRevision ? await wiki.diffRevisions({ actorId: user.id, isAdmin: user.isAdmin, projectId, environment, id: pageId, fromRevision, toRevision }) : undefined;
     return { content: [{ type: "text", text: serializeKnowledgeResult({ page, revisions, diff }) }] };
   });
-  server.tool("knowledge_wiki_write", "Create a page idempotently or append a reviewed edit; content is scanned before persistence.", { pageKey: z.string().max(300).optional(), pageId: z.string().optional(), title: z.string().min(1).max(500), body: z.string().min(1), projectId: z.string().optional(), productVersion: z.string().optional(), topicId: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), sourceRefs: z.array(z.string()).max(100).optional(), reason: z.string().min(1).max(2000) }, async (input) => {
+  server.tool("knowledge_wiki_write", "Create a page idempotently or append a reviewed edit; content is scanned before persistence.", { pageKey: z.string().max(300).optional(), pageId: z.string().optional(), title: z.string().min(1).max(500), body: z.string().min(1), projectId: z.string().optional(), environment: z.string().optional(), productVersion: z.string().optional(), topicId: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), sourceRefs: z.array(z.string()).max(100).optional(), reason: z.string().min(1).max(2000) }, async (input) => {
     const wiki = activeWikiService(requireKnowledge());
-    const page = input.pageId ? await wiki.edit({ actorId: user.id, environment: user.defaultEnvironment, id: input.pageId, title: input.title, body: input.body, reason: input.reason }) : await wiki.create({ actorId: user.id, environment: user.defaultEnvironment, pageKey: input.pageKey ?? "", title: input.title, body: input.body, projectId: input.projectId, productVersion: input.productVersion, topicId: input.topicId, solution: input.solution, module: input.module, sourceRefs: input.sourceRefs, reason: input.reason });
+    const page = input.pageId ? await wiki.edit({ actorId: user.id, isAdmin: user.isAdmin, projectId: input.projectId, environment: input.environment, id: input.pageId, title: input.title, body: input.body, reason: input.reason }) : await wiki.create({ actorId: user.id, isAdmin: user.isAdmin, environment: input.environment, pageKey: input.pageKey ?? "", title: input.title, body: input.body, projectId: input.projectId, productVersion: input.productVersion, topicId: input.topicId, solution: input.solution, module: input.module, sourceRefs: input.sourceRefs, reason: input.reason });
     return { content: [{ type: "text", text: serializeKnowledgeResult({ page }) }] };
   });
-  server.tool("knowledge_wiki_review", "Publish, deprecate, or roll back a Wiki page with an explicit reason and audit trail.", { pageId: z.string(), action: z.enum(["publish", "deprecate", "rollback"]), revision: z.number().int().positive().optional(), reason: z.string().min(1).max(2000) }, async ({ pageId, action, revision, reason }) => {
+  server.tool("knowledge_wiki_review", "Publish, deprecate, or roll back a Wiki page with an explicit reason and audit trail.", { pageId: z.string(), projectId: z.string().optional(), environment: z.string().optional(), action: z.enum(["publish", "deprecate", "rollback"]), revision: z.number().int().positive().optional(), reason: z.string().min(1).max(2000) }, async ({ pageId, projectId, environment, action, revision, reason }) => {
     const wiki = activeWikiService(requireKnowledge());
-    const page = action === "publish" ? await wiki.publish({ actorId: user.id, environment: user.defaultEnvironment, id: pageId, reason }) : action === "deprecate" ? await wiki.deprecate({ actorId: user.id, environment: user.defaultEnvironment, id: pageId, reason }) : await wiki.rollback({ actorId: user.id, environment: user.defaultEnvironment, id: pageId, revision: revision ?? 0, reason });
+    const input = { actorId: user.id, isAdmin: user.isAdmin, projectId, environment, id: pageId, reason };
+    const page = action === "publish" ? await wiki.publish(input) : action === "deprecate" ? await wiki.deprecate(input) : await wiki.rollback({ ...input, revision: revision ?? 0 });
     return { content: [{ type: "text", text: serializeKnowledgeResult({ page }) }] };
   });
   server.tool("knowledge_migration_create", "Create an idempotent staged Product Knowledge migration record.", { idempotencyKey: z.string().min(1).max(300), sourceManifest: z.record(z.unknown()), kind: z.string().max(100).optional() }, async ({ idempotencyKey, sourceManifest, kind }) => { if (!user.isAdmin) throw new Error("Administrator access is required"); const migration = new MigrationController(requireKnowledge()).create({ actorId: user.id, idempotencyKey, sourceManifest, kind }); return { content: [{ type: "text", text: serializeKnowledgeResult({ migration }) }] }; });
@@ -318,20 +334,26 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   server.tool("knowledge_migration_publish", "Validate, publish and switch a staged Product Knowledge migration to WeKnora.", { migrationId: z.string() }, async ({ migrationId }) => { if (!user.isAdmin) throw new Error("Administrator access is required"); const migration = new MigrationController(requireKnowledge()).validateAndPublish(migrationId, user.id); return { content: [{ type: "text", text: serializeKnowledgeResult({ migration }) }] }; });
   server.tool("knowledge_migration_rollback", "Rollback a Product Knowledge migration and restore Relay local retrieval with an audit reason.", { migrationId: z.string(), reason: z.string().min(1).max(2000) }, async ({ migrationId, reason }) => { if (!user.isAdmin) throw new Error("Administrator access is required"); const migration = new MigrationController(requireKnowledge()).rollback(migrationId, user.id, reason); return { content: [{ type: "text", text: serializeKnowledgeResult({ migration }) }] }; });
   server.tool("knowledge_release_gates", "Run deterministic security, migration, provider, ACL and visibility release gates.", {}, async () => { if (!user.isAdmin) throw new Error("Administrator access is required"); return { content: [{ type: "text", text: serializeKnowledgeResult(runReleaseGates(requireKnowledge())) }] }; });
-  server.tool("knowledge_weknora_search", "Search published Product Knowledge through Relay's ACL-checked internal WeKnora boundary.", { query: z.string().min(1), workSessionId: z.string().optional(), projectId: z.string().optional(), productVersion: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), language: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }, async ({ query, workSessionId, projectId, productVersion, solution, module, language, limit }) => {
-    const scope = retrievalScope({ workSessionId, projectId, productVersion, solution, module, language });
-    const effectiveIntent={objective:"",actions:[] as string[],...scope.session?.intent,projectId:scope.projectId,environment:scope.session?.environment??user.defaultEnvironment,sampleManagerVersion:productVersion??scope.session?.intent.sampleManagerVersion,solution:solution??scope.session?.intent.solution,module:module??scope.session?.intent.module};
+  server.tool("knowledge_search", "Search published global Product Knowledge by default; explicit Project scope is required only for private Product sources.", { query: z.string().min(1), workSessionId:z.string().optional(), projectId:z.string().optional(), environment:z.string().optional(), productVersion:z.string().optional(), solution:z.string().optional(), module:z.string().optional(), language:z.string().optional(), limit:z.number().int().min(1).max(100).optional() }, async ({ query, workSessionId, projectId, environment, productVersion, solution, module, language, limit }) => {
+    const scope = retrievalScope({ workSessionId, projectId, environment, productVersion, solution, module, language });
+    const effectiveIntent = { objective: "", actions: [] as string[], ...scope.session?.intent, projectId: scope.projectId, environment: scope.environment, sampleManagerVersion: productVersion ?? scope.session?.intent.sampleManagerVersion, solution: solution ?? scope.session?.intent.solution, module: module ?? scope.session?.intent.module };
     let relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: undefined } as Awaited<ReturnType<typeof loadRelayContextSources>>;
-    try { relaySources = await loadRelayContextSources({ store: requireKnowledge(), userId: user.id, workSessionId:scope.session?.id, projectId: scope.projectId, query, intent: effectiveIntent, limit: limit ?? 10 }); } catch { relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: { relayMemory: "unavailable" } }; }
-    if (scope.session) workSessions().get({actorId:user.id,sessionId:scope.session.id});
+    if (scope.projectId) {
+      try { relaySources = await loadRelayContextSources({ store: requireKnowledge(), userId: user.id, workSessionId: scope.session?.id, projectId: scope.projectId, query, intent: effectiveIntent, limit: limit ?? 10 }); }
+      catch { relaySources = { confirmedKnowledge: [], candidates: [], currentFacts: [], degraded: { relayMemory: "unavailable" } }; }
+    }
+    if (scope.session) workSessions().get({ actorId: user.id, sessionId: scope.session.id });
     if (!scope.knowledgeIds.length) {
       const contextPack = new ContextPackService({ provider: "weknora" }).build({ intent: effectiveIntent, authoritativeDocs: [], confirmedKnowledge: relaySources.confirmedKnowledge, candidates: relaySources.candidates, currentFacts: relaySources.currentFacts, degraded: { ...relaySources.degraded, productKnowledge: "no_published_documents" }, acl: { documentIds: [] }, maxItemsPerSection: limit ?? 10 });
       return { content: [{ type: "text", text: serializeKnowledgeResult({ retrievalRunId: "local-scope-empty", references: [], degraded: contextPack.degraded, contextPack }) }] };
     }
-    const result = await searchEngineProductReferences(requireKnowledge(),{userId:user.id,projectId:scope.projectId,environment:scope.session?.environment??user.defaultEnvironment,query,sampleManagerVersion:productVersion??scope.session?.intent.sampleManagerVersion,solution:solution??scope.session?.intent.solution,module:module??scope.session?.intent.module,language,limit});
-    if (scope.session) workSessions().recordRetrieval({actorId:user.id,sessionId:scope.session.id,projectId:scope.projectId,environment:effectiveIntent.environment,query,sourceRunId:result.retrievalRunId,resultCount:result.references.length,degraded:Boolean(result.degraded)});
+    const result = await searchEngineProductReferences(requireKnowledge(), { userId: user.id, isAdmin: user.isAdmin, projectId: scope.projectId, environment: scope.environment, query, sampleManagerVersion: productVersion ?? scope.session?.intent.sampleManagerVersion, solution: solution ?? scope.session?.intent.solution, module: module ?? scope.session?.intent.module, language, limit });
+    if (scope.session) {
+      if (!scope.projectId) throw new Error("Work Session project is required");
+      workSessions().recordRetrieval({ actorId: user.id, sessionId: scope.session.id, projectId: scope.projectId, environment: scope.environment, query, sourceRunId: result.retrievalRunId, resultCount: result.references.length, degraded: Boolean(result.degraded) });
+    }
     const visible = new Set(scope.knowledgeIds);
-    const references = result.references.filter((reference) => visible.has(reference.documentId));
+    const references = result.references.filter(reference => visible.has(reference.documentId));
     const contextPack = new ContextPackService({ provider: "weknora" }).build({ intent: effectiveIntent, authoritativeDocs: references, confirmedKnowledge: relaySources.confirmedKnowledge, candidates: relaySources.candidates, currentFacts: relaySources.currentFacts, degraded: { ...relaySources.degraded, ...result.degraded }, acl: { documentIds: scope.knowledgeIds }, maxItemsPerSection: limit ?? 10 });
     return { content: [{ type: "text", text: serializeKnowledgeResult({ ...result, references: contextPack.authoritativeDocs, contextPack }) }] };
   });
@@ -342,8 +364,9 @@ export function registerKnowledgeTools(context: McpServer | KnowledgeToolsContex
   server.resource("knowledge-document", new ResourceTemplate("knowledge://{kind}/{id}", { list: undefined }), async (uri, variables) => {
     const store = requireKnowledge(); const kind = String(variables.kind); const id = String(variables.id);
     const row = store.db.prepare("SELECT * FROM knowledge_documents WHERE id = ? AND kind = ?").get(id, kind) as Record<string, unknown> | undefined;
-    const name = project(); const projectId = user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name;
-    if(kind==="product_document") return {contents:[{uri:uri.toString(),mimeType:"application/json",text:JSON.stringify(await getProductBackend(store,{documentId:id,userId:user.id,isAdmin:user.isAdmin,projectId,environment:user.defaultEnvironment}))}]};
+    if (kind === "product_document") return { contents: [{ uri: uri.toString(), mimeType: "application/json", text: JSON.stringify(await getProductBackend(store, { documentId: id, userId: user.id, isAdmin: user.isAdmin })) }] };
+    const name = project();
+    const projectId = user.defaultProjectId && name === user.defaultProject ? String(user.defaultProjectId) : name;
     if (!row || !canReadDocument(store, row, projectId)) throw new Error("Knowledge access denied");
     store.audit({ actorId: user.id, projectId: row.project_id ? String(row.project_id) : undefined, action: "knowledge.resource.read", entityType: kind, entityId: id });
     const source = provenance(store, row);

@@ -32,7 +32,7 @@ interface RequestSpec {
 
 interface Scenario {
   name: string;
-  endpoint: "weknoraSearch" | "candidateInsights" | "evidence";
+  endpoint: "knowledgeSearch" | "candidateInsights" | "evidence";
   request: RequestSpec;
   limit: number;
   offset?: number;
@@ -182,7 +182,7 @@ export async function runKnowledgeRequestBenchmark(config: BenchmarkConfig = con
         currentFacts: 1,
       },
       endpoints: {
-        weknoraSearch: endpoint("weknoraSearch", "POST", "/api/knowledge/weknora/search"),
+        knowledgeSearch: endpoint("knowledgeSearch", "POST", "/api/knowledge/search"),
         candidateInsights: endpoint("candidateInsights", "GET", "/api/knowledge/candidate-insights"),
         evidence: endpoint("evidence", "GET", "/api/knowledge/evidence"),
       },
@@ -248,8 +248,8 @@ function seedData(store: KnowledgeStore, repository: KnowledgeRepository, config
 
 function createScenarios(): Scenario[] {
   const search = (name: string, limit: number, query: string, expectation: Scenario["expectation"] = "results"): Scenario => ({
-    name, endpoint: "weknoraSearch", limit, expectation,
-    request: { method: "POST", url: "/api/knowledge/weknora/search", payload: { query, projectId: PROJECT_ID, limit } },
+    name, endpoint: "knowledgeSearch", limit, expectation,
+    request: { method: "POST", url: "/api/knowledge/search", payload: { query, projectId: PROJECT_ID, limit } },
     validate: validateSearch,
   });
   const insights = (name: string, limit: number, offset?: number, expectation: Scenario["expectation"] = "results"): Scenario => ({
@@ -405,7 +405,7 @@ async function measureScenario(app: FastifyInstance, rawScenario: Scenario, conf
     samples: durations.length,
     concurrency: config.concurrency,
     cache: { coldRepetitions: config.coldRepetitions, hotRepetitions: config.hotRepetitions, samplesPerRepetition: config.samples, warmupRequests, description: cacheDescription },
-    provider: scenario.endpoint === "weknoraSearch"
+    provider: scenario.endpoint === "knowledgeSearch"
       ? { kind: "deterministic-weknora-http-replay", actualModel: false, paidCalls: 0, replayCalls: calls }
       : { kind: "none-sqlite-route-only", actualModel: false, paidCalls: 0, replayCalls: 0 },
     latencyMs: {

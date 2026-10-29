@@ -130,7 +130,7 @@ async function main():Promise<void>{
     check(memories.length>0,"confirmed_memory_required");
     const term=String(memories[0].title).match(/[A-Za-z0-9_]{3,}/)?.[0];check(term,"memory_search_term_missing");
     const httpQuery=term+" "+sentinel;
-    const search=await http("/api/knowledge/search?"+new URLSearchParams({projectId,environment,kinds:"case",q:httpQuery,limit:"100"}));
+    const search=await http("/api/memory/search?"+new URLSearchParams({projectId,environment,kinds:"case",q:httpQuery,limit:"100"}));
     check(search.status===200&&search.value.query===httpQuery&&Array.isArray(search.value.results)&&search.value.results.some((r:Row)=>r.id===memories[0].id),"http_local_search_unusable");
     expected.push({id:search.value.retrievalRunId,query:httpQuery});
     for(const row of search.value.results)if(typeof row.summary==="string"&&row.summary.length>=40)forbidden.push(row.summary.slice(0,80));
@@ -150,7 +150,7 @@ async function main():Promise<void>{
     await call(admin,"knowledge_source_search",{query:sourceQuery,limit:1},"baselineId or projectSnapshotId is required");
     report.checks.push({name:"mcp_source_unscoped_request_denied",status:"passed",reason:"baseline_or_snapshot_required"});
     check((await http("/api/unknown-privacy-path?q="+encodeURIComponent(sentinel))).status===404,"http_404_contract_failed");
-    const malformed=await http("/api/knowledge/weknora/search",token,{method:"POST",headers:{"content-type":"application/json"},body:'{"query":"'+body+'", "invalid":'});
+    const malformed=await http("/api/knowledge/search",token,{method:"POST",headers:{"content-type":"application/json"},body:'{"query":"'+body+'", "invalid":'});
     check(malformed.status===400,"malformed_json_not_rejected");
     for(const source of sources){
       const path="/api/knowledge/product-docs/"+encodeURIComponent(source.localId);

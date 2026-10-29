@@ -15,13 +15,18 @@ test('MCP knowledge_get preserves structured source citations for documents larg
     const body='Evidence-backed product source. '.repeat(1000);
     store.db.prepare('INSERT INTO knowledge_documents(id,kind,title,body,lifecycle,project_id,source_locator,source_sha256,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)').run('product-long','product_document','Long source',body,'approved','p1','manual.html#section','source-hash','now','now');
     store.db.prepare('INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,source_path,source_sha256,version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)').run('product-long','family','guide','en','manual.html','source-hash','21.3','now','now');
+    store.db.prepare('INSERT INTO knowledge_documents(id,kind,title,body,lifecycle,project_id,source_locator,source_sha256,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)').run('product-global','product_document','Global source','Global product body','approved',null,'global.html','global-hash','now','now');
+    store.db.prepare('INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,source_path,source_sha256,version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)').run('product-global','global-family','guide','en','global.html','global-hash','21.3','now','now');
     const callbacks=new Map<string,Function>();
     registerKnowledgeTools({server:{tool:(name:string,...args:any[])=>callbacks.set(name,args.at(-1)),resource:()=>undefined}as any,user:{id:7,username:'test',defaultProject:'p1',defaultProjectId:'p1'}as any,knowledge:store});
-    const result=await callbacks.get('knowledge_get')!({documentId:'product-long'});
+    const result=await callbacks.get('knowledge_get')!({documentId:'product-long',project:'p1'});
     const document=JSON.parse(result.content[0].text);
     assert.equal(document.id,'product-long');assert.equal(document.body,body);
     assert.equal(document.sourceSha256,'source-hash');assert.equal(document.citations[0].sourceLocator,'manual.html#section');
     assert.equal(document.truncated,undefined);
+    const globalResult=await callbacks.get('knowledge_get')!({documentId:'product-global'});
+    const globalDocument=JSON.parse(globalResult.content[0].text);
+    assert.equal(globalDocument.body,'Global product body');
   }finally{store.close();rmSync(root,{recursive:true,force:true});}
 });
 
@@ -44,7 +49,7 @@ test('MCP engine outage preserves confirmed Relay memory and reports an empty de
     store.db.prepare("INSERT INTO knowledge_weknora_documents(id,external_document_id,external_knowledge_base_id,external_chunk_ids_json,title,normalized_content_sha256,parser_version,product_version,source_path,project_id,environment,status,idempotency_key,created_at,updated_at,upstream_verified_at,upstream_parse_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run('mapping','external','kb','["chunk"]','pump','hash','v1','21.3','pump.html','p1','nonprod','published','mapping',now,now,now,'completed');
     const callbacks=new Map<string,Function>();
     registerKnowledgeTools({server:{tool:(name:string,...args:any[])=>callbacks.set(name,args.at(-1)),resource:()=>undefined}as any,user:{id:7,username:'test',defaultProject:'p1',defaultProjectId:'p1',defaultEnvironment:'nonprod'}as any,knowledge:store});
-    const response=await callbacks.get('knowledge_weknora_search')!({projectId:'p1',query:'pump sentinel',limit:10});
+    const response=await callbacks.get('knowledge_search')!({projectId:'p1',query:'pump sentinel',limit:10});
     const value=JSON.parse(response.content[0].text);
     assert.deepEqual(value.references,[]);
     assert.equal(value.contextPack.degraded.productKnowledge,'unavailable');

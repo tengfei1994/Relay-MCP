@@ -354,7 +354,7 @@ Knowledge 审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [`d
 | Jobs | `job_cancel` | 请求取消运行中的 SSH job。 |
 | Context | `context_record_fact` | 保存持久化 Project fact。 |
 | Context | `context_search` | 搜索持久化 Project fact。 |
-| Context | `knowledge_search` | 按 Project、SampleManager 版本、解决方案、模块和环境检索 Confirmed Memory；Candidate Insight 与 Approved Operation 需要显式入口。 |
+| Context | `memory_search` | 按 Project、SampleManager 版本、解决方案、模块和环境检索 Relay Memory；Candidate Insight 与 Approved Operation 需要显式入口。 |
 | Context | `knowledge_get` | 在 Project ACL 校验后读取 Knowledge 文档完整正文和来源。 |
 | Context | `knowledge_playbook_get` | 读取 Playbook 的步骤、回滚说明、生命周期和提议的 Skill diff。 |
 | Context | `knowledge_evidence_get` | 读取 Evidence 元数据；内容通过受控、审计的下载路径访问。 |
@@ -388,7 +388,7 @@ Knowledge 审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [`d
 | Context | `knowledge_migration_publish` | 发布已验证的 Product Knowledge 迁移。 |
 | Context | `knowledge_migration_rollback` | 以审计理由回滚 Product Knowledge 迁移。 |
 | Context | `knowledge_release_gates` | 执行安全、迁移、Provider、ACL 和发布可见性门禁。 |
-| Context | `knowledge_weknora_search` | 通过 Relay 内部 WeKnora 边界检索 Product Knowledge。 |
+| Context | `knowledge_search` | 通过 Relay 内部 WeKnora 边界检索 Product Knowledge。 |
 | SampleManager | `samplemanager_capabilities` | 解析实例使用的版本化 Capability Pack，并列出已就绪、规划中和不可用的语义检查能力。 |
 | SampleManager | `samplemanager_instance_preflight` | 一次性只读检查实例目录、指定文件哈希/XML、FormsBin、服务、进程和近期错误摘要。 |
 | SampleManager | `samplemanager_vgl_inspect_entrypoint` | 静态检查 VGL 例程参数、引用/值传递、常量、JOIN、`CALL_ROUTINE` 调用链和源码行证据。 |

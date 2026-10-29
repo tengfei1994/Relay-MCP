@@ -87,6 +87,7 @@ const workSessionValidator = (store: ReturnType<typeof createKnowledgeStore>) =>
   };
 let knowledgeStatus: { available: boolean; error?: string } = { available: false, error: "not initialized" };
 let knowledge: ReturnType<typeof createKnowledgeStore> | undefined;
+let recoveryRunning = false;
 let captureRunning = false;
 let captureConsecutiveFailures = 0;
 let captureLastSuccessAt: string | undefined;
@@ -99,20 +100,37 @@ function recordCaptureFailure(error: unknown): void {
   captureLastErrorAt = new Date().toISOString();
 }
 function attemptKnowledgeRecovery(): void {
-  if (knowledge) {
-    try { knowledge.db.prepare("SELECT 1").get(); drainRelayEventSpool(knowledge); knowledgeStatus = { available: true }; return; }
-    catch (error) { try { knowledge.close(); } catch { /* ignore */ } knowledge = undefined; knowledgeStatus = { available: false, error: error instanceof Error ? error.message : String(error) }; }
-  }
+  if (recoveryRunning) return;
+  recoveryRunning = true;
   try {
-    knowledge = createKnowledgeStore({ dbPath: KNOWLEDGE_DB_PATH, appDbPath: DB_PATH, casebookRoot: process.env.KNOWLEDGE_CASEBOOK_ROOT, evidenceRoot: process.env.KNOWLEDGE_EVIDENCE_ROOT });
-    configureJobStore({ eventSink: knowledge, resolveProjectId: resolveStableProjectId, validateWorkSession: workSessionValidator(knowledge) });
-    configureDeploymentStore({ eventSink: knowledge, resolveProjectId: resolveStableProjectId, validateWorkSession: workSessionValidator(knowledge) });
-    drainRelayEventSpool(knowledge);
-    knowledgeStatus = { available: true };
-  } catch (error) {
-    knowledge = undefined;
-    configureJobStore({ resolveProjectId: resolveStableProjectId }); configureDeploymentStore({ resolveProjectId: resolveStableProjectId });
-    knowledgeStatus = { available: false, error: error instanceof Error ? error.message : String(error) };
+    if (knowledge) {
+      try {
+        knowledge.db.prepare("SELECT 1").get();
+        drainRelayEventSpool(knowledge);
+        knowledgeStatus = { available: true };
+        return;
+      } catch (error) {
+        try { knowledge.close(); } catch { /* ignore */ }
+        knowledge = undefined;
+        knowledgeStatus = { available: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    let opened: ReturnType<typeof createKnowledgeStore> | undefined;
+    try {
+      opened = createKnowledgeStore({ dbPath: KNOWLEDGE_DB_PATH, appDbPath: DB_PATH, casebookRoot: process.env.KNOWLEDGE_CASEBOOK_ROOT, evidenceRoot: process.env.KNOWLEDGE_EVIDENCE_ROOT });
+      knowledge = opened;
+      configureJobStore({ eventSink: opened, resolveProjectId: resolveStableProjectId, validateWorkSession: workSessionValidator(opened) });
+      configureDeploymentStore({ eventSink: opened, resolveProjectId: resolveStableProjectId, validateWorkSession: workSessionValidator(opened) });
+      drainRelayEventSpool(opened);
+      knowledgeStatus = { available: true };
+    } catch (error) {
+      try { opened?.close(); } catch { /* ignore */ }
+      if (knowledge === opened) knowledge = undefined;
+      configureJobStore({ resolveProjectId: resolveStableProjectId }); configureDeploymentStore({ resolveProjectId: resolveStableProjectId });
+      knowledgeStatus = { available: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  } finally {
+    recoveryRunning = false;
   }
 }
 attemptKnowledgeRecovery();

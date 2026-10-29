@@ -57,16 +57,16 @@ try{
    proof.push({documentId:doc.id,bodyHash:sha(doc.body),sourceHash:doc.sourceSha256,citationCount:doc.citations.length,version:doc.version});
   }
   const query=seed.documents[0].title;
-  const pack:any=await call(admin!,'knowledge_weknora_search',{projectId:'1',workSessionId:sessionId,query,limit:10});
+  const pack:any=await call(admin!,'knowledge_search',{projectId:'1',workSessionId:sessionId,query,limit:10});
   requireThat(pack.contextPack?.authoritativeDocs?.length>0,'context_pack_missing_product');
   requireThat(pack.references.every((ref:any)=>ref.provider==='weknora'&&ref.chunkId&&ref.sourceSha256),'context_reference_incomplete');
-  await call(foreign!,'knowledge_weknora_search',{projectId:'1',query,limit:10},true);
+  await call(foreign!,'knowledge_search',{projectId:'1',query,limit:10},true);
   return {documents:proof,referenceCount:pack.references.length,foreignActorDenied:true};
  });
  const confirmedCaseId=process.env.RELAY_MCP_CONFIRMED_CASE_ID;
  if(confirmedCaseId)await check('reviewed_memory_reuse_and_environment_isolation',async()=>{
   const query='sentinel evidence routing';
-  const selected:any=await call(admin!,'knowledge_weknora_search',{projectId:'1',workSessionId:sessionId,query,limit:20});
+  const selected:any=await call(admin!,'knowledge_search',{projectId:'1',workSessionId:sessionId,query,limit:20});
   const rows=selected.contextPack?.confirmedKnowledge??[];
   const confirmed=rows.find((item:any)=>item.id===confirmedCaseId);
   requireThat(confirmed && ['verified','approved'].includes(confirmed.lifecycle),'reviewed_memory_missing');
@@ -74,7 +74,7 @@ try{
     requireThat(selected.references.length===0&&selected.contextPack.degraded.productKnowledge==='unavailable','outage_not_degraded');
   } else requireThat(selected.references.length>0,'combined_context_pack_missing_product');
   const other:any=await call(admin!,'knowledge_work_session_open',{idempotencyKey:runId+'-foreign-environment',intent:{...intent,environment:'other-environment',objective:'Check nonproduction memory environment isolation'}});
-  await call(admin!,'knowledge_weknora_search',{projectId:'1',workSessionId:other.session.id,query,limit:20},'Work Session environment does not match caller');
+  await call(admin!,'knowledge_search',{projectId:'1',workSessionId:other.session.id,query,limit:20},'Work Session environment does not match caller');
   await call(admin!,'knowledge_work_session_close',{sessionId:other.session.id,idempotencyKey:runId+'-foreign-close',result:{summary:'Environment isolation checked'}});
   return {caseId:confirmedCaseId,lifecycle:confirmed.lifecycle,matchingScopeReturned:true,otherEnvironmentDenied:true,matchingProductReferences:selected.references?.length??0};
  });

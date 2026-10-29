@@ -5,7 +5,7 @@ import { candidateCompileAuditArguments } from "./candidate-compile-audit.js";
 import { knowledgeOperationAuditArguments } from "./knowledge-operation-audit.js";
 
 const RETRIEVAL_TOOLS = new Set([
-  "knowledge_search", "knowledge_weknora_search", "knowledge_source_search",
+  "memory_search", "knowledge_search", "knowledge_source_search",
   "knowledge_wiki_search", "samplemanager_diagnose",
 ]);
 const SCOPE_FIELDS = [

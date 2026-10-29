@@ -18,7 +18,7 @@ function fixture(){
  for(const id of ["case-1","case-2"])memories.save({id,type:"Case",title:`cache private_title_${id}`,statement:`cache private_body_${id}`,details:{symptoms:"cache",rootCause:"fixture",resolution:"reviewed",verification:"confirmed"},scope:{projectId:"p1",environment:"nonprod",scopeType:"environment",scopeKey:"nonprod",visibility:"project"},evidenceRefs:[evidence.id],source:{kind:"manual",locator:`case:${id}`},confirmedBy:7,confirmedAt:now,audit:{action:"manual",reason:"fixture"}});
  return {store,clean(){store.close();rmSync(root,{recursive:true,force:true});}};
 }
-function telemetry(store:ReturnType<typeof createKnowledgeStore>){return JSON.stringify({runs:store.db.prepare("SELECT * FROM knowledge_retrieval_runs").all(),audit:store.db.prepare("SELECT entity_id,details_json FROM knowledge_audit WHERE action='knowledge.search'").all()});}
+function telemetry(store:ReturnType<typeof createKnowledgeStore>){return JSON.stringify({runs:store.db.prepare("SELECT * FROM knowledge_retrieval_runs").all(),audit:store.db.prepare("SELECT entity_id,details_json FROM knowledge_audit WHERE action='memory.search'").all()});}
 
 test("retrieval telemetry excludes request and result content while preserving response and run identity",async()=>{
  const f=fixture(),query="cache private_query_sentinel 🔬";try{
@@ -29,7 +29,7 @@ test("retrieval telemetry excludes request and result content while preserving r
   const hash=createHash("sha256").update(query).digest("hex"),metadata=JSON.parse(saved.results_json);
   assert.equal(saved.query,"sha256:"+hash);assert.equal(metadata.schemaVersion,1);assert.equal(metadata.queryHash,hash);assert.equal(metadata.queryLength,[...query].length);assert.equal(metadata.resultCount,2);assert.ok(metadata.latencyMs>=0);
   assert.deepEqual(metadata.results.map((x:any)=>x.id),result.results.map(x=>x.id));assert.equal(metadata.results[0].score,0.75);assert.equal(metadata.results[0].applicability.environment,"nonprod");assert.equal(metadata.rerankModelId,"fixture-rerank");
-  const audit=f.store.db.prepare("SELECT entity_id,details_json FROM knowledge_audit WHERE action='knowledge.search'").get() as any;assert.equal(audit.entity_id,result.retrievalRunId);assert.equal(JSON.parse(audit.details_json).queryHash,hash);
+  const audit=f.store.db.prepare("SELECT entity_id,details_json FROM knowledge_audit WHERE action='memory.search'").get() as any;assert.equal(audit.entity_id,result.retrievalRunId);assert.equal(JSON.parse(audit.details_json).queryHash,hash);
  }finally{f.clean();}
 });
 

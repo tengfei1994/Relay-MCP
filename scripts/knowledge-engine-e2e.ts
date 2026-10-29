@@ -206,7 +206,7 @@ async function main(): Promise<void> {
     requireThat(Number(row(migration.report).failed) === 0 && documents.every(d => d.status === 'staged' && d.documentId && d.externalDocumentId && d.parserVersion === parserVersion), 'staging_has_unready_documents');
     requireThat(manifest.every(d => d.projectId === projectId && d.environment === environment && /^[0-9a-f]{64}$/.test(str(d.bodySha256)) && /^[0-9a-f]{64}$/.test(str(d.sourceSha256)) && d.sourcePath && d.productVersion), 'manifest_scope_or_source_provenance_missing');
     requireThat(await provider() === 'relay_local', 'staging_switched_provider_early');
-    const hidden = await post('staged_documents_are_not_searchable', '/api/knowledge/weknora/search', { ...scope(), query: process.env.RELAY_E2E_QUERY ?? 'SampleManager', limit: 20 });
+    const hidden = await post('staged_documents_are_not_searchable', '/api/knowledge/search', { ...scope(), query: process.env.RELAY_E2E_QUERY ?? 'SampleManager', limit: 20 });
     requireThat(!rows(hidden.references).some(d => documents.some(link => link.externalDocumentId === d.documentId)), 'staged_documents_visible_before_publication');
     for (const d of documents) {
       const local = row((await get('local_product_before_publish', `/api/knowledge/product-docs/${encode(str(d.localDocumentId))}`, scope())).document);

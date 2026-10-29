@@ -306,7 +306,7 @@ export async function searchKnowledge(store: KnowledgeStore, request: KnowledgeS
     store.db.prepare("INSERT OR REPLACE INTO knowledge_retrieval_runs(id,project_id,query,provider_model_id,degraded,results_json,created_at) VALUES (?,?,?,?,?,?,?)").run(retrievalRunId, request.projectId, `sha256:${queryHash}`, embeddingModelId ?? null, degraded ? 1 : 0, JSON.stringify({ ...metadata, results: resultMetadata }), new Date().toISOString());
   } catch { /* older stores may not have the optional replay table */ }
   if (request.workSessionId) new WorkSessionService(store).recordRetrieval({actorId:request.userId,sessionId:request.workSessionId,projectId:request.projectId,environment:request.environment,query:request.query,sourceRunId:retrievalRunId,resultCount:finalResults.length,degraded});
-  store.audit({ actorId: request.userId, projectId: request.projectId, action: "knowledge.search", entityType: "retrieval", entityId: retrievalRunId, details: metadata });
+  store.audit({ actorId: request.userId, projectId: request.projectId, action: "memory.search", entityType: "retrieval", entityId: retrievalRunId, details: metadata });
   return { retrievalRunId, query: request.query, degraded, ...(degradedReasons?{degradedReasons}:{}), results: finalResults };
 }
 

@@ -25,7 +25,7 @@ interface SmokeReport {
   format: string;
   provider: { kind: string; actualModel: boolean; paidCalls: number; externalNetwork: boolean; replayCalls: number };
   data: { productDocuments: number; candidateInsights: number; evidence: number; confirmedKnowledge: number; candidates: number; currentFacts: number };
-  endpoints: Record<"weknoraSearch" | "candidateInsights" | "evidence", EndpointReport>;
+  endpoints: Record<"knowledgeSearch" | "candidateInsights" | "evidence", EndpointReport>;
 }
 
 test("knowledge request benchmark uses nearest-rank percentiles without mutating samples", () => {
@@ -95,8 +95,8 @@ test("knowledge request benchmark smoke covers real HTTP routes, Context Pack, r
       assert.equal(boundary.phaseLatencyMs.hot?.samples, 1);
     }
   }
-  assert.equal(report.endpoints.weknoraSearch.boundaries.maximumLimit.limit, 100);
-  assert.equal(report.endpoints.weknoraSearch.boundaries.noResults.expectation, "noResults");
+  assert.equal(report.endpoints.knowledgeSearch.boundaries.maximumLimit.limit, 100);
+  assert.equal(report.endpoints.knowledgeSearch.boundaries.noResults.expectation, "noResults");
 
   assert.equal(report.endpoints.candidateInsights.boundaries.maximumLimit.limit, 200);
   assert.equal(report.endpoints.candidateInsights.boundaries.deepOffset.offset, 4);
@@ -113,7 +113,7 @@ test("knowledge request benchmark preserves chunk identity beyond the 200-result
   });
   assert.equal(stderr, "");
   const report = JSON.parse(stdout) as SmokeReport;
-  for (const endpoint of [report.endpoints.weknoraSearch, report.endpoints.weknoraSearch.boundaries.maximumLimit]) {
+  for (const endpoint of [report.endpoints.knowledgeSearch, report.endpoints.knowledgeSearch.boundaries.maximumLimit]) {
     assert.deepEqual(endpoint.statusErrors, {});
     assert.deepEqual(endpoint.integrityErrors, {});
   }

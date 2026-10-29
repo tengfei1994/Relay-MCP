@@ -149,7 +149,7 @@ operator and approval
 
 **调用方式**
 
-- MCP Host → knowledge_search（若用户已描述问题或历史背景）；
+- MCP Host → memory_search（若用户已描述问题或历史背景）；
 - MCP Host → list_projects；
 - Relay Web UI → Project/Server/LIMS Instance 选择页面。
 
@@ -217,7 +217,7 @@ EffectiveTarget，包括 projectId、serverId、environment、limsInstanceId、i
 
 **主要工具**
 
-- knowledge_search；
+- memory_search；
 - knowledge_get；
 - knowledge_playbook_get；
 - knowledge_relation_query；
@@ -1027,7 +1027,7 @@ deployment_finish(success/failure)
 | 部署状态 | samplemanager_deployment_status | 查询阶段、工件、哈希、备份和回滚 |
 | 部署结束 | samplemanager_deployment_finish | 标记成功、失败或需人工处理 |
 | 备份恢复 | samplemanager_restore_backup | 恢复明确目标文件 |
-| 知识检索 | knowledge_search | 找案例、Pattern、Playbook |
+| 知识检索 | memory_search | 找案例、Pattern、Playbook |
 | 知识详情 | knowledge_get、knowledge_evidence_get | 读取完整内容和证据 |
 | 关系查询 | knowledge_relation_query | 查询 Form/Task/Assembly/Menu 影响关系 |
 | 诊断编排 | samplemanager_diagnose | 知识检索加当前环境只读检查 |

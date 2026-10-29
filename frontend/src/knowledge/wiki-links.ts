@@ -5,7 +5,7 @@ export function validWikiSlug(slug: string): boolean {
 }
 
 export function wikiLinkHref(slug: string, scope: KnowledgeScope, pageKey?: string): string | undefined {
-  if (!validWikiSlug(slug) || !buildKnowledgeScope(scope).projectId) return undefined;
+  if (!validWikiSlug(slug)) return undefined;
   const prefix=pageKey?.match(/^engine-wiki:[a-f0-9]{16}:/)?.[0];
   if (!prefix) return undefined;
   return withKnowledgeScope(`/knowledge/integrated?tab=wiki&wikiKey=${encodeURIComponent(prefix+slug)}`, scope);

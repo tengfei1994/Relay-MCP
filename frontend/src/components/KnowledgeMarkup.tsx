@@ -9,6 +9,7 @@ import type {KnowledgeScope} from "../knowledge/integrated-search";
 
 const anchorPrefix = "knowledge-content-";
 const InCodeBlock = createContext(false);
+const SourceText = createContext("");
 function sourceReferences(node: unknown): string[] {
   const value = node as {properties?: {href?: unknown}; children?: unknown[]} | undefined;
   return [...new Set([...(typeof value?.properties?.href === "string" ? [value.properties.href] : []), ...(value?.children ?? []).flatMap(sourceReferences)])];
@@ -23,7 +24,7 @@ const schema = {
  * Relative files remain source references until Relay has an authorized asset
  * resolver. They must not become accidental requests against the current route. */
 export function KnowledgeMarkup({source, wikiScope, wikiPageKey}: {source: string; wikiScope?: KnowledgeScope; wikiPageKey?: string}) {
-  return <div className="min-w-0 space-y-3 break-words text-sm leading-6 text-gray-300 [&_h1]:text-xl [&_h1]:font-semibold [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:font-semibold [&_h4]:font-semibold [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:list-decimal [&_ol]:pl-6 [&_li]:my-1 [&_pre]:my-3 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:border [&_pre]:border-gray-700 [&_pre]:bg-gray-950 [&_pre]:p-3 [&_pre]:text-xs [&_code]:font-mono [&_blockquote]:border-l-2 [&_blockquote]:border-cyan-700 [&_blockquote]:pl-3">
+  return <SourceText.Provider value={source}><div className="min-w-0 space-y-3 break-words text-sm leading-6 text-gray-300 [&_h1]:text-xl [&_h1]:font-semibold [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:font-semibold [&_h4]:font-semibold [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:list-decimal [&_ol]:pl-6 [&_li]:my-1 [&_pre]:my-3 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:border [&_pre]:border-gray-700 [&_pre]:bg-gray-950 [&_pre]:p-3 [&_pre]:text-xs [&_code]:font-mono [&_blockquote]:border-l-2 [&_blockquote]:border-cyan-700 [&_blockquote]:pl-3">
     <Markdown remarkPlugins={wikiPageKey ? [remarkGfm,remarkWikiLinks] : [remarkGfm]} rehypePlugins={[rehypeRaw,[rehypeSanitize,schema]]} components={{
       table: ({children,id}) => <div className="max-w-full overflow-x-auto"><table id={id} className="w-full border-collapse text-left text-sm">{children}</table></div>,
       th: ({children,colSpan,rowSpan,id}) => <th id={id} colSpan={colSpan} rowSpan={rowSpan} className="border border-gray-700 bg-gray-900 px-3 py-2 align-top font-medium text-gray-100">{children}</th>,
@@ -35,9 +36,11 @@ export function KnowledgeMarkup({source, wikiScope, wikiPageKey}: {source: strin
       img: ({src,alt}) => <span className="inline-block break-all rounded border border-gray-700 px-2 py-1 text-xs text-gray-400">Image reference: {alt ? `${alt} · ` : ""}{src || "unavailable"}</span>,
       a: ({href,id,node,children}) => {
         const name=typeof node?.properties.name === "string" ? node.properties.name : undefined;
-        const inCode=useContext(InCodeBlock), anchor=id ?? name;
+        const inCode=useContext(InCodeBlock), rawSource=useContext(SourceText), anchor=id ?? name;
         const content=<>{id && name && id!==name && <span id={name} />}{children}</>;
         if (!href || inCode) return <span id={anchor} title={inCode ? href : undefined}>{content}</span>;
+        const wikiWrappedUrl = rawSource.includes(`[[${href}|`) || rawSource.includes(`[[${href}]]`);
+        if (wikiWrappedUrl) return <span id={anchor}>{content}</span>;
         if (href.startsWith('/knowledge/wiki-link/')) {
           let target: string | undefined;
           try { target=wikiScope && wikiLinkHref(decodeURIComponent(href.slice('/knowledge/wiki-link/'.length)),wikiScope,wikiPageKey); } catch { /* Invalid source reference remains text. */ }
@@ -48,5 +51,5 @@ export function KnowledgeMarkup({source, wikiScope, wikiPageKey}: {source: strin
         return <span id={anchor}>{content}<span className="ml-1 break-all font-mono text-xs text-gray-400">({href})</span></span>;
       },
     }}>{source}</Markdown>
-  </div>;
+  </div></SourceText.Provider>;
 }

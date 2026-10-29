@@ -298,18 +298,8 @@ function useProjectScope() {
   const scope = buildKnowledgeScope({ projectId: params.get("projectId") ?? undefined, environment: params.get("environment") ?? undefined });
   useEffect(() => {
     let cancelled = false;
-    api.listProjects().then((result) => {
-      if (cancelled) return;
-      const available = result.projects ?? [];
-      setProjects(available);
-      setParams((current) => {
-        if (current.get("projectId")) return current;
-        const stored = localStorage.getItem("knowledge.projectId");
-        const selected = available.find((project: any) => String(project.id) === stored) ?? available[0];
-        if (!selected) return current;
-        const next = new URLSearchParams(current); next.set("projectId", String(selected.id)); return next;
-      }, { replace: true });
-    }).catch((err) => { if (!cancelled) setScopeError(errText(err, "Unable to load projects")); });
+    api.listProjects().then((result) => { if (!cancelled) setProjects(result.projects ?? []); })
+      .catch((err) => { if (!cancelled) setScopeError(errText(err, "Unable to load projects")); });
     return () => { cancelled = true; };
   }, []);
   const setScope = (key: "projectId" | "environment", value: string) => {
@@ -332,7 +322,7 @@ function ScopeControls({ selection, allowAllProjects = false, environmentPlaceho
 }
 
 function WikiPane({ isAdmin }: { isAdmin: boolean }) {
-  const selection = useProjectScope(); const { scope } = selection;
+  const { scope } = useProjectScope();
   const [params,setParams] = useSearchParams();
   const selectedPage=params.get("wikiPage"), selectedKey=params.get("wikiKey");
   const navigation=useRef(createWikiNavigation());
@@ -358,7 +348,6 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   const [rollbackRev, setRollbackRev] = useState("");
   const load = (nextOffset = offset) => {
     const requestId = ++listRequest.current;
-    if (!scope.projectId) { setResult({ items: [], total: 0 }); return; }
     setError("");
     api.knowledgeWikiPages({ ...scope, search: applied.search || undefined, status: applied.status || undefined, limit: PAGE_LIMIT, offset: nextOffset })
       .then((data) => { if (requestId === listRequest.current) setResult({ items: data.items ?? [], total: data.total ?? 0 }); })
@@ -366,7 +355,7 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   };
   useEffect(() => { setOffset(0); setResult(undefined); setSourceRefs([]); setNotice(""); load(0); return () => { listRequest.current++; }; }, [applied, scope.projectId, scope.environment]);
   useEffect(() => {
-    if (!showCreate || !scope.projectId) { setSources([]); return; }
+    if (!showCreate) { setSources([]); return; }
     let cancelled = false;
     setSourcesLoading(true); setSources([]); setSourceRefs([]);
     const loadSources = async () => {
@@ -393,7 +382,7 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   useEffect(() => {
     let cancelled=false;
     setPage(undefined); setRevisions([]); setError(""); setDiff("");
-    if (!scope.projectId || (!selectedPage && !selectedKey)) return;
+    if (!selectedPage && !selectedKey) return;
     const read = async () => {
       const {page:detail}=selectedKey ? await api.knowledgeWikiResolve(selectedKey,scope) : await api.knowledgeWikiPage(selectedPage!,scope);
       if (cancelled || !currentNavigation.isCurrent()) return;
@@ -415,7 +404,6 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   };
   return <div className="space-y-4">
     <section className={cardClass}>
-      <ScopeControls selection={selection} />
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="font-medium text-gray-100">Wiki pages</h3>
         <input className={`${inputClass} w-64`} placeholder="Search title or body…" value={filters.search} onChange={(event) => setFilters({ ...filters, search: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter") setApplied(filters); }} />
@@ -440,8 +428,7 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
         </label>
         <textarea className="min-h-24 w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-200 outline-none focus:border-indigo-500" placeholder="Page body" value={create.body} onChange={(event) => setCreate({ ...create, body: event.target.value })} />
         <div className="flex flex-wrap items-center gap-2">
-          <input className={`${inputClass} w-72`} placeholder="Creation reason (required)" value={create.reason} onChange={(event) => setCreate({ ...create, reason: event.target.value })} />
-          <button className={btn} disabled={!scope.projectId || sourcesLoading || !sourceRefs.length || !create.pageKey.trim() || !create.title.trim() || !create.body.trim() || !create.reason.trim()} onClick={() => run(async () => { const { page: created } = await api.knowledgeWikiCreate({ ...scope, sourceRefs, pageKey: create.pageKey.trim(), title: create.title.trim(), body: create.body, productVersion: create.productVersion.trim() || undefined, reason: create.reason.trim() }); currentNavigation.commit(()=>{setCreate(emptyCreate);setSourceRefs([]);setShowCreate(false);}); return created; }, "Wiki page created.")}>Create</button>
+          <button className={btn} disabled={sourcesLoading || !sourceRefs.length || !create.pageKey.trim() || !create.title.trim() || !create.body.trim() || !create.reason.trim()} onClick={() => run(async () => { const { page: created } = await api.knowledgeWikiCreate({ ...scope, sourceRefs, pageKey: create.pageKey.trim(), title: create.title.trim(), body: create.body, productVersion: create.productVersion.trim() || undefined, reason: create.reason.trim() }); currentNavigation.commit(()=>{setCreate(emptyCreate);setSourceRefs([]);setShowCreate(false);}); return created; }, "Wiki page created.")}>Create</button>
         </div>
       </div>}
       <Err message={error} />
@@ -515,7 +502,7 @@ function WikiPane({ isAdmin }: { isAdmin: boolean }) {
 const WEKNORA_STATUSES = ["staged", "published", "deprecated", "failed"] as const;
 
 function WeknoraPane({ isAdmin }: { isAdmin: boolean }) {
-  const selection = useProjectScope(); const { scope } = selection;
+  const { scope } = useProjectScope();
   const listRequest = useRef(0);
   const emptyStage = { title: "", content: "", productVersion: "", solution: "", module: "", language: "" };
   const [status, setStatus] = useState("");
@@ -530,7 +517,6 @@ function WeknoraPane({ isAdmin }: { isAdmin: boolean }) {
   const [showStage, setShowStage] = useState(false);
   const load = (nextOffset = offset) => {
     const requestId = ++listRequest.current;
-    if (!scope.projectId) { setData({ documents: [], page: { total: 0 } }); return; }
     setError("");
     api.knowledgeWeknoraDocuments({ ...scope, status: status || undefined, limit: PAGE_LIMIT, offset: nextOffset })
       .then((result) => { if (requestId === listRequest.current) setData({ documents: result.documents ?? [], page: result.page ?? { total: 0 } }); })
@@ -542,14 +528,12 @@ function WeknoraPane({ isAdmin }: { isAdmin: boolean }) {
     const requestId = listRequest.current;
     setSearching(true); setError(""); setSearch(undefined);
     try {
-      if (!scope.projectId) throw new Error("Select a project before searching Product engine");
-      const result = await api.knowledgeWeknoraSearch(buildWeknoraSearchBody(query, scope.projectId, scope.environment));
+      const result = await api.knowledgeSearch(buildWeknoraSearchBody(query, scope.projectId, scope.environment));
       if (requestId === listRequest.current) setSearch(result);
     } catch (err) { setError(errText(err, "Product engine search failed")); } finally { setSearching(false); }
   };
   return <div className="space-y-4">
     <section className={cardClass}>
-      <ScopeControls selection={selection} />
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="font-medium text-gray-100">Product engine documents</h3>
         <select className={inputClass} value={status} onChange={(event) => setStatus(event.target.value)}>
@@ -567,7 +551,7 @@ function WeknoraPane({ isAdmin }: { isAdmin: boolean }) {
           <input className={inputClass} placeholder="Module" value={stage.module} onChange={(event) => setStage({ ...stage, module: event.target.value })} />
         </div>
         <textarea className="min-h-20 w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-200 outline-none focus:border-indigo-500" placeholder="Document content" value={stage.content} onChange={(event) => setStage({ ...stage, content: event.target.value })} />
-        <button className={btn} disabled={!scope.projectId || !stage.title.trim() || !stage.content.trim()} onClick={() => run(async () => {
+        <button className={btn} disabled={!stage.title.trim() || !stage.content.trim()} onClick={() => run(async () => {
           const body: Record<string, unknown> = { ...scope, idempotencyKey: `weknora-stage:${Date.now()}:${stage.title.trim()}`, title: stage.title.trim(), content: stage.content };
           for (const key of ["productVersion", "solution", "module", "language"] as const) if (stage[key].trim()) body[key] = stage[key].trim();
           const result = await api.knowledgeWeknoraDocumentStage(body);
@@ -601,15 +585,14 @@ function WeknoraPane({ isAdmin }: { isAdmin: boolean }) {
     </section>
     <section className={cardClass}>
       <h3 className="font-medium text-gray-100">Retrieval test</h3>
-      <p className="mt-1 text-xs text-gray-500">Searches published Product documents in the selected project and environment; ACL-invisible documents are filtered out.</p>
+      <p className="mt-1 text-xs text-gray-500">{scope.projectId ? "Searches published Product documents in the selected project and environment; ACL-invisible documents are filtered out." : "Searches global published Product documents; project-scoped retrieval requires an explicit project link."}</p>
       <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_140px_140px_140px_90px]">
         <input className={inputClass} placeholder="Query text" value={query.q} onChange={(event) => setQuery({ ...query, q: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter" && query.q.trim()) runSearch(); }} />
         <input className={inputClass} placeholder="Version" value={query.productVersion} onChange={(event) => setQuery({ ...query, productVersion: event.target.value })} />
         <input className={inputClass} placeholder="Solution" value={query.solution} onChange={(event) => setQuery({ ...query, solution: event.target.value })} />
         <input className={inputClass} placeholder="Module" value={query.module} onChange={(event) => setQuery({ ...query, module: event.target.value })} />
-        <input className={inputClass} placeholder="Limit" value={query.limit} onChange={(event) => setQuery({ ...query, limit: event.target.value })} />
       </div>
-      <button className={`${btn} mt-2`} disabled={searching || !scope.projectId || !query.q.trim()} onClick={runSearch}>{searching ? <RefreshCw size={12} className="animate-spin" /> : null} Run search</button>
+      <button className={`${btn} mt-2`} disabled={searching || !query.q.trim()} onClick={runSearch}>{searching ? <RefreshCw size={12} className="animate-spin" /> : null} Run search</button>
       {search && <div className="mt-3">
         <p className="text-xs text-gray-500">retrieval run {search.retrievalRunId}{search.degraded ? ` · degraded: ${typeof search.degraded === "object" ? JSON.stringify(search.degraded) : "yes"}` : ""}</p>
         <div className="mt-2 space-y-2">

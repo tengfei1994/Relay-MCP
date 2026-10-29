@@ -7,6 +7,7 @@ import {WeKnoraClientDocumentWriter,WeKnoraIngestor} from "./weknora-ingest.js";
 import {MigrationController} from "./migration-control.js";
 import {WikiService} from "./wiki.js";
 import {EngineWikiService} from "./engine-wiki.js";
+import {ActiveWikiService} from "./active-wiki.js";
 /** Finalizing includes remote summary/Wiki jobs; a two-minute window can time out after successful indexing. */
 export function engineReadinessTimeout(value=process.env.KNOWLEDGE_ENGINE_READINESS_TIMEOUT_MS):number {
   if(value===undefined||value.trim()==="")return 600_000;
@@ -47,8 +48,18 @@ export function managedControlPlane(store:KnowledgeStore){
   };
   return {manager,client,knowledgeBaseId,ingestor:new WeKnoraIngestor(store,new WeKnoraClientDocumentWriter(client,knowledgeBaseId,{modelProvenance,deferSynthesis:profile==="bulk",assertCurrentConfiguration,readiness:{timeoutMs:engineReadinessTimeout(),...(profile==="bulk"?{pollIntervalMs:250}:{})}}))};
 }
-export function activeWikiService(store:KnowledgeStore):WikiService|EngineWikiService{
-  if(new MigrationController(store).activeProductProvider()==="relay_local")return new WikiService(store);
-  const {manager,knowledgeBaseId}=managedControlPlane(store);
-  return new EngineWikiService(store,{knowledgeBaseId,request:(method,path,body)=>manager.request(method,path,body)});
+export function activeWikiService(store:KnowledgeStore):ActiveWikiService{
+  const local=new WikiService(store),provider=new MigrationController(store).activeProductProvider();
+  if(provider!=="relay_local"){
+    const {manager,knowledgeBaseId}=managedControlPlane(store);
+    const engine=new EngineWikiService(store,{knowledgeBaseId,request:(method,path,body)=>manager.request(method,path,body)});
+    return new ActiveWikiService(store,local,engine,true);
+  }
+  const manager=getEngineManager(store),status=manager.status();
+  if(status.phase!=="ready")return new ActiveWikiService(store,local);
+  const control=manager.control();
+  const engine=control.knowledgeBaseId
+    ? new EngineWikiService(store,{knowledgeBaseId:control.knowledgeBaseId,request:(method,path,body)=>manager.request(method,path,body)})
+    : undefined;
+  return new ActiveWikiService(store,local,engine);
 }

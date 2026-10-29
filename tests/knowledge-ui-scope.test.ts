@@ -43,7 +43,7 @@ test("Product and Wiki detail, revision and mutation requests retain their sourc
     }
     await api.knowledgeWikiCreate({ ...scope, title: "Wiki", sourceRefs: ["source-1"] });
     await api.knowledgeWeknoraDocumentStage({ ...scope, title: "Source", content: "body" });
-    await api.knowledgeWeknoraSearch({ ...scope, query: "probe" });
+    await api.knowledgeSearch({ ...scope, query: "probe" });
     for (const call of calls.slice(12)) {
       assert.equal(call.body.projectId, "project-a");
       assert.equal(call.body.environment, "test");

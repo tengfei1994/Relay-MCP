@@ -24,10 +24,11 @@ test('Wiki rendering leaves code, existing links and raw HTML text alone',()=>{
  assert.match(html,/href="https:\/\/example.test"/);
 });
 
-test('Wiki links cannot carry external URLs, traversal, encoded paths, query scope overrides or missing project scope',()=>{
+test('Wiki links reject external URLs, traversal and scope overrides while allowing global targets',()=>{
  const html=render('[[https://evil.test/x|external]] [[https://evil.test/x|label with spaces]] [[//evil.test/x]] [[../entity/x]] [[entity/%2e%2e/x]] [[entity/x?projectId=other]] [[entity/x#part]] [[entity\\x]]');
  assert.doesNotMatch(html,/<a\b/);
- assert.doesNotMatch(render('[[entity/safe]]',{}),/<a\b/);
+ const globalHtml=render('[[entity/safe]]',{});
+ assert.match(globalHtml,/href="\/knowledge\/integrated\?tab=wiki&amp;wikiKey=engine-wiki%3A0123456789abcdef%3Aentity%2Fsafe"/);
 });
 
 test('Wiki resolver sends full bound key and only the caller current scope to Relay',async()=>{

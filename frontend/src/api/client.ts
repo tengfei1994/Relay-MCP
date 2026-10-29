@@ -10,7 +10,8 @@ async function request<T>(
   method: string,
   path: string,
   body?: unknown,
-  extraHeaders?: Record<string, string>
+  extraHeaders?: Record<string, string>,
+  options?: { signal?: AbortSignal },
 ): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -22,6 +23,7 @@ async function request<T>(
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
+    signal: options?.signal,
   });
 
   if (!res.ok) {
@@ -60,13 +62,13 @@ export const api = {
     ),
 
   // Knowledge governance plane
-  knowledgeSearch: (params: { projectId: number; q: string; limit?: number; sampleManagerVersion?: string; solution?: string; module?: string; environment?: string; scopeType?: string; scopeKey?: string; kinds?: string; includeDeprecated?: boolean }) => {
+  memorySearch: (params: { projectId: number; q: string; limit?: number; sampleManagerVersion?: string; solution?: string; module?: string; environment?: string; scopeType?: string; scopeKey?: string; kinds?: string; includeDeprecated?: boolean }) => {
     const query = new URLSearchParams({ projectId: String(params.projectId), q: params.q });
     for (const key of ["limit", "sampleManagerVersion", "solution", "module", "environment", "scopeType", "scopeKey", "kinds", "includeDeprecated"] as const) {
       const value = params[key];
       if (value !== undefined && value !== "") query.set(key, String(value));
     }
-    return request<{ retrievalRunId: string; query: string; degraded: boolean; results: any[] }>("GET", `/knowledge/search?${query.toString()}`);
+    return request<{ retrievalRunId: string; query: string; degraded: boolean; results: any[] }>("GET", `/memory/search?${query.toString()}`);
   },
   knowledgeDocument: (id: string, projectId?: number) => request<{ document: any; evidenceRefs: string[]; reviews: any[] }>("GET", `/knowledge/documents/${encodeURIComponent(id)}${projectId ? `?projectId=${projectId}` : ""}`),
   knowledgeDocuments: (projectId: number, kinds?: string, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); if (kinds) query.set("kinds", kinds); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ documents: any[]; page?: any }>("GET", `/knowledge/documents?${query.toString()}`); },
@@ -117,8 +119,8 @@ export const api = {
   productDocumentSearch: (params: Record<string, string | number | boolean | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ results: any[]; page?: any }>("GET", `/knowledge/product-documents/search?${query.toString()}`); },
   productDocumentDiff: (id: string, against: string) => request<any>("GET", `/knowledge/product-docs/${encodeURIComponent(id)}/diff?against=${encodeURIComponent(against)}`),
   productDocumentDiffReview: (id: string, body: { against: string; status: "accepted" | "rejected" | "needs_review"; reason: string }, idempotencyKey?: string) => request<any>("POST", `/knowledge/product-docs/${encodeURIComponent(id)}/diff-review`, body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  productTopics: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ topics: any[]; page?: any }>("GET", `/knowledge/product-topics?${query.toString()}`); },
-  productTopic: (id: string) => request<{ topic: any; versions: any[] }>("GET", `/knowledge/product-topics/${encodeURIComponent(id)}`),
+  productTopics: (params: Record<string, string | number | undefined> = {}, options?: { signal?: AbortSignal }) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ topics: any[]; page?: any }>("GET", `/knowledge/product-topics?${query.toString()}`, undefined, undefined, options); },
+  productTopic: (id: string, scope: KnowledgeScope = {}, options?: { signal?: AbortSignal }) => request<{ topic: any; versions: any[]; page?: any }>("GET", withKnowledgeScope(`/knowledge/product-topics/${encodeURIComponent(id)}?includeReview=true`, scope), undefined, undefined, options),
   productTopicBindingReview: (id: string, body: { status: "active" | "rejected"; reason: string }) => request<any>("POST", `/knowledge/product-topic-bindings/${encodeURIComponent(id)}/review`, body),
   knowledgeArtifactSets: (limit = 100) => request<{ sets: any[] }>("GET", `/knowledge/artifact-sets?limit=${limit}`),
   knowledgeArtifactImport: (body: Record<string, unknown>) => request<any>("POST", "/knowledge/artifact-sets/import", body),
@@ -189,7 +191,7 @@ export const api = {
   knowledgeWeknoraDocumentStage: (body: Record<string, unknown>) => request<{ document: any }>("POST", "/knowledge/weknora/documents", body),
   knowledgeWeknoraDocumentPublish: (id: string) => request<{ document: any }>("POST", `/knowledge/weknora/documents/${encodeURIComponent(id)}/publish`, {}),
   knowledgeWeknoraDocumentDeprecate: (id: string) => request<{ document: any }>("POST", `/knowledge/weknora/documents/${encodeURIComponent(id)}/deprecate`, {}),
-  knowledgeWeknoraSearch: (body: Record<string, unknown>) => request<any>("POST", "/knowledge/weknora/search", body),
+  knowledgeSearch: (body: Record<string, unknown>) => request<any>("POST", "/knowledge/search", body),
   knowledgeProductProvider: () => request<{ provider: string }>("GET", "/knowledge/integrations/product-provider"),
   knowledgeSetProductProvider: (provider: "relay_local" | "weknora", migrationId?: string) => request<{ provider: string; previousProvider: string }>("POST", "/knowledge/integrations/product-provider", { provider, migrationId }),
   knowledgeMigrationFromLocal: (body: Record<string, unknown>) => request<{ migration: any; migrationId?: string; job?: { id: string; kind: string; status: string; result?: any; error?: string } }>("POST", "/knowledge/migrations/from-local", body),

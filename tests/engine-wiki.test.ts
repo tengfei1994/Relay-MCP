@@ -4,7 +4,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKnowledgeStore, type KnowledgeStore } from "../src/knowledge/store.ts";
+import { ActiveWikiService } from "../src/knowledge/active-wiki.ts";
 import { EngineWikiService, type EngineWikiTransport } from "../src/knowledge/engine-wiki.ts";
+import { WikiService } from "../src/knowledge/wiki.ts";
 
 const NOW = "2026-10-25T00:00:00.000Z";
 const KB = "private-kb";
@@ -371,6 +373,40 @@ function generated(remote: ReturnType<typeof upstream>, slug: string, ids: strin
     source_refs: ids.map(id => 'external-' + id + '|Source'), chunk_refs: ids.map(id => 'chunk-' + id), created_at: NOW, updated_at: NOW });
 }
 
+test("generated Wiki slugs converge to one canonical topic while retaining duplicate drafts and citations", () => fixture(async ({ store, wiki, remote }) => {
+  document(store);
+  store.db.prepare("UPDATE knowledge_weknora_documents SET topic_id='topic-shared' WHERE id='doc-1'").run();
+  generated(remote, "generated/one", ["doc-1"]);
+  generated(remote, "generated/two", ["doc-1"]);
+  const first = await wiki.adopt({ actorId: 7, slug: "generated/one", projectId: "p1", reason: "Review source" });
+  const second = await wiki.adopt({ actorId: 7, slug: "generated/two", projectId: "p1", reason: "Review duplicate source" });
+  assert.equal(second.id, first.id);
+  const rows = store.db.prepare("SELECT id,status,source_refs_json FROM knowledge_wiki_pages ORDER BY created_at,id").all() as Array<{ id: string; status: string; source_refs_json: string }>;
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every(row => row.status === "draft"));
+  assert.deepEqual(JSON.parse(rows[0].source_refs_json), ["doc-1"]);
+  assert.deepEqual(JSON.parse(rows[1].source_refs_json), ["doc-1"]);
+  assert.equal((await wiki.list({ actorId: 7, projectId: "p1" })).total, 1);
+  const duplicate = rows.find(row => row.id !== first.id);
+  assert.ok(duplicate);
+  assert.equal((await wiki.get({ actorId: 7, id: duplicate.id, projectId: "p1" })).duplicateOf, first.id);
+  await assert.rejects(wiki.publish({ actorId: 7, id: duplicate.id, projectId: "p1", reason: "Must stay draft" }), /duplicate|canonical/i);
+  assert.equal((store.db.prepare("SELECT COUNT(*) n FROM knowledge_audit WHERE action='wiki.discover_duplicate'").get() as { n: number }).n, 1);
+  assert.equal(remote.calls.filter(call => call.method === "POST").length, 0);
+}));
+
+test("generated Wiki fallback identity uses shared citations and keeps different topics separate", () => fixture(async ({ store, wiki, remote }) => {
+  document(store);
+  document(store, { id: "doc-2" });
+  generated(remote, "fallback/one", ["doc-1"]);
+  generated(remote, "fallback/two", ["doc-1"]);
+  generated(remote, "different-topic", ["doc-2"]);
+  await wiki.adopt({ actorId: 7, slug: "fallback/one", projectId: "p1", reason: "Review fallback" });
+  await wiki.adopt({ actorId: 7, slug: "fallback/two", projectId: "p1", reason: "Review duplicate fallback" });
+  await wiki.adopt({ actorId: 7, slug: "different-topic", projectId: "p1", reason: "Review another topic" });
+  assert.equal((await wiki.list({ actorId: 7, projectId: "p1" })).total, 2);
+}));
+
 test('project Wiki may cite global Product sources while retaining explicitly chosen private scope', () => fixture(async ({ store, wiki }) => {
   document(store, { id: 'global', project: null });
   document(store, { environment: 'nonprod' });
@@ -458,4 +494,16 @@ test("Wiki chunk citations reflect actual page references, not all authorized so
   const documentOnly = await wiki.get({ actorId: 7, id: page.id });
   assert.deepEqual(documentOnly.sourceRefs, ["doc-1"]);
   assert.deepEqual(documentOnly.citations[0].chunkIds, []);
+}));
+test("hybrid Wiki reads engine content and citations while Product routing stays local", () => fixture(async ({ store, wiki }) => {
+  document(store);
+  const page = await create(wiki);
+  const active = new ActiveWikiService(store, new WikiService(store), wiki);
+  const read = await active.get({ actorId: 7, id: page.id, projectId: "p1" });
+  assert.equal(read.body, "Inspect pump.");
+  if (!("citations" in read)) throw new Error("Expected engine Wiki citations");
+  assert.equal(read.citations[0].documentId, "doc-1");
+  assert.equal(read.citations[0].chunkIds.length, 1);
+  const list = await active.list({ actorId: 7, projectId: "p1", status: "draft" });
+  assert.deepEqual(list.items.map(item => item.id), [page.id]);
 }));

@@ -134,6 +134,7 @@ const KNOWLEDGE_MIGRATION_RETRY_LIMIT = parseBoundedNumber(
   1,
   20,
 );
+const KNOWLEDGE_POST_REPAIR_MARKER = "knowledge-post-repair-backfill-v2";
 const KNOWLEDGE_MIGRATION_RETRY_BASE_MS = parseBoundedNumber(
   process.env.KNOWLEDGE_MIGRATION_RETRY_BASE_MS,
   100,
@@ -266,8 +267,27 @@ export class KnowledgeStore {
     }
   }
 
+  private migrationsComplete(): boolean {
+    try {
+      const hasMigrationTable = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get();
+      if (!hasMigrationTable) return false;
+      const applied = new Set((this.db.prepare("SELECT version FROM schema_migrations").all() as Array<{ version: string }>).map((row) => row.version));
+      if (![...KNOWLEDGE_MIGRATIONS.map((migration) => migration.version), KNOWLEDGE_POST_REPAIR_MARKER].every((version) => applied.has(version))) return false;
+      const pendingScopes = this.db.prepare("SELECT 1 FROM knowledge_documents d WHERE NOT EXISTS (SELECT 1 FROM knowledge_scope_bindings s WHERE s.document_id=d.id) LIMIT 1").get();
+      if (pendingScopes) return false;
+      const pendingTopics = this.db.prepare("SELECT 1 FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE d.kind='product_document' AND NOT EXISTS (SELECT 1 FROM knowledge_product_document_bindings b WHERE b.document_id=d.id) LIMIT 1").get();
+      return !pendingTopics;
+    } catch {
+      return false;
+    }
+  }
+
   migrate(): void {
-    withMigrationRetry(() => this.migrateOnce());
+    withMigrationRetry(() => {
+      this.repairLegacyDocumentCheckSchema();
+      if (this.migrationsComplete()) return;
+      this.migrateOnce();
+    });
   }
 
   private migrateOnce(): void {
@@ -360,7 +380,7 @@ export class KnowledgeStore {
       // this additive repair safe and idempotent without rewriting user data.
       // Increment this marker for a new one-time repair generation; old
       // generations remain evidence that their repair completed.
-      const postRepairMarker = "knowledge-post-repair-backfill-v2";
+      const postRepairMarker = KNOWLEDGE_POST_REPAIR_MARKER;
       const postRepairNeeded = !this.db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(postRepairMarker);
       if (postRepairNeeded) {
       const requiredTables = ["knowledge_cases", "knowledge_patterns", "knowledge_playbooks", "knowledge_candidates", "knowledge_chunks", "knowledge_candidate_cards", "knowledge_scope_bindings", "knowledge_entity_evidence", "knowledge_ingest_runs", "knowledge_evidence_acl", "knowledge_observations", "knowledge_confirmed_memories", "knowledge_product_documents", "knowledge_product_document_items", "knowledge_product_document_revisions", "knowledge_topics", "knowledge_product_document_bindings", "knowledge_artifact_sets", "knowledge_artifacts", "knowledge_source_baselines", "knowledge_source_files", "knowledge_project_snapshots", "knowledge_project_snapshot_files", "knowledge_source_chunks", "knowledge_source_chunks_fts", "knowledge_artifact_publications", "knowledge_ingest_jobs", "knowledge_product_revisions", "knowledge_product_graph_entities", "knowledge_product_graph_relations"];

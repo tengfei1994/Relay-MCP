@@ -435,6 +435,7 @@ export function searchKnowledgeProducts(store: KnowledgeStore, request: ProductD
   for (const [column, key] of filters) { const value = request[key as keyof ProductDocumentSearchRequest]; if (value) { conditions.push(`${column}=@${key}`); params[key] = value; } }
   conditions.push(request.includeDeprecated ? "d.lifecycle IN ('approved','verified','deprecated')" : "d.lifecycle IN ('approved','verified')");
   const limit = Math.max(1, Math.min(500, Math.trunc(request.limit ?? 50)));
+  const matchCap = Math.min(20_000, Math.max(1_000, limit * 32));
   let rows: Array<Record<string, unknown>> = [];
   if (request.query?.trim()) {
     const tokens = request.query.trim().split(/\s+/).filter(Boolean).slice(0, 24).map((value) => `"${value.replaceAll('"', '""')}"`);
@@ -449,6 +450,7 @@ export function searchKnowledgeProducts(store: KnowledgeStore, request: ProductD
         FROM knowledge_fts JOIN knowledge_documents d ON d.id=knowledge_fts.document_id
         JOIN knowledge_product_documents p ON p.id=d.id
         WHERE knowledge_fts MATCH @match AND ${conditions.join(" AND ")}
+        ORDER BY rank,match_rowid LIMIT ${matchCap}
       ), best AS (
         SELECT *,ROW_NUMBER() OVER (PARTITION BY id ORDER BY rank,match_rowid) AS chunk_rank FROM scored
       )

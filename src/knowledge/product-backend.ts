@@ -212,7 +212,7 @@ export async function searchProductBackend(store: KnowledgeStore, input: Product
   assertScope(store, input);
   const limit = Math.max(1, Math.min(500, Math.trunc(input.limit ?? 50)));
   if (!input.engineOnly && new MigrationController(store).activeProductProvider() === "relay_local") {
-    const localRows = searchKnowledgeProducts(store, { ...input, scope: { projectId: text(input.projectId), environment: text(input.environment) }, limit: 500 }).filter(result => {
+    const localRows = searchKnowledgeProducts(store, { ...input, scope: { projectId: text(input.projectId), environment: text(input.environment) }, limit }).filter(result => {
       const row = store.db.prepare("SELECT project_id,environment FROM knowledge_documents WHERE id=?").get(result.id) as Row | undefined;
       return Boolean(row && localAllowed(store, row, input));
     }).slice(0, limit);

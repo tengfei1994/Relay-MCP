@@ -43,6 +43,7 @@ import { PRODUCT_REVISION_PARSER_IDENTITY_MIGRATION, PARSER_SCOPED_PRODUCT_REVIS
 import { CONFIRMED_MEMORY_MIGRATION } from "./migrations/047-confirmed-memory.js";
 import { PRODUCT_TOPIC_QUERY_INDEXES_MIGRATION } from "./migrations/048-product-topic-query-indexes.js";
 import { PRODUCT_GRAPH_MIGRATION } from "./migrations/049-product-graph.js";
+import { PRODUCT_GRAPH_QUERY_INDEXES_MIGRATION } from "./migrations/050-product-graph-query-indexes.js";
 import { PROVIDER_SECRETS_MIGRATION } from "./migrations/039-provider-secrets.js";
 import { WEKNORA_DOCUMENT_MIGRATION } from "./migrations/031-weknora-documents.js";
 import { WORK_SESSION_MIGRATION } from "./migrations/029-work-sessions.js";
@@ -118,6 +119,7 @@ const KNOWLEDGE_MIGRATIONS: Array<{ version: string; sql: string; requiresForeig
     CONFIRMED_MEMORY_MIGRATION,
   PRODUCT_TOPIC_QUERY_INDEXES_MIGRATION,
   PRODUCT_GRAPH_MIGRATION,
+  PRODUCT_GRAPH_QUERY_INDEXES_MIGRATION,
 ];
 
 const KNOWLEDGE_BUSY_TIMEOUT_MS = parseBoundedNumber(

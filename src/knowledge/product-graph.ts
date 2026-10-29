@@ -404,7 +404,13 @@ export function queryProductGraph(store: KnowledgeStore, request: ProductGraphQu
     const relationTypes = (request.relationTypes ?? []).map(optional).filter((value): value is string => Boolean(value)).slice(0, 16);
     if (relationTypes.length) { relationClauses.push(`r.relation_type IN (${relationTypes.map(() => "?").join(",")})`); relationParams.push(...relationTypes); }
   }
-  const relationRows = store.db.prepare(`SELECT r.* FROM knowledge_product_graph_relations r JOIN knowledge_documents d ON ${relationClauses[0]} LEFT JOIN knowledge_product_documents p ON p.id=d.id WHERE ${relationClauses.slice(1).join(" AND ")} ORDER BY r.id`).all(...relationParams) as Array<Record<string, unknown>>;
+  const visibleIds = [...visible].slice(0, 500);
+  if (!visibleIds.length) return { entities, relations: [] };
+  const endpointPlaceholders = visibleIds.map(() => "?").join(",");
+  relationClauses.push(`(r.from_entity_id IN (${endpointPlaceholders}) OR r.to_entity_id IN (${endpointPlaceholders}))`);
+  relationParams.push(...visibleIds, ...visibleIds);
+  const relationLimit = Math.min(5000, Math.max(100, limit * 8));
+  const relationRows = store.db.prepare(`SELECT r.* FROM knowledge_product_graph_relations r JOIN knowledge_documents d ON ${relationClauses[0]} LEFT JOIN knowledge_product_documents p ON p.id=d.id WHERE ${relationClauses.slice(1).join(" AND ")} ORDER BY r.id LIMIT ?`).all(...relationParams, relationLimit) as Array<Record<string, unknown>>;
   const relations = relationRows.map(relationFromRow).filter((relation) => visible.has(relation.fromEntityId) && visible.has(relation.toEntityId));
   return { entities, relations };
 }

@@ -37,24 +37,32 @@ export function withKnowledgeScope(path: string, scope: KnowledgeScope = {}): st
   return pathname + (query ? `?${query}` : "") + (hash === undefined ? "" : `#${hash}`);
 }
 
-export function knowledgeItemScope(item: any, fallback: KnowledgeScope = {}): KnowledgeScope {
-  return { projectId: item?.projectId ?? item?.project_id ?? fallback.projectId, environment: item?.environment ?? fallback.environment };
+export function knowledgeItemScope(item: unknown, fallback: KnowledgeScope = {}): KnowledgeScope {
+  const source = typeof item === "object" && item !== null ? item as Record<string, unknown> : undefined;
+  const projectId = source?.projectId ?? source?.project_id;
+  const environment = source?.environment;
+  return {
+    projectId: typeof projectId === "string" || typeof projectId === "number" ? projectId : fallback.projectId,
+    environment: typeof environment === "string" ? environment : fallback.environment,
+  };
 }
 
-export function knowledgeItemMatchesScope(item: any, scope: KnowledgeScope): boolean {
+export function knowledgeItemMatchesScope(item: unknown, scope: KnowledgeScope): boolean {
   const source = buildKnowledgeScope(knowledgeItemScope(item));
   const selected = buildKnowledgeScope(scope);
   return source.projectId === selected.projectId && source.environment === selected.environment;
 }
 
-export function productEngineDocumentState(document: any) {
-  const parseJson = (value: unknown) => { if (typeof value !== "string") return value; try { return JSON.parse(value); } catch { return undefined; } };
-  const chunkIds = parseJson(document.externalChunkIds ?? document.external_chunk_ids_json);
+export function productEngineDocumentState(document: unknown) {
+  const source = typeof document === "object" && document !== null ? document as Record<string, unknown> : {};
+  const parseJson = (value: unknown): unknown => { if (typeof value !== "string") return value; try { return JSON.parse(value) as unknown; } catch { return undefined; } };
+  const chunkIds = parseJson(source.externalChunkIds ?? source.external_chunk_ids_json);
   const chunks = Array.isArray(chunkIds) ? chunkIds.filter((id) => typeof id === "string" && id.trim()) : [];
-  const parseStatus = document.upstreamParseStatus ?? document.upstream_parse_status;
-  const verifiedAt = document.upstreamVerifiedAt ?? document.upstream_verified_at;
-  const verified = parseStatus === "completed" && Boolean(verifiedAt) && Number.isFinite(Date.parse(verifiedAt)) && chunks.length > 0;
-  const model = parseJson(document.modelProvenance ?? document.model_provenance_json);
-  const modelProvenance = model && typeof model === "object" && model.modelId && model.providerId ? model : undefined;
-  return { parseStatus, verifiedAt, chunkCount: chunks.length, verified, canPublish: document.status === "staged" && verified, modelProvenance };
+  const parseStatus = source.upstreamParseStatus ?? source.upstream_parse_status;
+  const verifiedAt = source.upstreamVerifiedAt ?? source.upstream_verified_at;
+  const verified = parseStatus === "completed" && typeof verifiedAt === "string" && Boolean(verifiedAt) && Number.isFinite(Date.parse(verifiedAt)) && chunks.length > 0;
+  const model = parseJson(source.modelProvenance ?? source.model_provenance_json);
+  const modelRecord = typeof model === "object" && model !== null ? model as Record<string, unknown> : undefined;
+  const modelProvenance = modelRecord?.modelId && modelRecord.providerId ? modelRecord : undefined;
+  return { parseStatus, verifiedAt, chunkCount: chunks.length, verified, canPublish: source.status === "staged" && verified, modelProvenance };
 }

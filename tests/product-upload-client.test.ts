@@ -7,11 +7,16 @@ import ts from "typescript";
 test("product upload uses top-level URL and capability token from the API", async () => {
   const source = readFileSync(new URL("../frontend/src/pages/KnowledgeProduct.tsx", import.meta.url), "utf8");
   const functionSource = source.slice(source.indexOf("  const uploadFile ="), source.indexOf("  const submit ="));
-  const calls: any[] = [];
+  const calls: Array<{ url: string; options: { method?: string; headers: Record<string, string>; body?: unknown } }> = [];
   const file = { name: "21.1 Docs.zip" };
+  const record = (value: unknown) => value && typeof value === "object" ? value : {};
+  const text = (value: unknown, fallback = "") => typeof value === "string" && value ? value : fallback;
   const uploadFile = runInNewContext(ts.transpile(`${functionSource}\nuploadFile;`), {
+    record,
+    text,
+    path: { trim: () => ({ replace: () => "knowledge/product-docs" }) },
     localStorage: { getItem: () => "test-auth" },
-    fetch: async (url: string, options: any) => {
+    fetch: async (url: string, options: { method?: string; headers: Record<string, string>; body?: unknown }) => {
       calls.push({ url, options });
       return { ok: true, json: async () => ({ upload: { path: "knowledge/product-docs/21.1 Docs.zip", status: "pending" }, token: "test-capability", uploadUrl: "/api/uploads/test-session" }) };
     },

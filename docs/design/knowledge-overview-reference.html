@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'>
+<title>Knowledge overview v2</title>
+<link rel='preconnect' href='https://fonts.googleapis.com'>
+<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>
+<link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap'>
+<style>
+:root{--ink:#061216;--mint:#6ee7c8;--amber:#ffb454;--coral:#ff7a70;--text:#e8f1ef;--muted:#8fa8a6;--line:rgba(255,255,255,.09);--display:'Bricolage Grotesque','Segoe UI Variable Display','Segoe UI','Microsoft YaHei',sans-serif;--body:'IBM Plex Sans','Segoe UI','Microsoft YaHei',sans-serif;--mono:'IBM Plex Mono','Cascadia Mono',Consolas,monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark;background:#071418}
+body{min-height:100vh;font:15px/1.6 var(--body);color:var(--text);background:radial-gradient(900px 620px at 88% -8%,rgba(255,170,80,.20),transparent 62%),radial-gradient(820px 700px at -6% 18%,rgba(20,184,166,.22),transparent 62%),radial-gradient(1000px 640px at 55% 112%,rgba(70,100,210,.20),transparent 62%),linear-gradient(180deg,#071418,#081a1f 60%,#07161b)}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;opacity:.07;mix-blend-mode:overlay;background-image:url(data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20width=%27160%27%20height=%27160%27%3E%3Cfilter%20id=%27n%27%3E%3CfeTurbulence%20type=%27fractalNoise%27%20baseFrequency=%27.8%27%20numOctaves=%272%27%20stitchTiles=%27stitch%27/%3E%3C/filter%3E%3Crect%20width=%27100%25%27%20height=%27100%25%27%20filter=%27url%28%23n%29%27/%3E%3C/svg%3E)}
+a{color:inherit}
+a:focus-visible,button:focus-visible{outline:2px solid var(--amber);outline-offset:3px;border-radius:6px}
+.top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:36px;padding:16px 40px;border-bottom:1px solid var(--line);background:rgba(6,18,22,.6);backdrop-filter:blur(14px)}
+.brand{display:flex;align-items:center;gap:10px;font:600 18px var(--display);letter-spacing:-.01em;white-space:nowrap}
+.mark{width:26px;height:26px;border-radius:8px;background:conic-gradient(from 210deg,var(--mint),var(--amber),var(--mint));box-shadow:0 0 20px rgba(110,231,200,.4)}
+nav{display:flex;gap:4px;overflow-x:auto}
+nav a{padding:7px 15px;border-radius:999px;color:var(--muted);text-decoration:none;font-size:14px;white-space:nowrap;transition:color .2s,background .2s}
+nav a:hover{color:var(--text);background:rgba(255,255,255,.06)}
+nav a[aria-current]{color:var(--ink);background:var(--mint);font-weight:500}
+.who{margin-left:auto;color:var(--muted);font-size:13px;white-space:nowrap}
+.wrap{max-width:1280px;margin:0 auto;padding:52px 40px 96px}
+.hero{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:56px;align-items:center}
+.plate-shell{padding:1px;border-radius:24px;background:linear-gradient(145deg,rgba(255,255,255,.30),rgba(255,255,255,.04) 42%,rgba(110,231,200,.26));box-shadow:0 40px 80px -30px rgba(0,0,0,.65),0 0 90px -20px rgba(110,231,200,.20)}
+.plate{border-radius:23px;padding:24px 26px 28px 18px;background:linear-gradient(160deg,#10303a 0%,#08191e 72%);box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}
+.grid{display:grid;grid-template-columns:18px repeat(12,1fr);gap:10px;align-items:center}
+.ax{font:400 11px var(--mono);color:var(--muted);text-align:center;opacity:.75}
+.well{aspect-ratio:1;border-radius:50%;filter:brightness(var(--b,1));transition:transform .15s;animation:light .55s cubic-bezier(.2,.8,.2,1) backwards;animation-delay:var(--d,0ms)}
+.well:hover{transform:scale(1.2)}
+.well.ok{background:radial-gradient(circle at 35% 30%,#c4fbec 0,var(--mint) 38%,#1f9c86 100%);box-shadow:0 0 14px rgba(110,231,200,.35),inset 0 -3px 6px rgba(0,0,0,.25)}
+.well.stale{background:radial-gradient(circle at 35% 30%,#ffe3b5,var(--amber) 42%,#b36a12 100%);box-shadow:0 0 16px rgba(255,180,84,.5),inset 0 -3px 6px rgba(0,0,0,.25)}
+.well.fail{background:radial-gradient(circle at 35% 30%,#ffc2bc,var(--coral) 42%,#b8322a 100%);box-shadow:0 0 16px rgba(255,122,112,.5),inset 0 -3px 6px rgba(0,0,0,.25)}
+.well.wait{background:rgba(255,255,255,.04);box-shadow:inset 0 0 0 1.5px rgba(255,255,255,.16)}
+@keyframes light{from{opacity:0;transform:scale(.4);filter:brightness(2.2)}}
+h1{font:600 clamp(32px,4.2vw,52px)/1.08 var(--display);letter-spacing:-.03em;text-wrap:balance}
+.lede{margin-top:16px;color:var(--muted);max-width:38ch}
+.legend{display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;margin:26px 0 24px;list-style:none;font-size:14px;color:var(--muted)}
+.legend b{font:500 14px var(--mono);color:var(--text);margin-left:6px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:8px}
+.dot.ok{background:var(--mint);box-shadow:0 0 10px var(--mint)}
+.dot.stale{background:var(--amber);box-shadow:0 0 10px var(--amber)}
+.dot.fail{background:var(--coral);box-shadow:0 0 10px var(--coral)}
+.dot.wait{box-shadow:inset 0 0 0 1.5px rgba(255,255,255,.35)}
+.btn{font:500 14px var(--body);color:var(--amber);background:rgba(255,180,84,.08);border:1px solid rgba(255,180,84,.45);border-radius:8px;padding:8px 18px;cursor:pointer;transition:background .2s,box-shadow .2s}
+.btn:hover{background:rgba(255,180,84,.16);box-shadow:0 0 22px -4px rgba(255,180,84,.5)}
+.sub{font:500 14px var(--body);color:var(--muted);margin:36px 0 6px}
+.q{display:flex;justify-content:space-between;align-items:center;padding:14px 10px;border-top:1px solid var(--line);text-decoration:none;transition:background .2s}
+.q:hover{background:rgba(255,255,255,.05)}
+.q b{font:500 15px var(--mono)}
+.amber{color:var(--amber)}.mintc{color:var(--mint)}.coralc{color:var(--coral)}
+section.block{margin-top:80px}
+h2.h{font:600 22px var(--display);letter-spacing:-.01em}
+.row-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:18px}
+.row-head a{font-size:14px;color:var(--mint);text-decoration:none;border-bottom:1px solid transparent;transition:border-color .2s}
+.row-head a:hover{border-bottom-color:var(--mint)}
+.glass{position:relative;border:1px solid var(--line);border-radius:16px;background:linear-gradient(165deg,rgba(255,255,255,.07),rgba(255,255,255,.02));backdrop-filter:blur(14px);overflow:hidden;transition:border-color .25s}
+.glass::after{content:'';position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity .3s;background:radial-gradient(320px circle at var(--mx,50%) var(--my,50%),rgba(255,255,255,.09),transparent 65%)}
+.glass:hover{border-color:rgba(255,255,255,.22)}
+.glass:hover::after{opacity:1}
+.planes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}
+.plane{display:flex;flex-direction:column;gap:28px;padding:26px;min-height:210px;text-decoration:none;background:radial-gradient(300px 190px at 0 0,rgba(var(--tint),.26),transparent 70%),linear-gradient(165deg,rgba(255,255,255,.07),rgba(255,255,255,.02))}
+.plane h3{font:600 24px var(--display);letter-spacing:-.02em}
+.plane p{margin-top:8px;color:var(--muted);max-width:30ch}
+.plane .foot{margin-top:auto;font:500 13px var(--mono);color:rgb(var(--tint))}
+.runs{padding:0}
+.run{display:grid;grid-template-columns:minmax(0,1fr) 200px 110px;gap:24px;align-items:center;padding:16px 22px;border-top:1px solid var(--line);text-decoration:none;transition:background .2s}
+.run:first-child{border-top:0}
+.run:hover{background:rgba(255,255,255,.04)}
+.path{font:400 13.5px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meta{margin-top:2px;font-size:12.5px;color:var(--muted)}
+.seg{display:flex;height:6px;border-radius:99px;overflow:hidden;background:rgba(255,255,255,.06)}
+.seg i{display:block}
+.pill{display:inline-flex;align-items:center;gap:8px;justify-content:flex-end;font-size:13px}
+.pill::before{content:'';width:8px;height:8px;border-radius:50%;background:currentColor;box-shadow:0 0 10px currentColor}
+.good{color:var(--mint)}.warn{color:var(--amber)}.bad{color:var(--coral)}
+.note{margin-top:28px;font-size:13px;color:var(--muted)}
+.note span{color:var(--text)}
+@media(max-width:960px){.hero{grid-template-columns:1fr;gap:40px}.planes{grid-template-columns:1fr}}
+@media(max-width:700px){.top{padding:14px 20px;gap:16px}.who{display:none}.wrap{padding:32px 20px 64px}.grid{gap:6px}.run{grid-template-columns:minmax(0,1fr) auto}.run .seg{grid-column:1/-1;grid-row:2}}
+@media(prefers-reduced-motion:reduce){.well{animation:none}*{transition:none!important}}
+</style>
+</head>
+<body>
+<header class='top'>
+<div class='brand'><span class='mark'></span>Relay MCP</div>
+<nav aria-label='Primary'><a href='#' aria-current='page'>Overview</a><a href='#'>Product docs</a><a href='#'>Memory</a><a href='#'>Operations</a></nav>
+<div class='who'>fei.teng, admin</div>
+</header>
+<main class='wrap'>
+<section class='hero'>
+<div class='plate-shell'><div class='plate'><div class='grid' id='grid' role='img' aria-label='Index coverage plate with 96 batches'></div></div></div>
+<div class='intro'>
+<h1>Index is current except <span id='n'>14</span> batches</h1>
+<p class='lede'>Each well is a batch of 12 documents. Hover one to see where it came from.</p>
+<ul class='legend'>
+<li><i class='dot ok'></i>Current<b id='c-ok'>82</b></li>
+<li><i class='dot stale'></i>Stale<b id='c-stale'>6</b></li>
+<li><i class='dot fail'></i>Failed<b id='c-fail'>2</b></li>
+<li><i class='dot wait'></i>Waiting<b id='c-wait'>6</b></li>
+</ul>
+<button class='btn' id='replay' type='button'>Refresh</button>
+<h2 class='sub'>Needs attention</h2>
+<div>
+<a class='q' href='#'><span>Candidate insights waiting for review</span><b class='amber'>12</b></a>
+<a class='q' href='#'><span>Evidence not linked to any knowledge</span><b class='mintc'>5</b></a>
+<a class='q' href='#'><span>Imports that failed</span><b class='coralc'>2</b></a>
+</div>
+</div>
+</section>
+<section class='block'>
+<div class='row-head'><h2 class='h'>Where to work</h2></div>
+<div class='planes'>
+<a class='glass plane' href='#' style='--tint:110,231,200'><div><h3>Product docs</h3><p>Versioned documentation you can import, compare and search.</p></div><span class='foot'>248 documents</span></a>
+<a class='glass plane' href='#' style='--tint:255,180,84'><div><h3>Memory</h3><p>What sessions captured, and the insights waiting to become knowledge.</p></div><span class='foot'>12 waiting for review</span></a>
+<a class='glass plane' href='#' style='--tint:255,122,112'><div><h3>Operations</h3><p>Capture, ingest and index health, with rebuild controls.</p></div><span class='foot'>2 failed imports</span></a>
+</div>
+</section>
+<section class='block'>
+<div class='row-head'><h2 class='h'>Recent ingest runs</h2><a href='#'>View all runs</a></div>
+<div class='glass runs'>
+<a class='run' href='#'><div><div class='path'>knowledge/product-docs/SampleManager-12.4.pdf</div><div class='meta'>45 imported, 12 skipped, 0 failed</div></div><div class='seg'><i style='flex:45;background:var(--mint)'></i><i style='flex:12;background:rgba(255,255,255,.22)'></i></div><span class='pill good'>Succeeded</span></a>
+<a class='run' href='#'><div><div class='path'>knowledge/lims-operations/deployment-guide.md</div><div class='meta'>28 imported, 3 skipped, 2 failed</div></div><div class='seg'><i style='flex:28;background:var(--mint)'></i><i style='flex:3;background:rgba(255,255,255,.22)'></i><i style='flex:2;background:var(--coral)'></i></div><span class='pill warn'>Partial</span></a>
+<a class='run' href='#'><div><div class='path'>knowledge/troubleshooting/network-issues.zip</div><div class='meta'>0 imported, 0 skipped, 15 failed</div></div><div class='seg'><i style='flex:15;background:var(--coral)'></i></div><span class='pill bad'>Failed</span></a>
+<a class='run' href='#'><div><div class='path'>knowledge/api-docs/rest-api-v2.json</div><div class='meta'>156 imported, 8 skipped, 0 failed</div></div><div class='seg'><i style='flex:156;background:var(--mint)'></i><i style='flex:8;background:rgba(255,255,255,.22)'></i></div><span class='pill good'>Succeeded</span></a>
+<a class='run' href='#'><div><div class='path'>knowledge/product-docs/installation-guide-12.3.html</div><div class='meta'>89 imported, 21 skipped, 0 failed</div></div><div class='seg'><i style='flex:89;background:var(--mint)'></i><i style='flex:21;background:rgba(255,255,255,.22)'></i></div><span class='pill good'>Succeeded</span></a>
+</div>
+<p class='note'>Default project: <span>SampleManager Production</span></p>
+</section>
+</main>
+<script>
+(function(){
+function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
+var rows='ABCDEFGH',stale=[14,15,16,38,39,70],fail=[53,87],wait=[90,91,92,93,94,95];
+var label={ok:'current',stale:'stale',fail:'failed',wait:'waiting to index'};
+var src=['SampleManager admin guide','Deployment runbook','Network troubleshooting','REST API reference','Installation guide','Release notes','Workflow reference','Data model reference'];
+var g=document.getElementById('grid'),wells=[],seed=7;
+function rnd(){seed=(seed*9301+49297)%233280;return seed/233280}
+g.appendChild(el('span'));
+for(var c=1;c<=12;c++)g.appendChild(el('span','ax',c));
+for(var r=0;r<8;r++){g.appendChild(el('span','ax',rows[r]));for(var k=0;k<12;k++){var i=r*12+k;var st=fail.indexOf(i)>-1?'fail':stale.indexOf(i)>-1?'stale':wait.indexOf(i)>-1?'wait':'ok';var w=el('div','well '+st);w.style.setProperty('--d',((r+k)*35)+'ms');w.style.setProperty('--b',(0.82+rnd()*0.3).toFixed(2));w.title=rows[r]+(k+1)+', '+label[st]+', '+src[(i*3)%src.length];g.appendChild(w);wells.push(w)}}
+var bad=stale.length+fail.length+wait.length;
+document.getElementById('n').textContent=bad;
+document.getElementById('c-ok').textContent=96-bad;
+document.getElementById('c-stale').textContent=stale.length;
+document.getElementById('c-fail').textContent=fail.length;
+document.getElementById('c-wait').textContent=wait.length;
+document.getElementById('replay').addEventListener('click',function(){wells.forEach(function(w){w.style.animation='none'});void g.offsetWidth;wells.forEach(function(w){w.style.animation=''})});
+document.querySelectorAll('.glass').forEach(function(p){p.addEventListener('mousemove',function(e){var b=p.getBoundingClientRect();p.style.setProperty('--mx',(e.clientX-b.left)+'px');p.style.setProperty('--my',(e.clientY-b.top)+'px')})});
+})();
+</script>
+</body>
+</html>

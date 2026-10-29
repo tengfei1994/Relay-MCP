@@ -2,76 +2,91 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { api } from "../api/client";
 import { Badge, formatDate } from "./KnowledgePrimitives";
+import { Button, StatusPill } from "./ui";
 
 type HistoryKind = "events" | "dead-letter";
+
+type Page = { total: number; limit?: number; offset?: number };
+interface CaptureEvent { id: string; type?: string; occurredAt?: string; jobId?: string; deploymentId?: string; payloadKeys?: string[] }
+interface DeadLetter { id?: string; error?: string; eventId?: string; attempts?: number; sourcePath?: string; lineNumber?: number }
+type HistoryResult = { page: Page; events?: CaptureEvent[]; deadLetters?: DeadLetter[] };
 
 export default function CaptureHistory({ kind, refresh }: { kind: HistoryKind; refresh: number }) {
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(10);
   const [total, setTotal] = useState(0);
-  const [rows, setRows] = useState<any[]>([]);
+  const [rows, setRows] = useState<Array<CaptureEvent | DeadLetter>>([]);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   const [jump, setJump] = useState("1");
   const requestId = useRef(0);
-  const title = kind === "events" ? "Recent events" : "Dead-letter details";
+  const title = kind === "events" ? "Recent captures" : "Dead-letter details";
   const pages = Math.max(1, Math.ceil(total / size));
-  useEffect(() => { setJump(String(page)); }, [page]);
+
+  useEffect(() => setJump(String(page)), [page]);
   useEffect(() => {
     const id = ++requestId.current;
-    setBusy(true); setError(""); setRows([]);
-    const request = kind === "events" ? api.knowledgeOperationsCaptureEvents(size, (page - 1) * size) : api.knowledgeOperationsDeadLetters(size, (page - 1) * size);
-    request.then((result) => {
+    setBusy(true); setError("");
+    const request = kind === "events"
+      ? api.knowledgeOperationsCaptureEvents(size, (page - 1) * size)
+      : api.knowledgeOperationsDeadLetters(size, (page - 1) * size);
+    request.then((raw) => {
       if (id !== requestId.current) return;
-      const count = Number(result.page.total);
-      setTotal(count);
+      const result = raw as unknown as HistoryResult;
+      const count = Number(result.page?.total ?? 0);
+      setTotal(Number.isFinite(count) ? count : 0);
       const last = Math.max(1, Math.ceil(count / size));
       if (page > last) { setPage(last); return; }
-      setRows(kind === "events" ? result.events : result.deadLetters);
-    }).catch((err) => {
-      if (id === requestId.current) setError(err instanceof Error ? err.message : "Unable to load history");
+      setRows(kind === "events" ? (result.events ?? []) : (result.deadLetters ?? []));
+    }).catch((err: unknown) => {
+      if (id === requestId.current) setError(err instanceof Error ? err.message : "Unable to load capture history");
     }).finally(() => { if (id === requestId.current) setBusy(false); });
     return () => { requestId.current++; };
   }, [kind, page, size, refresh, retry]);
 
-  const numbers = [...new Set([1, pages, ...Array.from({ length: 5 }, (_, i) => page + i - 2)])].filter((n) => n >= 1 && n <= pages).sort((a, b) => a - b);
-  const buttonClass = "inline-flex h-8 min-w-8 items-center justify-center rounded border border-gray-700 px-2 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-40";
-  return <section className="min-w-0 border-t border-gray-800 py-4" aria-label={title} aria-busy={busy}>
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <h3 className="font-medium text-gray-100">{title}</h3>
-      <label className="flex items-center gap-2 text-xs text-gray-400">Rows per page
-        <select aria-label={`${title} rows per page`} disabled={busy} value={size} onChange={(e) => { setSize(Number(e.target.value)); setPage(1); }} className="rounded border border-gray-700 bg-gray-950 p-1.5">
-          {[10, 20, 50].map((n) => <option key={n} value={n}>{n}</option>)}
+  const numbers = [...new Set([1, pages, ...Array.from({ length: 5 }, (_, i) => page + i - 2)])]
+    .filter((number) => number >= 1 && number <= pages).sort((a, b) => a - b);
+  const from = total === 0 ? 0 : (page - 1) * size + 1;
+  const to = Math.min(page * size, total);
+  return <section className="glass overflow-hidden" aria-label={title} aria-busy={busy}>
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
+      <div><h2 className="font-display text-[17px] font-semibold text-fg">{title}</h2><p className="mt-1 text-sm text-muted">Capture records are retained with safe provenance and no raw payloads.</p></div>
+      <label className="flex items-center gap-2 text-xs text-muted">Rows per page
+        <select aria-label={`${title} rows per page`} disabled={busy} value={size} onChange={(event) => { setSize(Number(event.target.value)); setPage(1); }} className="h-8 rounded-field border border-line bg-[var(--field)] px-2 text-fg">
+          {[10, 20, 50].map((number) => <option key={number} value={number}>{number}</option>)}
         </select>
       </label>
     </div>
-    {error ? <div role="alert" className="my-4 break-words text-sm text-rose-300">{error}<button onClick={() => setRetry((n) => n + 1)} className={`${buttonClass} ml-2`}><RefreshCw size={14} className="mr-1" />Retry</button></div>
-      : busy ? <p role="status" className="py-4 text-sm text-gray-400">Loading page {page}...</p>
-      : rows.length === 0 ? <p className="py-4 text-sm text-gray-400">No records.</p>
-      : <div className="mt-3 max-h-[32rem] divide-y divide-gray-800 overflow-y-auto">
-        {rows.map((row, index) => <div key={row.id ?? `${row.sourcePath}:${row.lineNumber ?? index}`} className="min-w-0 py-3 [overflow-wrap:anywhere]">
-          {kind === "events" ? <>
-            <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm text-gray-200">{row.type}</span><Badge>{(row.payloadKeys ?? []).length} payload fields</Badge></div>
-            <p className="mt-1 text-xs text-gray-400">{formatDate(row.occurredAt)} · {row.jobId ?? "no job"} · {row.deploymentId ?? "no deployment"}</p>
-            <p className="mt-1 text-xs text-gray-500">{row.id}</p>
-          </> : <>
-            <p className="text-sm text-rose-200">{row.error ?? "unknown error"}</p>
-            <p className="mt-1 text-xs text-gray-400">{row.eventId ?? "no event ID"} · attempts {row.attempts ?? "unknown"}</p>
-            <p className="mt-1 text-xs text-gray-500">{row.sourcePath} · line {row.lineNumber}</p>
-          </>}
-        </div>)}
+    {error ? <div role="alert" className="flex flex-wrap items-center gap-3 p-5 text-sm text-coral"><span>{error}</span><Button variant="ghost" size="sm" onClick={() => setRetry((value) => value + 1)}><RefreshCw size={14} /> Retry</Button></div>
+      : busy ? <p role="status" className="p-5 text-sm text-muted">Loading capture history…</p>
+      : rows.length === 0 ? <p className="p-5 text-sm text-muted">No capture records yet.</p>
+      : <div className="divide-y divide-white/10">
+        {rows.map((row, index) => {
+          const event = row as CaptureEvent;
+          const deadLetter = row as DeadLetter;
+          const key = kind === "events" ? event.id : deadLetter.id ?? `${deadLetter.sourcePath ?? "dead-letter"}:${deadLetter.lineNumber ?? index}`;
+          return <div key={key} className="min-w-0 px-5 py-4 [overflow-wrap:anywhere]">
+            {kind === "events" ? <>
+              <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium text-fg">{event.type ?? "Unknown event"}</span><Badge>{event.payloadKeys?.length ?? 0} payload fields</Badge></div>
+              <p className="mt-1 text-xs text-muted">{formatDate(event.occurredAt)}, {event.jobId ?? "no job"}, {event.deploymentId ?? "no deployment"}</p>
+              <p className="mt-1 font-mono text-xs text-muted/80">{event.id}</p>
+            </> : <>
+              <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium text-coral">{deadLetter.error ?? "Unknown error"}</span><StatusPill status="failed" /></div>
+              <p className="mt-1 text-xs text-muted">{deadLetter.eventId ?? "no event ID"}, attempts {deadLetter.attempts ?? "unknown"}</p>
+              <p className="mt-1 font-mono text-xs text-muted/80">{deadLetter.sourcePath ?? "unknown source"}, line {deadLetter.lineNumber ?? "unknown"}</p>
+            </>}
+          </div>;
+        })}
       </div>}
-    <nav aria-label={`${title} pagination`} className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-gray-800 pt-3">
-      <span className="text-xs text-gray-400">{total === 0 ? 0 : (page - 1) * size + 1}-{Math.min(page * size, total)} of {total} · Page {page} of {pages}</span>
-      <div className="flex flex-wrap items-center gap-1">
-        <button title="Previous page" aria-label={`${title} previous page`} disabled={busy || page === 1} onClick={() => setPage((n) => n - 1)} className={buttonClass}><ChevronLeft size={14} /></button>
-        {numbers.map((n, i) => <span key={n} className="inline-flex items-center gap-1">{i > 0 && n - numbers[i - 1] > 1 && <span className="px-1 text-gray-500">...</span>}<button aria-label={`${title} page ${n}`} aria-current={n === page ? "page" : undefined} disabled={busy} onClick={() => setPage(n)} className={`${buttonClass} ${n === page ? "border-cyan-500 bg-cyan-950 text-cyan-100" : ""}`}>{n}</button></span>)}
-        <button title="Next page" aria-label={`${title} next page`} disabled={busy || page === pages} onClick={() => setPage((n) => n + 1)} className={buttonClass}><ChevronRight size={14} /></button>
+    <nav aria-label={`${title} pagination`} className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 px-5 py-4">
+      <span className="text-xs text-muted">Showing <span className="font-mono text-fg">{from}</span> to <span className="font-mono text-fg">{to}</span> of <span className="font-mono text-fg">{total}</span></span>
+      <div className="flex items-center gap-1"><Button variant="ghost" size="sm" aria-label={`${title} previous page`} disabled={busy || page === 1} onClick={() => setPage((value) => value - 1)}><ChevronLeft size={14} /></Button>
+        {numbers.map((number, index) => <span key={number} className="inline-flex items-center gap-1">{index > 0 && number - numbers[index - 1] > 1 && <span className="px-1 text-muted">…</span>}<button aria-label={`${title} page ${number}`} aria-current={number === page ? "page" : undefined} disabled={busy} onClick={() => setPage(number)} className={`h-8 min-w-8 rounded-ctl px-2 text-xs ${number === page ? "bg-mint text-ink" : "text-muted hover:bg-white/10 hover:text-fg"}`}>{number}</button></span>)}
+        <Button variant="ghost" size="sm" aria-label={`${title} next page`} disabled={busy || page === pages} onClick={() => setPage((value) => value + 1)}><ChevronRight size={14} /></Button>
       </div>
-      <form className="flex items-center gap-2 text-xs text-gray-400" onSubmit={(e) => { e.preventDefault(); const n = Number(jump); if (Number.isInteger(n) && n >= 1 && n <= pages) setPage(n); }}>
-        <label>Go to page <input aria-label={`${title} page number`} type="number" min={1} max={pages} value={jump} onChange={(e) => setJump(e.target.value)} className="ml-1 h-8 w-16 rounded border border-gray-700 bg-gray-950 px-2" /></label>
-        <button disabled={busy} className={buttonClass}>Go</button>
+      <form className="flex items-center gap-2 text-xs text-muted" onSubmit={(event) => { event.preventDefault(); const number = Number(jump); if (Number.isInteger(number) && number >= 1 && number <= pages) setPage(number); }}>
+        <label>Go to page <input aria-label={`${title} page number`} type="number" min={1} max={pages} value={jump} onChange={(event) => setJump(event.target.value)} className="ml-1 h-8 w-16 rounded-field border border-line bg-[var(--field)] px-2 text-fg" /></label><Button variant="ghost" size="sm" disabled={busy}>Go</Button>
       </form>
     </nav>
   </section>;

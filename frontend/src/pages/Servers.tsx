@@ -1,22 +1,76 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Server, CheckCircle, XCircle, Clock, Copy, Trash2, Key, Pencil, Terminal } from "lucide-react";
+import { Plus, Server as ServerIcon, CheckCircle, XCircle, Clock, Copy, Trash2, Key, Pencil, Terminal } from "lucide-react";
 import { api } from "../api/client";
+import { Button, ConfirmDialog, Dialog, Field, Input, Select } from "../components/ui";
+
+type ServerStatus = "connected" | "failed" | "pending" | string;
+type Server = {
+  id: number;
+  name: string;
+  host?: string;
+  port?: number;
+  sshUser?: string;
+  os?: "linux" | "windows" | string;
+  connectionMode?: "ssh" | "agent" | string;
+  agentId?: string;
+  status: ServerStatus;
+};
+type ServerFormKey = "name" | "host" | "port" | "sshUser" | "os" | "password" | "connectionMode" | "agentId";
+type EditFormKey = Exclude<ServerFormKey, "password">;
+type ServerForm = Record<ServerFormKey, string>;
+type EditForm = Record<EditFormKey, string>;
+type TerminalLine = { type: "log" | "success" | "error"; message: string };
+type ConfirmState = { kind: "server"; id: number } | null;
+function messageFrom(error: unknown): string { return error instanceof Error ? error.message : "Request failed"; }
+function present<T>(value: T | null): value is T {
+  return value !== null;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function serverFrom(value: unknown): Server | null {
+  if (typeof value !== "object" || value === null || !("id" in value) || typeof value.id !== "number" || !("name" in value) || typeof value.name !== "string" || !("status" in value) || typeof value.status !== "string") return null;
+  const record = value as Record<string, unknown>;
+  return {
+    id: value.id,
+    name: value.name,
+    host: optionalString(record.host),
+    port: typeof record.port === "number" ? record.port : undefined,
+    sshUser: optionalString(record.sshUser),
+    os: optionalString(record.os),
+    connectionMode: optionalString(record.connectionMode),
+    agentId: optionalString(record.agentId),
+    status: value.status,
+  };
+}
+
+function serversFrom(value: unknown): Server[] {
+  return typeof value === "object" && value !== null && "servers" in value && Array.isArray(value.servers) ? value.servers.map(serverFrom).filter(present) : [];
+}
+
+function addedServerFrom(value: unknown): { server: Server; publicKey: string } | null {
+  if (typeof value !== "object" || value === null || !("server" in value)) return null;
+  const server = serverFrom(value.server);
+  if (!server) return null;
+  return { server, publicKey: "publicKey" in value && typeof value.publicKey === "string" ? value.publicKey : "" };
+}
 
 const STATUS_ICON: Record<string, JSX.Element> = {
-  connected: <CheckCircle size={13} className="text-green-400" />,
-  failed: <XCircle size={13} className="text-red-400" />,
-  pending: <Clock size={13} className="text-yellow-400" />,
+  connected: <CheckCircle size={13} className="text-mint" />,
+  failed: <XCircle size={13} className="text-coral" />,
+  pending: <Clock size={13} className="text-sun" />,
 };
 
-type TerminalLine = { type: "log" | "success" | "error"; message: string };
-
 export default function ServersPage() {
-  const [servers, setServers] = useState<any[]>([]);
+  const [servers, setServers] = useState<Server[]>([]);
+  const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [showAdd, setShowAdd] = useState(false);
-  const [newServer, setNewServer] = useState({ name: "", host: "", port: "22", sshUser: "root", os: "linux", password: "", connectionMode: "ssh", agentId: "" });
+  const [newServer, setNewServer] = useState<ServerForm>({ name: "", host: "", port: "22", sshUser: "root", os: "linux", password: "", connectionMode: "ssh", agentId: "" });
   const [addedKey, setAddedKey] = useState<{ id: number; key: string } | null>(null);
-  const [editServer, setEditServer] = useState<any | null>(null);
-  const [editForm, setEditForm] = useState({ name: "", host: "", port: "22", sshUser: "", os: "linux", connectionMode: "ssh", agentId: "" });
+  const [editServer, setEditServer] = useState<Server | null>(null);
+  const [editForm, setEditForm] = useState<EditForm>({ name: "", host: "", port: "22", sshUser: "", os: "linux", connectionMode: "ssh", agentId: "" });
   const [error, setError] = useState("");
 
   // Terminal modal
@@ -25,8 +79,14 @@ export default function ServersPage() {
   const [termRunning, setTermRunning] = useState(false);
   const termRef = useRef<HTMLDivElement>(null);
 
+  // Password confirmation before pushing an SSH key
+  const [setupTarget, setSetupTarget] = useState<Server | null>(null);
+  const [setupPassword, setSetupPassword] = useState("");
+  const [setupError, setSetupError] = useState("");
+  const [setupLoading, setSetupLoading] = useState(false);
+
   useEffect(() => {
-    api.listServers().then((r) => setServers(r.servers));
+    api.listServers().then((r) => setServers(serversFrom(r)));
   }, []);
 
   // Auto-scroll terminal
@@ -46,10 +106,10 @@ export default function ServersPage() {
       .then(() => {
         setTermRunning(false);
         // Refresh server status
-        api.listServers().then((r) => setServers(r.servers));
+        api.listServers().then((r) => setServers(serversFrom(r)));
       })
-      .catch((err) => {
-        setTermLines((l) => [...l, { type: "error", message: err.message }]);
+      .catch((err: unknown) => {
+        setTermLines((l) => [...l, { type: "error", message: messageFrom(err) }]);
         setTermRunning(false);
       });
   }, [terminal]);
@@ -67,29 +127,47 @@ export default function ServersPage() {
         connectionMode: newServer.connectionMode as "ssh" | "agent",
         agentId: newServer.agentId,
       });
-      setServers((s) => [...s, r.server]);
+      const added = addedServerFrom(r);
+      if (!added) throw new Error("The server returned an invalid server.");
+      setServers((s) => [...s, added.server]);
       setShowAdd(false);
       const pwd = newServer.password.trim();
       setNewServer({ name: "", host: "", port: "22", sshUser: "root", os: "linux", password: "", connectionMode: "ssh", agentId: "" });
 
       if (newServer.connectionMode === "ssh" && pwd) {
         // Auto-launch terminal setup
-        setTerminal({ serverId: r.server.id, password: pwd });
+        setTerminal({ serverId: added.server.id, password: pwd });
       } else if (newServer.connectionMode === "ssh") {
         // Show public key for manual copy
-        setAddedKey({ id: r.server.id, key: r.publicKey });
+        setAddedKey({ id: added.server.id, key: added.publicKey });
       }
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(messageFrom(err));
     }
   };
 
-  const openSetup = (s: any) => {
-    const pwd = prompt(`Enter SSH password for ${s.sshUser}@${s.host} to push key:`);
-    if (pwd) setTerminal({ serverId: s.id, password: pwd });
+  const openSetup = (s: Server) => {
+    setSetupTarget(s);
+    setSetupPassword("");
+    setSetupError("");
   };
 
-  const openEdit = (s: any) => {
+  const startSetup = () => {
+    if (!setupTarget) return;
+    const password = setupPassword.trim();
+    if (!password) {
+      setSetupError("Enter the SSH password to continue.");
+      return;
+    }
+    setSetupError("");
+    setSetupLoading(true);
+    setTerminal({ serverId: setupTarget.id, password });
+    setSetupTarget(null);
+    setSetupPassword("");
+    setSetupLoading(false);
+  };
+
+  const openEdit = (s: Server) => {
     setEditServer(s);
     setEditForm({ name: s.name, host: s.host ?? "", port: String(s.port ?? 22), sshUser: s.sshUser ?? "", os: s.os ?? "linux", connectionMode: s.connectionMode ?? "ssh", agentId: s.agentId ?? "" });
     setError("");
@@ -97,9 +175,11 @@ export default function ServersPage() {
 
   const saveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!editServer) return;
+    const serverId = editServer.id;
     setError("");
     try {
-      const r = await api.updateServer(editServer.id, {
+      const r = await api.updateServer(serverId, {
         name: editForm.name,
         host: editForm.host,
         port: Number(editForm.port),
@@ -108,53 +188,57 @@ export default function ServersPage() {
         connectionMode: editForm.connectionMode as "ssh" | "agent",
         agentId: editForm.agentId,
       });
-      setServers((s) => s.map((sv) => (sv.id === editServer.id ? r.server : sv)));
+      const server = serverFrom(typeof r === "object" && r !== null && "server" in r ? r.server : null);
+      if (!server) throw new Error("The server returned an invalid server.");
+      setServers((s) => s.map((sv) => (sv.id === serverId ? server : sv)));
       setEditServer(null);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(messageFrom(err));
     }
   };
 
   const testServer = async (id: number) => {
     const r = await api.testServer(id);
+    const ok = typeof r === "object" && r !== null && "ok" in r && r.ok === true;
     setServers((s) =>
-      s.map((sv) => (sv.id === id ? { ...sv, status: r.ok ? "connected" : "failed" } : sv))
+      s.map((sv) => (sv.id === id ? { ...sv, status: ok ? "connected" : "failed" } : sv))
     );
   };
 
   const deleteServer = async (id: number) => {
-    if (!confirm("Delete this server?")) return;
-    await api.deleteServer(id);
-    setServers((s) => s.filter((sv) => sv.id !== id));
+    setConfirm({ kind: "server", id });
   };
 
-  const inputCls =
-    "w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500";
+  const confirmDeleteServer = async () => {
+    if (!confirm || confirm.kind !== "server") return;
+    await api.deleteServer(confirm.id);
+    setServers((s) => s.filter((sv) => sv.id !== confirm.id));
+    setConfirm(null);
+  };
+
+
 
   return (
-    <div className="p-6 max-w-3xl">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-lg font-semibold text-gray-100">Servers</h2>
-        <button
-          onClick={() => setShowAdd(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-md transition-colors"
-        >
+    <div className="page max-w-3xl">
+      <div className="mb-8 flex items-center justify-between">
+        <div>
+          <h1 className="font-display text-[30px] font-semibold tracking-[-0.02em] text-fg">Servers</h1>
+          <p className="mt-2 max-w-[60ch] text-sm text-muted">Manage remote hosts and relay agents.</p>
+        </div>
+        <Button variant="primary" onClick={() => setShowAdd(true)}>
           <Plus size={14} />
-          Add Server
-        </button>
+          Add server
+        </Button>
       </div>
 
       <div className="space-y-3">
         {servers.map((s) => (
-          <div
-            key={s.id}
-            className="flex items-center justify-between bg-gray-900 border border-gray-800 rounded-lg px-4 py-3"
-          >
+          <div key={s.id} className="glass flex items-center justify-between rounded-panel px-5 py-4">
             <div className="flex items-center gap-3">
-              <Server size={16} className="text-gray-500" />
+              <ServerIcon size={16} className="text-muted" />
               <div>
-                <p className="text-sm font-medium text-gray-200">{s.name}</p>
-                <p className="text-xs text-gray-500">
+                <p className="text-sm font-medium text-fg">{s.name}</p>
+                <p className="text-xs text-muted">
                   {(s.connectionMode ?? "ssh") === "agent"
                     ? `agent: ${s.agentId ?? "-"}`
                     : `${s.sshUser}@${s.host}:${s.port}`}
@@ -162,318 +246,249 @@ export default function ServersPage() {
               </div>
             </div>
             <div className="flex items-center gap-3">
-              <div className="flex items-center gap-1 text-xs text-gray-500">
+              <div className="flex items-center gap-1 text-xs text-muted">
                 {STATUS_ICON[s.status] ?? STATUS_ICON.pending}
                 {s.status}
               </div>
               {(s.connectionMode ?? "ssh") === "ssh" && (
                 <button
+                  type="button"
                   onClick={() => openSetup(s)}
-                  className="text-gray-500 hover:text-yellow-400"
-                  title="Push Key & Setup"
+                  className="text-muted transition-colors hover:text-sun"
+                  title="Push key and set up"
+                  aria-label={`Push key and set up ${s.name}`}
                 >
                   <Key size={14} />
                 </button>
               )}
+              <Button variant="ghost" size="sm" onClick={() => testServer(s.id)}>Test</Button>
               <button
-                onClick={() => testServer(s.id)}
-                className="text-xs text-indigo-400 hover:text-indigo-300 px-2 py-1 border border-gray-700 rounded"
-              >
-                Test
-              </button>
-              <button
+                type="button"
                 onClick={() => openEdit(s)}
-                className="text-gray-500 hover:text-indigo-400"
+                className="text-muted transition-colors hover:text-mint"
                 title="Edit"
+                aria-label={`Edit ${s.name}`}
               >
                 <Pencil size={14} />
               </button>
-              <button onClick={() => deleteServer(s.id)} className="text-gray-600 hover:text-red-400">
+              <button
+                type="button"
+                onClick={() => deleteServer(s.id)}
+                className="text-muted transition-colors hover:text-coral"
+                aria-label={`Delete ${s.name}`}
+              >
                 <Trash2 size={14} />
               </button>
             </div>
           </div>
         ))}
-        {servers.length === 0 && <p className="text-sm text-gray-600">No servers added yet.</p>}
+        {servers.length === 0 && <p className="text-sm text-muted">No servers added yet.</p>}
       </div>
 
-      {/* Add server modal */}
-      {showAdd && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-md">
-            <h3 className="text-base font-semibold text-gray-100 mb-4">Add Server</h3>
-            <form onSubmit={addServer} className="space-y-3">
-              {[ 
-                { label: "Name", key: "name", placeholder: "my-prod-server" },
-              ].map(({ label, key, placeholder }) => (
-                <div key={key}>
-                  <label className="block text-xs text-gray-400 mb-1">{label}</label>
-                  <input
-                    value={(newServer as any)[key]}
-                    onChange={(e) => setNewServer((s) => ({ ...s, [key]: e.target.value }))}
-                    placeholder={placeholder}
-                    className={inputCls}
-                  />
-                </div>
-              ))}
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">Connection</label>
-                <select
-                  value={newServer.connectionMode}
-                  onChange={(e) => setNewServer((s) => ({ ...s, connectionMode: e.target.value }))}
-                  className={inputCls}
-                >
-                  <option value="ssh">SSH</option>
-                  <option value="agent">Relay Agent</option>
-                </select>
-              </div>
-              {newServer.connectionMode === "ssh" ? (
-                <>
-                  {[
-                    { label: "Host", key: "host", placeholder: "192.168.1.100" },
-                    { label: "Port", key: "port", placeholder: "22" },
-                    { label: "SSH User", key: "sshUser", placeholder: "root" },
-                  ].map(({ label, key, placeholder }) => (
-                    <div key={key}>
-                      <label className="block text-xs text-gray-400 mb-1">{label}</label>
-                      <input
-                        value={(newServer as any)[key]}
-                        onChange={(e) => setNewServer((s) => ({ ...s, [key]: e.target.value }))}
-                        placeholder={placeholder}
-                        className={inputCls}
-                      />
-                    </div>
-                  ))}
-                </>
-              ) : (
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">Agent ID</label>
-                  <input
-                    value={newServer.agentId}
-                    onChange={(e) => setNewServer((s) => ({ ...s, agentId: e.target.value }))}
-                    placeholder="VGSM-SERVER"
-                    className={inputCls}
-                  />
-                </div>
-              )}
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">OS</label>
-                <select
-                  value={newServer.os}
-                  onChange={(e) => setNewServer((s) => ({ ...s, os: e.target.value }))}
-                  className={inputCls}
-                >
-                  <option value="linux">Linux / Unix</option>
-                  <option value="windows">Windows</option>
-                </select>
-              </div>
-              {newServer.connectionMode === "ssh" && <div>
-                <label className="block text-xs text-gray-400 mb-1">
-                  SSH Password <span className="text-gray-600">(optional — auto-push key)</span>
-                </label>
-                <input
-                  type="password"
-                  value={newServer.password}
-                  onChange={(e) => setNewServer((s) => ({ ...s, password: e.target.value }))}
-                  placeholder="Leave blank to copy key manually"
-                  className={inputCls}
-                />
-              </div>}
-              {error && <p className="text-xs text-red-400">{error}</p>}
-              <div className="flex gap-2 pt-1">
-                <button
-                  type="submit"
-                  className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-md"
-                >
-                  {newServer.connectionMode === "agent" ? "Add Agent Server" : newServer.password ? "Add & Setup" : "Generate SSH Key & Add"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowAdd(false)}
-                  className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <Dialog
+        open={showAdd}
+        onClose={() => setShowAdd(false)}
+        title="Add server"
+        description="Connect a remote host or relay agent."
+        footer={
+          <>
+            <Button type="button" variant="ghost" onClick={() => setShowAdd(false)}>Cancel</Button>
+            <Button type="submit" form="add-server-form">
+              {newServer.connectionMode === "agent" ? "Add agent server" : newServer.password ? "Add and set up" : "Generate SSH key and add"}
+            </Button>
+          </>
+        }
+      >
+        <form id="add-server-form" onSubmit={addServer} className="space-y-3">
+          <Field label="Name" required>
+            <Input value={newServer.name} onChange={(e) => setNewServer((s) => ({ ...s, name: e.target.value }))} placeholder="my-prod-server" required />
+          </Field>
+          <Field label="Connection">
+            <Select value={newServer.connectionMode} onChange={(e) => setNewServer((s) => ({ ...s, connectionMode: e.target.value }))}>
+              <option value="ssh">SSH</option>
+              <option value="agent">Relay agent</option>
+            </Select>
+          </Field>
+          {newServer.connectionMode === "ssh" ? (
+            <>
+              <Field label="Host" required>
+                <Input value={newServer.host} onChange={(e) => setNewServer((s) => ({ ...s, host: e.target.value }))} placeholder="192.168.1.100" required />
+              </Field>
+              <Field label="Port">
+                <Input value={newServer.port} onChange={(e) => setNewServer((s) => ({ ...s, port: e.target.value }))} placeholder="22" inputMode="numeric" />
+              </Field>
+              <Field label="SSH user">
+                <Input value={newServer.sshUser} onChange={(e) => setNewServer((s) => ({ ...s, sshUser: e.target.value }))} placeholder="root" />
+              </Field>
+            </>
+          ) : (
+            <Field label="Agent ID" required>
+              <Input value={newServer.agentId} onChange={(e) => setNewServer((s) => ({ ...s, agentId: e.target.value }))} placeholder="VGSM-SERVER" required />
+            </Field>
+          )}
+          <Field label="Operating system">
+            <Select value={newServer.os} onChange={(e) => setNewServer((s) => ({ ...s, os: e.target.value }))}>
+              <option value="linux">Linux / Unix</option>
+              <option value="windows">Windows</option>
+            </Select>
+          </Field>
+          {newServer.connectionMode === "ssh" && (
+            <Field label="SSH password" hint="Optional; used to push the key automatically.">
+              <Input type="password" value={newServer.password} onChange={(e) => setNewServer((s) => ({ ...s, password: e.target.value }))} placeholder="Leave blank to copy the key manually" />
+            </Field>
+          )}
+          {error && <p className="text-sm text-coral" role="alert">{error}</p>}
+        </form>
+      </Dialog>
 
-      {/* Edit server modal */}
-      {editServer && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-md">
-            <h3 className="text-base font-semibold text-gray-100 mb-4">Edit Server</h3>
-            <form onSubmit={saveEdit} className="space-y-3">
-              {[
-                { label: "Name", key: "name" },
-              ].map(({ label, key }) => (
-                <div key={key}>
-                  <label className="block text-xs text-gray-400 mb-1">{label}</label>
-                  <input
-                    value={(editForm as any)[key]}
-                    onChange={(e) => setEditForm((f) => ({ ...f, [key]: e.target.value }))}
-                    className={inputCls}
-                  />
-                </div>
-              ))}
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">Connection</label>
-                <select
-                  value={editForm.connectionMode}
-                  onChange={(e) => setEditForm((f) => ({ ...f, connectionMode: e.target.value }))}
-                  className={inputCls}
-                >
-                  <option value="ssh">SSH</option>
-                  <option value="agent">Relay Agent</option>
-                </select>
-              </div>
-              {editForm.connectionMode === "ssh" ? (
-                <>
-                  {[
-                    { label: "Host", key: "host" },
-                    { label: "Port", key: "port" },
-                    { label: "SSH User", key: "sshUser" },
-                  ].map(({ label, key }) => (
-                    <div key={key}>
-                      <label className="block text-xs text-gray-400 mb-1">{label}</label>
-                      <input
-                        value={(editForm as any)[key]}
-                        onChange={(e) => setEditForm((f) => ({ ...f, [key]: e.target.value }))}
-                        className={inputCls}
-                      />
-                    </div>
-                  ))}
-                </>
-              ) : (
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">Agent ID</label>
-                  <input
-                    value={editForm.agentId}
-                    onChange={(e) => setEditForm((f) => ({ ...f, agentId: e.target.value }))}
-                    className={inputCls}
-                  />
-                </div>
-              )}
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">OS</label>
-                <select
-                  value={editForm.os}
-                  onChange={(e) => setEditForm((f) => ({ ...f, os: e.target.value }))}
-                  className={inputCls}
-                >
-                  <option value="linux">Linux / Unix</option>
-                  <option value="windows">Windows</option>
-                </select>
-              </div>
-              {error && <p className="text-xs text-red-400">{error}</p>}
-              <p className="text-xs text-yellow-500">Changing host/user will reset status to pending.</p>
-              <div className="flex gap-2 pt-1">
-                <button
-                  type="submit"
-                  className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-md"
-                >
-                  Save
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditServer(null);
-                    setError("");
-                  }}
-                  className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <Dialog
+        open={editServer !== null}
+        onClose={() => { setEditServer(null); setError(""); }}
+        title="Edit server"
+        description="Update the connection details for this server."
+        footer={
+          <>
+            <Button type="button" variant="ghost" onClick={() => { setEditServer(null); setError(""); }}>Cancel</Button>
+            <Button type="submit" form="edit-server-form">Save</Button>
+          </>
+        }
+      >
+        <form id="edit-server-form" onSubmit={saveEdit} className="space-y-3">
+          <Field label="Name" required>
+            <Input value={editForm.name} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} required />
+          </Field>
+          <Field label="Connection">
+            <Select value={editForm.connectionMode} onChange={(e) => setEditForm((f) => ({ ...f, connectionMode: e.target.value }))}>
+              <option value="ssh">SSH</option>
+              <option value="agent">Relay agent</option>
+            </Select>
+          </Field>
+          {editForm.connectionMode === "ssh" ? (
+            <>
+              <Field label="Host" required>
+                <Input value={editForm.host} onChange={(e) => setEditForm((f) => ({ ...f, host: e.target.value }))} required />
+              </Field>
+              <Field label="Port">
+                <Input value={editForm.port} onChange={(e) => setEditForm((f) => ({ ...f, port: e.target.value }))} inputMode="numeric" />
+              </Field>
+              <Field label="SSH user">
+                <Input value={editForm.sshUser} onChange={(e) => setEditForm((f) => ({ ...f, sshUser: e.target.value }))} />
+              </Field>
+            </>
+          ) : (
+            <Field label="Agent ID" required>
+              <Input value={editForm.agentId} onChange={(e) => setEditForm((f) => ({ ...f, agentId: e.target.value }))} required />
+            </Field>
+          )}
+          <Field label="Operating system">
+            <Select value={editForm.os} onChange={(e) => setEditForm((f) => ({ ...f, os: e.target.value }))}>
+              <option value="linux">Linux / Unix</option>
+              <option value="windows">Windows</option>
+            </Select>
+          </Field>
+          {error && <p className="text-sm text-coral" role="alert">{error}</p>}
+          <p className="text-sm text-sun">Changing host or user will reset status to pending.</p>
+        </form>
+      </Dialog>
 
-      {/* Manual key copy modal */}
-      {addedKey && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-lg">
-            <div className="flex items-center gap-2 mb-3">
-              <Key size={16} className="text-indigo-400" />
-              <h3 className="text-base font-semibold text-gray-100">SSH Key Generated</h3>
-            </div>
-            <p className="text-xs text-gray-400 mb-2">
-              Add this public key to the server's{" "}
-              <code className="text-indigo-300">~/.ssh/authorized_keys</code>:
-            </p>
-            <div className="relative">
-              <pre className="bg-gray-800 rounded p-3 text-xs text-green-300 break-all whitespace-pre-wrap mb-3">
-                {addedKey.key}
-              </pre>
-              <button
-                onClick={() => navigator.clipboard.writeText(addedKey.key)}
-                className="absolute top-2 right-2 text-gray-500 hover:text-gray-300"
-              >
-                <Copy size={13} />
-              </button>
-            </div>
-            <button
-              onClick={() => setAddedKey(null)}
-              className="mt-2 w-full py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md"
+      <Dialog
+        open={setupTarget !== null}
+        onClose={() => {
+          if (setupLoading) return;
+          setSetupTarget(null);
+          setSetupPassword("");
+          setSetupError("");
+        }}
+        title="Set up SSH access"
+        description={setupTarget ? `Enter the SSH password for ${setupTarget.sshUser}@${setupTarget.host}.` : "Enter the SSH password to push the key."}
+        busy={setupLoading}
+        footer={
+          <>
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={setupLoading}
+              onClick={() => {
+                setSetupTarget(null);
+                setSetupPassword("");
+                setSetupError("");
+              }}
             >
-              Done
+              Cancel
+            </Button>
+            <Button type="button" onClick={startSetup} loading={setupLoading}>
+              Push key and set up
+            </Button>
+          </>
+        }
+      >
+        <Field label="SSH password" required>
+          <Input
+            type="password"
+            autoFocus
+            value={setupPassword}
+            onChange={(event) => {
+              setSetupPassword(event.target.value);
+              if (setupError) setSetupError("");
+            }}
+            placeholder="Enter password"
+            required
+          />
+        </Field>
+        {setupError && <p className="mt-3 text-sm text-coral" role="alert">{setupError}</p>}
+      </Dialog>
+
+      <Dialog
+        open={addedKey !== null}
+        onClose={() => setAddedKey(null)}
+        title="SSH key generated"
+        description="Add this public key to the server's ~/.ssh/authorized_keys file."
+        footer={<Button onClick={() => setAddedKey(null)}>Done</Button>}
+        wide
+      >
+        {addedKey && (
+          <div className="relative">
+            <pre className="rounded-field border border-line bg-field p-3 font-mono text-xs text-mint break-all whitespace-pre-wrap">{addedKey.key}</pre>
+            <button
+              type="button"
+              onClick={() => navigator.clipboard.writeText(addedKey.key)}
+              className="absolute right-2 top-2 text-muted hover:text-fg"
+              aria-label="Copy public key"
+            >
+              <Copy size={13} />
             </button>
           </div>
-        </div>
-      )}
+        )}
+      </Dialog>
 
-      {/* Terminal modal */}
-      {terminal && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-gray-950 border border-gray-700 rounded-xl w-full max-w-2xl flex flex-col" style={{ height: "420px" }}>
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-800">
-              <Terminal size={15} className="text-green-400" />
-              <span className="text-sm font-mono text-gray-300">Server Setup</span>
-              {termRunning && (
-                <span className="ml-2 text-xs text-yellow-400 animate-pulse">running…</span>
-              )}
+      <Dialog
+        open={terminal !== null}
+        onClose={() => setTerminal(null)}
+        title="Server setup"
+        description={termRunning ? "Setup is running…" : "Setup output"}
+        wide
+        busy={termRunning}
+        footer={<Button variant="ghost" disabled={termRunning} onClick={() => setTerminal(null)}>{termRunning ? "Running…" : "Close"}</Button>}
+      >
+        <div ref={termRef} className="max-h-80 overflow-y-auto rounded-field border border-line bg-[#071418] p-4 font-mono text-xs space-y-1">
+          {termLines.map((l, i) => (
+            <div key={i} className={l.type === "success" ? "text-mint" : l.type === "error" ? "text-coral" : "text-fg"}>
+              <span className="mr-2 select-none text-muted">{l.type === "success" ? "✓" : l.type === "error" ? "✗" : "›"}</span>
+              {l.message}
             </div>
-            <div
-              ref={termRef}
-              className="flex-1 overflow-y-auto p-4 font-mono text-xs space-y-1"
-              style={{ background: "#0d1117" }}
-            >
-              {termLines.map((l, i) => (
-                <div
-                  key={i}
-                  className={
-                    l.type === "success"
-                      ? "text-green-400"
-                      : l.type === "error"
-                      ? "text-red-400"
-                      : "text-gray-300"
-                  }
-                >
-                  <span className="text-gray-600 mr-2 select-none">
-                    {l.type === "success" ? "✓" : l.type === "error" ? "✗" : "›"}
-                  </span>
-                  {l.message}
-                </div>
-              ))}
-              {termRunning && (
-                <div className="text-gray-600 animate-pulse">█</div>
-              )}
-            </div>
-            <div className="px-4 py-3 border-t border-gray-800">
-              <button
-                onClick={() => setTerminal(null)}
-                disabled={termRunning}
-                className="w-full py-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-gray-300 text-sm rounded-md"
-              >
-                {termRunning ? "Running…" : "Close"}
-              </button>
-            </div>
-          </div>
+          ))}
+          {termRunning && <div className="animate-pulse text-muted">█</div>}
         </div>
-      )}
+      </Dialog>
+      <ConfirmDialog
+        open={confirm !== null}
+        onClose={() => setConfirm(null)}
+        title="Delete server?"
+        description="This removes the server connection and cannot be undone."
+        confirmLabel="Delete server"
+        tone="danger"
+        onConfirm={confirmDeleteServer}
+      />
     </div>
   );
 }

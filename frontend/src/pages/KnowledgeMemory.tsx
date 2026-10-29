@@ -1,39 +1,182 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Search } from "lucide-react";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
-import { Badge, cardClass, formatDate, inputClass, PageShell, ScopeBanner, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
+import { useProjectScope } from "../context/ProjectScope";
+import { PageTabs } from "../components/shell/PageTabs";
+import { Badge, DataTable, Drawer, EmptyState, ErrorState, Input, PageHeader, Select, StatusPill } from "../components/ui";
 
-const TABS = ["sessions", "evidence", "observations", "candidate-insights", "confirmed-memory"] as const;
+type MemoryTab = "sessions" | "evidence" | "observations" | "candidate-insights" | "confirmed-memory";
+type JsonRecord = Record<string, unknown>;
+const TABS: readonly MemoryTab[] = ["sessions", "evidence", "observations", "candidate-insights", "confirmed-memory"];
 const TYPES = ["Fact", "Decision", "Case", "Pattern"] as const;
+const isRecord = (value: unknown): value is JsonRecord => typeof value === "object" && value !== null;
+const text = (value: unknown, fallback = "") => typeof value === "string" || typeof value === "number" ? String(value) : fallback;
+const listFrom = (value: unknown): JsonRecord[] => Array.isArray(value) ? value.filter(isRecord) : [];
+type MemoryPayloadKey = "memories" | "insights" | "sessions" | "evidence" | "observations";
+const listFromPayload = (value: unknown, key: MemoryPayloadKey): JsonRecord[] => {
+  if (!isRecord(value)) return [];
+  return listFrom(value[key]);
+};
+
+const titleOf = (row: JsonRecord) => text(row.title ?? row.displayTitle ?? row.statement ?? row.summary ?? row.id, "Untitled record");
+const summaryOf = (row: JsonRecord) => text(row.statement ?? row.displaySummary ?? row.summary ?? row.objective, "No summary available");
+const labelOf = (tab: MemoryTab) => tab === "candidate-insights" ? "Candidate insights" : tab === "confirmed-memory" ? "Confirmed memory" : tab[0].toUpperCase() + tab.slice(1);
+const dateOf = (value: unknown) => {
+  const date = new Date(String(value ?? ""));
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+};
+
+function RecordDrawer({ row, tab, onClose }: { row: JsonRecord; tab: MemoryTab; onClose: () => void }) {
+  const evidence = Array.isArray(row.evidenceRefs) ? row.evidenceRefs : [];
+  const audit = row.audit ?? row.reviewReason;
+  const impact = row.impact ?? row.impactSummary ?? row.affectedRecords;
+  const review = row.review ?? row.reviewStatus ?? row.reviewReason;
+  const metadata: Array<[string, unknown]> = [
+    ["Type", row.type ?? row.kind],
+    ["Scope", isRecord(row.scope) ? `${text(row.scope.scopeType)}:${text(row.scope.scopeKey)}` : row.projectId],
+    ["Source", isRecord(row.source) ? row.source.locator : row.sourceLocator],
+    ["Reviewed", row.reviewedAt ?? row.confirmedAt ?? row.updatedAt],
+  ];
+  return (
+    <Drawer open title={titleOf(row)} onClose={onClose}>
+      <div className="space-y-8">
+        <section>
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <Badge tone="iris">{labelOf(tab)}</Badge>
+            <StatusPill status={row.status ?? row.lifecycle ?? "confirmed"} />
+            <code className="text-xs text-muted">{text(row.id, "unknown")}</code>
+          </div>
+          <h3 className="mb-3 font-display text-lg font-semibold">Summary</h3>
+          <dl className="grid gap-3 sm:grid-cols-2">
+            {metadata.map(([name, value]) => <div key={name}><dt className="text-sm text-muted">{name}</dt><dd className="mt-1 break-words text-sm">{text(value, "—")}</dd></div>)}
+          </dl>
+          <p className="mt-5 whitespace-pre-wrap text-[15px] leading-6 text-muted">{summaryOf(row)}</p>
+        </section>
+        <section>
+          <h3 className="mb-3 font-display text-lg font-semibold">Evidence</h3>
+          {evidence.length ? <ul className="divide-y divide-white/10">{evidence.map((item, index) => <li key={`${text(item)}-${index}`} className="flex items-center justify-between gap-3 py-3"><code className="break-all text-xs text-muted">{text(item)}</code><Badge tone="mint">Linked</Badge></li>)}</ul> : <p className="text-sm text-muted">No linked evidence.</p>}
+        </section>
+        <section>
+          <h3 className="mb-3 font-display text-lg font-semibold">History</h3>
+          {audit ? <pre className="max-h-80 overflow-auto whitespace-pre-wrap text-xs leading-6 text-muted">{typeof audit === "string" ? audit : JSON.stringify(audit, null, 2)}</pre> : <p className="text-sm text-muted">No review history yet.</p>}
+        </section>
+        <section>
+          <h3 className="mb-3 font-display text-lg font-semibold">Impact</h3>
+          {impact ? <pre className="max-h-64 overflow-auto whitespace-pre-wrap text-sm leading-6 text-muted">{typeof impact === "string" ? impact : JSON.stringify(impact, null, 2)}</pre> : <p className="text-sm text-muted">No impact relationships are recorded.</p>}
+        </section>
+        <section>
+          <h3 className="mb-3 font-display text-lg font-semibold">Review</h3>
+          {review ? <pre className="max-h-64 overflow-auto whitespace-pre-wrap text-sm leading-6 text-muted">{typeof review === "string" ? review : JSON.stringify(review, null, 2)}</pre> : <p className="text-sm text-muted">No review decision is recorded.</p>}
+        </section>
+      </div>
+    </Drawer>
+  );
+}
 
 export default function KnowledgeMemory() {
   const location = useLocation();
-  const routeTab = (TABS.find((item) => location.pathname.endsWith(`/${item}`)) ?? "confirmed-memory") as (typeof TABS)[number];
-  const [tab, setTab] = useState<(typeof TABS)[number]>(routeTab);
-  const [projectId, setProjectId] = useState("");
-  const [projects, setProjects] = useState<any[]>([]);
+  const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const { projects, projectId, setProjectId, loading: scopeLoading, error: scopeError } = useProjectScope();
+  const routeTab = (TABS.find((item) => location.pathname.endsWith(`/${item}`)) ?? "confirmed-memory") as MemoryTab;
+  const [tab, setTab] = useState<MemoryTab>(routeTab);
   const [type, setType] = useState("");
-  const [rows, setRows] = useState<any[]>([]);
-  const [selected, setSelected] = useState<any>();
+  const [query, setQuery] = useState(params.get("q") ?? "");
+  const [rows, setRows] = useState<JsonRecord[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  useEffect(() => { setTab(routeTab); }, [routeTab]);
-  useEffect(() => { api.listProjects().then((result) => { setProjects(result.projects ?? []); const first = result.projects?.[0]; if (first) setProjectId(String(first.id)); }).catch((err) => setError(String(err))); }, []);
-  useEffect(() => {
-    if (!projectId) return;
-    setLoading(true); setError(""); setSelected(undefined);
-    const task = tab === "confirmed-memory" ? api.knowledgeConfirmedMemories(projectId, type ? { type } : {}) : tab === "candidate-insights" ? api.knowledgeCandidateInsights(projectId) : tab === "sessions" ? api.knowledgeSessions() : tab === "evidence" ? api.knowledgeEvidenceList(Number(projectId)) : api.knowledgeObservations(Number(projectId));
-    task.then((result: any) => setRows(result.memories ?? result.insights ?? result.sessions ?? result.evidence ?? result.observations ?? [])).catch((err) => setError(err instanceof Error ? err.message : "Unable to load Memory workspace")).finally(() => setLoading(false));
-  }, [projectId, tab, type]);
-  const title = tab === "confirmed-memory" ? "Confirmed Memory" : tab === "candidate-insights" ? "Candidate Insights" : tab[0].toUpperCase() + tab.slice(1);
-  const selectedEvidence = useMemo(() => selected?.evidenceRefs ?? [], [selected]);
-  return <PageShell title="Memory" description="Sessions, source Evidence, Observations, Candidate Insights and typed Confirmed Memory live in separate views. Approved Playbooks are managed as operations." breadcrumbs={[{ label: "Knowledge", to: "/knowledge" }, { label: "Memory" }]}>
-    <ScopeBanner project={projects.find((item) => String(item.id) === projectId)?.name} scope="memory" acl="owner / granted reviewers" />
-    <div className="mb-4 flex flex-wrap items-center gap-2"><select className={inputClass} value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">Select project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>{tab === "confirmed-memory" && <select className={inputClass} value={type} onChange={(event) => setType(event.target.value)}><option value="">All Confirmed Memory</option>{TYPES.map((item) => <option key={item} value={item}>{item}</option>)}</select>}</div>
-    <div className="mb-5 flex flex-wrap gap-2" aria-label="Memory sections">{TABS.map((item) => <button key={item} onClick={() => setTab(item)} className={`rounded-md px-3 py-2 text-xs ${tab === item ? "bg-indigo-600 text-white" : "border border-gray-700 text-gray-300 hover:bg-gray-800"}`}>{item === "candidate-insights" ? "Candidate Insights" : item === "confirmed-memory" ? "Confirmed Memory" : item[0].toUpperCase() + item.slice(1)}</button>)}<Link to="/knowledge/playbooks" className="rounded-md border border-amber-800/70 px-3 py-2 text-xs text-amber-300">Approved Operations</Link></div>
-    {error && <p className="mb-4 rounded-md border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-300">{error}</p>}
-    {loading ? <StatePanel state="loading" message={`Loading ${title}…`} /> : !rows.length ? <StatePanel state="empty" message={`No ${title} records are available in this project.`} /> : <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.8fr)]"><div className="space-y-3">{rows.map((row) => <button key={row.id} onClick={() => setSelected(row)} className={`block w-full rounded-xl border p-4 text-left ${selected?.id === row.id ? "border-indigo-600 bg-indigo-950/20" : "border-gray-800 bg-gray-900/70 hover:border-indigo-700/70"}`}><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm font-medium text-gray-200">{row.title ?? row.displayTitle ?? row.statement ?? row.summary ?? row.id}</span><StatusBadge value={row.status ?? row.lifecycle ?? "confirmed"} /></div><p className="mt-2 line-clamp-3 text-sm leading-6 text-gray-400">{row.statement ?? row.displaySummary ?? row.summary ?? row.objective ?? "No summary available"}</p>{row.type && <div className="mt-2"><Badge tone="blue">{row.type}</Badge></div>}</button>)}</div>{selected && <section className={cardClass}><div className="flex items-center justify-between gap-2"><h3 className="font-medium text-gray-100">{selected.title ?? selected.id}</h3><StatusBadge value={selected.status ?? selected.lifecycle ?? "confirmed"} /></div><div className="mt-3 grid gap-2 sm:grid-cols-2"><Meta label="Type" value={selected.type ?? selected.kind ?? "—"} /><Meta label="Evidence" value={selectedEvidence.length ? selectedEvidence.join(", ") : "—"} /><Meta label="Scope" value={selected.scope ? `${selected.scope.scopeType}:${selected.scope.scopeKey}` : selected.projectId ?? projectId} /><Meta label="Source" value={selected.source?.locator ?? selected.sourceLocator ?? "—"} /><Meta label="Confirmed by" value={selected.confirmedBy ?? selected.reviewedBy ?? "—"} /><Meta label="Confirmed at" value={selected.confirmedAt ?? selected.reviewedAt ?? selected.updatedAt ?? "—"} /></div><div className="mt-4 rounded-lg border border-gray-800 bg-gray-950/40 p-3"><p className="text-xs font-medium text-gray-300">Audit</p><p className="mt-2 whitespace-pre-wrap text-sm text-gray-400">{selected.audit ? JSON.stringify(selected.audit, null, 2) : selected.reviewReason ?? "No audit detail returned."}</p></div></section>}</div>}
-  </PageShell>;
-}
+  const [reloadCount, setReloadCount] = useState(0);
+  const selectedId = params.get("id");
+  const selected = useMemo(() => rows.find((row) => text(row.id) === selectedId), [rows, selectedId]);
 
-function Meta({ label, value }: { label: string; value: unknown }) { return <div className="rounded-lg border border-gray-800 bg-gray-950/40 p-3"><p className="text-[11px] uppercase tracking-wide text-gray-600">{label}</p><p className="mt-1 break-words text-sm text-gray-300">{String(value ?? "—")}</p><p className="mt-1 text-[11px] text-gray-600">{formatDate(value)}</p></div>; }
+  useEffect(() => { setTab(routeTab); }, [routeTab]);
+  useEffect(() => {
+    if (tab !== "sessions" && projectId === undefined) {
+      setRows([]);
+      return;
+    }
+    let active = true;
+    setLoading(true);
+    setError("");
+    let task: Promise<unknown>;
+    if (tab === "confirmed-memory") {
+      task = api.knowledgeConfirmedMemories(projectId ?? "", type ? { type } : {});
+    } else if (tab === "candidate-insights") {
+      task = api.knowledgeCandidateInsights(projectId ?? "");
+    } else if (tab === "sessions") {
+      task = api.knowledgeSessions();
+    } else if (tab === "evidence") {
+      task = api.knowledgeEvidenceList(projectId);
+    } else {
+      if (projectId === undefined) return;
+      task = api.knowledgeObservations(projectId);
+    }
+    task.then((result: unknown) => {
+      if (!active) return;
+      const key: MemoryPayloadKey = tab === "confirmed-memory"
+        ? "memories"
+        : tab === "candidate-insights"
+          ? "insights"
+          : tab;
+      setRows(listFromPayload(result, key));
+    }).catch((reason: unknown) => {
+      if (!active) return;
+      setRows([]);
+      setError(reason instanceof Error ? reason.message : "Unable to load Memory workspace");
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
+  }, [projectId, tab, type, reloadCount]);
+
+  const open = (id: string) => {
+    const next = new URLSearchParams(params);
+    next.set("id", id);
+    setParams(next, { replace: false });
+  };
+  const close = () => {
+    const next = new URLSearchParams(params);
+    next.delete("id");
+    navigate(`${location.pathname}${next.toString() ? `?${next}` : ""}`, { replace: true });
+  };
+  const applyQuery = (value: string) => {
+    setQuery(value);
+    const next = new URLSearchParams(params);
+    value ? next.set("q", value) : next.delete("q");
+    setParams(next, { replace: true });
+  };
+  const visibleRows = rows.filter((row) => !query.trim() || `${titleOf(row)} ${summaryOf(row)}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const title = labelOf(tab);
+  const columns = [
+    { key: "record", header: "Record", render: (row: JsonRecord) => <div className="min-w-0"><strong className="block truncate font-medium">{titleOf(row)}</strong><span className="mt-1 block line-clamp-2 text-sm text-muted">{summaryOf(row)}</span></div> },
+    { key: "status", header: "Status", render: (row: JsonRecord) => <StatusPill status={row.status ?? row.lifecycle ?? "confirmed"} /> },
+    { key: "updated", header: "Updated", render: (row: JsonRecord) => <span className="text-sm text-muted">{dateOf(row.updatedAt ?? row.confirmedAt ?? row.createdAt)}</span> },
+  ];
+
+  return (
+    <div className="mx-auto max-w-[1280px] px-5 py-8 sm:px-8">
+      <PageHeader title="Memory" description="Sessions, evidence and the insights built from them." tabs={<PageTabs section="memory" />} />
+      <div className="mb-6 flex flex-wrap items-end gap-3">
+        <label className="relative min-w-[280px] flex-1">
+          <span className="sr-only">Search {title}</span>
+          <Search size={15} aria-hidden="true" className="pointer-events-none absolute left-3 top-3 text-muted" />
+          <Input className="pl-9" placeholder={`Search ${title.toLowerCase()}`} value={query} onChange={(event) => applyQuery(event.target.value)} />
+        </label>
+        <label className="min-w-[210px]">
+          <span className="sr-only">Project</span>
+          <Select value={projectId === undefined ? "" : String(projectId)} onChange={(event) => setProjectId(Number(event.target.value))} disabled={scopeLoading || projects.length === 0}>
+            <option value="">Select project</option>
+            {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+          </Select>
+        </label>
+        {tab === "confirmed-memory" && <label className="min-w-[190px]"><span className="sr-only">Memory type</span><Select value={type} onChange={(event) => setType(event.target.value)}><option value="">All confirmed memory</option>{TYPES.map((item) => <option key={item} value={item}>{item}</option>)}</Select></label>}
+        <span className="text-sm text-muted">{visibleRows.length} results</span>
+      </div>
+      {scopeError && <ErrorState className="mb-4" message={scopeError} description="The project scope could not be loaded." />}
+      {error && <ErrorState className="mb-4" message={error} onRetry={() => setReloadCount((count) => count + 1)} />}
+      {loading || scopeLoading ? <div className="ui-glass p-6 text-sm text-muted" role="status">Loading {title.toLowerCase()}…</div> : !visibleRows.length ? <EmptyState title={`No ${title.toLowerCase()} records`} description="Try another filter or capture more knowledge." /> : <DataTable columns={columns} rows={visibleRows} rowKey={(row) => text(row.id)} selectedRowKey={selectedId ?? undefined} onRowClick={(row) => open(text(row.id))} />}
+      {selected && <RecordDrawer row={selected} tab={tab} onClose={close} />}
+    </div>
+  );
+}

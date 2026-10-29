@@ -503,6 +503,19 @@ npm run dev:mcp
 
 技术栈：Node.js、TypeScript、Fastify、Express、MCP SDK、SQLite/Drizzle、React、Vite、Tailwind CSS、PM2、node-ssh，以及 Windows WPF/.NET Agent。
 
+### 前端界面
+
+Web UI 使用顶部主导航与 Knowledge 二级导航；Product docs、Memory 和 Operations 保留各自的分区标签。Knowledge Overview 以 96 孔板展示索引覆盖，项目级页面通过顶部项目范围选择器共享持久化的 `knowledge.projectId`。记录详情、Provider 配置与审核操作使用可键盘操作的 Drawer/Dialog；原生 `window.confirm`/`prompt` 已移除。
+
+设计令牌与实现约束见 [前端重设计规格](docs/frontend-redesign-spec.md)，视觉参考见 [Knowledge Overview 参考页](docs/design/knowledge-overview-reference.html)。字体通过 `frontend` 的本地 `@fontsource` 依赖加载，不依赖 Google Fonts。
+
+前端构建与严格类型检查：
+
+```bash
+npm --prefix frontend run build
+cd frontend && npx tsc --noEmit --jsx react-jsx --module ESNext --moduleResolution bundler --target ES2022 --strict --skipLibCheck src/main.tsx
+```
+
 ## Managed Knowledge engine
 
 Product Knowledge 和 Wiki 的统一模型、部署、迁移及故障恢复见 [运维指南](docs/managed-knowledge-engine-operations.md)。本轮能力与升级边界见 [未发布变更说明](docs/managed-knowledge-engine-release-notes.md)，真实验收证据见 [验证报告](docs/verification/managed-engine-progress.md)。

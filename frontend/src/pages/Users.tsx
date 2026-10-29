@@ -1,168 +1,87 @@
-import { useState, useEffect } from "react";
-import { UserPlus, Trash2, ShieldCheck, Shield, KeyRound } from "lucide-react";
+import { useEffect, useState } from "react";
+import { KeyRound, Shield, ShieldCheck, Trash2, UserPlus } from "lucide-react";
 import { api } from "../api/client";
 import { useAuth } from "../App";
+import { Button, ConfirmDialog, Dialog, EmptyState, Field, Input, StatusPill, useToast } from "../components/ui";
+
+type UserRecord = { id: number; username: string; isAdmin: boolean; createdAt?: string };
+type UserForm = { username: string; password: string; isAdmin: boolean };
+const emptyUser: UserForm = { username: "", password: "", isAdmin: false };
+const inputClass = "w-full rounded-[10px] border border-white/10 bg-white/[.04] px-3 py-2 text-sm text-fg outline-none placeholder:text-muted focus:border-mint";
+function messageOf(reason: unknown) { return reason instanceof Error ? reason.message : "The request could not be completed."; }
 
 export default function UsersPage() {
   const { user: me } = useAuth();
-  const [users, setUsers] = useState<any[]>([]);
+  const toast = useToast();
+  const [users, setUsers] = useState<UserRecord[]>([]);
   const [showCreate, setShowCreate] = useState(false);
-  const [newUser, setNewUser] = useState({ username: "", password: "", isAdmin: false });
-  const [pwdTarget, setPwdTarget] = useState<any | null>(null);
+  const [newUser, setNewUser] = useState<UserForm>(emptyUser);
+  const [pwdTarget, setPwdTarget] = useState<UserRecord | null>(null);
   const [newPwd, setNewPwd] = useState("");
   const [error, setError] = useState("");
   const [pwdError, setPwdError] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<UserRecord | null>(null);
 
   useEffect(() => {
-    api.listUsers().then((r) => setUsers(r.users));
+    api.listUsers().then((result) => setUsers(result.users as UserRecord[])).catch((reason: unknown) => setError(messageOf(reason)));
   }, []);
 
-  const createUser = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const createUser = async (event: React.FormEvent) => {
+    event.preventDefault();
     setError("");
     try {
-      const r = await api.createUser(newUser.username, newUser.password, newUser.isAdmin);
-      setUsers((u) => [...u, r.user]);
+      const result = await api.createUser(newUser.username, newUser.password, newUser.isAdmin);
+      setUsers((current) => [...current, result.user as UserRecord]);
       setShowCreate(false);
-      setNewUser({ username: "", password: "", isAdmin: false });
-    } catch (err: any) {
-      setError(err.message);
+      setNewUser(emptyUser);
+      toast.success("User created.");
+    } catch (reason: unknown) { setError(messageOf(reason)); }
+  };
+
+  const deleteUser = async () => {
+    if (!deleteTarget) return;
+    try {
+      await api.deleteUser(deleteTarget.id);
+      setUsers((current) => current.filter((user) => user.id !== deleteTarget.id));
+      setDeleteTarget(null);
+      toast.success("User deleted.");
+    } catch (reason: unknown) {
+      throw new Error(messageOf(reason));
     }
   };
 
-  const deleteUser = async (id: number) => {
-    if (!confirm("Delete this user? All their projects and servers will be deleted.")) return;
-    await api.deleteUser(id);
-    setUsers((u) => u.filter((usr) => usr.id !== id));
+  const toggleAdmin = async (user: UserRecord) => {
+    try {
+      await api.toggleAdmin(user.id, !user.isAdmin);
+      setUsers((current) => current.map((item) => item.id === user.id ? { ...item, isAdmin: !item.isAdmin } : item));
+      toast.success(user.isAdmin ? "Admin access revoked." : "Admin access granted.");
+    } catch (reason: unknown) { setError(messageOf(reason)); }
   };
 
-  const toggleAdmin = async (user: any) => {
-    await api.toggleAdmin(user.id, !user.isAdmin);
-    setUsers((u) => u.map((usr) => usr.id === user.id ? { ...usr, isAdmin: !usr.isAdmin } : usr));
-  };
-
-  const changePassword = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const changePassword = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!pwdTarget) return;
     setPwdError("");
     try {
       await api.changePassword(pwdTarget.id, newPwd);
       setPwdTarget(null);
       setNewPwd("");
-    } catch (err: any) {
-      setPwdError(err.message);
-    }
+      toast.success("Password changed.");
+    } catch (reason: unknown) { setPwdError(messageOf(reason)); }
   };
 
-  const inputCls = "w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500";
-
   return (
-    <div className="p-6 max-w-3xl">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-lg font-semibold text-gray-100">User Management</h2>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-md"
-        >
-          <UserPlus size={14} />
-          Add User
-        </button>
+    <div className="mx-auto max-w-[1000px] px-5 py-8 sm:px-8">
+      <header className="mb-7 flex flex-wrap items-end justify-between gap-5"><div><h1 className="font-display text-[30px] font-semibold leading-tight tracking-[-.02em] text-fg">Users</h1><p className="mt-2 text-sm text-muted">Manage accounts, administrator access and passwords.</p></div><Button onClick={() => { setError(""); setShowCreate(true); }} variant="primary"><UserPlus size={15} /> Add user</Button></header>
+      {error && <div className="mb-5 rounded-[10px] border border-coral/40 bg-coral/10 px-4 py-3 text-sm text-coral" role="alert">{error}</div>}
+      <div className="glass divide-y divide-white/[.09]">
+        {users.map((user) => <div key={user.id} className="flex flex-wrap items-center justify-between gap-4 px-4 py-4 sm:px-5"><div className="flex min-w-0 items-center gap-3">{user.isAdmin ? <ShieldCheck size={18} className="shrink-0 text-mint" /> : <Shield size={18} className="shrink-0 text-muted" />}<div className="min-w-0"><p className="truncate font-medium text-fg">{user.username}{user.id === me?.id && <span className="ml-2 text-xs text-muted">(you)</span>}</p><div className="mt-1 flex flex-wrap items-center gap-2 text-[13px] text-muted"><StatusPill status={user.isAdmin ? "admin" : "user"} /><span>Joined {user.createdAt?.slice(0, 10) ?? "-"}</span></div></div></div><div className="flex items-center gap-1"><Button onClick={() => { setPwdTarget(user); setNewPwd(""); setPwdError(""); }} variant="ghost" aria-label={`Change password for ${user.username}`}><KeyRound size={15} /></Button>{user.id !== me?.id && <><Button onClick={() => void toggleAdmin(user)} variant="ghost">{user.isAdmin ? "Revoke admin" : "Make admin"}</Button><Button onClick={() => setDeleteTarget(user)} variant="ghost" aria-label={`Delete ${user.username}`}><Trash2 size={15} /></Button></>}</div></div>)}
+        {users.length === 0 && <EmptyState title="No users found" description="Add a user to manage access to Relay." />}
       </div>
 
-      <div className="space-y-3">
-        {users.map((u) => (
-          <div key={u.id} className="flex items-center justify-between bg-gray-900 border border-gray-800 rounded-lg px-4 py-3">
-            <div className="flex items-center gap-3">
-              {u.isAdmin
-                ? <ShieldCheck size={16} className="text-indigo-400" />
-                : <Shield size={16} className="text-gray-600" />
-              }
-              <div>
-                <p className="text-sm font-medium text-gray-200">
-                  {u.username}
-                  {u.id === me?.id && <span className="ml-2 text-xs text-gray-500">(you)</span>}
-                </p>
-                <p className="text-xs text-gray-500">{u.isAdmin ? "Admin" : "User"} · joined {u.createdAt?.slice(0, 10)}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => { setPwdTarget(u); setNewPwd(""); setPwdError(""); }}
-                className="text-gray-500 hover:text-indigo-400"
-                title="Change password"
-              >
-                <KeyRound size={14} />
-              </button>
-              {u.id !== me?.id && (
-                <>
-                  <button
-                    onClick={() => toggleAdmin(u)}
-                    className={`text-xs px-2 py-1 border rounded ${u.isAdmin ? "border-indigo-700 text-indigo-400 hover:border-gray-700 hover:text-gray-400" : "border-gray-700 text-gray-400 hover:border-indigo-700 hover:text-indigo-400"}`}
-                    title={u.isAdmin ? "Revoke admin" : "Grant admin"}
-                  >
-                    {u.isAdmin ? "Revoke admin" : "Make admin"}
-                  </button>
-                  <button onClick={() => deleteUser(u.id)} className="text-gray-600 hover:text-red-400">
-                    <Trash2 size={14} />
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Create user modal */}
-      {showCreate && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-sm">
-            <h3 className="text-base font-semibold text-gray-100 mb-4">Add User</h3>
-            <form onSubmit={createUser} className="space-y-3">
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">Username</label>
-                <input value={newUser.username} onChange={(e) => setNewUser((u) => ({ ...u, username: e.target.value }))} className={inputCls} />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">Password</label>
-                <input type="password" value={newUser.password} onChange={(e) => setNewUser((u) => ({ ...u, password: e.target.value }))} className={inputCls} />
-              </div>
-              <label className="flex items-center gap-2 text-sm text-gray-400 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={newUser.isAdmin}
-                  onChange={(e) => setNewUser((u) => ({ ...u, isAdmin: e.target.checked }))}
-                  className="rounded"
-                />
-                Grant admin privileges
-              </label>
-              {error && <p className="text-xs text-red-400">{error}</p>}
-              <div className="flex gap-2 pt-1">
-                <button type="submit" className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-md">Create</button>
-                <button type="button" onClick={() => setShowCreate(false)} className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md">Cancel</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Change password modal */}
-      {pwdTarget && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-sm">
-            <h3 className="text-base font-semibold text-gray-100 mb-4">Change Password — {pwdTarget.username}</h3>
-            <form onSubmit={changePassword} className="space-y-3">
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">New Password</label>
-                <input type="password" value={newPwd} onChange={(e) => setNewPwd(e.target.value)} className={inputCls} autoFocus />
-              </div>
-              {pwdError && <p className="text-xs text-red-400">{pwdError}</p>}
-              <div className="flex gap-2 pt-1">
-                <button type="submit" className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-md">Save</button>
-                <button type="button" onClick={() => setPwdTarget(null)} className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md">Cancel</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <Dialog open={showCreate} onClose={() => setShowCreate(false)} title="Add user"><form onSubmit={createUser} className="space-y-4"><Field label="Username"><Input required value={newUser.username} onChange={(event) => setNewUser((current) => ({ ...current, username: event.target.value }))} /></Field><Field label="Password"><Input required type="password" value={newUser.password} onChange={(event) => setNewUser((current) => ({ ...current, password: event.target.value }))} /></Field><label className="flex min-h-10 items-center gap-2 text-sm text-fg"><input type="checkbox" checked={newUser.isAdmin} onChange={(event) => setNewUser((current) => ({ ...current, isAdmin: event.target.checked }))} /> Grant admin privileges</label>{error && <p className="text-sm text-coral" role="alert">{error}</p>}<div className="flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setShowCreate(false)}>Cancel</Button><Button type="submit" variant="primary">Create user</Button></div></form></Dialog>
+      <Dialog open={Boolean(pwdTarget)} onClose={() => setPwdTarget(null)} title="Change password" description={pwdTarget?.username}><form onSubmit={changePassword} className="space-y-4"><Field label="New password"><Input required type="password" value={newPwd} onChange={(event) => setNewPwd(event.target.value)} autoFocus /></Field>{pwdError && <p className="text-sm text-coral" role="alert">{pwdError}</p>}<div className="flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setPwdTarget(null)}>Cancel</Button><Button type="submit" variant="primary">Save password</Button></div></form></Dialog>
+      <ConfirmDialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} title="Delete user" description="Delete this user? All their projects and servers will be deleted." confirmLabel="Delete user" tone="danger" onConfirm={deleteUser} />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
 import { useState, useEffect, createContext, useContext } from "react";
 import { api } from "./api/client";
 import LoginPage from "./pages/Login";
@@ -7,15 +7,16 @@ import ServersPage from "./pages/Servers";
 import UsersPage from "./pages/Users";
 import TokensPage from "./pages/Tokens";
 import InstancesPage from "./pages/Instances";
-import ToolsPage from "./pages/Tools";
 import KnowledgeOverview from "./pages/KnowledgeOverview";
+import ToolsPage from "./pages/Tools";
 import KnowledgeProduct from "./pages/KnowledgeProduct";
 import KnowledgeProject from "./pages/KnowledgeProject";
 import KnowledgeOperations from "./pages/KnowledgeOperations";
 import KnowledgeSource from "./pages/KnowledgeSource";
 import KnowledgeIntegrated from "./pages/KnowledgeIntegrated";
 import KnowledgeMemory from "./pages/KnowledgeMemory";
-import Layout from "./components/Layout";
+
+import { AppShell } from "./components/shell/AppShell";
 
 interface AuthCtx {
   user: { id: number; username: string; isAdmin: boolean } | null;
@@ -62,8 +63,8 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-gray-950">
-        <div className="text-gray-400">Loading…</div>
+      <div className="app-shell flex min-h-screen items-center justify-center">
+        <div className="text-muted">Loading…</div>
       </div>
     );
   }
@@ -77,7 +78,7 @@ export default function App() {
         />
         <Route
           path="/"
-          element={user ? <Layout /> : <Navigate to="/login" replace />}
+          element={user ? <AppShell /> : <Navigate to="/login" replace />}
         >
           <Route index element={<Navigate to="/projects" replace />} />
           <Route path="projects" element={<ProjectsPage />} />
@@ -92,7 +93,7 @@ export default function App() {
           <Route path="knowledge/confirmed-memory" element={<KnowledgeMemory />} />
           <Route path="knowledge/product-docs" element={<KnowledgeProduct />} />
           <Route path="knowledge/product-docs/topics" element={<KnowledgeProduct />} />
-          <Route path="knowledge/product-docs/imports" element={<KnowledgeProduct />} />
+          <Route path="knowledge/product-docs/imports" element={user?.isAdmin ? <KnowledgeProduct /> : <Navigate to="/knowledge/product-docs" replace />} />
           <Route path="knowledge/product-docs/versions" element={<KnowledgeProduct />} />
           <Route path="knowledge/product-docs/search" element={<KnowledgeProduct />} />
           <Route path="knowledge/solution" element={<KnowledgeSource />} />

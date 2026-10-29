@@ -20,20 +20,22 @@ const schema = {
   tagNames: ["a","p","br","hr","h1","h2","h3","h4","h5","h6","pre","code","strong","em","del","s","b","i","blockquote","ul","ol","li","table","thead","tbody","tfoot","tr","th","td","caption","div","span","img","sup","sub","dl","dt","dd"],
 };
 
+const linkClass = "text-mint underline decoration-mint/60 underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint";
+
 /** Render source structure without executing source HTML or fetching its assets.
  * Relative files remain source references until Relay has an authorized asset
  * resolver. They must not become accidental requests against the current route. */
 export function KnowledgeMarkup({source, wikiScope, wikiPageKey}: {source: string; wikiScope?: KnowledgeScope; wikiPageKey?: string}) {
-  return <SourceText.Provider value={source}><div className="min-w-0 space-y-3 break-words text-sm leading-6 text-gray-300 [&_h1]:text-xl [&_h1]:font-semibold [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:font-semibold [&_h4]:font-semibold [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:list-decimal [&_ol]:pl-6 [&_li]:my-1 [&_pre]:my-3 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:border [&_pre]:border-gray-700 [&_pre]:bg-gray-950 [&_pre]:p-3 [&_pre]:text-xs [&_code]:font-mono [&_blockquote]:border-l-2 [&_blockquote]:border-cyan-700 [&_blockquote]:pl-3">
+  return <SourceText.Provider value={source}><div className="min-w-0 space-y-3 break-words text-sm leading-6 text-fg [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:text-fg [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:text-fg [&_h3]:font-semibold [&_h3]:text-fg [&_h4]:font-semibold [&_h4]:text-fg [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:list-decimal [&_ol]:pl-6 [&_li]:my-1 [&_pre]:my-3 [&_pre]:overflow-x-auto [&_pre]:rounded-field [&_pre]:border [&_pre]:border-line [&_pre]:bg-black/20 [&_pre]:p-3 [&_pre]:text-xs [&_code]:font-mono [&_blockquote]:border-l-2 [&_blockquote]:border-mint [&_blockquote]:pl-3">
     <Markdown remarkPlugins={wikiPageKey ? [remarkGfm,remarkWikiLinks] : [remarkGfm]} rehypePlugins={[rehypeRaw,[rehypeSanitize,schema]]} components={{
       table: ({children,id}) => <div className="max-w-full overflow-x-auto"><table id={id} className="w-full border-collapse text-left text-sm">{children}</table></div>,
-      th: ({children,colSpan,rowSpan,id}) => <th id={id} colSpan={colSpan} rowSpan={rowSpan} className="border border-gray-700 bg-gray-900 px-3 py-2 align-top font-medium text-gray-100">{children}</th>,
-      td: ({children,colSpan,rowSpan,id}) => <td id={id} colSpan={colSpan} rowSpan={rowSpan} className="border border-gray-700 px-3 py-2 align-top">{children}</td>,
+      th: ({children,colSpan,rowSpan,id}) => <th id={id} colSpan={colSpan} rowSpan={rowSpan} className="border border-line bg-mint/10 px-3 py-2 align-top font-medium text-fg">{children}</th>,
+      td: ({children,colSpan,rowSpan,id}) => <td id={id} colSpan={colSpan} rowSpan={rowSpan} className="border border-line px-3 py-2 align-top text-muted">{children}</td>,
       pre: ({children,node,id}) => {
         const references=sourceReferences(node);
-        return <><InCodeBlock.Provider value={true}><pre id={id}>{children}</pre></InCodeBlock.Provider>{references.length > 0 && <details className="text-xs text-gray-400"><summary className="cursor-pointer">Source references</summary><ul>{references.map(ref=><li key={ref} className="break-all font-mono">{ref}</li>)}</ul></details>}</>;
+        return <><InCodeBlock.Provider value={true}><pre id={id}>{children}</pre></InCodeBlock.Provider>{references.length > 0 && <details className="text-xs text-muted"><summary className="cursor-pointer">Source references</summary><ul>{references.map(ref=><li key={ref} className="break-all font-mono">{ref}</li>)}</ul></details>}</>;
       },
-      img: ({src,alt}) => <span className="inline-block break-all rounded border border-gray-700 px-2 py-1 text-xs text-gray-400">Image reference: {alt ? `${alt} · ` : ""}{src || "unavailable"}</span>,
+      img: ({src,alt}) => <span className="inline-block break-all rounded-field border border-sun/40 bg-sun/10 px-2 py-1 text-xs text-sun">Image reference: {alt ? `${alt} — ` : ""}{src || "unavailable"}</span>,
       a: ({href,id,node,children}) => {
         const name=typeof node?.properties.name === "string" ? node.properties.name : undefined;
         const inCode=useContext(InCodeBlock), rawSource=useContext(SourceText), anchor=id ?? name;
@@ -44,11 +46,11 @@ export function KnowledgeMarkup({source, wikiScope, wikiPageKey}: {source: strin
         if (href.startsWith('/knowledge/wiki-link/')) {
           let target: string | undefined;
           try { target=wikiScope && wikiLinkHref(decodeURIComponent(href.slice('/knowledge/wiki-link/'.length)),wikiScope,wikiPageKey); } catch { /* Invalid source reference remains text. */ }
-          return target ? <Link id={anchor} to={target} className="text-cyan-300 underline decoration-cyan-700 underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300">{content}</Link> : <span id={anchor}>{content}</span>;
+          return target ? <Link id={anchor} to={target} className={linkClass}>{content}</Link> : <span id={anchor}>{content}</span>;
         }
-        if (href.startsWith("#")) return <a id={anchor} href={`#${anchorPrefix}${href.slice(1)}`} className="text-cyan-300 underline decoration-cyan-700 underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300">{content}</a>;
-        if (/^https?:\/\//i.test(href)) return <a id={anchor} href={href} target="_blank" rel="noopener noreferrer" className="text-cyan-300 underline decoration-cyan-700 underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300">{content}</a>;
-        return <span id={anchor}>{content}<span className="ml-1 break-all font-mono text-xs text-gray-400">({href})</span></span>;
+        if (href.startsWith("#")) return <a id={anchor} href={`#${anchorPrefix}${href.slice(1)}`} className={linkClass}>{content}</a>;
+        if (/^https?:\/\//i.test(href)) return <a id={anchor} href={href} target="_blank" rel="noopener noreferrer" className={linkClass}>{content}</a>;
+        return <span id={anchor}>{content}<span className="ml-1 break-all font-mono text-xs text-muted">({href})</span></span>;
       },
     }}>{source}</Markdown>
   </div></SourceText.Provider>;

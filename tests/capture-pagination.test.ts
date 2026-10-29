@@ -40,7 +40,7 @@ test("Capture UI renders independent server-paged histories, not sliced arrays",
   assert.match(page, /CaptureHistory kind="dead-letter"/);
   assert.doesNotMatch(page, /events\.slice|deadLetters\.slice/);
   assert.match(history, /aria-current/);
-  assert.match(history, /result\.page\.total/);
+  assert.match(history, /result\.page\?\.total/);
   assert.match(history, /\(page - 1\) \* size/);
 });
 

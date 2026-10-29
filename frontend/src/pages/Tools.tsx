@@ -1,15 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  BookOpen,
-  CheckCircle2,
-  ChevronRight,
-  CircleAlert,
-  Filter,
-  Search,
-  TerminalSquare,
-  X,
-} from "lucide-react";
+import { BookOpen, CheckCircle2, ChevronRight, CircleAlert, Filter, Search, TerminalSquare, X } from "lucide-react";
 import { api } from "../api/client";
+import { Badge, EmptyState, ErrorState, Skeleton } from "../components/ui";
 
 type Tool = {
   name: string;
@@ -40,6 +32,11 @@ type SampleManagerEntity = {
   inspectors: Inspector[];
 };
 
+type Category = {
+  id: string;
+  label: string;
+};
+
 type Selection =
   | { kind: "tool"; tool: Tool }
   | { kind: "inspector"; entity: SampleManagerEntity; inspector: Inspector };
@@ -56,30 +53,26 @@ const categoryLabels: Record<string, string> = {
   samplemanager: "SampleManager",
 };
 
-const badgeStyles: Record<string, string> = {
-  "read-only": "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
-  mutation: "border-amber-500/30 bg-amber-500/10 text-amber-300",
-  "remote-capable": "border-sky-500/30 bg-sky-500/10 text-sky-300",
-  "local-service": "border-gray-700 bg-gray-800/70 text-gray-400",
-  preferred: "border-indigo-500/30 bg-indigo-500/10 text-indigo-300",
-  standard: "border-gray-700 bg-gray-800/70 text-gray-400",
-  legacy: "border-rose-500/30 bg-rose-500/10 text-rose-300",
-  ready: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
-  planned: "border-sky-500/30 bg-sky-500/10 text-sky-300",
-  unavailable: "border-gray-700 bg-gray-800/70 text-gray-500",
+const badgeTone: Record<string, "mint" | "sun" | "coral" | "neutral"> = {
+  "read-only": "mint",
+  mutation: "sun",
+  "remote-capable": "mint",
+  "local-service": "neutral",
+  preferred: "mint",
+  standard: "neutral",
+  legacy: "coral",
+  ready: "mint",
+  planned: "sun",
+  unavailable: "neutral",
 };
 
-function Badge({ children }: { children: string }) {
-  return (
-    <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[11px] ${badgeStyles[children] ?? badgeStyles.standard}`}>
-      {children}
-    </span>
-  );
+function CatalogBadge({ children }: { children: string }) {
+  return <Badge tone={badgeTone[children] ?? "neutral"}>{children}</Badge>;
 }
 
 export default function ToolsPage() {
   const [tools, setTools] = useState<Tool[]>([]);
-  const [categories, setCategories] = useState<any[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [sampleManagerEntities, setSampleManagerEntities] = useState<SampleManagerEntity[]>([]);
   const [category, setCategory] = useState("all");
   const [entity, setEntity] = useState("all");
@@ -92,12 +85,13 @@ export default function ToolsPage() {
   useEffect(() => {
     api.listTools()
       .then((result) => {
-        setTools(result.tools);
-        setCategories(result.categories);
-        setSampleManagerEntities(result.sampleManagerEntities ?? []);
-        setSelected(result.tools[0] ? { kind: "tool", tool: result.tools[0] } : null);
+        const nextTools = result.tools as Tool[];
+        setTools(nextTools);
+        setCategories(result.categories as Category[]);
+        setSampleManagerEntities((result.sampleManagerEntities ?? []) as SampleManagerEntity[]);
+        setSelected(nextTools[0] ? { kind: "tool", tool: nextTools[0] } : null);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : "Unable to load tools"))
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Unable to load tools"))
       .finally(() => setLoading(false));
   }, []);
 
@@ -128,245 +122,40 @@ export default function ToolsPage() {
     .filter((group) => group.tools.length > 0), [filtered]);
 
   return (
-    <div className="min-h-full bg-gray-950">
-      <header className="border-b border-gray-800 bg-gray-950/95 px-8 py-7">
-        <div className="flex flex-wrap items-start justify-between gap-5">
-          <div>
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-indigo-500/30 bg-indigo-500/10 text-indigo-300">
-                <TerminalSquare size={20} />
-              </div>
-              <div>
-                <h1 className="text-xl font-semibold text-gray-100">MCP Tools</h1>
-                <p className="mt-1 text-sm text-gray-500">Command reference for the Relay MCP surface</p>
-              </div>
-            </div>
+    <div className="mx-auto max-w-[1440px] px-5 py-8 sm:px-8">
+      <header className="mb-7">
+        <div className="flex flex-wrap items-end justify-between gap-5">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-[10px] border border-mint/30 bg-mint/10 text-mint"><TerminalSquare size={20} /></div>
+            <div><h1 className="font-display text-[30px] font-semibold leading-tight tracking-[-.02em] text-fg">Tools</h1><p className="mt-2 text-sm text-muted">Browse the Relay MCP command catalog and inspect capabilities.</p></div>
           </div>
-          <div className="flex items-center gap-3 text-xs text-gray-500">
-            <span>{tools.length} commands</span>
-            <span className="text-gray-700">·</span>
-            <span>{filtered.length} shown</span>
-          </div>
+          <div className="font-mono text-[13px] text-muted">{tools.length} commands, {filtered.length} shown</div>
         </div>
         <div className="mt-7 flex flex-wrap items-center gap-3">
-          <label className="relative min-w-[280px] flex-1">
-            <Search size={15} className="pointer-events-none absolute left-3 top-3 text-gray-500" />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search command name or description"
-              className="h-10 w-full rounded-md border border-gray-800 bg-gray-900 pl-9 pr-9 text-sm text-gray-200 outline-none transition focus:border-indigo-500"
-            />
-            {query && (
-              <button onClick={() => setQuery("")} className="absolute right-2 top-2 rounded p-1 text-gray-500 hover:bg-gray-800 hover:text-gray-200" aria-label="Clear search">
-                <X size={15} />
-              </button>
-            )}
-          </label>
-          <div className="flex h-10 items-center rounded-md border border-gray-800 bg-gray-900 p-1">
-            <Filter size={14} className="mx-2 text-gray-500" />
-            {["all", "read-only", "mutation"].map((value) => (
-              <button
-                key={value}
-                onClick={() => setAccess(value)}
-                className={`rounded px-3 py-1.5 text-xs transition ${access === value ? "bg-gray-700 text-gray-100" : "text-gray-500 hover:text-gray-200"}`}
-              >
-                {value === "all" ? "All access" : value === "read-only" ? "Read-only" : "Mutation"}
-              </button>
-            ))}
-          </div>
+          <label className="relative min-w-[280px] flex-1"><Search size={15} className="pointer-events-none absolute left-3 top-3 text-muted" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search command name or description" className="h-10 w-full rounded-[10px] border border-white/10 bg-white/[.04] pl-9 pr-9 text-sm text-fg outline-none placeholder:text-muted focus:border-mint" />{query && <button onClick={() => setQuery("")} className="absolute right-2 top-2 rounded p-1 text-muted hover:bg-white/[.08] hover:text-fg" aria-label="Clear search"><X size={15} /></button>}</label>
+          <div className="flex h-10 items-center rounded-[10px] border border-white/10 bg-white/[.04] p-1"><Filter size={14} className="mx-2 text-muted" />{["all", "read-only", "mutation"].map((value) => <button key={value} onClick={() => setAccess(value)} className={`rounded-[8px] px-3 py-1.5 text-xs transition ${access === value ? "bg-white/[.12] text-fg" : "text-muted hover:text-fg"}`}>{value === "all" ? "All access" : value === "read-only" ? "Read-only" : "Mutation"}</button>)}</div>
         </div>
       </header>
 
-      <div className="grid min-h-[calc(100vh-202px)] grid-cols-[220px_minmax(0,1fr)_330px]">
-        <aside className="border-r border-gray-800 bg-gray-925 px-4 py-5">
-          <p className="mb-3 px-2 text-[11px] font-semibold uppercase tracking-wider text-gray-600">Categories</p>
-          <button
-            onClick={() => setCategory("all")}
-            className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-sm ${category === "all" ? "bg-indigo-500/10 text-indigo-300" : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"}`}
-          >
-            <span>All commands</span><span className="text-xs text-gray-600">{tools.length}</span>
-          </button>
-          <div className="mt-2 space-y-1">
-            {categories.map((item) => {
-              const count = tools.filter((tool) => tool.category === item.id).length;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => { setCategory(item.id); if (item.id !== "samplemanager") setEntity("all"); }}
-                  className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm ${category === item.id ? "bg-indigo-500/10 text-indigo-300" : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"}`}
-                >
-                  <span>{item.label}</span><span className="text-xs text-gray-600">{count}</span>
-                </button>
-              );
-            })}
-          </div>
-          {category === "samplemanager" && (
-            <div className="mt-7 border-t border-gray-800 pt-5">
-              <p className="mb-3 px-2 text-[11px] font-semibold uppercase tracking-wider text-gray-600">Entities</p>
-              <button
-                onClick={() => setEntity("all")}
-                className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-sm ${entity === "all" ? "bg-sky-500/10 text-sky-300" : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"}`}
-              >
-                <span>All entities</span><span className="text-xs text-gray-600">{sampleManagerEntities.length}</span>
-              </button>
-              <div className="mt-2 space-y-1">
-                {sampleManagerEntities.map((item) => (
-                  <button
-                    key={item.id}
-                    onClick={() => setEntity(item.id)}
-                    className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm ${entity === item.id ? "bg-sky-500/10 text-sky-300" : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"}`}
-                  >
-                    <span className="truncate">{item.label}</span><span className="text-xs text-gray-600">{item.inspectors.length}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-          <div className="mt-8 border-t border-gray-800 pt-5">
-            <p className="px-2 text-xs leading-5 text-gray-600">This directory is generated from the server-side MCP tool catalog.</p>
-          </div>
+      <div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)_330px]">
+        <aside className="glass p-4">
+          <p className="mb-3 px-2 text-sm font-medium text-muted">Categories</p>
+          <button onClick={() => setCategory("all")} className={`flex min-h-10 w-full items-center justify-between rounded-[8px] px-3 text-sm ${category === "all" ? "bg-mint/10 text-mint" : "text-muted hover:bg-white/[.06] hover:text-fg"}`}><span>All commands</span><span className="font-mono text-[12px]">{tools.length}</span></button>
+          <div className="mt-2 space-y-1">{categories.map((item) => { const count = tools.filter((tool) => tool.category === item.id).length; return <button key={item.id} onClick={() => { setCategory(item.id); if (item.id !== "samplemanager") setEntity("all"); }} className={`flex min-h-10 w-full items-center justify-between rounded-[8px] px-3 text-left text-sm ${category === item.id ? "bg-mint/10 text-mint" : "text-muted hover:bg-white/[.06] hover:text-fg"}`}><span>{item.label}</span><span className="font-mono text-[12px]">{count}</span></button>; })}</div>
+          {category === "samplemanager" && <div className="mt-7 border-t border-white/[.09] pt-5"><p className="mb-3 px-2 text-sm font-medium text-muted">Entities</p><button onClick={() => setEntity("all")} className={`flex min-h-10 w-full items-center justify-between rounded-[8px] px-3 text-sm ${entity === "all" ? "bg-iris/10 text-iris" : "text-muted hover:bg-white/[.06] hover:text-fg"}`}><span>All entities</span><span className="font-mono text-[12px]">{sampleManagerEntities.length}</span></button><div className="mt-2 space-y-1">{sampleManagerEntities.map((item) => <button key={item.id} onClick={() => setEntity(item.id)} className={`flex min-h-10 w-full items-center justify-between rounded-[8px] px-3 text-left text-sm ${entity === item.id ? "bg-iris/10 text-iris" : "text-muted hover:bg-white/[.06] hover:text-fg"}`}><span className="truncate">{item.label}</span><span className="font-mono text-[12px]">{item.inspectors.length}</span></button>)}</div></div>}
+          <p className="mt-8 border-t border-white/[.09] px-2 pt-5 text-xs leading-5 text-muted">This directory is generated from the server-side MCP tool catalog.</p>
         </aside>
 
-        <main className="min-w-0 px-6 py-5">
-          {loading && <div className="py-16 text-center text-sm text-gray-500">Loading command catalog…</div>}
-          {error && <div className="rounded-md border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-300">{error}</div>}
-          {!loading && !error && filtered.length === 0 && (
-            <div className="py-16 text-center">
-              <Search className="mx-auto mb-3 text-gray-700" size={26} />
-              <p className="text-sm text-gray-400">No commands match the current filters.</p>
-            </div>
-          )}
-          {!loading && !error && category === "samplemanager" && visibleEntities.map((item) => (
-            <section key={item.id} className="mb-8">
-              <div className="mb-3">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-sm font-semibold text-gray-200">{item.label}</h2>
-                  <span className="text-xs text-gray-700">{item.inspectors.length} inspectors</span>
-                </div>
-                <p className="mt-1 text-xs text-gray-600">{item.description}</p>
-              </div>
-              <div className="divide-y divide-gray-800 overflow-hidden rounded-md border border-gray-800 bg-gray-900/50">
-                {item.inspectors.map((inspector) => (
-                  <button
-                    key={`${item.id}.${inspector.id}`}
-                    onClick={() => setSelected({ kind: "inspector", entity: item, inspector })}
-                    className={`flex w-full items-center gap-4 px-4 py-4 text-left transition hover:bg-gray-800/60 ${selected?.kind === "inspector" && selected.entity.id === item.id && selected.inspector.id === inspector.id ? "bg-sky-500/5" : ""}`}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-medium text-gray-200">{inspector.label}</span>
-                        <Badge>{inspector.status}</Badge>
-                      </div>
-                      <p className="mt-1 truncate text-xs text-gray-500">{inspector.description}</p>
-                    </div>
-                    {inspector.plannedTool && <code className="hidden max-w-56 truncate text-[11px] text-gray-600 xl:block">{inspector.plannedTool}</code>}
-                    <ChevronRight size={16} className="shrink-0 text-gray-700" />
-                  </button>
-                ))}
-              </div>
-            </section>
-          ))}
-          {!loading && !error && grouped.map((group) => (
-            <section key={group.id} className="mb-8">
-              <div className="mb-3 flex items-center gap-2">
-                <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-500">{categoryLabels[group.id]}</h2>
-                <span className="text-xs text-gray-700">{group.tools.length}</span>
-              </div>
-              <div className="divide-y divide-gray-800 overflow-hidden rounded-md border border-gray-800 bg-gray-900/50">
-                {group.tools.map((tool) => (
-                  <button
-                    key={tool.name}
-                    onClick={() => setSelected({ kind: "tool", tool })}
-                    className={`flex w-full items-center gap-4 px-4 py-4 text-left transition hover:bg-gray-800/60 ${selected?.kind === "tool" && selected.tool.name === tool.name ? "bg-indigo-500/5" : ""}`}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <code className="text-sm font-medium text-gray-200">{tool.name}</code>
-                        {tool.lifecycle === "preferred" && <Badge>preferred</Badge>}
-                        {tool.lifecycle === "legacy" && <Badge>legacy</Badge>}
-                      </div>
-                      <p className="mt-1 truncate text-xs text-gray-500">{tool.description}</p>
-                    </div>
-                    <div className="hidden items-center gap-2 md:flex">
-                      <Badge>{tool.access}</Badge>
-                      <Badge>{tool.execution}</Badge>
-                    </div>
-                    <ChevronRight size={16} className="shrink-0 text-gray-700" />
-                  </button>
-                ))}
-              </div>
-            </section>
-          ))}
-        </main>
+        <div className="min-w-0">
+          {loading && <div className="glass space-y-3 p-5"><Skeleton className="h-5 w-48" /><Skeleton className="h-12 w-full" /><Skeleton className="h-12 w-full" /></div>}
+          {error && <ErrorState message={error} />}
+          {!loading && !error && filtered.length === 0 && <EmptyState title="No commands match" description="Try a broader search or choose a different access filter." />}
+          {!loading && !error && category === "samplemanager" && visibleEntities.map((item) => <section key={item.id} className="mb-8"><div className="mb-3"><div className="flex items-center gap-2"><h2 className="font-display text-[22px] font-semibold text-fg">{item.label}</h2><span className="font-mono text-[12px] text-muted">{item.inspectors.length}</span></div><p className="mt-1 text-sm text-muted">{item.description}</p></div><div className="glass divide-y divide-white/[.09]">{item.inspectors.map((inspector) => <button key={`${item.id}.${inspector.id}`} onClick={() => setSelected({ kind: "inspector", entity: item, inspector })} className={`flex min-h-16 w-full items-center gap-4 px-4 py-4 text-left transition hover:bg-white/[.06] ${selected?.kind === "inspector" && selected.entity.id === item.id && selected.inspector.id === inspector.id ? "bg-iris/10" : ""}`}><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-fg">{inspector.label}</span><CatalogBadge>{inspector.status}</CatalogBadge></div><p className="mt-1 truncate text-sm text-muted">{inspector.description}</p></div>{inspector.plannedTool && <code className="hidden max-w-56 truncate text-[12px] text-muted xl:block">{inspector.plannedTool}</code>}<ChevronRight size={16} className="shrink-0 text-muted" /></button>)}</div></section>)}
+          {!loading && !error && grouped.map((group) => <section key={group.id} className="mb-8"><div className="mb-3 flex items-center gap-2"><h2 className="font-display text-[22px] font-semibold text-fg">{categoryLabels[group.id]}</h2><span className="font-mono text-[12px] text-muted">{group.tools.length}</span></div><div className="glass divide-y divide-white/[.09]">{group.tools.map((tool) => <button key={tool.name} onClick={() => setSelected({ kind: "tool", tool })} className={`flex min-h-16 w-full items-center gap-4 px-4 py-4 text-left transition hover:bg-white/[.06] ${selected?.kind === "tool" && selected.tool.name === tool.name ? "bg-mint/10" : ""}`}><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><code className="text-sm font-medium text-fg">{tool.name}</code>{tool.lifecycle !== "standard" && <CatalogBadge>{tool.lifecycle}</CatalogBadge>}</div><p className="mt-1 truncate text-sm text-muted">{tool.description}</p></div><div className="hidden items-center gap-2 md:flex"><CatalogBadge>{tool.access}</CatalogBadge><CatalogBadge>{tool.execution}</CatalogBadge></div><ChevronRight size={16} className="shrink-0 text-muted" /></button>)}</div></section>)}
+        </div>
 
-        <aside className="border-l border-gray-800 bg-gray-925 px-5 py-6">
-          {selected?.kind === "tool" ? (
-            <>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-400">{categoryLabels[selected.tool.category]}</p>
-                  <h2 className="mt-2 break-all font-mono text-sm font-semibold leading-6 text-gray-100">{selected.tool.name}</h2>
-                </div>
-                <BookOpen size={17} className="mt-1 shrink-0 text-gray-600" />
-              </div>
-              <p className="mt-6 text-sm leading-6 text-gray-400">{selected.tool.description}</p>
-              <div className="mt-6 space-y-3 border-t border-gray-800 pt-5">
-                {selected.tool.entity && <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Entity</span><span className="text-gray-300">{sampleManagerEntities.find((item) => item.id === selected.tool.entity)?.label ?? selected.tool.entity}</span></div>}
-                {selected.tool.capability && <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Capability</span><span className="text-gray-300">{selected.tool.capability.replace(/_/g, " ")}</span></div>}
-                <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Access</span><Badge>{selected.tool.access}</Badge></div>
-                <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Execution</span><Badge>{selected.tool.execution}</Badge></div>
-                <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Lifecycle</span><Badge>{selected.tool.lifecycle}</Badge></div>
-              </div>
-              <div className="mt-7 rounded-md border border-gray-800 bg-gray-900 p-4">
-                {selected.tool.access === "mutation" ? (
-                  <div className="flex gap-3">
-                    <CircleAlert size={16} className="mt-0.5 shrink-0 text-amber-400" />
-                    <p className="text-xs leading-5 text-gray-500">This command can change remote state. Use a deploymentId, verify the target, and prefer async execution for long operations.</p>
-                  </div>
-                ) : (
-                  <div className="flex gap-3">
-                    <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-emerald-400" />
-                    <p className="text-xs leading-5 text-gray-500">This command is classified as read-only by the Relay catalog.</p>
-                  </div>
-                )}
-              </div>
-            </>
-          ) : selected?.kind === "inspector" ? (
-            <>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-sky-400">{selected.entity.label}</p>
-                  <h2 className="mt-2 text-sm font-semibold leading-6 text-gray-100">{selected.inspector.label}</h2>
-                </div>
-                <BookOpen size={17} className="mt-1 shrink-0 text-gray-600" />
-              </div>
-              <p className="mt-6 text-sm leading-6 text-gray-400">{selected.inspector.description}</p>
-              <div className="mt-6 space-y-3 border-t border-gray-800 pt-5">
-                <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Status</span><Badge>{selected.inspector.status}</Badge></div>
-                <div className="flex items-center justify-between text-xs"><span className="text-gray-600">Access</span><Badge>{selected.inspector.readOnly ? "read-only" : "mutation"}</Badge></div>
-                {selected.inspector.plannedTool && <div className="text-xs"><p className="text-gray-600">MCP tool</p><code className="mt-2 block break-all text-gray-300">{selected.inspector.plannedTool}</code></div>}
-              </div>
-              {selected.inspector.relatedEntities && selected.inspector.relatedEntities.length > 0 && (
-                <div className="mt-6">
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600">Related entities</p>
-                  <div className="mt-2 flex flex-wrap gap-2">{selected.inspector.relatedEntities.map((value) => <span key={value} className="rounded border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-400">{sampleManagerEntities.find((item) => item.id === value)?.label ?? value}</span>)}</div>
-                </div>
-              )}
-              <div className="mt-6">
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600">Evidence</p>
-                <div className="mt-2 flex flex-wrap gap-2">{selected.inspector.evidenceKinds.map((value) => <span key={value} className="rounded border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-400">{value}</span>)}</div>
-              </div>
-              <div className="mt-7 rounded-md border border-gray-800 bg-gray-900 p-4">
-                <div className="flex gap-3">
-                  {selected.inspector.status === "ready" ? <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-emerald-400" /> : <CircleAlert size={16} className="mt-0.5 shrink-0 text-sky-400" />}
-                  <p className="text-xs leading-5 text-gray-500">{selected.inspector.status === "ready" ? "This inspector is available through the listed MCP tool." : "This inspector is part of the Capability Pack roadmap and is not yet callable."}</p>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="py-12 text-center text-sm text-gray-600">Select a command to inspect it.</div>
-          )}
+        <aside className="glass min-w-0 p-5">
+          {selected?.kind === "tool" ? <><div className="flex items-start justify-between gap-3"><div><p className="text-sm text-mint">{categoryLabels[selected.tool.category]}</p><h2 className="mt-2 break-all font-mono text-sm font-medium leading-6 text-fg">{selected.tool.name}</h2></div><BookOpen size={17} className="mt-1 shrink-0 text-muted" /></div><p className="mt-6 text-sm leading-6 text-muted">{selected.tool.description}</p><div className="mt-6 space-y-3 border-t border-white/[.09] pt-5">{selected.tool.entity && <div className="flex items-center justify-between text-xs"><span className="text-muted">Entity</span><span className="text-fg">{sampleManagerEntities.find((item) => item.id === selected.tool.entity)?.label ?? selected.tool.entity}</span></div>}{selected.tool.capability && <div className="flex items-center justify-between text-xs"><span className="text-muted">Capability</span><span className="text-fg">{selected.tool.capability.replace(/_/g, " ")}</span></div>}<div className="flex items-center justify-between text-xs"><span className="text-muted">Access</span><CatalogBadge>{selected.tool.access}</CatalogBadge></div><div className="flex items-center justify-between text-xs"><span className="text-muted">Execution</span><CatalogBadge>{selected.tool.execution}</CatalogBadge></div><div className="flex items-center justify-between text-xs"><span className="text-muted">Lifecycle</span><CatalogBadge>{selected.tool.lifecycle}</CatalogBadge></div></div><div className="mt-7 rounded-[10px] border border-white/[.09] bg-white/[.03] p-4">{selected.tool.access === "mutation" ? <div className="flex gap-3"><CircleAlert size={16} className="mt-0.5 shrink-0 text-sun" /><p className="text-xs leading-5 text-muted">This command can change remote state. Use a deploymentId, verify the target, and prefer async execution for long operations.</p></div> : <div className="flex gap-3"><CheckCircle2 size={16} className="mt-0.5 shrink-0 text-mint" /><p className="text-xs leading-5 text-muted">This command is classified as read-only by the Relay catalog.</p></div>}</div></> : selected?.kind === "inspector" ? <><div className="flex items-start justify-between gap-3"><div><p className="text-sm text-iris">{selected.entity.label}</p><h2 className="mt-2 text-sm font-medium leading-6 text-fg">{selected.inspector.label}</h2></div><BookOpen size={17} className="mt-1 shrink-0 text-muted" /></div><p className="mt-6 text-sm leading-6 text-muted">{selected.inspector.description}</p><div className="mt-6 space-y-3 border-t border-white/[.09] pt-5"><div className="flex items-center justify-between text-xs"><span className="text-muted">Status</span><CatalogBadge>{selected.inspector.status}</CatalogBadge></div><div className="flex items-center justify-between text-xs"><span className="text-muted">Access</span><CatalogBadge>{selected.inspector.readOnly ? "read-only" : "mutation"}</CatalogBadge></div>{selected.inspector.plannedTool && <div className="text-xs"><p className="text-muted">MCP tool</p><code className="mt-2 block break-all text-fg">{selected.inspector.plannedTool}</code></div>}</div>{selected.inspector.relatedEntities && selected.inspector.relatedEntities.length > 0 && <div className="mt-6"><p className="text-sm text-muted">Related entities</p><div className="mt-2 flex flex-wrap gap-2">{selected.inspector.relatedEntities.map((value) => <span key={value} className="rounded-[8px] border border-white/[.09] bg-white/[.03] px-2 py-1 text-xs text-muted">{sampleManagerEntities.find((item) => item.id === value)?.label ?? value}</span>)}</div></div>}<div className="mt-6"><p className="text-sm text-muted">Evidence</p><div className="mt-2 flex flex-wrap gap-2">{selected.inspector.evidenceKinds.map((value) => <span key={value} className="rounded-[8px] border border-white/[.09] bg-white/[.03] px-2 py-1 text-xs text-muted">{value}</span>)}</div></div><div className="mt-7 rounded-[10px] border border-white/[.09] bg-white/[.03] p-4"><div className="flex gap-3">{selected.inspector.status === "ready" ? <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-mint" /> : <CircleAlert size={16} className="mt-0.5 shrink-0 text-iris" />}<p className="text-xs leading-5 text-muted">{selected.inspector.status === "ready" ? "This inspector is available through the listed MCP tool." : "This inspector is part of the Capability Pack roadmap and is not yet callable."}</p></div></div></> : <div className="py-12 text-center text-sm text-muted">Select a command to inspect it.</div>}
         </aside>
       </div>
     </div>

@@ -49,15 +49,15 @@ export const api = {
 
   // Projects
   listProjects: () =>
-    request<{ projects: any[] }>("GET", "/projects"),
+    request<{ projects: unknown[] }>("GET", "/projects"),
   listTools: () =>
-    request<{ tools: any[]; categories: any[]; sampleManagerEntities: any[] }>("GET", "/tools"),
+    request<{ tools: unknown[]; categories: unknown[]; sampleManagerEntities: unknown[] }>("GET", "/tools"),
   createProject: (name: string, description?: string) =>
-    request<{ project: any }>("POST", "/projects", { name, description }),
+    request<{ project: unknown }>("POST", "/projects", { name, description }),
   deleteProject: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/projects/${id}`),
   listFiles: (id: number, path = "") =>
-    request<{ path: string; entries: any[] }>(
+    request<{ path: string; entries: unknown[] }>(
       "GET", `/projects/${id}/files?path=${encodeURIComponent(path)}`
     ),
 
@@ -68,19 +68,19 @@ export const api = {
       const value = params[key];
       if (value !== undefined && value !== "") query.set(key, String(value));
     }
-    return request<{ retrievalRunId: string; query: string; degraded: boolean; results: any[] }>("GET", `/memory/search?${query.toString()}`);
+    return request<{ retrievalRunId: string; query: string; degraded: boolean; results: unknown[] }>("GET", `/memory/search?${query.toString()}`);
   },
-  knowledgeDocument: (id: string, projectId?: number) => request<{ document: any; evidenceRefs: string[]; reviews: any[] }>("GET", `/knowledge/documents/${encodeURIComponent(id)}${projectId ? `?projectId=${projectId}` : ""}`),
-  knowledgeDocuments: (projectId: number, kinds?: string, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); if (kinds) query.set("kinds", kinds); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ documents: any[]; page?: any }>("GET", `/knowledge/documents?${query.toString()}`); },
-  knowledgeEvidence: (id: string) => request<{ evidence: any }>("GET", `/knowledge/evidence/${encodeURIComponent(id)}`),
-  knowledgeObservation: (id: string) => request<{ observation: any }>("GET", `/knowledge/observations/${encodeURIComponent(id)}`),
-  knowledgeObservations: (projectId: number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ observations: any[]; page?: any }>("GET", `/knowledge/observations?${query.toString()}`); },
-  knowledgeDocumentEvidence: (id: string, body: { evidenceId: string; operation: "attach" | "detach"; reason: string }, idempotencyKey?: string) => request<any>("POST", `/knowledge/documents/${encodeURIComponent(id)}/evidence`, body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  knowledgeDocument: (id: string, projectId?: number) => request<{ document: unknown; evidenceRefs: string[]; reviews: unknown[] }>("GET", `/knowledge/documents/${encodeURIComponent(id)}${projectId ? `?projectId=${projectId}` : ""}`),
+  knowledgeDocuments: (projectId: number, kinds?: string, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); if (kinds) query.set("kinds", kinds); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ documents: unknown[]; page?: unknown }>("GET", `/knowledge/documents?${query.toString()}`); },
+  knowledgeEvidence: (id: string) => request<{ evidence: unknown }>("GET", `/knowledge/evidence/${encodeURIComponent(id)}`),
+  knowledgeObservation: (id: string) => request<{ observation: unknown }>("GET", `/knowledge/observations/${encodeURIComponent(id)}`),
+  knowledgeObservations: (projectId: number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ observations: unknown[]; page?: unknown }>("GET", `/knowledge/observations?${query.toString()}`); },
+  knowledgeDocumentEvidence: (id: string, body: { evidenceId: string; operation: "attach" | "detach"; reason: string }, idempotencyKey?: string) => request<unknown>("POST", `/knowledge/documents/${encodeURIComponent(id)}/evidence`, body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
   knowledgeEvidenceList: (projectId?: number, params: Record<string, string | number | undefined> = {}) => {
     const query = new URLSearchParams();
     if (projectId !== undefined) query.set("projectId", String(projectId));
     Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); });
-    return request<{ evidence: any[]; page?: any }>("GET", `/knowledge/evidence?${query.toString()}`);
+    return request<{ evidence: unknown[]; page?: unknown }>("GET", `/knowledge/evidence?${query.toString()}`);
   },
   knowledgeEvidenceSession: (id: string, maxBytes?: number) => request<{ sessionId: string; evidenceId: string; expiresAt: string; maxBytes: number; mimeType: string; sizeBytes: number; sha256: string }>("POST", `/knowledge/evidence/${encodeURIComponent(id)}/download-session`, maxBytes ? { maxBytes } : {}),
   knowledgeEvidenceContentUrl: (id: string, sessionId: string) => `/api/knowledge/evidence/${encodeURIComponent(id)}/content?sessionId=${encodeURIComponent(sessionId)}`,
@@ -90,7 +90,7 @@ export const api = {
       const value = params[key];
       if (value !== undefined && value !== "") query.set(key, String(value));
     }
-    return request<{ relations: any[] }>("GET", `/knowledge/relations?${query.toString()}`);
+    return request<{ relations: unknown[] }>("GET", `/knowledge/relations?${query.toString()}`);
   },
   knowledgeImpact: (params: { projectId: number; objectId: string; maxDepth?: number; direction?: "upstream" | "downstream" | "both"; verifiedOnly?: boolean }) => {
     const query = new URLSearchParams({ projectId: String(params.projectId), objectId: params.objectId });
@@ -98,128 +98,128 @@ export const api = {
       const value = params[key];
       if (value !== undefined) query.set(key, String(value));
     }
-    return request<{ root: string; nodes: string[]; relations: any[] }>("GET", `/knowledge/relations/impact?${query.toString()}`);
+    return request<{ root: string; nodes: string[]; relations: unknown[] }>("GET", `/knowledge/relations/impact?${query.toString()}`);
   },
-  knowledgeCandidates: (projectId: number, status?: string, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); if (status) query.set("status", status); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ candidates: any[]; page: any }>("GET", `/knowledge/candidates?${query.toString()}`); },
-  knowledgeIndexStatus: (projectId: number) => request<{ projectId: string; stale: boolean; counts: any[]; lastIngest?: any }>("GET", `/knowledge/index-status?projectId=${projectId}`),
-  knowledgeDashboard: (projectId: number) => request<{ projectId: string; totals: any[]; counts: any[]; recent: any; capture: any }>("GET", `/knowledge/dashboard?projectId=${projectId}`),
-  knowledgeDiagnostics: (projectId: number) => request<any>("GET", `/knowledge/diagnostics?projectId=${projectId}`),
-  knowledgeIngestRuns: (projectId: number, limit = 50) => request<{ runs: any[] }>("GET", `/knowledge/ingest-runs?projectId=${projectId}&limit=${limit}`),
-  productDocuments: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ documents: any[] }>("GET", `/knowledge/product-docs?${query.toString()}`); },
-  productDocumentsList: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ documents: any[]; page?: any }>("GET", `/knowledge/product-documents?${query.toString()}`); },
-  productDocumentImport: (body: Record<string, unknown>, idempotencyKey?: string) => request<any>("POST", "/knowledge/product-docs/import", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  productDocumentImportGlobal: (body: Record<string, unknown>, idempotencyKey?: string) => request<any>("POST", "/knowledge/product-documents/import", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  productDocument: (id: string, scope: KnowledgeScope = {}) => request<{ document: any; sections: any[] }>("GET", withKnowledgeScope(`/knowledge/product-docs/${encodeURIComponent(id)}`, scope)),
-  productDocumentGlobal: (id: string, scope: KnowledgeScope = {}) => request<{ document: any; sections: any[] }>("GET", withKnowledgeScope(`/knowledge/product-documents/${encodeURIComponent(id)}`, scope)),
-  productDocumentImports: (limit = 50) => request<{ runs: any[] }>("GET", `/knowledge/product-documents/imports?limit=${limit}`),
-  productDocumentImportDetail: (id: string) => request<any>("GET", `/knowledge/product-documents/imports/${encodeURIComponent(id)}`),
-  productDocumentRetry: (id: string, idempotencyKey?: string) => request<any>("POST", `/knowledge/product-documents/imports/${encodeURIComponent(id)}/retry`, {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  productDocumentVersions: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ versions: any[]; page?: any }>("GET", `/knowledge/product-documents/versions?${query.toString()}`); },
-  productDocumentDiffs: (left: string, right: string) => request<any>("GET", `/knowledge/product-documents/diffs?left=${encodeURIComponent(left)}&right=${encodeURIComponent(right)}`),
-  productDocumentSearch: (params: Record<string, string | number | boolean | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ results: any[]; page?: any }>("GET", `/knowledge/product-documents/search?${query.toString()}`); },
-  productDocumentDiff: (id: string, against: string) => request<any>("GET", `/knowledge/product-docs/${encodeURIComponent(id)}/diff?against=${encodeURIComponent(against)}`),
-  productDocumentDiffReview: (id: string, body: { against: string; status: "accepted" | "rejected" | "needs_review"; reason: string }, idempotencyKey?: string) => request<any>("POST", `/knowledge/product-docs/${encodeURIComponent(id)}/diff-review`, body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  productTopics: (params: Record<string, string | number | undefined> = {}, options?: { signal?: AbortSignal }) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ topics: any[]; page?: any }>("GET", `/knowledge/product-topics?${query.toString()}`, undefined, undefined, options); },
-  productTopic: (id: string, scope: KnowledgeScope = {}, options?: { signal?: AbortSignal }) => request<{ topic: any; versions: any[]; page?: any }>("GET", withKnowledgeScope(`/knowledge/product-topics/${encodeURIComponent(id)}?includeReview=true`, scope), undefined, undefined, options),
-  productTopicBindingReview: (id: string, body: { status: "active" | "rejected"; reason: string }) => request<any>("POST", `/knowledge/product-topic-bindings/${encodeURIComponent(id)}/review`, body),
-  knowledgeArtifactSets: (limit = 100) => request<{ sets: any[] }>("GET", `/knowledge/artifact-sets?limit=${limit}`),
-  knowledgeArtifactImport: (body: Record<string, unknown>) => request<any>("POST", "/knowledge/artifact-sets/import", body),
-  knowledgeArtifactPublish: (id: string) => request<any>("POST", `/knowledge/artifact-sets/${encodeURIComponent(id)}/publish`, {}),
-  knowledgeIngestJob: (id: string) => request<any>("GET", `/knowledge/ingest-jobs/${encodeURIComponent(id)}`),
-  knowledgeSourceBaselines: (limit = 100, offset = 0) => request<{ baselines: any[]; page: any }>("GET", `/knowledge/source-baselines?limit=${limit}&offset=${offset}`),
-  knowledgeSourceBaselineFiles: (id: string, limit = 100, offset = 0) => request<any>("GET", `/knowledge/source-baselines/${encodeURIComponent(id)}/files?limit=${limit}&offset=${offset}`),
-  knowledgeSourceSearch: (params: Record<string, string | number | undefined>) => { const q = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") q.set(key, String(value)); }); return request<any>("GET", `/knowledge/source-search?${q.toString()}`); },
-  knowledgeProjectSnapshots: (limit = 100, offset = 0) => request<{ snapshots: any[]; page: any }>("GET", `/knowledge/project-snapshots?limit=${limit}&offset=${offset}`),
-  knowledgeProjectSnapshot: (body: Record<string, unknown>) => request<any>("POST", "/knowledge/project-snapshots/import", body),
-  knowledgeUpgradeCompare: (body: Record<string, unknown>) => request<any>("POST", "/knowledge/source-baselines/compare", body),
-  productDocumentMetadataCorrection: (body: Record<string, unknown>, idempotencyKey?: string) => request<any>("PATCH", "/knowledge/product-docs/metadata", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  knowledgeIngest: (projectId: number, casebookRoot?: string, contextFiles?: string[]) => request<any>("POST", "/knowledge/ingest", { projectId, casebookRoot, contextFiles }),
-  knowledgeReindex: (projectId: number) => request<any>("POST", "/knowledge/reindex", { projectId }),
-  knowledgeReview: (body: Record<string, unknown>, idempotencyKey?: string) => request<any>("POST", "/knowledge/reviews", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  knowledgeFeedback: (body: Record<string, unknown>, idempotencyKey?: string) => request<any>("POST", "/knowledge/feedback", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  knowledgeOperationsCapture: () => request<any>("GET", "/knowledge/operations/capture"),
-  knowledgeOperationsCaptureEvents: (limit = 10, offset = 0) => request<any>("GET", `/knowledge/operations/capture/events?limit=${limit}&offset=${offset}`),
-  knowledgeOperationsCaptureQueue: (limit = 20) => request<any>("GET", `/knowledge/operations/capture/queue?limit=${limit}`),
-  knowledgeOperationsDeadLetters: (limit = 10, offset = 0) => request<any>("GET", `/knowledge/operations/capture/dead-letter?limit=${limit}&offset=${offset}`),
-  knowledgeOperationsSmokeTest: (body: Record<string, unknown> = {}, idempotencyKey?: string) => request<any>("POST", "/knowledge/operations/capture/smoke-test", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  knowledgeOperationsReplayCapture: (body: Record<string, unknown>, idempotencyKey?: string) => request<any>("POST", "/knowledge/operations/capture/replay", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  knowledgeOperationsIngestRuns: (limit = 50) => request<any>("GET", `/knowledge/operations/ingest-runs?limit=${limit}`),
-  knowledgeOperationsIngestRun: (id: string) => request<any>("GET", `/knowledge/operations/ingest-runs/${encodeURIComponent(id)}`),
-  knowledgeOperationsRetryIngest: (id: string, idempotencyKey?: string) => request<any>("POST", `/knowledge/operations/ingest-runs/${encodeURIComponent(id)}/retry`, {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  knowledgeOperationsIndex: () => request<any>("GET", "/knowledge/operations/index"),
-  knowledgeOperationsProviders: () => request<any>("GET", "/knowledge/operations/providers"),
-  knowledgeOperationsTestProvider: (provider?: string, idempotencyKey?: string) => request<any>("POST", "/knowledge/operations/providers/test", provider ? { provider } : {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  knowledgeOperationsRebuildIndex: (projectId?: number, idempotencyKey?: string) => request<any>("POST", "/knowledge/operations/index/rebuild", projectId ? { projectId } : {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  knowledgeOperationsInvalidateEmbeddings: (projectId?: number, idempotencyKey?: string) => request<any>("POST", "/knowledge/operations/index/invalidate-embeddings", projectId ? { projectId } : {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  knowledgeSessions: (limit = 50) => request<{ sessions: any[] }>("GET", `/knowledge/sessions?limit=${limit}`),
-  knowledgeSession: (id: string) => request<{ session: any }>("GET", `/knowledge/sessions/${encodeURIComponent(id)}`),
-  knowledgeSessionEvents: (id: string) => request<{ events: any[] }>("GET", `/knowledge/sessions/${encodeURIComponent(id)}/events`),
-  knowledgeEngine: () => request<any>("GET", "/knowledge/engine"),
-  knowledgeEngineInitialize: (body: Record<string, string> = {}) => request<any>("POST", "/knowledge/engine/initialize", body),
-  knowledgeManagedProviders: () => request<{ providers: any[] }>("GET", "/knowledge/providers/managed"),
+  knowledgeCandidates: (projectId: number, status?: string, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); if (status) query.set("status", status); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ candidates: unknown[]; page: unknown }>("GET", `/knowledge/candidates?${query.toString()}`); },
+  knowledgeIndexStatus: (projectId: number) => request<{ projectId: string; stale: boolean; counts: unknown[]; lastIngest?: unknown }>("GET", `/knowledge/index-status?projectId=${projectId}`),
+  knowledgeDashboard: (projectId: number) => request<{ projectId: string; totals: unknown[]; counts: unknown[]; recent: unknown; capture: unknown }>("GET", `/knowledge/dashboard?projectId=${projectId}`),
+  knowledgeDiagnostics: (projectId: number) => request<unknown>("GET", `/knowledge/diagnostics?projectId=${projectId}`),
+  knowledgeIngestRuns: (projectId: number, limit = 50) => request<{ runs: unknown[] }>("GET", `/knowledge/ingest-runs?projectId=${projectId}&limit=${limit}`),
+  productDocuments: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ documents: unknown[] }>("GET", `/knowledge/product-docs?${query.toString()}`); },
+  productDocumentsList: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ documents: unknown[]; page?: unknown }>("GET", `/knowledge/product-documents?${query.toString()}`); },
+  productDocumentImport: (body: Record<string, unknown>, idempotencyKey?: string) => request<unknown>("POST", "/knowledge/product-docs/import", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  productDocumentImportGlobal: (body: Record<string, unknown>, idempotencyKey?: string) => request<unknown>("POST", "/knowledge/product-documents/import", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  productDocument: (id: string, scope: KnowledgeScope = {}) => request<{ document: unknown; sections: unknown[] }>("GET", withKnowledgeScope(`/knowledge/product-docs/${encodeURIComponent(id)}`, scope)),
+  productDocumentGlobal: (id: string, scope: KnowledgeScope = {}) => request<{ document: unknown; sections: unknown[] }>("GET", withKnowledgeScope(`/knowledge/product-documents/${encodeURIComponent(id)}`, scope)),
+  productDocumentImports: (limit = 50) => request<{ runs: unknown[] }>("GET", `/knowledge/product-documents/imports?limit=${limit}`),
+  productDocumentImportDetail: (id: string) => request<unknown>("GET", `/knowledge/product-documents/imports/${encodeURIComponent(id)}`),
+  productDocumentRetry: (id: string, idempotencyKey?: string) => request<unknown>("POST", `/knowledge/product-documents/imports/${encodeURIComponent(id)}/retry`, {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  productDocumentVersions: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ versions: unknown[]; page?: unknown }>("GET", `/knowledge/product-documents/versions?${query.toString()}`); },
+  productDocumentDiffs: (left: string, right: string) => request<unknown>("GET", `/knowledge/product-documents/diffs?left=${encodeURIComponent(left)}&right=${encodeURIComponent(right)}`),
+  productDocumentSearch: (params: Record<string, string | number | boolean | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ results: unknown[]; page?: unknown }>("GET", `/knowledge/product-documents/search?${query.toString()}`); },
+  productDocumentDiff: (id: string, against: string) => request<unknown>("GET", `/knowledge/product-docs/${encodeURIComponent(id)}/diff?against=${encodeURIComponent(against)}`),
+  productDocumentDiffReview: (id: string, body: { against: string; status: "accepted" | "rejected" | "needs_review"; reason: string }, idempotencyKey?: string) => request<unknown>("POST", `/knowledge/product-docs/${encodeURIComponent(id)}/diff-review`, body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  productTopics: (params: Record<string, string | number | undefined> = {}, options?: { signal?: AbortSignal }) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ topics: unknown[]; page?: unknown }>("GET", `/knowledge/product-topics?${query.toString()}`, undefined, undefined, options); },
+  productTopic: (id: string, scope: KnowledgeScope = {}, options?: { signal?: AbortSignal }) => request<{ topic: unknown; versions: unknown[]; page?: unknown }>("GET", withKnowledgeScope(`/knowledge/product-topics/${encodeURIComponent(id)}?includeReview=true`, scope), undefined, undefined, options),
+  productTopicBindingReview: (id: string, body: { status: "active" | "rejected"; reason: string }) => request<unknown>("POST", `/knowledge/product-topic-bindings/${encodeURIComponent(id)}/review`, body),
+  knowledgeArtifactSets: (limit = 100) => request<{ sets: unknown[] }>("GET", `/knowledge/artifact-sets?limit=${limit}`),
+  knowledgeArtifactImport: (body: Record<string, unknown>) => request<unknown>("POST", "/knowledge/artifact-sets/import", body),
+  knowledgeArtifactPublish: (id: string) => request<unknown>("POST", `/knowledge/artifact-sets/${encodeURIComponent(id)}/publish`, {}),
+  knowledgeIngestJob: (id: string) => request<unknown>("GET", `/knowledge/ingest-jobs/${encodeURIComponent(id)}`),
+  knowledgeSourceBaselines: (limit = 100, offset = 0) => request<{ baselines: unknown[]; page: unknown }>("GET", `/knowledge/source-baselines?limit=${limit}&offset=${offset}`),
+  knowledgeSourceBaselineFiles: (id: string, limit = 100, offset = 0) => request<unknown>("GET", `/knowledge/source-baselines/${encodeURIComponent(id)}/files?limit=${limit}&offset=${offset}`),
+  knowledgeSourceSearch: (params: Record<string, string | number | undefined>) => { const q = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") q.set(key, String(value)); }); return request<unknown>("GET", `/knowledge/source-search?${q.toString()}`); },
+  knowledgeProjectSnapshots: (limit = 100, offset = 0) => request<{ snapshots: unknown[]; page: unknown }>("GET", `/knowledge/project-snapshots?limit=${limit}&offset=${offset}`),
+  knowledgeProjectSnapshot: (body: Record<string, unknown>) => request<unknown>("POST", "/knowledge/project-snapshots/import", body),
+  knowledgeUpgradeCompare: (body: Record<string, unknown>) => request<unknown>("POST", "/knowledge/source-baselines/compare", body),
+  productDocumentMetadataCorrection: (body: Record<string, unknown>, idempotencyKey?: string) => request<unknown>("PATCH", "/knowledge/product-docs/metadata", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  knowledgeIngest: (projectId: number, casebookRoot?: string, contextFiles?: string[]) => request<unknown>("POST", "/knowledge/ingest", { projectId, casebookRoot, contextFiles }),
+  knowledgeReindex: (projectId: number) => request<unknown>("POST", "/knowledge/reindex", { projectId }),
+  knowledgeReview: (body: Record<string, unknown>, idempotencyKey?: string) => request<unknown>("POST", "/knowledge/reviews", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  knowledgeFeedback: (body: Record<string, unknown>, idempotencyKey?: string) => request<unknown>("POST", "/knowledge/feedback", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  knowledgeOperationsCapture: () => request<unknown>("GET", "/knowledge/operations/capture"),
+  knowledgeOperationsCaptureEvents: (limit = 10, offset = 0) => request<unknown>("GET", `/knowledge/operations/capture/events?limit=${limit}&offset=${offset}`),
+  knowledgeOperationsCaptureQueue: (limit = 20) => request<unknown>("GET", `/knowledge/operations/capture/queue?limit=${limit}`),
+  knowledgeOperationsDeadLetters: (limit = 10, offset = 0) => request<unknown>("GET", `/knowledge/operations/capture/dead-letter?limit=${limit}&offset=${offset}`),
+  knowledgeOperationsSmokeTest: (body: Record<string, unknown> = {}, idempotencyKey?: string) => request<unknown>("POST", "/knowledge/operations/capture/smoke-test", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  knowledgeOperationsReplayCapture: (body: Record<string, unknown>, idempotencyKey?: string) => request<unknown>("POST", "/knowledge/operations/capture/replay", body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  knowledgeOperationsIngestRuns: (limit = 50) => request<unknown>("GET", `/knowledge/operations/ingest-runs?limit=${limit}`),
+  knowledgeOperationsIngestRun: (id: string) => request<unknown>("GET", `/knowledge/operations/ingest-runs/${encodeURIComponent(id)}`),
+  knowledgeOperationsRetryIngest: (id: string, idempotencyKey?: string) => request<unknown>("POST", `/knowledge/operations/ingest-runs/${encodeURIComponent(id)}/retry`, {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  knowledgeOperationsIndex: () => request<unknown>("GET", "/knowledge/operations/index"),
+  knowledgeOperationsProviders: () => request<unknown>("GET", "/knowledge/operations/providers"),
+  knowledgeOperationsTestProvider: (provider?: string, idempotencyKey?: string) => request<unknown>("POST", "/knowledge/operations/providers/test", provider ? { provider } : {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  knowledgeOperationsRebuildIndex: (projectId?: number, idempotencyKey?: string) => request<unknown>("POST", "/knowledge/operations/index/rebuild", projectId ? { projectId } : {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  knowledgeOperationsInvalidateEmbeddings: (projectId?: number, idempotencyKey?: string) => request<unknown>("POST", "/knowledge/operations/index/invalidate-embeddings", projectId ? { projectId } : {}, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+  knowledgeSessions: (limit = 50) => request<{ sessions: unknown[] }>("GET", `/knowledge/sessions?limit=${limit}`),
+  knowledgeSession: (id: string) => request<{ session: unknown }>("GET", `/knowledge/sessions/${encodeURIComponent(id)}`),
+  knowledgeSessionEvents: (id: string) => request<{ events: unknown[] }>("GET", `/knowledge/sessions/${encodeURIComponent(id)}/events`),
+  knowledgeEngine: () => request<unknown>("GET", "/knowledge/engine"),
+  knowledgeEngineInitialize: (body: Record<string, string> = {}) => request<unknown>("POST", "/knowledge/engine/initialize", body),
+  knowledgeManagedProviders: () => request<{ providers: unknown[] }>("GET", "/knowledge/providers/managed"),
   knowledgeProviderModels: (body: { baseUrl: string; token: string }) => request<{ models: Array<{ id: string }>; baseUrl: string }>("POST", "/knowledge/providers/managed/models", body),
-  knowledgeProviderConfigure: (id: string, body: Record<string, unknown>) => request<{ provider: any; report: any }>("POST", `/knowledge/providers/managed/${encodeURIComponent(id)}/configure`, body),
-  knowledgeProviderToken: (id: string, token: string | null) => request<{ provider: any }>("POST", `/knowledge/providers/managed/${encodeURIComponent(id)}/token`, { token }),
-  knowledgeManagedProvidersReindex: () => request<{ jobs: any[] }>("GET", "/knowledge/providers/managed/reindex"),
-  knowledgeManagedProviderUpsert: (id: string, body: Record<string, unknown>) => request<{ provider: any }>("PUT", `/knowledge/providers/managed/${encodeURIComponent(id)}`, body),
-  knowledgeManagedProviderTest: (id: string) => request<{ report: any }>("POST", `/knowledge/providers/managed/${encodeURIComponent(id)}/test`, {}),
-  knowledgeManagedProviderRotate: (id: string, secretRef: string) => request<{ provider: any }>("POST", `/knowledge/providers/managed/${encodeURIComponent(id)}/rotate`, { secretRef }),
-  knowledgeManagedProviderDisable: (id: string) => request<{ provider: any }>("POST", `/knowledge/providers/managed/${encodeURIComponent(id)}/disable`, {}),
-  knowledgeManagedProviderReindexComplete: (jobId: string) => request<{ job: any }>("POST", `/knowledge/providers/managed/reindex/${encodeURIComponent(jobId)}/complete`, {}),
-  knowledgeCandidateInsights: (projectId: string | number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ insights: any[] }>("GET", `/knowledge/candidate-insights?${query.toString()}`); },
-  knowledgeCandidateInsight: (id: string) => request<{ insight: any }>("GET", `/knowledge/candidate-insights/${encodeURIComponent(id)}`),
-  knowledgeCandidateInsightHistory: (id: string) => request<{ history: any[] }>("GET", `/knowledge/candidate-insights/${encodeURIComponent(id)}/history`),
-  knowledgeCandidateInsightCompile: (body: Record<string, unknown>) => request<any>("POST", "/knowledge/candidate-insights/compile", body),
-  knowledgeCandidateInsightConfirm: (id: string, reason: string) => request<{ insight: any }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/confirm`, { reason }),
-  knowledgeCandidateInsightReject: (id: string, reason: string) => request<{ insight: any }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/reject`, { reason }),
-  knowledgeCandidateInsightEdit: (id: string, patch: Record<string, unknown>, reason: string) => request<{ insight: any }>("PATCH", `/knowledge/candidate-insights/${encodeURIComponent(id)}`, { patch, reason }),
-  knowledgeCandidateInsightReviewScope: (id: string, reason: string, expectedSessionUpdatedAt: string) => request<{ insight: any }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/review-scope`, { reason, expectedSessionUpdatedAt }),
-  knowledgeCandidateInsightPromote: (id: string, body: { target: "fact" | "decision" | "case" | "pattern"; reason: string; title?: string }) => request<{ promotion: any }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/promote`, body),
-  knowledgeConfirmedMemories: (projectId: string | number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ memories: any[] }>("GET", `/knowledge/confirmed-memories?${query.toString()}`); },
-  knowledgeConfirmedMemory: (id: string) => request<{ memory: any }>("GET", `/knowledge/confirmed-memories/${encodeURIComponent(id)}`),
-  knowledgeWikiPages: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ items: any[]; total: number; limit: number; offset: number }>("GET", `/knowledge/wiki?${query.toString()}`); },
-  knowledgeWikiCreate: (body: Record<string, unknown>) => request<{ page: any }>("POST", "/knowledge/wiki", body),
-  knowledgeWikiPage: (id: string, scope: KnowledgeScope = {}) => request<{ page: any }>("GET", withKnowledgeScope(`/knowledge/wiki/${encodeURIComponent(id)}`, scope)),
-  knowledgeWikiResolve: (pageKey: string, scope: KnowledgeScope) => request<{ page: any }>("GET", withKnowledgeScope(`/knowledge/wiki/resolve?pageKey=${encodeURIComponent(pageKey)}`, scope)),
-  knowledgeWikiEdit: (id: string, body: { title?: string; body?: string; reason: string }, scope: KnowledgeScope = {}) => request<{ page: any }>("PATCH", `/knowledge/wiki/${encodeURIComponent(id)}`, { ...body, ...buildKnowledgeScope(scope) }),
-  knowledgeWikiPublish: (id: string, reason: string, scope: KnowledgeScope = {}) => request<{ page: any }>("POST", `/knowledge/wiki/${encodeURIComponent(id)}/publish`, { reason, ...buildKnowledgeScope(scope) }),
-  knowledgeWikiDeprecate: (id: string, reason: string, scope: KnowledgeScope = {}) => request<{ page: any }>("POST", `/knowledge/wiki/${encodeURIComponent(id)}/deprecate`, { reason, ...buildKnowledgeScope(scope) }),
-  knowledgeWikiRevisions: (id: string, scope: KnowledgeScope = {}) => request<{ revisions: any[] }>("GET", withKnowledgeScope(`/knowledge/wiki/${encodeURIComponent(id)}/revisions`, scope)),
+  knowledgeProviderConfigure: (id: string, body: Record<string, unknown>) => request<{ provider: unknown; report: unknown }>("POST", `/knowledge/providers/managed/${encodeURIComponent(id)}/configure`, body),
+  knowledgeProviderToken: (id: string, token: string | null) => request<{ provider: unknown }>("POST", `/knowledge/providers/managed/${encodeURIComponent(id)}/token`, { token }),
+  knowledgeManagedProvidersReindex: () => request<{ jobs: unknown[] }>("GET", "/knowledge/providers/managed/reindex"),
+  knowledgeManagedProviderUpsert: (id: string, body: Record<string, unknown>) => request<{ provider: unknown }>("PUT", `/knowledge/providers/managed/${encodeURIComponent(id)}`, body),
+  knowledgeManagedProviderTest: (id: string) => request<{ report: unknown }>("POST", `/knowledge/providers/managed/${encodeURIComponent(id)}/test`, {}),
+  knowledgeManagedProviderRotate: (id: string, secretRef: string) => request<{ provider: unknown }>("POST", `/knowledge/providers/managed/${encodeURIComponent(id)}/rotate`, { secretRef }),
+  knowledgeManagedProviderDisable: (id: string) => request<{ provider: unknown }>("POST", `/knowledge/providers/managed/${encodeURIComponent(id)}/disable`, {}),
+  knowledgeManagedProviderReindexComplete: (jobId: string) => request<{ job: unknown }>("POST", `/knowledge/providers/managed/reindex/${encodeURIComponent(jobId)}/complete`, {}),
+  knowledgeCandidateInsights: (projectId: string | number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ insights: unknown[] }>("GET", `/knowledge/candidate-insights?${query.toString()}`); },
+  knowledgeCandidateInsight: (id: string) => request<{ insight: unknown }>("GET", `/knowledge/candidate-insights/${encodeURIComponent(id)}`),
+  knowledgeCandidateInsightHistory: (id: string) => request<{ history: unknown[] }>("GET", `/knowledge/candidate-insights/${encodeURIComponent(id)}/history`),
+  knowledgeCandidateInsightCompile: (body: Record<string, unknown>) => request<unknown>("POST", "/knowledge/candidate-insights/compile", body),
+  knowledgeCandidateInsightConfirm: (id: string, reason: string) => request<{ insight: unknown }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/confirm`, { reason }),
+  knowledgeCandidateInsightReject: (id: string, reason: string) => request<{ insight: unknown }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/reject`, { reason }),
+  knowledgeCandidateInsightEdit: (id: string, patch: Record<string, unknown>, reason: string) => request<{ insight: unknown }>("PATCH", `/knowledge/candidate-insights/${encodeURIComponent(id)}`, { patch, reason }),
+  knowledgeCandidateInsightReviewScope: (id: string, reason: string, expectedSessionUpdatedAt: string) => request<{ insight: unknown }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/review-scope`, { reason, expectedSessionUpdatedAt }),
+  knowledgeCandidateInsightPromote: (id: string, body: { target: "fact" | "decision" | "case" | "pattern"; reason: string; title?: string }) => request<{ promotion: unknown }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/promote`, body),
+  knowledgeConfirmedMemories: (projectId: string | number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ memories: unknown[] }>("GET", `/knowledge/confirmed-memories?${query.toString()}`); },
+  knowledgeConfirmedMemory: (id: string) => request<{ memory: unknown }>("GET", `/knowledge/confirmed-memories/${encodeURIComponent(id)}`),
+  knowledgeWikiPages: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ items: unknown[]; total: number; limit: number; offset: number }>("GET", `/knowledge/wiki?${query.toString()}`); },
+  knowledgeWikiCreate: (body: Record<string, unknown>) => request<{ page: unknown }>("POST", "/knowledge/wiki", body),
+  knowledgeWikiPage: (id: string, scope: KnowledgeScope = {}) => request<{ page: unknown }>("GET", withKnowledgeScope(`/knowledge/wiki/${encodeURIComponent(id)}`, scope)),
+  knowledgeWikiResolve: (pageKey: string, scope: KnowledgeScope) => request<{ page: unknown }>("GET", withKnowledgeScope(`/knowledge/wiki/resolve?pageKey=${encodeURIComponent(pageKey)}`, scope)),
+  knowledgeWikiEdit: (id: string, body: { title?: string; body?: string; reason: string }, scope: KnowledgeScope = {}) => request<{ page: unknown }>("PATCH", `/knowledge/wiki/${encodeURIComponent(id)}`, { ...body, ...buildKnowledgeScope(scope) }),
+  knowledgeWikiPublish: (id: string, reason: string, scope: KnowledgeScope = {}) => request<{ page: unknown }>("POST", `/knowledge/wiki/${encodeURIComponent(id)}/publish`, { reason, ...buildKnowledgeScope(scope) }),
+  knowledgeWikiDeprecate: (id: string, reason: string, scope: KnowledgeScope = {}) => request<{ page: unknown }>("POST", `/knowledge/wiki/${encodeURIComponent(id)}/deprecate`, { reason, ...buildKnowledgeScope(scope) }),
+  knowledgeWikiRevisions: (id: string, scope: KnowledgeScope = {}) => request<{ revisions: unknown[] }>("GET", withKnowledgeScope(`/knowledge/wiki/${encodeURIComponent(id)}/revisions`, scope)),
   knowledgeWikiDiff: (id: string, fromRevision: number, toRevision: number, scope: KnowledgeScope = {}) => request<{ diff: string }>("GET", withKnowledgeScope(`/knowledge/wiki/${encodeURIComponent(id)}/diff?fromRevision=${fromRevision}&toRevision=${toRevision}`, scope)),
-  knowledgeWikiRollback: (id: string, revision: number, reason: string, scope: KnowledgeScope = {}) => request<{ page: any }>("POST", `/knowledge/wiki/${encodeURIComponent(id)}/rollback`, { revision, reason, ...buildKnowledgeScope(scope) }),
-  knowledgeWeknoraDocuments: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ documents: any[]; page: { limit: number; offset: number; total: number } }>("GET", `/knowledge/weknora/documents?${query.toString()}`); },
-  knowledgeWeknoraDocumentStage: (body: Record<string, unknown>) => request<{ document: any }>("POST", "/knowledge/weknora/documents", body),
-  knowledgeWeknoraDocumentPublish: (id: string) => request<{ document: any }>("POST", `/knowledge/weknora/documents/${encodeURIComponent(id)}/publish`, {}),
-  knowledgeWeknoraDocumentDeprecate: (id: string) => request<{ document: any }>("POST", `/knowledge/weknora/documents/${encodeURIComponent(id)}/deprecate`, {}),
-  knowledgeSearch: (body: Record<string, unknown>) => request<any>("POST", "/knowledge/search", body),
+  knowledgeWikiRollback: (id: string, revision: number, reason: string, scope: KnowledgeScope = {}) => request<{ page: unknown }>("POST", `/knowledge/wiki/${encodeURIComponent(id)}/rollback`, { revision, reason, ...buildKnowledgeScope(scope) }),
+  knowledgeWeknoraDocuments: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ documents: unknown[]; page: { limit: number; offset: number; total: number } }>("GET", `/knowledge/weknora/documents?${query.toString()}`); },
+  knowledgeWeknoraDocumentStage: (body: Record<string, unknown>) => request<{ document: unknown }>("POST", "/knowledge/weknora/documents", body),
+  knowledgeWeknoraDocumentPublish: (id: string) => request<{ document: unknown }>("POST", `/knowledge/weknora/documents/${encodeURIComponent(id)}/publish`, {}),
+  knowledgeWeknoraDocumentDeprecate: (id: string) => request<{ document: unknown }>("POST", `/knowledge/weknora/documents/${encodeURIComponent(id)}/deprecate`, {}),
+  knowledgeSearch: (body: Record<string, unknown>) => request<unknown>("POST", "/knowledge/search", body),
   knowledgeProductProvider: () => request<{ provider: string }>("GET", "/knowledge/integrations/product-provider"),
   knowledgeSetProductProvider: (provider: "relay_local" | "weknora", migrationId?: string) => request<{ provider: string; previousProvider: string }>("POST", "/knowledge/integrations/product-provider", { provider, migrationId }),
-  knowledgeMigrationFromLocal: (body: Record<string, unknown>) => request<{ migration: any; migrationId?: string; job?: { id: string; kind: string; status: string; result?: any; error?: string } }>("POST", "/knowledge/migrations/from-local", body),
-  knowledgeMigrations: (id: string) => request<{ migration: any }>("GET", `/knowledge/migrations/${encodeURIComponent(id)}`),
-  knowledgeMigrationPublish: (id: string) => request<{ migration: any }>("POST", `/knowledge/migrations/${encodeURIComponent(id)}/publish`, {}),
-  knowledgeMigrationRollback: (id: string, reason: string) => request<{ migration: any }>("POST", `/knowledge/migrations/${encodeURIComponent(id)}/rollback`, { reason }),
-  knowledgeMigrationCleanup: (id: string) => request<any>("GET", `/knowledge/migrations/${encodeURIComponent(id)}/cleanup`),
-  knowledgeReleaseGates: () => request<any>("GET", "/knowledge/release-gates"),
+  knowledgeMigrationFromLocal: (body: Record<string, unknown>) => request<{ migration: unknown; migrationId?: string; job?: { id: string; kind: string; status: string; result?: unknown; error?: string } }>("POST", "/knowledge/migrations/from-local", body),
+  knowledgeMigrations: (id: string) => request<{ migration: unknown }>("GET", `/knowledge/migrations/${encodeURIComponent(id)}`),
+  knowledgeMigrationPublish: (id: string) => request<{ migration: unknown }>("POST", `/knowledge/migrations/${encodeURIComponent(id)}/publish`, {}),
+  knowledgeMigrationRollback: (id: string, reason: string) => request<{ migration: unknown }>("POST", `/knowledge/migrations/${encodeURIComponent(id)}/rollback`, { reason }),
+  knowledgeMigrationCleanup: (id: string) => request<unknown>("GET", `/knowledge/migrations/${encodeURIComponent(id)}/cleanup`),
+  knowledgeReleaseGates: () => request<unknown>("GET", "/knowledge/release-gates"),
 
   // Project-Server links
   listProjectServers: (projectId: number) =>
-    request<{ servers: any[] }>("GET", `/projects/${projectId}/servers`),
+    request<{ servers: unknown[] }>("GET", `/projects/${projectId}/servers`),
   linkServer: (projectId: number, serverId: number, remotePath: string, environment = "production", connectionMode?: "ssh" | "agent", limsInstanceId?: number) =>
-    request<{ link: any }>("POST", `/projects/${projectId}/servers`, { serverId, remotePath, environment, connectionMode, limsInstanceId }),
+    request<{ link: unknown }>("POST", `/projects/${projectId}/servers`, { serverId, remotePath, environment, connectionMode, limsInstanceId }),
   updateProjectServer: (projectId: number, linkId: number, data: { remotePath?: string; environment?: string; connectionMode?: "ssh" | "agent"; limsInstanceId?: number | null }) =>
-    request<{ link: any }>("PUT", `/projects/${projectId}/servers/${linkId}`, data),
+    request<{ link: unknown }>("PUT", `/projects/${projectId}/servers/${linkId}`, data),
   unlinkServer: (projectId: number, linkId: number) =>
     request<{ ok: boolean }>("DELETE", `/projects/${projectId}/servers/${linkId}`),
 
   // Servers
   listServers: () =>
-    request<{ servers: any[] }>("GET", "/servers"),
+    request<{ servers: unknown[] }>("GET", "/servers"),
   addServer: (data: { name: string; host?: string; port?: number; sshUser?: string; os?: "linux" | "windows"; connectionMode?: "ssh" | "agent"; agentId?: string }) =>
-    request<{ server: any; publicKey: string; instructions: string }>(
+    request<{ server: unknown; publicKey: string; instructions: string }>(
       "POST", "/servers", data
     ),
   updateServer: (id: number, data: { name?: string; host?: string; port?: number; sshUser?: string; os?: "linux" | "windows"; connectionMode?: "ssh" | "agent"; agentId?: string }) =>
-    request<{ server: any }>("PUT", `/servers/${id}`, data),
+    request<{ server: unknown }>("PUT", `/servers/${id}`, data),
   testServer: (id: number) =>
     request<{ ok: boolean; output?: string; error?: string }>(
       "POST", `/servers/${id}/test`
@@ -231,15 +231,15 @@ export const api = {
   deleteServer: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/servers/${id}`),
   listInstances: (serverId: number) =>
-    request<{ instances: any[] }>("GET", `/servers/${serverId}/instances`),
+    request<{ instances: unknown[] }>("GET", `/servers/${serverId}/instances`),
   discoverInstances: (serverId: number, rootHints: string[] = []) =>
-    request<{ serverId: number; scannedAt: string; readOnly: boolean; instances: any[] }>(
+    request<{ serverId: number; scannedAt: string; readOnly: boolean; instances: unknown[] }>(
       "POST", `/servers/${serverId}/instances/discover`, { rootHints }
     ),
-  saveInstance: (serverId: number, instance: any) =>
-    request<{ instance: any }>("POST", `/servers/${serverId}/instances`, instance),
-  updateInstance: (id: number, instance: any) =>
-    request<{ instance: any }>("PUT", `/instances/${id}`, instance),
+  saveInstance: (serverId: number, instance: Record<string, unknown>) =>
+    request<{ instance: unknown }>("POST", `/servers/${serverId}/instances`, instance),
+  updateInstance: (id: number, instance: Record<string, unknown>) =>
+    request<{ instance: unknown }>("PUT", `/instances/${id}`, instance),
   deleteInstance: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/instances/${id}`),
   setupServer: async (
@@ -282,7 +282,7 @@ export const api = {
 
   // MCP API keys (legacy API route and database names remain token-based)
   listTokens: () =>
-    request<{ tokens: any[] }>("GET", "/tokens"),
+    request<{ tokens: unknown[] }>("GET", "/tokens"),
   createToken: (data: {
     name: string;
     projectId?: number;
@@ -294,7 +294,7 @@ export const api = {
     allowAllProjects?: boolean;
     canCreateProjects?: boolean;
   }) =>
-    request<{ token: string; profile: any }>("POST", "/tokens", data),
+    request<{ token: string; profile: unknown }>("POST", "/tokens", data),
   updateToken: (id: number, data: {
     name: string;
     projectId?: number;
@@ -306,23 +306,23 @@ export const api = {
     allowAllProjects?: boolean;
     canCreateProjects?: boolean;
   }) =>
-    request<{ profile: any }>("PUT", `/tokens/${id}`, data),
+    request<{ profile: unknown }>("PUT", `/tokens/${id}`, data),
   deleteApiKey: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/tokens/${id}`),
 
   // Agent tokens
   listAgentTokens: () =>
-    request<{ tokens: any[] }>("GET", "/agent-tokens"),
+    request<{ tokens: unknown[] }>("GET", "/agent-tokens"),
   createAgentToken: (data: { name: string; serverId: number }) =>
-    request<{ token: string; profile: any }>("POST", "/agent-tokens", data),
+    request<{ token: string; profile: unknown }>("POST", "/agent-tokens", data),
   revokeAgentToken: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/agent-tokens/${id}`),
 
   // Users (admin)
   listUsers: () =>
-    request<{ users: any[] }>("GET", "/users"),
+    request<{ users: unknown[] }>("GET", "/users"),
   createUser: (username: string, password: string, isAdmin = false) =>
-    request<{ user: any }>("POST", "/users", { username, password, isAdmin }),
+    request<{ user: unknown }>("POST", "/users", { username, password, isAdmin }),
   changePassword: (id: number, password: string) =>
     request<{ ok: boolean }>("PATCH", `/users/${id}/password`, { password }),
   toggleAdmin: (id: number, isAdmin: boolean) =>

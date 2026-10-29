@@ -1,43 +1,224 @@
-import { useEffect, useState } from "react";
-import { Activity, ArrowRight, BookOpen, CheckCircle2, ClipboardCheck, Database, FileWarning, Layers3, RefreshCw, Search, ShieldAlert, UploadCloud } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
-import { Badge, cardClass, LifecyclePipeline, PageShell, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
+import { useAuth } from "../App";
+import { useProjectScope, type Project } from "../context/ProjectScope";
+import { buildPlate } from "../lib/plate";
+import { Button, ErrorState, Skeleton } from "../components/ui";
+import AttentionList from "../components/knowledge/AttentionList";
+import IndexPlate from "../components/knowledge/IndexPlate";
+import IngestRunList, { type IngestRun } from "../components/knowledge/IngestRunList";
+import PlaneCard from "../components/knowledge/PlaneCard";
 
-type Project = { id: number; name: string };
+import "../components/knowledge/overview.css";
 
-function Metric({ label, value, hint, icon: Icon, to }: { label: string; value: unknown; hint: string; icon: typeof Activity; to: string }) {
-  return <Link to={to} className={`${cardClass} block transition hover:border-indigo-700/70 hover:bg-gray-900`}><div className="flex items-start justify-between gap-3"><div><p className="text-xs uppercase tracking-wide text-gray-500">{label}</p><p className="mt-2 text-3xl font-semibold text-gray-100">{String(value ?? "—")}</p><p className="mt-1 text-xs text-gray-500">{hint}</p></div><Icon size={20} className="text-indigo-300" /></div></Link>;
+interface IndexData {
+  documents: number;
+  indexedDocuments: number;
+  stale: boolean;
+}
+interface PlateCounts {
+  ok: number;
+  stale: number;
+  fail: number;
+  wait: number;
+}
+
+interface DashboardData {
+  counts: Array<{ kind: string; lifecycle: string; count: number }>;
+}
+
+interface CaptureData {
+  status?: string;
+  deadLetterCount?: number;
+}
+
+interface OverviewSnapshot {
+  projects: Project[];
+  projectId: number | undefined;
+  index: IndexData;
+  dashboard: DashboardData | undefined;
+  capture: CaptureData | undefined;
+  runs: IngestRun[];
+  productDocumentCount: number | undefined;
+  unlinkedEvidence: number | undefined;
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" ? value as Record<string, unknown> : undefined;
+}
+
+function numberValue(value: unknown, fallback = 0): number {
+  const result = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(result) ? result : fallback;
+}
+
+
+function indexData(value: unknown): IndexData {
+  const payload = record(value);
+  const index = record(payload?.index) ?? payload ?? {};
+  return {
+    documents: numberValue(index.documents),
+    indexedDocuments: numberValue(index.indexedDocuments),
+    stale: index.stale === true,
+  };
+}
+
+function dashboardData(value: unknown): DashboardData | undefined {
+  const payload = record(value);
+  const rawCounts = Array.isArray(payload?.counts) ? payload.counts as unknown[] : undefined;
+  if (!rawCounts) return undefined;
+  const counts = rawCounts.flatMap((item) => {
+    const entry = record(item);
+    return typeof entry?.kind === "string" && typeof entry.lifecycle === "string"
+      ? [{ kind: entry.kind, lifecycle: entry.lifecycle, count: numberValue(entry.count) }]
+      : [];
+  });
+  return { counts };
+}
+
+function captureData(value: unknown): CaptureData | undefined {
+  const payload = record(value);
+  if (!payload) return undefined;
+  return {
+    status: typeof payload.status === "string" ? payload.status : undefined,
+    deadLetterCount: payload.deadLetterCount === undefined ? undefined : numberValue(payload.deadLetterCount),
+  };
+}
+
+function runList(value: unknown): IngestRun[] {
+  const payload = record(value);
+  const rawRuns = Array.isArray(payload?.runs) ? payload.runs as unknown[] : [];
+  return rawRuns.flatMap((item) => {
+    const run = record(item);
+    if (!run || (typeof run.id !== "string" && typeof run.id !== "number")) return [];
+    return [{
+      id: String(run.id),
+      sourceLocator: typeof run.source_locator === "string" ? run.source_locator : undefined,
+      status: typeof run.status === "string" ? run.status : undefined,
+      imported: numberValue(run.imported),
+      skipped: numberValue(run.skipped),
+      failed: numberValue(run.failed),
+    }];
+  });
+}
+
+function pageTotal(value: unknown): number | undefined {
+  const payload = record(value);
+  const page = record(payload?.page);
+  return page?.total === undefined ? undefined : numberValue(page.total);
 }
 
 export default function KnowledgeOverview() {
-  const [productDocumentCount, setProductDocumentCount] = useState<number>(); const [projects, setProjects] = useState<Project[]>([]); const [projectId, setProjectId] = useState<number>(); const [data, setData] = useState<any>(); const [dashboard, setDashboard] = useState<any>(); const [unlinkedEvidence, setUnlinkedEvidence] = useState<number>(); const [capture, setCapture] = useState<any>(); const [runs, setRuns] = useState<any[]>([]); const [buildInfo, setBuildInfo] = useState<any>(); const [error, setError] = useState(""); const [loading, setLoading] = useState(true);
-  const load = async () => { setLoading(true); setError(""); try { const projectResult = await api.listProjects(); const first = projectResult.projects?.[0]; const [captureResult, runResult, indexResult, health, dashboardResult, unlinkedResult, productResult] = await Promise.all([api.knowledgeOperationsCapture(), api.knowledgeOperationsIngestRuns(8), api.knowledgeOperationsIndex(), api.health(), first ? api.knowledgeDashboard(first.id) : Promise.resolve(undefined), first ? api.knowledgeEvidenceList(first.id, { unlinked: "true", limit: 1 }) : Promise.resolve(undefined), api.productDocumentsList({ limit: 1 })]); setProductDocumentCount(productResult.page?.total); setProjects(projectResult.projects ?? []); setProjectId(first?.id); setCapture(captureResult); setRuns(runResult.runs ?? []); setData(indexResult); setBuildInfo(health); setDashboard(dashboardResult); setUnlinkedEvidence(unlinkedResult?.page?.total); } catch (err) { setError(err instanceof Error ? err.message : "Unable to load Knowledge overview"); } finally { setLoading(false); } };
-  useEffect(() => { load(); }, []);
-  if (loading && !data) return <PageShell title="Knowledge Overview" description="A map of what is authoritative, what came from project operations, and what needs review." breadcrumbs={[{ label: "Knowledge" }]}><StatePanel state="loading" message="Loading Knowledge health and pipeline summaries…" /></PageShell>;
-  if (error && !data) return <PageShell title="Knowledge Overview" breadcrumbs={[{ label: "Knowledge" }]}><StatePanel state="error" message={error} onRetry={load} /></PageShell>;
-  const totals = data?.index ?? {}; const captureStatus = capture?.status ?? "Unknown";
-  return <PageShell title="Knowledge Overview" description="Use this page to choose the right plane. Product Knowledge is global and versioned; Memory keeps runtime provenance and durable memory separate; Operations explains pipeline health." breadcrumbs={[{ label: "Knowledge" }]} actions={<button onClick={load} className="inline-flex items-center gap-2 rounded-md border border-gray-700 px-3 py-2 text-xs text-gray-300 hover:bg-gray-800"><RefreshCw size={14} /> Refresh</button>}>
-    <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2 text-xs text-gray-500"><ShieldAlert size={14} className="text-indigo-300" />Scope is explicit on every project page; no project selector is required for Product Knowledge.</div>{projects.length > 0 && <Badge tone="blue">{projects.length} project{projects.length === 1 ? "" : "s"} available</Badge>}</div>
-    <LifecyclePipeline />
-    <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <Metric label="Pending review records" value={dashboard?.counts?.filter((row: any) => row.kind === "candidate" && row.lifecycle === "draft").reduce((sum: number, row: any) => sum + Number(row.count ?? 0), 0) ?? "—"} hint="Legacy and Candidate Insight records waiting for review" icon={ClipboardCheck} to="/knowledge/candidate-insights" />
-      <Metric label="Unlinked evidence" value={unlinkedEvidence ?? "—"} hint="Raw evidence without a knowledge link" icon={FileWarning} to="/knowledge/evidence" />
-      <Metric label="Product docs" value={productDocumentCount} hint="Global authoritative sources" icon={BookOpen} to="/knowledge/product-docs" />
-      <Metric label="Import failures" value={runs.filter((run) => /failed|partial/i.test(String(run.status))).length} hint="Runs needing retry or review" icon={UploadCloud} to="/knowledge/product-docs/imports" />
+  const { user } = useAuth();
+  const { projects, projectId, selectedProject, loading: scopeLoading } = useProjectScope();
+  const [snapshot, setSnapshot] = useState<OverviewSnapshot>();
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [animationKey, setAnimationKey] = useState(0);
+
+  const load = useCallback(async () => {
+    if (scopeLoading) return;
+    setLoading(true);
+    setError("");
+    try {
+      const [captureResult, runResult, indexResult, dashboardResult, unlinkedResult, productResult] = await Promise.all([
+        api.knowledgeOperationsCapture(),
+        api.knowledgeOperationsIngestRuns(8),
+        api.knowledgeOperationsIndex(),
+        projectId === undefined ? Promise.resolve(undefined) : api.knowledgeDashboard(projectId),
+        projectId === undefined ? Promise.resolve(undefined) : api.knowledgeEvidenceList(projectId, { unlinked: "true", limit: 1 }),
+        api.productDocumentsList({ limit: 1 }),
+      ]);
+      setSnapshot({
+        projects,
+        projectId,
+        index: indexData(indexResult),
+        dashboard: dashboardData(dashboardResult),
+        capture: captureData(captureResult),
+        runs: runList(runResult),
+        productDocumentCount: pageTotal(productResult),
+        unlinkedEvidence: pageTotal(unlinkedResult),
+      });
+      setAnimationKey((key) => key + 1);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Unable to load Knowledge overview");
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId, projects, scopeLoading]);
+
+  useEffect(() => {
+    if (!scopeLoading) void load();
+  }, [load, scopeLoading]);
+
+  const pendingReview = useMemo(() => snapshot?.dashboard?.counts
+    .filter((item) => item.kind === "candidate" && item.lifecycle === "draft")
+    .reduce((total, item) => total + item.count, 0), [snapshot]);
+  const failedRuns = snapshot?.runs.filter((run) => /failed|partial/i.test(String(run.status ?? ""))).length;
+  const plate = snapshot ? buildPlate({
+    documents: snapshot.index.documents,
+    indexedDocuments: snapshot.index.indexedDocuments,
+    stale: snapshot.index.stale,
+    failedBatches: 0,
+  }) : { wells: Array.from({ length: 96 }, () => "wait" as const), batchSize: 1 };
+  const counts: PlateCounts = { ok: 0, stale: 0, fail: 0, wait: 0 };
+  for (const state of plate.wells) counts[state] += 1;
+  const notCurrent = counts.stale + counts.fail + counts.wait;
+  const documents = snapshot?.index.documents ?? 0;
+  const title = documents === 0 ? "No documents indexed yet" : snapshot?.index.stale ? "Index is stale" : notCurrent === 0 ? "Index is current" : `Index is current except ${notCurrent} ${notCurrent === 1 ? "batch" : "batches"}`;
+  const lede = documents === 0
+    ? "Import product documents to build the index."
+    : plate.batchSize === 1
+      ? "Each well is one document. Hover a well for its position and state."
+      : `Each well is a batch of about ${plate.batchSize} documents. Hover a well for its position and state.`;
+  const projectName = selectedProject?.name ?? snapshot?.projects.find((project) => project.id === snapshot.projectId)?.name;
+  const captureStatus = snapshot?.capture?.status ? snapshot.capture.status.toLowerCase() : "unknown";
+  const isAdmin = user?.isAdmin === true;
+
+  if (error && !snapshot) {
+    return <div className="page overview-page"><ErrorState message={error} description="Check the Knowledge service and retry the overview." onRetry={() => void load()} /></div>;
+  }
+
+  return (
+    <div className="page overview-page">
+      <section className="overview-hero">
+        <IndexPlate wells={plate.wells} batchSize={plate.batchSize} loading={!snapshot} animationKey={animationKey} />
+        <div className="overview-intro">
+          {snapshot ? <>
+            <h1 className="overview-title">{title}</h1>
+            <p className="overview-lede">{lede}</p>
+            <ul className="plate-legend" aria-label="Index coverage legend">
+              <li><i className="legend-dot legend-ok" />Current <b>{counts.ok}</b></li>
+              <li><i className="legend-dot legend-stale" />Stale <b>{counts.stale}</b></li>
+              {counts.fail > 0 && <li><i className="legend-dot legend-fail" />Failed <b>{counts.fail}</b></li>}
+              <li><i className="legend-dot legend-wait" />Waiting <b>{counts.wait}</b></li>
+            </ul>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button variant="accent" loading={loading} onClick={() => void load()}><RefreshCw size={16} />Refresh</Button>
+              {snapshot.index.stale && <Link className="button-ghost button-sm" to="/knowledge/operations/index">Open index controls</Link>}
+            </div>
+            <h2 className="attention-heading">Needs attention</h2>
+            <AttentionList pendingReview={pendingReview} unlinkedEvidence={snapshot.unlinkedEvidence} failedRuns={failedRuns} isAdmin={isAdmin} />
+          </> : <div className="overview-loading"><Skeleton width="88%" height="48px" /><Skeleton width="95%" height="56px" /><Skeleton width="100%" height="88px" /></div>}
+        </div>
+      </section>
+
+      <section className="overview-block">
+        <h2 className="section-heading">Where to work</h2>
+        <div className="plane-grid">
+          <PlaneCard title="Product docs" description="Versioned documentation you can import, compare and search." footnote={snapshot ? `${snapshot.productDocumentCount ?? "—"} documents` : <Skeleton width="96px" height="16px" />} to="/knowledge/product-docs" tint="110,231,200" />
+          <PlaneCard title="Memory" description="What sessions captured, and the insights waiting to become knowledge." footnote={snapshot ? `${pendingReview ?? "—"} waiting for review` : <Skeleton width="128px" height="16px" />} to="/knowledge/memory" tint="255,180,84" />
+          <PlaneCard title="Operations" description="Capture, ingest and index health, with rebuild controls." footnote={snapshot ? failedRuns && failedRuns > 0 ? `${failedRuns} failed imports` : `Capture ${captureStatus}` : <Skeleton width="104px" height="16px" />} to="/knowledge/operations/capture" tint={failedRuns && failedRuns > 0 ? "255,122,112" : "138,180,255"} />
+        </div>
+      </section>
+
+      <section className="overview-block">
+        <div className="section-heading-row"><h2 className="section-heading">Recent ingest runs</h2><Link className="section-link" to="/knowledge/operations/ingest">View all runs</Link></div>
+        <IngestRunList runs={snapshot?.runs ?? []} loading={!snapshot} isAdmin={isAdmin} />
+        {projectName && <p className="default-project">Default project: <span>{projectName}</span></p>}
+      </section>
     </div>
-    <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <Metric label="Index health" value={totals.stale ? "Stale" : "Healthy"} hint={`${totals.indexedDocuments ?? 0}/${totals.documents ?? 0} documents indexed`} icon={Database} to="/knowledge/operations/index" />
-      <Metric label="Capture health" value={captureStatus} hint={capture?.deadLetterCount ? `${capture.deadLetterCount} dead-letter records` : "No dead-letter records reported"} icon={Activity} to="/knowledge/operations/capture" />
-      <Metric label="Recent ingest runs" value={runs.length} hint="Product and project pipeline history" icon={UploadCloud} to="/knowledge/operations/ingest" />
-      <Metric label="Review queue" value={dashboard?.recent?.lastReview?.action ?? "None"} hint="Latest audited review action" icon={ShieldAlert} to="/knowledge/candidate-insights" />
-    </div>
-    <div className="mt-6 grid gap-4 lg:grid-cols-3">
-      <section className={`${cardClass} lg:col-span-2`}><div className="flex items-center justify-between"><div><h3 className="font-medium text-gray-100">Choose a Knowledge plane</h3><p className="mt-1 text-sm text-gray-500">Each plane has its own scope, permissions, and review expectations.</p></div><Layers3 size={20} className="text-indigo-300" /></div><div className="mt-4 grid gap-3 md:grid-cols-3"><Link to="/knowledge/product-docs" className="rounded-lg border border-cyan-900/50 bg-cyan-950/20 p-4 hover:border-cyan-500/60"><p className="text-sm font-medium text-cyan-200">Product Knowledge</p><p className="mt-2 text-xs leading-5 text-gray-400">Versioned, global, authoritative documentation. Import, compare, search, and cite sources.</p><span className="mt-3 inline-flex items-center gap-1 text-xs text-cyan-300">Open plane <ArrowRight size={13} /></span></Link><Link to="/knowledge/memory" className="rounded-lg border border-indigo-900/50 bg-indigo-950/20 p-4 hover:border-indigo-500/60"><p className="text-sm font-medium text-indigo-200">Memory</p><p className="mt-2 text-xs leading-5 text-gray-400">Sessions, Evidence, Observations, Candidate Insights and typed Confirmed Memory stay separate and ACL-scoped.</p><span className="mt-3 inline-flex items-center gap-1 text-xs text-indigo-300">Open plane <ArrowRight size={13} /></span></Link><Link to="/knowledge/operations/capture" className="rounded-lg border border-amber-900/50 bg-amber-950/20 p-4 hover:border-amber-500/60"><p className="text-sm font-medium text-amber-200">Operations</p><p className="mt-2 text-xs leading-5 text-gray-400">Capture health, ingestion runs, indexing, providers, and safe diagnostics.</p><span className="mt-3 inline-flex items-center gap-1 text-xs text-amber-300">Open plane <ArrowRight size={13} /></span></Link></div></section>
-      <section className={cardClass}><h3 className="font-medium text-gray-100">Quick actions</h3><div className="mt-3 space-y-2"><Link to="/knowledge/product-docs/imports" className="flex items-center gap-2 rounded-md border border-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800"><UploadCloud size={15} className="text-cyan-300" /> Import Product Documents</Link><Link to="/knowledge/product-docs/search" className="flex items-center gap-2 rounded-md border border-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800"><Search size={15} className="text-cyan-300" /> Search authoritative docs</Link><Link to="/knowledge/candidate-insights" className="flex items-center gap-2 rounded-md border border-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800"><ClipboardCheck size={15} className="text-indigo-300" /> Review Candidate Insights</Link><Link to="/knowledge/operations/index" className="flex items-center gap-2 rounded-md border border-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800"><RefreshCw size={15} className="text-amber-300" /> Check index/providers</Link></div></section>
-    </div>
-    <div className="mt-6 grid gap-4 lg:grid-cols-2"><section className={cardClass}><div className="flex items-center justify-between"><h3 className="font-medium text-gray-100">Recent ingest runs</h3><Link to="/knowledge/operations/ingest" className="text-xs text-indigo-300 hover:text-indigo-200">View all</Link></div>{runs.length === 0 ? <p className="mt-4 text-sm text-gray-500">No ingest runs have been recorded yet.</p> : <div className="mt-3 divide-y divide-gray-800">{runs.slice(0, 5).map((run: any) => <Link key={run.id} to={`/knowledge/operations/ingest?run=${encodeURIComponent(run.id)}`} className="flex items-center justify-between gap-3 py-3 hover:bg-gray-800/40"><div className="min-w-0"><p className="truncate text-sm text-gray-200">{run.source_locator ?? run.id}</p><p className="mt-1 text-xs text-gray-500">{run.imported ?? 0} imported · {run.failed ?? 0} failed</p></div><StatusBadge value={run.status} /></Link>)}</div>}</section><section className={cardClass}><div className="flex items-center justify-between"><h3 className="font-medium text-gray-100">Capture diagnosis</h3><Link to="/knowledge/operations/capture" className="text-xs text-indigo-300 hover:text-indigo-200">Inspect</Link></div><div className="mt-4 flex items-center gap-3"><div className={`flex h-10 w-10 items-center justify-center rounded-full ${/available|healthy/i.test(captureStatus) ? "bg-emerald-950 text-emerald-300" : "bg-amber-950 text-amber-300"}`}><Activity size={19} /></div><div><p className="font-medium text-gray-200">{captureStatus}</p><p className="text-xs text-gray-500">{capture?.capture?.lastError ?? capture?.diagnostics?.[0] ?? "No active diagnosis"}</p></div></div>{capture?.deadLetterCount ? <div className="mt-4 flex items-center gap-2 text-xs text-rose-300"><FileWarning size={14} /> Dead-letter records require review</div> : <div className="mt-4 flex items-center gap-2 text-xs text-emerald-300"><CheckCircle2 size={14} /> No dead-letter backlog reported</div>}</section></div>
-    {projectId && <p className="mt-6 text-xs text-gray-600">Project-scoped pages default to <span className="text-gray-400">{projects.find((p) => p.id === projectId)?.name ?? `#${projectId}`}</span>; you can change it there without affecting global Product Knowledge.</p>}
-    {buildInfo && <div className="mt-3 flex flex-wrap items-center gap-3 text-[11px] text-gray-600"><span>Web/MCP build {buildInfo.version}</span><span>commit {String(buildInfo.commit ?? "unknown").slice(0, 12)}</span><span>built {buildInfo.buildTime ?? "unknown"}</span></div>}
-  </PageShell>;
+  );
 }

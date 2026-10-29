@@ -378,23 +378,36 @@ export function queryProductGraph(store: KnowledgeStore, request: ProductGraphQu
   const environment = optional(request.environment);
   if (projectId && request.actorId === undefined && !request.isAdmin) throw new Error("Product graph actorId is required for project-scoped queries");
   if (projectId && !request.isAdmin && request.actorId !== undefined && !store.canRead(request.actorId, projectId)) throw new Error("Knowledge access denied for project");
-  const clauses = ["e.document_id=d.id", "d.kind='product_document'", "e.project_id IS d.project_id", "e.environment IS d.environment"];
-  const params: unknown[] = [];
+  const entityClauses: string[] = [];
+  const entityParams: unknown[] = [];
   if (projectId) {
-    clauses.push("((e.project_id=? AND (e.environment IS ? OR (e.environment IS NULL AND ? IS NULL))) OR (e.project_id IS NULL AND e.environment IS NULL))");
-    params.push(projectId, environment ?? null, environment ?? null);
-  } else clauses.push("e.project_id IS NULL AND e.environment IS NULL");
-  if (!request.includeDeprecated) clauses.push("d.lifecycle IN ('approved','verified')");
-  clauses.push("p.review_status='approved'");
-  if (projectId) { clauses.push("((d.project_id=? AND (d.environment IS ? OR (d.environment IS NULL AND ? IS NULL))) OR (d.project_id IS NULL AND d.environment IS NULL))"); params.push(projectId, environment ?? null, environment ?? null); }
-  else clauses.push("d.project_id IS NULL AND d.environment IS NULL");
-  for (const [column, value] of [["e.product_version", request.productVersion], ["e.solution", request.solution], ["e.module", request.module]] as Array<[string, unknown]>) if (optional(value)) { clauses.push(`${column}=?`); params.push(String(value)); }
-  if (optional(request.relationType)) { /* applied to relations below */ }
-  const rows = store.db.prepare(`SELECT e.* FROM knowledge_product_graph_entities e JOIN knowledge_documents d ON ${clauses[0]} JOIN knowledge_product_documents p ON p.id=d.id WHERE ${clauses.slice(1).join(" AND ")} ORDER BY e.canonical_key,e.id LIMIT ?`).all(...params, 500) as Array<Record<string, unknown>>;
+    entityClauses.push("((e.project_id=? AND (e.environment IS ? OR (e.environment IS NULL AND ? IS NULL))) OR (e.project_id IS NULL AND e.environment IS NULL))");
+    entityParams.push(projectId, environment ?? null, environment ?? null);
+  } else entityClauses.push("e.project_id IS NULL AND e.environment IS NULL");
+  for (const [column, value] of [["e.product_version", request.productVersion], ["e.solution", request.solution], ["e.module", request.module]] as Array<[string, unknown]>) if (optional(value)) { entityClauses.push(`${column}=?`); entityParams.push(String(value)); }
+  const limit = Math.max(1, Math.min(500, Math.trunc(request.limit ?? 100)));
+  const candidateLimit = Math.min(5_000, Math.max(500, limit * 5));
+  const candidateRows = store.db.prepare(`SELECT e.* FROM knowledge_product_graph_entities e WHERE ${entityClauses.join(" AND ")} ORDER BY e.canonical_key,e.id LIMIT ?`).all(...entityParams, candidateLimit) as Array<Record<string, unknown>>;
+  const candidateDocumentIds = [...new Set(candidateRows.map((row) => String(row.document_id)))];
+  let rows: Array<Record<string, unknown>> = [];
+  if (candidateDocumentIds.length) {
+    const sourcePlaceholders = candidateDocumentIds.map(() => "?").join(",");
+    const sourceClauses = [`d.id IN (${sourcePlaceholders})`, "d.kind='product_document'"];
+    const sourceParams: unknown[] = [...candidateDocumentIds];
+    if (!request.includeDeprecated) sourceClauses.push("d.lifecycle IN ('approved','verified')");
+    sourceClauses.push("p.review_status='approved'");
+    if (projectId) { sourceClauses.push("((d.project_id=? AND (d.environment IS ? OR (d.environment IS NULL AND ? IS NULL))) OR (d.project_id IS NULL AND d.environment IS NULL))"); sourceParams.push(projectId, environment ?? null, environment ?? null); }
+    else sourceClauses.push("d.project_id IS NULL AND d.environment IS NULL");
+    const sourceRows = store.db.prepare(`SELECT d.id,d.project_id,d.environment FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE ${sourceClauses.join(" AND ")}`).all(...sourceParams) as Array<Record<string, unknown>>;
+    const sourceById = new Map(sourceRows.map((row) => [String(row.id), row]));
+    rows = candidateRows.filter((row) => {
+      const source = sourceById.get(String(row.document_id));
+      return Boolean(source) && optional(row.project_id) === optional(source!.project_id) && optional(row.environment) === optional(source!.environment);
+    });
+  }
   let entities = rows.map(entityFromRow);
   const terms = optional(request.query)?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
   if (terms.length) entities = entities.filter((entity) => terms.every((term) => `${entity.name} ${entity.canonicalKey} ${entity.kind}`.toLowerCase().includes(term)));
-  const limit = Math.max(1, Math.min(500, Math.trunc(request.limit ?? 100)));
   entities = entities.slice(0, limit);
   const visible = new Set(entities.map((entity) => entity.id));
   const relationClauses: string[] = []; const relationParams: unknown[] = [];

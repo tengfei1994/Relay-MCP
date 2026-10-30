@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { KnowledgeStore } from "./store.js";
 import { normalizeProductMarkup, legacyProductMarkupForReplay } from "./weknora-markdown.js";
+import { markProductDocumentEngineFailure, syncProductDocumentEngineProjection } from "./product-document.js";
 import { WeKnoraError, type WeKnoraClient, type WeKnoraReadinessOptions } from "./weknora.js";
 
 export interface WeKnoraModelProvenance { knowledgeBaseId: string; providerId: string; modelId: string; dimensions: number; indexVersion: number; }
-export interface WeKnoraDocumentInput { idempotencyKey: string; title: string; content: string; productVersion?: string; solution?: string; module?: string; topicId?: string; sourcePath?: string; language?: string; projectId?: string; environment?: string; parserVersion: string; rawSha256?: string; modelProvenance?: WeKnoraModelProvenance; }
+export interface WeKnoraDocumentInput { idempotencyKey: string; productDocumentId?: string; title: string; content: string; productVersion?: string; solution?: string; module?: string; topicId?: string; sourcePath?: string; language?: string; projectId?: string; environment?: string; parserVersion: string; rawSha256?: string; modelProvenance?: WeKnoraModelProvenance; }
 export interface ExternalDocumentResult { externalDocumentId: string; externalChunkIds?: string[]; knowledgeBaseId?: string; parseStatus?: string; modelProvenance?: WeKnoraModelProvenance; }
 export type WeKnoraDocumentStatus = "staged" | "published" | "deprecated" | "failed";
-export interface StagedWeKnoraDocument { id: string; externalDocumentId: string; externalChunkIds: string[]; knowledgeBaseId?: string; title: string; normalizedContentSha256: string; identityHash?: string; rawSha256?: string; parserVersion: string; productVersion?: string; solution?: string; module?: string; topicId?: string; sourcePath?: string; language?: string; projectId?: string; environment?: string; upstreamParseStatus?: string; upstreamVerifiedAt?: string; modelProvenance?: WeKnoraModelProvenance; status: WeKnoraDocumentStatus; failureCode?: string; failureMessage?: string; attemptCount: number; createdAt: string; updatedAt: string; publishedAt?: string; }
+export interface StagedWeKnoraDocument { id: string; externalDocumentId: string; externalChunkIds: string[]; knowledgeBaseId?: string; title: string; normalizedContentSha256: string; identityHash?: string; rawSha256?: string; parserVersion: string; productVersion?: string; solution?: string; module?: string; topicId?: string; sourcePath?: string; language?: string; projectId?: string; environment?: string; upstreamParseStatus?: string; upstreamVerifiedAt?: string; modelProvenance?: WeKnoraModelProvenance; status: WeKnoraDocumentStatus; failureCode?: string; failureMessage?: string; attemptCount: number; createdAt: string; updatedAt: string; publishedAt?: string; deprecatedAt?: string; }
 export interface WeKnoraDocumentWriter {
   upsertDocument(input: NormalizedWeKnoraInput, options?: WeKnoraWriteOptions): Promise<ExternalDocumentResult>;
   resumeDocument?(externalDocumentId: string, input: NormalizedWeKnoraInput, options?: WeKnoraWriteOptions): Promise<ExternalDocumentResult>;
@@ -86,7 +87,7 @@ export function weKnoraDocumentFromRow(row: Record<string, unknown>): StagedWeKn
     upstreamParseStatus: optional("upstream_parse_status"), upstreamVerifiedAt: optional("upstream_verified_at"),
     modelProvenance: provenanceFrom(parseJson(row.model_provenance_json)), status: String(row.status) as WeKnoraDocumentStatus,
     failureCode: optional("failure_code"), failureMessage: optional("failure_message"), attemptCount: Number(row.attempt_count ?? 0),
-    createdAt: String(row.created_at), updatedAt: String(row.updated_at), publishedAt: optional("published_at"),
+    createdAt: String(row.created_at), updatedAt: String(row.updated_at), publishedAt: optional("published_at"), deprecatedAt: optional("deprecated_at"),
   };
 }
 
@@ -211,8 +212,11 @@ export class WeKnoraIngestor {
     if (!isVerifiedWeKnoraDocument(document)) throw new WeKnoraIngestError("upstream_not_ready", "Cannot publish without verified completed parsing and nonempty chunks");
     const now = this.clock().toISOString();
     this.store.db.prepare("UPDATE knowledge_weknora_documents SET status='published',published_at=?,updated_at=?,deprecated_at=NULL WHERE id=?").run(now, now, document.id);
+    const published = this.get(document.id)!;
+    const localIds = this.store.db.prepare("SELECT id FROM knowledge_product_documents WHERE engine_external_document_id=?").all(published.externalDocumentId) as Array<{ id: string }>;
+    for (const local of localIds) syncProductDocumentEngineProjection(this.store, local.id, published);
     this.store.audit({ actorId, action: "knowledge.weknora.publish", entityType: "weknora_document", entityId: document.id, details: { status: "published" } });
-    return this.get(document.id)!;
+    return published;
   }
   deprecate(id: string, actorId: number): StagedWeKnoraDocument {
     return this.store.db.transaction(() => {
@@ -223,8 +227,11 @@ export class WeKnoraIngestor {
       // Migration 043 withdraws and audits all active mappings in this same
       // transaction, including mappings shared by several migrations.
       this.store.db.prepare("UPDATE knowledge_weknora_documents SET status='deprecated',deprecated_at=?,updated_at=? WHERE id=?").run(now, now, id);
+      const deprecated = this.get(id)!;
+      const localIds = this.store.db.prepare("SELECT id FROM knowledge_product_documents WHERE engine_external_document_id=?").all(deprecated.externalDocumentId) as Array<{ id: string }>;
+      for (const local of localIds) syncProductDocumentEngineProjection(this.store, local.id, deprecated);
       this.store.audit({ actorId, action: "knowledge.weknora.deprecate", entityType: "weknora_document", entityId: id, details: { previousStatus: document.status } });
-      return this.get(id)!;
+      return deprecated;
     }).immediate();
   }
   private assertExternalIdentity(externalId: string, identityHash: string, localId?: string): Record<string, unknown> | undefined {
@@ -307,11 +314,14 @@ export class WeKnoraIngestor {
       const updated = this.store.db.prepare("UPDATE knowledge_weknora_documents SET external_document_id=?,external_knowledge_base_id=?,external_chunk_ids_json=?,upstream_parse_status='completed',upstream_verified_at=?,model_provenance_json=?,status='staged',failure_code=NULL,failure_message=NULL,attempt_count=?,updated_at=? WHERE id=? AND status='staged' AND external_document_id=?")
         .run(external.externalDocumentId, external.knowledgeBaseId ?? null, JSON.stringify(external.externalChunkIds), now, JSON.stringify(external.modelProvenance ?? {}), attempts, now, id, external.externalDocumentId);
       if (updated.changes !== 1) throw new WeKnoraIngestError("ingest_state_conflict", "Document state changed before readiness was recorded");
+      const staged = this.get(id)!;
+      if (input.productDocumentId) syncProductDocumentEngineProjection(this.store, input.productDocumentId, staged);
       this.store.audit({ projectId: input.projectId, action: "knowledge.weknora.stage", entityType: "weknora_document", entityId: id, details: { externalDocumentId: external.externalDocumentId, normalizedContentSha256, identityHash, status: "staged", retry: true, attemptCount: attempts } });
-      return this.get(id)!;
+      return staged;
     } catch (error) {
       const code = failureCode(error); const message = sanitizeFailureMessage(error);
       const failed = this.store.db.prepare("UPDATE knowledge_weknora_documents SET status='failed',failure_code=?,failure_message=?,upstream_verified_at=NULL,attempt_count=?,updated_at=? WHERE id=? AND status IN ('staged','failed')").run(code, message, attempts, this.clock().toISOString(), id);
+      if (input.productDocumentId) markProductDocumentEngineFailure(this.store, input.productDocumentId, { code, message }, attempts);
       if (failed.changes) this.store.audit({ projectId: input.projectId, action: "knowledge.weknora.stage", entityType: "weknora_document", entityId: id, details: { status: "failed", failureCode: code, normalizedContentSha256, attemptCount: attempts } });
       throw new WeKnoraIngestError(code, `WeKnora ingest failed (${code}): ${message}`);
     }

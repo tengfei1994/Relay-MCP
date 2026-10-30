@@ -34,21 +34,20 @@ test("Product and Wiki detail, revision and mutation requests retain their sourc
     }
     await api.productDocumentsList(scope);
     await api.productDocumentSearch({ ...scope, q: "probe" });
-    await api.knowledgeWikiPages(scope);
-    await api.knowledgeWeknoraDocuments({ ...scope, status: "published" });
-    for (const call of calls.slice(8, 12)) {
+    await api.knowledgeWikiDirectory(scope);
+    await api.knowledgeWikiGeneration(scope);
+    for (const call of calls.slice(8, 13)) {
       const url = new URL(call.url, "http://relay.test");
       assert.equal(url.searchParams.get("projectId"), "project-a");
       assert.equal(url.searchParams.get("environment"), "test");
     }
     await api.knowledgeWikiCreate({ ...scope, title: "Wiki", sourceRefs: ["source-1"] });
-    await api.knowledgeWeknoraDocumentStage({ ...scope, title: "Source", content: "body" });
     await api.knowledgeSearch({ ...scope, query: "probe" });
-    for (const call of calls.slice(12)) {
+    for (const call of calls.slice(13)) {
       assert.equal(call.body.projectId, "project-a");
       assert.equal(call.body.environment, "test");
     }
-    assert.deepEqual(calls[12].body.sourceRefs, ["source-1"]);
+    assert.deepEqual(calls.find((call) => Array.isArray(call.body?.sourceRefs))?.body.sourceRefs, ["source-1"]);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalStorage) Object.defineProperty(globalThis, "localStorage", originalStorage);

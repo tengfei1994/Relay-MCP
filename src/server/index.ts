@@ -27,7 +27,7 @@ import { startCandidateInsightDispatcher } from "../knowledge/candidate-dispatch
 import { knowledgeRoutes } from "./routes/knowledge.js";
 import { requireJwtSecret } from "../shared/auth-secret.js";
 import { getKnowledgeStore } from "./knowledge-context.js";
-import { runPendingIngestJobs, recoverInterruptedIngestJobs } from "../knowledge/ingest-worker.js";
+import { ensureWikiGeneration, runPendingIngestJobs, recoverInterruptedIngestJobs } from "../knowledge/ingest-worker.js";
 import { stopIngestJobs } from "../knowledge/ingest-dispatch.js";
 
 declare module "@fastify/jwt" {
@@ -134,6 +134,7 @@ await app.register(knowledgeEngineRoutes);
 // Resume durable document imports after a process restart. The worker claims
 // only queued rows and keeps the HTTP server responsive while large packages
 // are parsed.
+ensureWikiGeneration(getKnowledgeStore());
 recoverInterruptedIngestJobs(getKnowledgeStore());
 void runPendingIngestJobs(getKnowledgeStore()).catch((error) => app.log.error(error, "knowledge ingest recovery failed"));
 

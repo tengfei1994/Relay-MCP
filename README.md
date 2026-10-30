@@ -1,12 +1,33 @@
+<div align="center">
+
 # Relay MCP
 
-> Self-hosted remote operations relay for MCP clients, SSH servers, Windows Agents, and Thermo Scientific SampleManager LIMS.
+**Self-hosted remote operations relay for MCP clients, SSH servers, Windows Agents, and SampleManager LIMS.**
 
 [![Release](https://img.shields.io/badge/release-v0.6.3-2563eb)](https://github.com/tengfei1994/Relay-MCP/releases/tag/v0.6.3)
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/license-MIT-64748b)](#license)
 
-Relay MCP 让 Codex、Claude 等 MCP 客户端通过一台自托管 Relay，按受控的项目、服务器和环境范围执行远程运维与 SampleManager 开发任务。目标服务器既可以使用 SSH，也可以运行仅需出站 HTTP 的 Relay Agent。
+</div>
+
+Relay MCP 让 Codex、Claude、Cursor 等 MCP 客户端通过一台自托管 Relay，按受控的 Project、Server 和 environment 范围执行远程运维与 SampleManager 开发任务。目标服务器可以使用 SSH，也可以运行仅需出站 HTTP 的 Relay Agent。
+
+<details>
+<summary><strong>快速导航</strong></summary>
+
+- [核心能力](#核心能力)
+- [架构](#架构)
+- [Knowledge Plane：统一 Product Document 与 Wiki](#knowledge-plane统一-product-document-与-wiki)
+- [快速部署](#快速部署)
+- [初始配置](#初始配置)
+- [MCP 客户端](#mcp-客户端)
+- [MCP 工具目录](#mcp-工具目录)
+- [开发与验证](#开发与验证)
+
+</details>
+
+> [!IMPORTANT]
+> MCP 默认使用 `Authorization: Bearer <token>`。自 v0.6.3 起，`?token=` query 认证默认关闭；只有无法发送请求头的 legacy 客户端才应显式设置 `RELAY_MCP_ALLOW_QUERY_TOKEN=true`。
 
 ### Authentication compatibility
 
@@ -18,6 +39,10 @@ leak through URLs, proxy logs, browser history, and monitoring systems.
 
 ## v0.6.3
 
+- Product Document 成为唯一的产品文档领域对象，索引引擎字段作为同一对象的 projection。
+- 同一 `topic_group_id` 的多版本内容合并为一个 Wiki 页面，并按 Common / Version / Differences 组织。
+- Product import 自动排队后台 `wiki_generation`，生成带章节级来源引用的 draft Wiki。
+- Wiki 前端提供 Solution → Module → Topic 目录、版本筛选、稳定 TOC 和生成状态。
 - Agent 通过 `artifact-upload` job 将远程文件流式上传到 Relay，不再把大型二进制塞进 Base64/JSON。
 - 下载接口支持 HTTP Range，本地下载器使用 `.part` 文件断点续传。
 - 文件传输返回并校验字节数和 SHA-256。
@@ -63,6 +88,61 @@ Knowledge Plane 使用独立的 `knowledge.db`（默认锚定到 `RELAY_STATE_RO
 
 Knowledge 检索的版本化黄金集、质量门槛和 10 万 chunk FTS5 基线见 [质量基线说明](docs/knowledge-quality-baseline.md)。
 
+## Knowledge Plane：统一 Product Document 与 Wiki
+
+> [!NOTE]
+> Product Document 是唯一的产品文档领域对象。索引引擎状态是它的投影，Wiki 是按主题和版本从 Product Document 派生出的可审阅知识页面；浏览器端不再提供手动 Product migration 流程。
+
+### 一套对象，三层职责
+
+| 层 | 职责 | 关键事实 |
+|---|---|---|
+| **Product Document** | 保存规范化正文、Solution、Module、Topic、版本、语言、来源和 ACL | `knowledge_documents` + `knowledge_product_documents` |
+| **Engine projection** | 保存外部文档 ID、Chunk、解析/验证/失败状态、模型 provenance 和索引状态 | 与 Product Document 同一领域对象 |
+| **Wiki** | 组织跨版本的 Common、Version、Difference 章节，保存逐章节来源引用 | 一个 `topic_group_id` 对应一个 Wiki 页面 |
+
+历史 WeKnora/migration 行只作为引擎兼容与审计记录保留，不是第二套产品文档，也不是 Wiki 生成的前置操作。
+
+### 同 Topic 的多版本呈现
+
+同一主题在 21.1 和 21.3 中不会生成两个 Wiki。Relay 会生成一个页面：
+
+```text
+Topic Wiki
+├── Common       ← 所有版本都成立，引用每个代表版本
+├── Version 21.1 ← 仅引用 21.1 的文档/Chunk
+├── Version 21.3 ← 仅引用 21.3 的文档/Chunk
+└── Differences  ← 只描述版本差异，至少引用两个版本
+```
+
+Wiki 目录按 `Solution → Module → Topic` 展示；页面支持版本筛选、稳定目录锚点和章节级 source citations。
+
+### 后台生成流水线
+
+```text
+Product import
+      │
+      ├─ assign stable topic_group_id
+      ├─ normalize + chunk + validate
+      └─ enqueue durable wiki_generation job
+                         │
+                         ▼
+                 managed wiki_llm
+                         │
+                         ├─ validate version boundaries
+                         ├─ validate document/chunk citations
+                         └─ write one draft Wiki revision
+```
+
+导入或服务启动会自动补齐待处理 topic group。生成失败会保留状态、错误和尝试次数，不会生成无来源的 fallback 内容；Review/Publish 仍是独立的人工动作。
+
+实现与运维细节：
+
+- [Knowledge base architecture](docs/knowledge-base-architecture.md)
+- [Managed Knowledge engine operations](docs/managed-knowledge-engine-operations.md)
+- [Managed Knowledge release notes](docs/managed-knowledge-engine-release-notes.md)
+
+
 ## 核心能力
 
 - 项目、服务器、environment 和 token 范围选择。
@@ -72,6 +152,7 @@ Knowledge 检索的版本化黄金集、质量门槛和 10 万 chunk FTS5 基线
 - 部署、日志检索、服务重启、执行审计和持久化项目事实。
 - SampleManager 多实例扫描、数据库识别、构建工具发现、SQL、utility、程序集部署和回滚。
 - 大文件上传、断点下载、大小与 SHA-256 完整性验证。
+- 统一 Product Document、版本化 Wiki、后台 LLM 生成和来源引用。
 
 ## 快速部署
 
@@ -383,11 +464,11 @@ Knowledge 审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [`d
 | Context | `knowledge_wiki_get` | 读取 Wiki 页面、修订历史或两个修订的 unified diff。 |
 | Context | `knowledge_wiki_write` | 幂等创建 Wiki 页面或追加受审核编辑修订。 |
 | Context | `knowledge_wiki_review` | 以审计理由发布、弃用或回滚 Wiki 页面。 |
-| Context | `knowledge_migration_create` | 创建幂等的 Product Knowledge 迁移记录。 |
-| Context | `knowledge_migration_from_local` | 将本地 Product Knowledge 分阶段导入 WeKnora 并生成逐文件报告。 |
-| Context | `knowledge_migration_publish` | 发布已验证的 Product Knowledge 迁移。 |
-| Context | `knowledge_migration_rollback` | 以审计理由回滚 Product Knowledge 迁移。 |
-| Context | `knowledge_release_gates` | 执行安全、迁移、Provider、ACL 和发布可见性门禁。 |
+| Compatibility | `knowledge_migration_create` | 兼容旧引擎的幂等迁移审计记录；Wiki 生成不需要手动调用。 |
+| Compatibility | `knowledge_migration_from_local` | 兼容旧引擎的本地 Product Knowledge 导入路径；新 Product import 会自动建立统一对象并排队 Wiki 生成。 |
+| Compatibility | `knowledge_migration_publish` | 发布兼容引擎迁移记录；不用于创建 Wiki 页面。 |
+| Compatibility | `knowledge_migration_rollback` | 以审计理由回滚兼容引擎迁移记录。 |
+| Context | `knowledge_release_gates` | 执行安全、迁移兼容性、Provider、ACL 和发布可见性门禁。 |
 | Context | `knowledge_search` | 通过 Relay 内部 WeKnora 边界检索 Product Knowledge。 |
 | SampleManager | `samplemanager_capabilities` | 解析实例使用的版本化 Capability Pack，并列出已就绪、规划中和不可用的语义检查能力。 |
 | SampleManager | `samplemanager_instance_preflight` | 一次性只读检查实例目录、指定文件哈希/XML、FormsBin、服务、进程和近期错误摘要。 |

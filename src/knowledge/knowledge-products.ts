@@ -10,6 +10,7 @@ import type { KnowledgeDocument } from "./domain.js";
 import { parseHelpHtml, parseToc, parsePdfBytes, type ParsedHelpHtml } from "./parsers.js";
 import { resolveChmExtractor, chmExtractionArguments } from "./chm-extractor.js";
 import { extractProductGraph, persistProductGraph } from "./product-graph.js";
+import { loadProductDocumentDomainObject, productDocumentEngineView, productDocumentPublicView } from "./product-document.js";
 
 const SUPPORTED = new Set([".md", ".markdown", ".html", ".htm", ".pdf", ".chm"]);
 
@@ -377,7 +378,7 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
       const createdAt = now;
       store.upsertDocument({ id, kind: "product_document", title: parsed.title, body, lifecycle: "approved", projectNameSnapshot: local.product, sampleManagerVersion: version, solution: local.solution, module: parsed.module, visibility: "global", scopeType: "version", scopeKey: version, locator: `product-doc:${relativePath}`, commit: options.sourceCommit, sha256: sourceHash, createdAt, updatedAt: createdAt });
       const metadata = { confidence: parsed.confidence, reasons: parsed.reasons, module: parsed.module, sourceFormat: htmlParsed?.sourceFormat ?? (tocEntries.length ? "toc" : parsed.sourceFormat), sourcePath: relativePath, sourceHash, normalizedContentSha256, parserVersion: HTML_PARSER_VERSION, ...(ext === ".pdf" && options.pdfText?.[path] !== undefined ? { pdfExtraction: "pdf-parse" } : {}), stableIdentifiers: parsed.stableIdentifiers, links: htmlParsed?.links ?? [], images: htmlParsed?.images ?? [], tocEntries, manifestRule: rule };
-      store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,sections_json,metadata_json,revision_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`).run(id, familyId, parsed.documentType, local.language ?? "en", local.authority ?? "official", relativePath, sourceHash, version, JSON.stringify(parsed.sections), JSON.stringify(metadata), revisionId, createdAt, createdAt);
+      store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,sections_json,metadata_json,revision_id,topic_group_id,normalized_content_sha256,parser_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET normalized_content_sha256=excluded.normalized_content_sha256,parser_version=excluded.parser_version,updated_at=excluded.updated_at`).run(id, familyId, parsed.documentType, local.language ?? "en", local.authority ?? "official", relativePath, sourceHash, version, JSON.stringify(parsed.sections), JSON.stringify(metadata), revisionId, `family:${familyId}`, normalizedContentSha256, HTML_PARSER_VERSION, createdAt, createdAt);
       if (!advanceCurrentProductBinding(store, id, familyId, version, relativePath, now)) {
         // A document family is the compatibility identity used by the first
         // generation importer. Keep it as the fallback topic identity while
@@ -396,6 +397,7 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
           (id,topic_id,document_id,product,product_version,source_path,match_method,match_confidence,status,created_at,updated_at)
           VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
           .run(`binding-${sha256(`${bindingTopicId}\0${version}\0${id}`).slice(0, 24)}`, bindingTopicId, id, local.product ?? null, version, relativePath, titleMatch ? "title_module" : "family_id", matchConfidence, matchConfidence < 0.8 ? "pending_review" : "active", createdAt, createdAt);
+        store.db.prepare("UPDATE knowledge_product_documents SET topic_group_id=?,updated_at=? WHERE id=?").run(bindingTopicId, createdAt, id);
       }
       if (prior?.id) { priorDocumentId = prior.id; store.db.prepare("UPDATE knowledge_documents SET lifecycle='deprecated',updated_at=? WHERE id=? AND lifecycle<>'deprecated'").run(now, prior.id); report.deprecated++; }
       if (prior?.id) report.updated++; else report.imported++;
@@ -465,6 +467,7 @@ export function searchKnowledgeProducts(store: KnowledgeStore, request: ProductD
     }
   } else rows = store.db.prepare(`SELECT d.id,d.title,d.lifecycle,d.samplemanager_version,d.solution,d.module,d.project_name_snapshot,d.source_locator,d.source_commit,d.source_sha256,d.created_at,d.updated_at,p.document_family_id,p.document_type,p.language,p.authority,p.source_path,p.version,p.sections_json,p.metadata_json,p.diff_review_status FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE ${conditions.join(" AND ")} ORDER BY d.updated_at DESC LIMIT ${limit}`).all(params) as Array<Record<string, unknown>>;
   return rows.map((row) => {
+    const unified = loadProductDocumentDomainObject(store, String(row.id));
     const sections = safeJson(row.sections_json, []) as Array<Record<string, unknown>>;
     const firstSection = Array.isArray(sections) ? sections[0] : undefined;
     return {
@@ -476,6 +479,7 @@ export function searchKnowledgeProducts(store: KnowledgeStore, request: ProductD
       // Search results cross the SQL/API boundary, so expose the same
       // camelCase provenance fields used by the Product Knowledge UI while
       // retaining the raw columns above for compatibility.
+      topicGroupId: unified?.topicGroupId, engine: unified ? productDocumentEngineView(unified.engine) : undefined, productDocument: unified ? productDocumentPublicView(unified) : undefined,
       sampleManagerVersion: row.samplemanager_version,
       projectNameSnapshot: row.project_name_snapshot,
       sourceLocator: row.source_locator,
@@ -529,7 +533,12 @@ export function updateProductDocumentLifecycle(store: KnowledgeStore, id: string
 /** A corrected/retired local source must be revalidated before its engine mapping can be published again. */
 export function invalidateEngineProductMappings(store:KnowledgeStore,ids:string[],now=new Date().toISOString()):number {
   const update=store.db.prepare("UPDATE knowledge_weknora_documents SET status='deprecated',deprecated_at=?,updated_at=? WHERE status!='deprecated' AND id IN (SELECT document_id FROM knowledge_migration_documents WHERE local_document_id=?)");
-  return store.db.transaction(()=>ids.reduce((count,id)=>count+Number(update.run(now,now,id).changes),0))();
+  const unified = store.db.prepare("UPDATE knowledge_product_documents SET engine_status='deprecated',engine_deprecated_at=?,engine_updated_at=?,updated_at=? WHERE id=? AND engine_status<>'deprecated'");
+  return store.db.transaction(() => ids.reduce((count, id) => {
+    const legacyChanges = Number(update.run(now, now, id).changes);
+    const projectionChanges = Number(unified.run(now, now, now, id).changes);
+    return count + (legacyChanges > 0 || projectionChanges > 0 ? 1 : 0);
+  }, 0))();
 }
 
 

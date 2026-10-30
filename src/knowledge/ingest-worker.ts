@@ -6,6 +6,7 @@ import type { KnowledgeStore } from "./store.js";
 import { readEngineControl, readEngineRuntime } from "./engine-config.js";
 import type { EngineModelBinding } from "./engine-model-gateway.js";
 import { importKnowledgeProductsAsync, type ProductDocumentImportOptions, type ProductDocumentImportReport } from "./knowledge-products.js";
+import { listWikiTopicGroups, WikiGenerationService } from "./wiki-generation.js";
 import { ingestArtifactSet, type ArtifactIngestReport } from "./artifact-ingest.js";
 
 interface MigrationRuntimeBinding {
@@ -83,6 +84,29 @@ export function enqueueProductImport(store: KnowledgeStore, options: ProductDocu
   scheduleIngestJobs(store);
   return { id, kind: "product_documents", status: "queued" };
 }
+
+export function enqueueWikiGeneration(store: KnowledgeStore, input: { topicGroupIds?: string[]; projectId?: string; environment?: string; triggerId?: string }): IngestJob | undefined {
+  const topicGroupIds = [...new Set(input.topicGroupIds ?? listWikiTopicGroups(store, input).map(group => group.topicGroupId).filter(Boolean))].sort();
+  if (!topicGroupIds.length) return undefined;
+  const triggerId = input.triggerId ?? randomUUID();
+  const id = `wiki-generation-${createHash("sha256").update(JSON.stringify({ topicGroupIds, projectId: input.projectId ?? "", environment: input.environment ?? "", triggerId })).digest("hex")}`;
+  const now = new Date().toISOString();
+  const existing = store.db.prepare("SELECT * FROM knowledge_ingest_jobs WHERE id=?").get(id) as Record<string, unknown> | undefined;
+  if (existing) return { id, kind: "wiki_generation", status: String(existing.status), ...(existing.result_json ? { result: JSON.parse(String(existing.result_json)) } : {}), ...(existing.error ? { error: String(existing.error) } : {}) };
+  const payload = { topicGroupIds, projectId: input.projectId, environment: input.environment, triggerId, cursor: 0 };
+  store.db.prepare("INSERT INTO knowledge_ingest_jobs(id,kind,payload_json,status,available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").run(id, "wiki_generation", JSON.stringify(payload), "queued", now, now, now);
+  scheduleIngestJobs(store);
+  return { id, kind: "wiki_generation", status: "queued" };
+}
+
+export function ensureWikiGeneration(store: KnowledgeStore, input: { projectId?: string; environment?: string } = {}): IngestJob | undefined {
+  const groups = listWikiTopicGroups(store, input).map(group => group.topicGroupId);
+  const pending = groups.filter(topicGroupId => {
+    const row = store.db.prepare("SELECT status FROM knowledge_wiki_generation_state WHERE project_id=? AND environment=? AND topic_group_id=?").get(input.projectId ?? "", input.environment ?? "", topicGroupId) as { status?: string } | undefined;
+    return !row;
+  });
+  return enqueueWikiGeneration(store, { ...input, topicGroupIds: pending, triggerId: "bootstrap" });
+}
 export function enqueueArtifactImport(store: KnowledgeStore, options: { source: string; kind?: string; name: string; version?: string; solution?: string; storageUri?: string }): IngestJob {
   const id = randomUUID(); const now = new Date().toISOString(); store.db.prepare("INSERT INTO knowledge_ingest_jobs(id,kind,payload_json,status,available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").run(id, "artifact_set", JSON.stringify(options), "queued", now, now, now); scheduleIngestJobs(store); return { id, kind: "artifact_set", status: "queued" };
 }
@@ -150,8 +174,40 @@ export async function executeIngestJob(store: KnowledgeStore, id: string, execut
       store.db.prepare("UPDATE knowledge_ingest_jobs SET status=?,error=?,result_json=?,finished_at=?,updated_at=? WHERE id=? AND status='running' AND owner_token=?").run(status, error, JSON.stringify(result), finished, finished, id, ownerToken);
       return ingestJobSnapshot(store, id);
     }
+    if (row.kind === "wiki_generation") {
+      const payload = JSON.parse(String(row.payload_json)) as { topicGroupIds: string[]; projectId?: string; environment?: string; cursor?: number };
+      const cursor = Math.max(0, Number(payload.cursor ?? 0)), batch = payload.topicGroupIds.slice(cursor, cursor + 5);
+      const generated: unknown[] = [], failures: Array<{ topicGroupId: string; error: string }> = [];
+      for (const topicGroupId of batch) {
+        assertOwner();
+        try {
+          generated.push(await new WikiGenerationService(store).generate({ topicGroupId, projectId: payload.projectId, environment: payload.environment }));
+        } catch (error) {
+          failures.push({ topicGroupId, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+      assertOwner();
+      const nextCursor = cursor + batch.length, summary = { processed: nextCursor, total: payload.topicGroupIds.length, generated, failures };
+      if (nextCursor < payload.topicGroupIds.length) {
+        const nextPayload = { ...payload, cursor: nextCursor };
+        store.db.prepare("UPDATE knowledge_ingest_jobs SET status='queued',payload_json=?,result_json=?,error=NULL,finished_at=NULL,available_at=?,updated_at=? WHERE id=? AND status='running' AND owner_token=?").run(JSON.stringify(nextPayload), JSON.stringify(summary), new Date().toISOString(), new Date().toISOString(), id, ownerToken);
+        return ingestJobSnapshot(store, id);
+      }
+      const status = failures.length ? "failed" : "succeeded", error = failures.length ? `${failures.length} Wiki topic generation(s) failed` : null, finished = new Date().toISOString();
+      store.db.prepare("UPDATE knowledge_ingest_jobs SET status=?,error=?,result_json=?,finished_at=?,updated_at=? WHERE id=? AND status='running' AND owner_token=?").run(status, error, JSON.stringify(summary), finished, finished, id, ownerToken);
+      return ingestJobSnapshot(store, id);
+    }
     const options = JSON.parse(String(row.payload_json)) as ProductDocumentImportOptions; const kind = store.db.prepare("SELECT kind FROM knowledge_ingest_jobs WHERE id=?").get(id) as { kind: string };
     const result: ProductDocumentImportReport | ArtifactIngestReport = kind.kind === "artifact_set" ? ingestArtifactSet(store, options as never) : await importKnowledgeProductsAsync(store, { ...options, onProgress: (progress) => { assertOwner(); store.db.prepare("UPDATE knowledge_ingest_jobs SET result_json=?,updated_at=? WHERE id=? AND status='running' AND owner_token=?").run(JSON.stringify(progress), new Date().toISOString(), id, ownerToken); } });
+    if (kind.kind === "product_documents") {
+      const documentIds = (result as ProductDocumentImportReport).documents;
+      const groups = documentIds.length
+        ? (store.db.prepare(`SELECT DISTINCT COALESCE(NULLIF(p.topic_group_id,''),b.topic_id,'family:' || p.document_family_id) AS topic_group_id
+          FROM knowledge_product_documents p LEFT JOIN knowledge_product_document_bindings b ON b.document_id=p.id
+          WHERE p.id IN (${documentIds.map(() => "?").join(",")})`).all(...documentIds) as Array<{ topic_group_id?: string }>).map(row => row.topic_group_id).filter((value): value is string => Boolean(value))
+        : [];
+      enqueueWikiGeneration(store, { topicGroupIds: groups, triggerId: (result as ProductDocumentImportReport).runId });
+    }
     const resultStatus = kind.kind === "artifact_set" ? "succeeded" : (result as ProductDocumentImportReport).status;
     // Item detail already lives in the import tables. Do not return tens of
     // thousands of source paths twice on each HTTP status poll.

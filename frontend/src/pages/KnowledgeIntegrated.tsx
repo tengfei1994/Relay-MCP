@@ -1,16 +1,14 @@
 import { LazyKnowledgeMarkup as KnowledgeMarkup } from "../components/LazyKnowledgeMarkup";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { BookOpen, CheckCircle2, ChevronLeft, ChevronRight, FileText, GitBranch, KeyRound, RefreshCw, ServerCog, ShieldAlert, Workflow } from "lucide-react";
+import { BookOpen, CheckCircle2, ChevronLeft, ChevronRight, FileText, KeyRound, RefreshCw, ServerCog, ShieldAlert, Workflow } from "lucide-react";
 import { api } from "../api/client";
 import { useAuth } from "../App";
-import { useProjectScope, type Project } from "../context/ProjectScope";
 import { Badge, cardClass, formatDate, inputClass, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
 import { ConfirmDialog, PageHeader } from "../components/ui";
 import { ProviderSetupForm, type ProviderSetupDefaults } from "../components/ProviderSetupForm";
-import { buildKnowledgeScope, buildWeknoraSearchBody, knowledgeItemScope, knowledgeItemMatchesScope, productEngineDocumentState, withKnowledgeScope, type KnowledgeScope } from "../knowledge/integrated-search";
-import { createWikiNavigation } from "../knowledge/wiki-navigation";
-
+import { buildKnowledgeScope, knowledgeItemScope, withKnowledgeScope, type KnowledgeScope } from "../knowledge/integrated-search";
+import { useProjectScope } from "../context/ProjectScope";
 const btn = "ui-button ui-button-primary ui-button-sm";
 const btnGhost = "ui-button ui-button-ghost ui-button-sm";
 const btnDanger = "ui-button ui-button-danger ui-button-sm";
@@ -34,8 +32,6 @@ type JsonRecord = {
   retrievalRunId: string; degraded: boolean | JsonRecord; references: JsonRecord[]; score: number; snippet: string;
   total: number; limit: number; offset: number; report: JsonRecord; generatedAt: string; totals: JsonRecord; note: string;
   providerId: string; verifiedAt: string; canPublish: boolean; chunkCount: number; verified: boolean;
-  migrationId: string; idempotencyKey: string; sourceManifest: JsonRecord; asyncRequest: JsonRecord; rolledBackAt: string; rollbackReason: string;
-  result: JsonRecord; error: string; processed: number; mapped: number; failed: number;
   checks: Record<string, JsonRecord>; ready: boolean; checkedAt: string; failures: string[]; ok: boolean; findings: string[];
 };
 
@@ -333,486 +329,272 @@ function CandidatesPane({ isAdmin }: { isAdmin: boolean }) {
 
 const WIKI_STATUSES = ["draft", "published", "deprecated"] as const;
 
-type KnowledgeScopeSelection = {
-  scope: KnowledgeScope;
-  projects: Project[];
-  scopeError: string;
-  setScope: (key: "projectId" | "environment", value: string) => void;
-  environmentValue: string;
-  projectId: number | undefined;
-  selectedProject: Project | undefined;
-  loading: boolean;
-};
-
-function useKnowledgeScope(): KnowledgeScopeSelection {
-  const { projects, projectId, selectedProject, setProjectId, loading, error } = useProjectScope();
-  const [params, setParams] = useSearchParams();
-  const [allProjects, setAllProjects] = useState(() => params.get("allProjects") === "true");
-  const environmentValue = params.get("environment") ?? "";
-  const scope = buildKnowledgeScope({ projectId: allProjects ? undefined : projectId, environment: environmentValue });
-  const setScope = (key: "projectId" | "environment", value: string) => {
-    if (key === "projectId") {
-      if (value) {
-        const nextProjectId = Number(value);
-        if (Number.isInteger(nextProjectId)) setProjectId(nextProjectId);
-        setAllProjects(false);
-      } else {
-        setAllProjects(true);
-      }
-    }
-    setParams((current) => {
-      const next = new URLSearchParams(current);
-      if (key === "projectId" && value) next.delete("allProjects");
-      if (key === "projectId" && !value) next.set("allProjects", "true");
-      value ? next.set(key, value) : next.delete(key);
-      next.delete("wikiPage");
-      next.delete("wikiKey");
-      return next;
-    }, { replace: true });
-  };
-  return { scope, projects, scopeError: error ?? "", setScope, environmentValue, projectId, selectedProject, loading };
+function useKnowledgeScope(): KnowledgeScope {
+  const { projectId } = useProjectScope();
+  const [params] = useSearchParams();
+  const allProjects = params.get("allProjects") === "true";
+  return buildKnowledgeScope({ projectId: allProjects ? undefined : projectId, environment: params.get("environment") ?? "" });
 }
 
-function ScopeControls({ selection, allowAllProjects = false, environmentPlaceholder = "Default environment" }: { selection: KnowledgeScopeSelection; allowAllProjects?: boolean; environmentPlaceholder?: string }) {
-  return <div className="mb-3 flex flex-wrap items-end gap-3">
-    <div className="space-y-1 text-xs text-subtle"><span className="block">Project scope</span><p className="h-[38px] rounded-field border border-line bg-[var(--field)] px-3 py-2 text-fg">{selection.scope.projectId ? selection.selectedProject?.name ?? selection.scope.projectId : "All projects"}</p></div>
-    {allowAllProjects && <button className={btnGhost} onClick={() => selection.setScope("projectId", selection.scope.projectId ? "" : String(selection.projectId ?? ""))}>{selection.scope.projectId ? "Use all projects" : "Use selected project"}</button>}
-    <label className="space-y-1 text-xs text-subtle"><span className="block">Environment</span><input className={inputClass} placeholder={environmentPlaceholder} value={selection.environmentValue} onChange={(event) => selection.setScope("environment", event.target.value)} /></label>
-    {selection.scopeError && <p className="text-xs text-coral">{selection.scopeError}</p>}
-  </div>;
+function slugHeading(value: string) {
+  return value.replace(/[`*_~]/g, "").trim().toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, "").replace(/\s+/g, "-");
 }
 
-export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
-  const { scope } = useKnowledgeScope();
-  const [params,setParams] = useSearchParams();
-  const selectedPage=params.get("wikiPage"), selectedKey=params.get("wikiKey");
-  const navigation=useRef(createWikiNavigation());
-  const currentNavigation=navigation.current.capture(JSON.stringify([scope.projectId,scope.environment,selectedPage,selectedKey]));
-  const listRequest = useRef(0);
-  const [sources, setSources] = useState<JsonRecord[]>([]);
-  const [sourcesLoading, setSourcesLoading] = useState(false);
-  const [sourceRefs, setSourceRefs] = useState<string[]>([]);
-  const emptyCreate = { pageKey: "", title: "", body: "", productVersion: "", reason: "" };
-  const [filters, setFilters] = useState({ search: "", status: "" });
-  const [applied, setApplied] = useState(filters);
-  const [offset, setOffset] = useState(0);
-  const [result, setResult] = useState<{ items: JsonRecord[]; total: number }>();
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [create, setCreate] = useState(emptyCreate);
-  const [showCreate, setShowCreate] = useState(false);
-  const [page, setPage] = useState<JsonRecord>();
+function markdownHeadings(source: string) {
+  return source.split(/\r?\n/).flatMap((line) => {
+    const match = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
+    return match ? [{ level: match[1].length, title: match[2].replace(/#+\s*$/, "").trim(), id: slugHeading(match[2]) }] : [];
+  });
+}
+
+function wikiSections(page: JsonRecord) {
+  const sections = [...records(page.sections), ...records(page.differences).map((difference) => ({ ...difference, kind: "difference" }))];
+  return sections.map((section) => ({
+    ...section,
+    title: text(section.title, text(section.key, "Section")),
+    kind: text(section.kind, "common") as "common" | "version" | "difference",
+    body: text(section.body, text(section.summary)),
+    productVersion: text(section.productVersion),
+    citations: records(section.citations),
+  }));
+}
+
+function WikiSectionSources({ citations, scope }: { citations: JsonRecord[]; scope: KnowledgeScope }) {
+  if (!citations.length) return <p className="mt-2 text-xs text-sun">No source citation is attached to this section.</p>;
+  return <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+    {citations.map((citation, index) => {
+      const id = text(citation.documentId);
+      return <li key={`${id}-${index}`} className="border-l-2 border-iris/60 pl-3 text-xs text-subtle">
+        {id ? <Link className="font-medium text-iris underline underline-offset-2" to={withKnowledgeScope(`/knowledge/product-docs?document=${encodeURIComponent(id)}`, scope)}>{text(citation.title, "Open source document")}</Link> : <span className="font-medium text-fg">{text(citation.title, "Source document")}</span>}
+        <p className="mt-1">{citation.productVersion ? `Version ${text(citation.productVersion)}` : "Version unspecified"}{citation.sourceLocator ? ` · ${text(citation.sourceLocator)}` : ""}</p>
+        {Array.isArray(citation.chunkIds) && citation.chunkIds.length > 0 && <p className="mt-1 text-muted">{citation.chunkIds.length} source chunk{citation.chunkIds.length === 1 ? "" : "s"}</p>}
+      </li>;
+    })}
+  </ul>;
+}
+
+function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; scope: KnowledgeScope; isAdmin: boolean; onRefresh: (updated: JsonRecord) => Promise<void> }) {
+  const sections = wikiSections(page);
+  const versions = [...new Set([...strings(page.supportedVersions), ...sections.filter((section) => section.kind === "version" && section.productVersion).map((section) => section.productVersion)])];
+  const [version, setVersion] = useState("");
+  const [view, setView] = useState<"all" | "common" | "differences">("all");
+  const [editBody, setEditBody] = useState({ title: text(page.title), body: text(page.body) });
+  const [rollbackRev, setRollbackRev] = useState("");
   const [revisions, setRevisions] = useState<JsonRecord[]>([]);
   const [diffRange, setDiffRange] = useState({ from: "", to: "" });
   const [diff, setDiff] = useState("");
-  const [editBody, setEditBody] = useState<{ title: string; body: string }>({ title: "", body: "" });
-  const [rollbackRev, setRollbackRev] = useState("");
-  const load = (nextOffset = offset) => {
-    const requestId = ++listRequest.current;
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const selectedVersion = version;
+  useEffect(() => {
+    setVersion("");
+    setEditBody({ title: text(page.title), body: text(page.body) });
+    setDiff("");
     setError("");
-    api.knowledgeWikiPages({ ...scope, search: applied.search || undefined, status: applied.status || undefined, limit: PAGE_LIMIT, offset: nextOffset })
-      .then((data) => { if (requestId === listRequest.current) setResult({ items: records(data.items), total: typeof data.total === "number" ? data.total : 0 }); })
-      .catch((err) => { if (requestId !== listRequest.current) return; setResult({ items: [], total: 0 }); setError(errText(err, "Unable to load Wiki pages")); });
+    api.knowledgeWikiRevisions(text(page.id), scope).then((result) => setRevisions(records(result.revisions))).catch((err) => setError(errText(err, "Unable to load revision history")));
+  }, [page.id, scope.projectId, scope.environment]);
+  const run = async (task: () => Promise<JsonRecord>, ok: string) => {
+    setError(""); setNotice("");
+    try { await onRefresh(await task()); setNotice(ok); } catch (err) { setError(errText(err, "Wiki operation failed")); }
   };
-  useEffect(() => { setOffset(0); setResult(undefined); setSourceRefs([]); setNotice(""); load(0); return () => { listRequest.current++; }; }, [applied, scope.projectId, scope.environment]);
-  useEffect(() => {
-    if (!showCreate) { setSources([]); return; }
-    let cancelled = false;
-    setSourcesLoading(true); setSources([]); setSourceRefs([]);
-    const loadSources = async () => {
-      const available: JsonRecord[] = []; let offset = 0;
-      while (!cancelled) {
-        const result = await api.knowledgeWeknoraDocuments({ ...scope, status: "published", limit: 100, offset });
-        const rows = records(result.documents); available.push(...rows);
-        offset += rows.length;
-        const total = asRecord(result.page).total;
-        if (!rows.length || offset >= (typeof total === "number" ? total : offset)) break;
-      }
-      if (!cancelled) setSources(available.filter((document) => knowledgeItemMatchesScope(document, scope) && productEngineDocumentState(document).verified && (!create.productVersion.trim() || String(document.product_version ?? document.productVersion ?? "") === create.productVersion.trim())));
-    };
-    loadSources().catch((err) => { if (!cancelled) setError(errText(err, "Unable to load published sources")); }).finally(() => { if (!cancelled) setSourcesLoading(false); });
-    return () => { cancelled = true; };
-  }, [showCreate, scope.projectId, scope.environment, create.productVersion]);
-  const run = async (task: () => Promise<unknown>, ok: string) => {
-    setError("");setNotice("");
-    try {const data=await task();currentNavigation.commit(()=>{setNotice(ok);load();});return data;}
-    catch(err){currentNavigation.commit(()=>setError(errText(err,"Wiki operation failed")));}
-  };
-  const openPage = (item: JsonRecord) => setParams(current => {
-    const next=new URLSearchParams(current); next.set("wikiPage",item.id); next.delete("wikiKey"); return next;
+  const visible = sections.filter((section) => {
+    if (view === "common") return section.kind === "common";
+    if (view === "differences") return section.kind === "difference";
+    return section.kind === "common" || section.kind === "difference" || section.kind === "version" && (!selectedVersion || section.productVersion === selectedVersion);
   });
-  useEffect(() => {
-    let cancelled=false;
-    setPage(undefined); setRevisions([]); setError(""); setDiff("");
-    if (!selectedPage && !selectedKey) return;
-    const read = async () => {
-      const result=selectedKey ? await api.knowledgeWikiResolve(selectedKey,scope) : await api.knowledgeWikiPage(selectedPage!,scope);
-      const detail=asRecord(result.page);
-      if (cancelled || !currentNavigation.isCurrent()) return;
-      // Defense in depth; the Relay endpoint authorizes the target independently.
-      if (!knowledgeItemMatchesScope(detail,scope) && (detail.projectId || detail.environment)) throw new Error("Wiki page is outside the selected scope");
-      const revs=await api.knowledgeWikiRevisions(detail.id,scope);
-      if (cancelled || !currentNavigation.isCurrent()) return;
-      setPage(detail); setRevisions(records(revs.revisions));
-      setEditBody({title:detail.title,body:detail.body});
-      setDiffRange({from:String(Math.max(1,detail.currentRevision-1)),to:String(detail.currentRevision)});
-    };
-    read().catch(err => {if (!cancelled) currentNavigation.commit(()=>setError(errText(err,"Unable to load Wiki page")));});
-    return () => {cancelled=true;};
-  },[selectedPage,selectedKey,scope.projectId,scope.environment]);
-  const refreshPage = async (updated: JsonRecord) => {
-    if (!currentNavigation.isCurrent()) return;
-    const revs=await api.knowledgeWikiRevisions(updated.id,scope);
-    currentNavigation.commit(()=>{setPage(updated);setEditBody({title:updated.title,body:updated.body});setRevisions(records(revs.revisions));load();});
+  const headings = visible.length > 0 ? visible.flatMap((section) => markdownHeadings(section.body)) : markdownHeadings(text(page.body));
+  return <section className={`${cardClass} overflow-hidden`} aria-labelledby="wiki-detail-title">
+    <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className="min-w-0">
+        <p className="text-xs font-medium text-iris">{text(page.solution, "Knowledge")} / {text(page.module, "General")}</p>
+        <h2 id="wiki-detail-title" className="mt-1 text-xl font-semibold text-fg">{text(page.title, text(page.pageKey, "Wiki page"))}</h2>
+        <p className="mt-1 text-xs text-muted">{text(page.pageKey)} · revision {text(page.currentRevision, "—")} · {text(page.generationStatus, text(page.status, "unknown"))}</p>
+      </div>
+      <StatusBadge value={text(page.status, "draft")} />
+    </div>
+    <div className="mt-4 flex flex-wrap items-center gap-2 border-b border-white/10 pb-3">
+      <button className={view === "all" ? btn : btnGhost} onClick={() => setView("all")}>All sections</button>
+      <button className={view === "common" ? btn : btnGhost} onClick={() => setView("common")}>Common</button>
+      <button className={view === "differences" ? btn : btnGhost} onClick={() => setView("differences")}>Differences</button>
+      {versions.length > 0 && <label className="ml-auto flex items-center gap-2 text-xs text-muted"><span>Version</span><select className={inputClass} value={selectedVersion} onChange={(event) => setVersion(event.target.value)}><option value="">All versions</option>{versions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>}
+    </div>
+    <div className="mt-4 grid gap-6 lg:grid-cols-[minmax(0,1fr)_13rem]">
+      <div className="min-w-0">
+        {visible.length > 0 ? <div className="space-y-8">{visible.map((section, index) => {
+          const sectionHeadings = markdownHeadings(section.body);
+          return <article key={text(section.id, `${section.kind}-${index}`)} id={`wiki-section-${text(section.id, `${section.kind}-${index}`)}`} className="scroll-mt-6">
+            <div className="flex flex-wrap items-center gap-2"><h3 className="text-base font-semibold text-fg">{section.title}</h3>{section.kind === "version" && <Badge tone="blue">{section.productVersion}</Badge>}{section.kind === "difference" && <Badge tone="amber">Difference</Badge>}</div>
+            <div className="mt-2"><KnowledgeMarkup source={section.body} wikiScope={scope} wikiPageKey={text(page.pageKey)} /></div>
+            <WikiSectionSources citations={section.citations} scope={knowledgeItemScope(page, scope)} />
+            {sectionHeadings.length > 0 && <div className="sr-only">{sectionHeadings.length} headings</div>}
+          </article>;
+        })}</div> : <div className="rounded-md border border-white/10 p-4 text-sm text-muted">No sections are available for this view. Showing the rendered page body instead.</div>}
+        {visible.length === 0 && <div className="mt-4 rounded-md border border-white/10 bg-black/20 p-4"><KnowledgeMarkup source={text(page.body)} wikiScope={scope} wikiPageKey={text(page.pageKey)} /></div>}
+      </div>
+      <aside className="lg:sticky lg:top-5 lg:self-start" aria-label="On this page">
+        <p className="text-xs font-medium text-muted">On this page</p>
+        {headings.length > 0 ? <nav className="mt-2 space-y-1 border-l border-white/10 pl-3">{headings.map((heading, index) => <a key={`${heading.id}-${index}`} href={`#knowledge-content-${heading.id}`} className="block text-xs text-subtle hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint" style={{ paddingLeft: `${Math.max(0, heading.level - 1) * 8}px` }}>{heading.title}</a>)}</nav> : <p className="mt-2 text-xs text-muted">No headings in this view.</p>}
+      </aside>
+    </div>
+    <div className="mt-6 border-t border-white/10 pt-4">
+      <h3 className="text-sm font-medium text-fg">Page sources</h3>
+      <WikiSectionSources citations={records(page.citations)} scope={knowledgeItemScope(page, scope)} />
+    </div>
+    {notice && <p className="mt-4 rounded-md border border-mint/40 bg-mint/10 p-3 text-sm text-mint">{notice}</p>}
+    <Err message={error} />
+    {isAdmin && page.status !== "deprecated" && <div className="mt-5 space-y-3 border-t border-white/10 pt-4">
+      <p className="text-xs font-medium text-muted">Review and edit</p>
+      <input className={`${inputClass} w-full`} value={editBody.title} onChange={(event) => setEditBody({ ...editBody, title: event.target.value })} placeholder="Title" />
+      <textarea className="min-h-28 w-full rounded-md border border-white/10 bg-[var(--field)] px-3 py-2 text-sm text-fg outline-none focus:border-mint" value={editBody.body} onChange={(event) => setEditBody({ ...editBody, body: event.target.value })} placeholder="Body" />
+      <div className="flex flex-wrap items-center gap-2">
+        <ReasonAction label="Save edit" onRun={async (reason) => run(async () => asRecord((await api.knowledgeWikiEdit(text(page.id), { title: editBody.title, body: editBody.body, reason }, knowledgeItemScope(page, scope))).page), "Wiki page saved.")} />
+        {page.status !== "published" && <ReasonAction label="Publish" onRun={async (reason) => run(async () => asRecord((await api.knowledgeWikiPublish(text(page.id), reason, knowledgeItemScope(page, scope))).page), "Wiki page published.")} />}
+        {page.status === "published" && <ReasonAction label="Deprecate" tone="danger" onRun={async (reason) => run(async () => asRecord((await api.knowledgeWikiDeprecate(text(page.id), reason, knowledgeItemScope(page, scope))).page), "Wiki page deprecated.")} />}
+        <input className={`${inputClass} w-24`} placeholder="Rev #" value={rollbackRev} onChange={(event) => setRollbackRev(event.target.value)} />
+        <ReasonAction label="Rollback" tone="danger" onRun={async (reason) => run(async () => { const revision = Number(rollbackRev); if (!Number.isInteger(revision) || revision < 1) throw new Error("Enter a valid revision number"); return asRecord((await api.knowledgeWikiRollback(text(page.id), revision, reason, knowledgeItemScope(page, scope))).page); }, "Wiki page rolled back.")} />
+      </div>
+    </div>}
+    <details className="mt-5 border-t border-white/10 pt-4">
+      <summary className="cursor-pointer text-xs font-medium text-muted">Revision history and diff</summary>
+      <ul className="mt-3 space-y-1.5">{revisions.map((revision) => <li key={revision.id} className="text-xs text-subtle"><Badge tone="purple">r{revision.revision}</Badge> <span className="ml-1 text-muted">{formatDate(revision.createdAt)} — {revision.changeReason}</span></li>)}</ul>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <input className={`${inputClass} w-24`} value={diffRange.from} onChange={(event) => setDiffRange({ ...diffRange, from: event.target.value })} placeholder="From" />
+        <input className={`${inputClass} w-24`} value={diffRange.to} onChange={(event) => setDiffRange({ ...diffRange, to: event.target.value })} placeholder="To" />
+        <button className={btnGhost} onClick={async () => { try { setDiff(text((await api.knowledgeWikiDiff(text(page.id), Number(diffRange.from), Number(diffRange.to), scope)).diff)); } catch (err) { setError(errText(err, "Unable to compute diff")); } }}>Diff revisions</button>
+      </div>
+      {diff && <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-white/10 bg-black/20 p-3 text-xs text-fg">{diff}</pre>}
+    </details>
+  </section>;
+}
+
+function directoryItems(value: unknown): JsonRecord[] {
+  if (Array.isArray(value)) return value.flatMap(directoryItems);
+  const source = asRecord(value);
+  const direct = records(source.items ?? source.pages ?? source.nodes ?? source.directory ?? source.groups);
+  if (direct.length) return direct.flatMap((item) => {
+    const children = records(item.children ?? item.modules ?? item.topics ?? item.items);
+    if (children.length) return children.flatMap(directoryItems);
+    const page = asRecord(item.page);
+    return Object.keys(page).length ? [page] : [item];
+  });
+  return Object.keys(source).length > 0 ? [source] : [];
+}
+
+export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
+  const scope = useKnowledgeScope();
+  const [params, setParams] = useSearchParams();
+  const selectedPage = params.get("wikiPage");
+  const selectedKey = params.get("wikiKey");
+  const [filters, setFilters] = useState({ search: "", status: "", version: "" });
+  const [result, setResult] = useState<JsonRecord[]>();
+  const [page, setPage] = useState<JsonRecord>();
+  const [generation, setGeneration] = useState<JsonRecord>();
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [showCreate, setShowCreate] = useState(false);
+  const [sources, setSources] = useState<JsonRecord[]>([]);
+  const [sourceRefs, setSourceRefs] = useState<string[]>([]);
+  const [create, setCreate] = useState({ pageKey: "", title: "", body: "", productVersion: "", reason: "" });
+  const requestId = useRef(0);
+  const load = async () => {
+    const id = ++requestId.current;
+    setError("");
+    const paramsForList = { ...scope, search: filters.search.trim() || undefined, status: filters.status || undefined, limit: 100, offset: 0 };
+    try {
+      let rows: JsonRecord[] = [];
+      try {
+        rows = directoryItems(await api.knowledgeWikiDirectory(paramsForList));
+      } catch {
+        const fallback = await api.knowledgeWikiPages(paramsForList);
+        const fallbackRecord = asRecord(fallback);
+        rows = records(fallbackRecord.items ?? fallbackRecord.pages);
+      }
+      if (id !== requestId.current) return;
+      const grouped = new Map<string, JsonRecord>();
+      rows.forEach((item) => {
+        const key = text(item.topicGroupId, text(item.pageKey, item.id));
+        const current = grouped.get(key);
+        if (!current) grouped.set(key, { ...item, supportedVersions: strings(item.supportedVersions) });
+        else {
+          const versions = [...new Set([...strings(current.supportedVersions), ...strings(item.supportedVersions), text(item.productVersion)])].filter(Boolean);
+          grouped.set(key, { ...current, supportedVersions: versions, sectionCount: Number(current.sectionCount ?? 0) + Number(item.sectionCount ?? 0) });
+        }
+      });
+      const filtered = [...grouped.values()].filter((item) => {
+        const versions = [...strings(item.supportedVersions), text(item.productVersion)].filter(Boolean);
+        return !filters.version || versions.includes(filters.version);
+      });
+      setResult(filtered);
+      api.knowledgeWikiGeneration(scope).then((value) => setGeneration(asRecord(value))).catch(() => { /* directory remains usable when progress is unavailable */ });
+    } catch (err) {
+      if (id === requestId.current) setError(errText(err, "Unable to load Wiki directory"));
+    }
   };
+  useEffect(() => { void load(); }, [scope.projectId, scope.environment, filters.search, filters.status, filters.version]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedPage && !selectedKey) { setPage(undefined); return; }
+    setError("");
+    (async () => {
+      try {
+        const data = selectedKey ? await api.knowledgeWikiResolve(selectedKey, scope) : await api.knowledgeWikiPage(selectedPage!, scope);
+        const detail = asRecord(data.page);
+        if (!cancelled) setPage(detail);
+      } catch (err) {
+        if (!cancelled) setError(errText(err, "Unable to load Wiki page"));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedPage, selectedKey, scope.projectId, scope.environment]);
+  useEffect(() => {
+    if (!showCreate) return;
+    api.productDocumentsList({ ...scope, status: "published", limit: 100, offset: 0 }).then((data) => setSources(records(data.documents))).catch((err) => setError(errText(err, "Unable to load published sources")));
+  }, [showCreate, scope.projectId, scope.environment]);
+  const openPage = (item: JsonRecord) => setParams((current) => { const next = new URLSearchParams(current); const id = text(item.id); const key = text(item.pageKey); if (id) { next.set("wikiPage", id); next.delete("wikiKey"); } else if (key) { next.set("wikiKey", key); next.delete("wikiPage"); } return next; });
+  const closePage = () => setParams((current) => { const next = new URLSearchParams(current); next.delete("wikiPage"); next.delete("wikiKey"); return next; });
+  const grouped = new Map<string, Map<string, JsonRecord[]>>();
+  (result ?? []).forEach((item) => {
+    const solution = text(item.solution, "Unassigned");
+    const module = text(item.module, "General");
+    if (!grouped.has(solution)) grouped.set(solution, new Map());
+    const modules = grouped.get(solution)!;
+    if (!modules.has(module)) modules.set(module, []);
+    modules.get(module)!.push(item);
+  });
+  const generationStates = records(generation?.states);
+  const activeGeneration = generationStates.filter((state) => ["queued", "running"].includes(text(state.status))).length;
+  const failedGeneration = generationStates.filter((state) => text(state.status) === "failed").length;
   return <div className="space-y-4">
     <section className={cardClass}>
-      <div className="flex flex-wrap items-center gap-3">
-        <h3 className="font-medium text-fg">Wiki pages</h3>
-        <input className={`${inputClass} w-64`} placeholder="Search title or body…" value={filters.search} onChange={(event) => setFilters({ ...filters, search: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter") setApplied(filters); }} />
-        <select className={inputClass} value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}>
-          <option value="">All statuses</option>
-          {WIKI_STATUSES.map((value) => <option key={value} value={value}>{value}</option>)}
-        </select>
-        <button className={btnGhost} onClick={() => setApplied(filters)}>Search</button>
+      <div className="flex flex-wrap items-end gap-3">
+        <div><h2 className="text-lg font-semibold text-fg">Wiki directory</h2><p className="mt-1 text-xs text-muted">One page per topic, organized by solution and module.</p></div>
+        <input aria-label="Search Wiki" className={`${inputClass} ml-auto w-64`} placeholder="Search topics…" value={filters.search} onChange={(event) => setFilters({ ...filters, search: event.target.value })} />
+        <select aria-label="Filter by status" className={inputClass} value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}><option value="">All statuses</option>{WIKI_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}</select>
+        <select aria-label="Filter by version" className={inputClass} value={filters.version} onChange={(event) => setFilters({ ...filters, version: event.target.value })}><option value="">All versions</option>{[...new Set((result ?? []).flatMap((item) => [...strings(item.supportedVersions), text(item.productVersion)].filter(Boolean)))].map((version) => <option key={version} value={version}>{version}</option>)}</select>
+        <button className={btnGhost} onClick={() => void load()}><RefreshCw size={13} /> Refresh</button>
         {isAdmin && <button className={btn} onClick={() => setShowCreate(!showCreate)}>New page</button>}
       </div>
-      {showCreate && isAdmin && <div className="mt-3 space-y-2 rounded-md border border-white/10 bg-black/20 p-3">
-        <div className="grid gap-2 sm:grid-cols-3">
-          <input className={inputClass} placeholder="pageKey (stable identity)" value={create.pageKey} onChange={(event) => setCreate({ ...create, pageKey: event.target.value })} />
-          <input className={inputClass} placeholder="Title" value={create.title} onChange={(event) => setCreate({ ...create, title: event.target.value })} />
-          <input className={inputClass} placeholder="Product version (optional)" value={create.productVersion} onChange={(event) => setCreate({ ...create, productVersion: event.target.value })} />
-        </div>
-        <label className="block space-y-1 text-xs text-subtle"><span>Published source documents (select one or more)</span>
-          <select multiple size={4} className={`${inputClass} h-auto w-full`} value={sourceRefs} disabled={sourcesLoading} onChange={(event) => setSourceRefs(Array.from(event.target.selectedOptions, (option) => option.value))}>
-            {sources.map((source) => <option key={source.id} value={source.id}>{source.title}{source.product_version ?? source.productVersion ? ` — v${source.product_version ?? source.productVersion}` : ""}{source.environment ? ` — ${source.environment}` : ""}</option>)}
-          </select>
-          <span>{sourcesLoading ? "Loading verified published sources…" : sources.length ? "Hold Ctrl or Command to select multiple sources." : "No verified published documents in this scope. Publish a parsed Product document first."}</span>
-        </label>
+      {generation && (activeGeneration > 0 || failedGeneration > 0) && <div className="mt-3 flex flex-wrap items-center gap-2 rounded-field border border-white/10 bg-black/20 px-3 py-2 text-xs text-subtle">
+        <Workflow size={13} className={activeGeneration > 0 ? "text-iris" : "text-coral"} />
+        {activeGeneration > 0 ? `${activeGeneration} Wiki topic generation job${activeGeneration === 1 ? "" : "s"} in progress.` : `${failedGeneration} Wiki topic generation${failedGeneration === 1 ? "" : "s"} failed.`}
+        <button className={`${btnGhost} ml-auto`} onClick={() => void load()}>Refresh progress</button>
+      </div>}
+      {showCreate && isAdmin && <div className="mt-4 space-y-3 border-t border-white/10 pt-4">
+        <div className="grid gap-2 sm:grid-cols-3"><input className={inputClass} placeholder="pageKey (stable identity)" value={create.pageKey} onChange={(event) => setCreate({ ...create, pageKey: event.target.value })} /><input className={inputClass} placeholder="Title" value={create.title} onChange={(event) => setCreate({ ...create, title: event.target.value })} /><input className={inputClass} placeholder="Product version (optional)" value={create.productVersion} onChange={(event) => setCreate({ ...create, productVersion: event.target.value })} /></div>
+        <label className="block space-y-1 text-xs text-subtle"><span>Published source documents</span><select multiple size={4} className={`${inputClass} h-auto w-full`} value={sourceRefs} onChange={(event) => setSourceRefs(Array.from(event.target.selectedOptions, (option) => option.value))}>{sources.map((source) => <option key={source.id} value={text(source.id)}>{text(source.title)}{source.productVersion ? ` — v${source.productVersion}` : ""}</option>)}</select></label>
         <textarea className="min-h-24 w-full rounded-md border border-white/10 bg-[var(--field)] px-3 py-2 text-sm text-fg outline-none focus:border-mint" placeholder="Page body" value={create.body} onChange={(event) => setCreate({ ...create, body: event.target.value })} />
-        <input className={inputClass} placeholder="Audit reason (required)" value={create.reason} onChange={(event) => setCreate({ ...create, reason: event.target.value })} />
-        <div className="flex flex-wrap items-center gap-2">
-          <button className={btn} disabled={sourcesLoading || !sourceRefs.length || !create.pageKey.trim() || !create.title.trim() || !create.body.trim() || !create.reason.trim()} onClick={() => run(async () => { const { page: created } = await api.knowledgeWikiCreate({ ...scope, sourceRefs, pageKey: create.pageKey.trim(), title: create.title.trim(), body: create.body, productVersion: create.productVersion.trim() || undefined, reason: create.reason.trim() }); currentNavigation.commit(()=>{setCreate(emptyCreate);setSourceRefs([]);setShowCreate(false);}); return created; }, "Wiki page created.")}>Create</button>
-        </div>
+        <div className="flex flex-wrap items-center gap-2"><input className={inputClass} placeholder="Audit reason (required)" value={create.reason} onChange={(event) => setCreate({ ...create, reason: event.target.value })} /><button className={btn} disabled={!sourceRefs.length || !create.pageKey.trim() || !create.title.trim() || !create.body.trim() || !create.reason.trim()} onClick={async () => { try { const data = await api.knowledgeWikiCreate({ ...scope, sourceRefs, pageKey: create.pageKey.trim(), title: create.title.trim(), body: create.body, productVersion: create.productVersion.trim() || undefined, reason: create.reason.trim() }); setNotice("Wiki page created."); setShowCreate(false); setCreate({ pageKey: "", title: "", body: "", productVersion: "", reason: "" }); setSourceRefs([]); await load(); openPage(asRecord(data.page)); } catch (err) { setError(errText(err, "Unable to create Wiki page")); } }}>Create</button></div>
       </div>}
-      <Err message={error} />
+      {error && !result && <StatePanel state="error" message={error} onRetry={() => void load()} />}
+      {error && result && <Err message={error} />}
       {notice && <p className="mt-3 rounded-md border border-mint/40 bg-mint/10 p-3 text-sm text-mint">{notice}</p>}
-      {!result ? <StatePanel state="loading" message="Loading Wiki pages…" /> : <>
-        <div className="mt-3 divide-y divide-white/10">
-          {result.items.length === 0 && <p className="py-3 text-sm text-muted">No Wiki pages match.</p>}
-          {result.items.map((item) => <button key={item.id} onClick={() => openPage(item)} className="flex w-full flex-wrap items-center justify-between gap-3 py-2.5 text-left">
-            <div className="min-w-0">
-              <p className="truncate text-sm text-fg">{item.title}</p>
-              <p className="text-xs text-muted">{item.pageKey} — rev {item.currentRevision}{item.productVersion ? ` — ${item.productVersion}` : ""} — {formatDate(item.updatedAt)}</p>
-            </div>
-            <StatusBadge value={item.status} />
-          </button>)}
-        </div>
-        <Pager offset={offset} limit={PAGE_LIMIT} total={result.total} count={result.items.length} onPage={(next) => { setOffset(next); load(next); }} />
-      </>}
-    </section>
-    {page && <section className={cardClass}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="font-medium text-fg">{page.title}</h3>
-          <p className="text-xs text-muted">{page.pageKey} — revision {page.currentRevision} — created {formatDate(page.createdAt)}{page.publishedAt ? ` — published ${formatDate(page.publishedAt)}` : ""}{page.deprecatedAt ? ` — deprecated ${formatDate(page.deprecatedAt)}` : ""}</p>
-        </div>
-        <StatusBadge value={page.status} />
-      </div>
-      <div className="mt-3 rounded-md border border-white/10 bg-black/20 p-4"><KnowledgeMarkup source={page.body} wikiScope={scope} wikiPageKey={page.pageKey} /></div>
-      <div className="mt-4 border-t border-white/10 pt-3">
-        <h4 className="text-sm font-medium text-fg">Source documents</h4>
-        <p className="mt-1 text-xs text-muted">Check the cited source before approving a Wiki statement.</p>
-        {(page.citations ?? []).length === 0 && <p className="mt-2 text-xs text-sun">No verified Product source is linked.</p>}
-        <ul className="mt-2 space-y-2">{(page.citations ?? []).map((citation: JsonRecord) => <li key={citation.documentId} className="rounded-md border border-white/10 p-3 text-xs text-subtle">
-          <Link className="font-medium text-iris underline" to={withKnowledgeScope(`/knowledge/product-docs?document=${encodeURIComponent(citation.documentId)}`, knowledgeItemScope(page, scope))}>{citation.title || "Open source document"}</Link>
-          <p className="mt-1">Version {citation.productVersion ?? "unspecified"} — {(citation.chunkIds ?? []).length} source chunks</p>
-          <p className="mt-1 break-all">{citation.sourceLocator}</p>
-          <details className="mt-2"><summary className="cursor-pointer text-muted">Source verification</summary><p className="mt-1 break-all">SHA-256: {citation.sourceSha256 ?? "unavailable"}</p><p className="mt-1 break-all">Chunks: {(citation.chunkIds ?? []).join(", ")}</p></details>
-        </li>)}</ul>
-      </div>
-      {page.status === "deprecated" && <p className="mt-4 text-sm text-sun">This Wiki page is deprecated. Its revisions and sources remain available.</p>}
-      {isAdmin && page.status !== "deprecated" && <div className="mt-4 space-y-3 border-t border-white/10 pt-3">
-        <div className="grid gap-2 sm:grid-cols-[1fr] ">
-          <input className={inputClass} value={editBody.title} onChange={(event) => setEditBody({ ...editBody, title: event.target.value })} placeholder="Title" />
-          <textarea className="min-h-20 rounded-md border border-white/10 bg-[var(--field)] px-3 py-2 text-sm text-fg outline-none focus:border-mint" value={editBody.body} onChange={(event) => setEditBody({ ...editBody, body: event.target.value })} placeholder="Body" />
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <ReasonAction label="Save edit" onRun={async (reason) => refreshPage(asRecord((await api.knowledgeWikiEdit(page.id, { title: editBody.title, body: editBody.body, reason }, knowledgeItemScope(page, scope))).page))} />
-          {page.status !== "published" && <ReasonAction label="Publish" onRun={async (reason) => refreshPage(asRecord((await api.knowledgeWikiPublish(page.id, reason, knowledgeItemScope(page, scope))).page))} />}
-          {page.status === "published" && <ReasonAction label="Deprecate" tone="danger" onRun={async (reason) => refreshPage(asRecord((await api.knowledgeWikiDeprecate(page.id, reason, knowledgeItemScope(page, scope))).page))} />}
-          <span className="inline-flex items-center gap-1.5">
-            <input className={`${inputClass} w-24`} placeholder="Rev #" value={rollbackRev} onChange={(event) => setRollbackRev(event.target.value)} />
-            <ReasonAction label="Rollback" tone="danger" onRun={async (reason) => { const revision = Number(rollbackRev); if (!Number.isInteger(revision) || revision < 1) throw new Error("Enter a valid revision number"); return refreshPage(asRecord((await api.knowledgeWikiRollback(page.id, revision, reason, knowledgeItemScope(page, scope))).page)); }} />
-          </span>
-        </div>
+      {!result ? <StatePanel state="loading" message="Loading Wiki directory…" /> : result.length === 0 ? <p className="mt-4 text-sm text-muted">No Wiki topics match these filters.</p> : <div className="mt-5 space-y-6">
+        {[...grouped.entries()].map(([solution, modules]) => <section key={solution}><h3 className="border-b border-white/10 pb-2 text-xs font-semibold text-iris">{solution}</h3><div className="mt-2 space-y-4">{[...modules.entries()].map(([module, items]) => <div key={module}><h4 className="text-sm font-medium text-fg">{module}</h4><div className="mt-1 divide-y divide-white/10">{items.map((item) => <button key={text(item.id, text(item.pageKey))} onClick={() => openPage(item)} className="flex w-full items-center justify-between gap-3 py-3 text-left hover:bg-white/[0.03] focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint"><div className="min-w-0"><p className="truncate text-sm text-fg">{text(item.title, text(item.pageKey, "Untitled topic"))}</p><p className="mt-1 text-xs text-muted">{text(item.directoryPath, text(item.pageKey))} · {strings(item.supportedVersions).length ? strings(item.supportedVersions).join(", ") : "Common"} · {text(item.sectionCount, "—")} sections · {text(item.sourceCount, "—")} sources</p></div><StatusBadge value={text(item.status, "draft")} /></button>)}</div></div>)}</div></section>)}
       </div>}
-      <div className="mt-4 border-t border-white/10 pt-3">
-        <p className="text-xs  text-muted">Revisions (append-only)</p>
-        <ul className="mt-2 space-y-1.5">
-          {revisions.map((revision) => <li key={revision.id} className="text-xs text-subtle"><Badge tone="purple">r{revision.revision}</Badge> <span className="ml-1 text-muted">{formatDate(revision.createdAt)} — author {revision.authorId}</span> — {revision.changeReason}</li>)}
-        </ul>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <input className={`${inputClass} w-24`} value={diffRange.from} onChange={(event) => setDiffRange({ ...diffRange, from: event.target.value })} placeholder="From" />
-          <input className={`${inputClass} w-24`} value={diffRange.to} onChange={(event) => setDiffRange({ ...diffRange, to: event.target.value })} placeholder="To" />
-          <button className={btnGhost} onClick={() => run(async () => { const data = await api.knowledgeWikiDiff(page.id, Number(diffRange.from), Number(diffRange.to), scope); currentNavigation.commit(()=>setDiff(text(data.diff))); return data; }, "Diff computed.")}><GitBranch size={13} /> Diff revisions</button>
-        </div>
-        {diff && <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-white/10 bg-black/20 p-3 text-xs text-fg">{diff}</pre>}
-      </div>
-    </section>}
+    </section>
+    {page && <><button className={`${btnGhost} self-start`} onClick={closePage}>← Back to directory</button><WikiDetail page={page} scope={scope} isAdmin={isAdmin} onRefresh={async (updated) => { setPage(updated); await load(); }} /></>}
   </div>;
 }
-
-const WEKNORA_STATUSES = ["staged", "published", "deprecated", "failed"] as const;
-
-function WeknoraPane({ isAdmin }: { isAdmin: boolean }) {
-  const { scope } = useKnowledgeScope();
-  const listRequest = useRef(0);
-  const emptyStage = { title: "", content: "", productVersion: "", solution: "", module: "", language: "" };
-  const [status, setStatus] = useState("");
-  const [offset, setOffset] = useState(0);
-  const [data, setData] = useState<{ documents: JsonRecord[]; page: { total: number } }>();
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [query, setQuery] = useState({ q: "", productVersion: "", solution: "", module: "", limit: "10" });
-  const [search, setSearch] = useState<JsonRecord>();
-  const [searching, setSearching] = useState(false);
-  const [stage, setStage] = useState(emptyStage);
-  const [showStage, setShowStage] = useState(false);
-  const [confirmDocument, setConfirmDocument] = useState<string>();
-  const load = (nextOffset = offset) => {
-    const requestId = ++listRequest.current;
-    setError("");
-    api.knowledgeWeknoraDocuments({ ...scope, status: status || undefined, limit: PAGE_LIMIT, offset: nextOffset })
-      .then((result) => { if (requestId === listRequest.current) { const page = asRecord(result.page); setData({ documents: records(result.documents), page: { total: typeof page.total === "number" ? page.total : 0 } }); } })
-      .catch((err) => { if (requestId !== listRequest.current) return; setData({ documents: [], page: { total: 0 } }); setError(errText(err, "Unable to load Product engine documents")); });
-  };
-  useEffect(() => { setOffset(0); setData(undefined); setSearch(undefined); setNotice(""); load(0); return () => { listRequest.current++; }; }, [status, scope.projectId, scope.environment]);
-  const run = async (task: () => Promise<unknown>, ok: string) => { setError(""); setNotice(""); try { await task(); setNotice(ok); load(); } catch (err) { setError(errText(err, "Product engine operation failed")); } };
-  const runSearch = async () => {
-    const requestId = listRequest.current;
-    setSearching(true); setError(""); setSearch(undefined);
-    try {
-      const result = await api.knowledgeSearch(buildWeknoraSearchBody(query, scope.projectId, scope.environment));
-      if (requestId === listRequest.current) setSearch(asRecord(result));
-    } catch (err) { setError(errText(err, "Product engine search failed")); } finally { setSearching(false); }
-  };
-  return <div className="space-y-4">
-    <section className={cardClass}>
-      <div className="flex flex-wrap items-center gap-3">
-        <h3 className="font-medium text-fg">Product engine documents</h3>
-        <select className={inputClass} value={status} onChange={(event) => setStatus(event.target.value)}>
-          <option value="">All statuses</option>
-          {WEKNORA_STATUSES.map((value) => <option key={value} value={value}>{value}</option>)}
-        </select>
-        <button className={btnGhost} onClick={() => load()}><RefreshCw size={13} /> Refresh</button>
-        {isAdmin && <button className={btn} onClick={() => setShowStage(!showStage)}>Stage document</button>}
-      </div>
-      {showStage && isAdmin && <div className="mt-3 space-y-2 rounded-md border border-white/10 bg-black/20 p-3">
-        <div className="grid gap-2 sm:grid-cols-4">
-          <input className={inputClass} placeholder="Title" value={stage.title} onChange={(event) => setStage({ ...stage, title: event.target.value })} />
-          <input className={inputClass} placeholder="Product version" value={stage.productVersion} onChange={(event) => setStage({ ...stage, productVersion: event.target.value })} />
-          <input className={inputClass} placeholder="Solution" value={stage.solution} onChange={(event) => setStage({ ...stage, solution: event.target.value })} />
-          <input className={inputClass} placeholder="Module" value={stage.module} onChange={(event) => setStage({ ...stage, module: event.target.value })} />
-        </div>
-        <textarea className="min-h-20 w-full rounded-md border border-white/10 bg-[var(--field)] px-3 py-2 text-sm text-fg outline-none focus:border-mint" placeholder="Document content" value={stage.content} onChange={(event) => setStage({ ...stage, content: event.target.value })} />
-        <button className={btn} disabled={!stage.title.trim() || !stage.content.trim()} onClick={() => run(async () => {
-          const body: Record<string, unknown> = { ...scope, idempotencyKey: `weknora-stage:${Date.now()}:${stage.title.trim()}`, title: stage.title.trim(), content: stage.content };
-          for (const key of ["productVersion", "solution", "module", "language"] as const) if (stage[key].trim()) body[key] = stage[key].trim();
-          const result = await api.knowledgeWeknoraDocumentStage(body);
-          const staged = asRecord(result.document); const document = asRecord(staged.document ?? result.document);
-          if (!document || !productEngineDocumentState(document).verified) throw new Error("The document has not completed parsing and chunk verification.");
-          setStage(emptyStage); setShowStage(false);
-        }, "Document content verified.")}>Stage</button>
-      </div>}
-      <Err message={error} />
-      {notice && <p className="mt-3 rounded-md border border-mint/40 bg-mint/10 p-3 text-sm text-mint">{notice}</p>}
-      {!data ? <StatePanel state="loading" message="Loading Product engine documents…" /> : <>
-        <div className="mt-3 divide-y divide-white/10">
-          {data.documents.length === 0 && <p className="py-3 text-sm text-muted">No Product engine documents in this filter.</p>}
-          {data.documents.map((doc) => { const readiness = productEngineDocumentState(doc); return <div key={doc.id} className="flex flex-wrap items-center justify-between gap-3 py-2.5">
-            <div className="min-w-0">
-              <p className="truncate text-sm text-fg">{doc.title}</p>
-              <p className="text-xs text-muted">{doc.id} — {doc.product_version ?? "any version"}{doc.solution ? ` — ${doc.solution}` : ""}{doc.module ? ` — ${doc.module}` : ""} — attempts {doc.attempt_count}{doc.failure_code ? ` — ${doc.failure_code}` : ""} — {formatDate(doc.updated_at)}</p>
-              <p className="mt-1 text-xs text-muted">Parse: {text(readiness.parseStatus, "unverified")} — {readiness.chunkCount} chunks{readiness.verified ? ` — verified ${formatDate(readiness.verifiedAt)}` : " — not ready for publication"}</p>
-              {readiness.modelProvenance && <p className="text-xs text-muted">Embedding: {text(readiness.modelProvenance.providerId)} / {text(readiness.modelProvenance.modelId)} — {text(readiness.modelProvenance.dimensions)} dimensions — index v{text(readiness.modelProvenance.indexVersion)}</p>}
-              {doc.failure_message && <p className="text-xs text-coral">{doc.failure_message}</p>}
-            </div>
-            <div className="flex items-center gap-2">
-              <StatusBadge value={doc.status} />
-              {isAdmin && readiness.canPublish && <button className={btnGhost} onClick={() => run(() => api.knowledgeWeknoraDocumentPublish(doc.id), "Document published.")}>Publish</button>}
-              {isAdmin && doc.status === "published" && <button className={btnDanger} onClick={() => setConfirmDocument(doc.id)}>Deprecate</button>}
-            </div>
-          </div>; })}
-        </div>
-        <Pager offset={offset} limit={PAGE_LIMIT} total={data.page.total} count={data.documents.length} onPage={(next) => { setOffset(next); load(next); }} />
-      </>}
-    </section>
-    <section className={cardClass}>
-      <h3 className="font-medium text-fg">Retrieval test</h3>
-      <p className="mt-1 text-xs text-muted">{scope.projectId ? "Searches published Product documents in the selected project and environment; ACL-invisible documents are filtered out." : "Searches global published Product documents; project-scoped retrieval requires an explicit project link."}</p>
-      <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_140px_140px_140px_90px]">
-        <input className={inputClass} placeholder="Query text" value={query.q} onChange={(event) => setQuery({ ...query, q: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter" && query.q.trim()) runSearch(); }} />
-        <input className={inputClass} placeholder="Version" value={query.productVersion} onChange={(event) => setQuery({ ...query, productVersion: event.target.value })} />
-        <input className={inputClass} placeholder="Solution" value={query.solution} onChange={(event) => setQuery({ ...query, solution: event.target.value })} />
-        <input className={inputClass} placeholder="Module" value={query.module} onChange={(event) => setQuery({ ...query, module: event.target.value })} />
-      </div>
-      <button className={`${btn} mt-2`} disabled={searching || !query.q.trim()} onClick={runSearch}>{searching ? <RefreshCw size={12} className="animate-spin" /> : null} Run search</button>
-      {search && <div className="mt-3">
-        <p className="text-xs text-muted">retrieval run {search.retrievalRunId}{search.degraded ? ` — degraded: ${typeof search.degraded === "object" ? JSON.stringify(search.degraded) : "yes"}` : ""}</p>
-        <div className="mt-2 space-y-2">
-          {(search.references ?? []).length === 0 && <p className="text-sm text-muted">No references returned.</p>}
-          {(search.references ?? []).map((reference: JsonRecord, index: number) => <div key={`${reference.documentId ?? index}-${index}`} className="rounded-md border border-white/10 p-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <Link className="text-xs text-fg hover:text-iris" to={withKnowledgeScope(`/knowledge/product-docs?document=${encodeURIComponent(reference.documentId ?? "")}`, knowledgeItemScope(reference, scope))}>{reference.title ?? `Reference ${index + 1}`}</Link>
-              {reference.score !== undefined && <Badge tone="blue">score {Number(reference.score).toFixed(3)}</Badge>}
-            </div>
-            {reference.snippet && <p className="mt-1 text-xs text-muted">{reference.snippet}</p>}
-          </div>)}
-        </div>
-      </div>}
-    </section>
-    <ConfirmDialog open={Boolean(confirmDocument)} onClose={() => setConfirmDocument(undefined)} title="Deprecate document" description="This action is recorded in the audit log. The document leaves retrieval scope immediately." confirmLabel="Deprecate document" tone="danger" requireReason onConfirm={async () => { if (!confirmDocument) return; const id = confirmDocument; setConfirmDocument(undefined); await run(() => api.knowledgeWeknoraDocumentDeprecate(id), "Document deprecated."); }} />
-  </div>;
-}
-
-function MigrationPane({ isAdmin }: { isAdmin: boolean }) {
-  const selection = useKnowledgeScope();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const jobId = searchParams.get("migrationJob") ?? "";
-  const [job, setJob] = useState<JsonRecord>();
-  const [submitting, setSubmitting] = useState(false);
-  const [pollVersion, setPollVersion] = useState(0);
-  const [operationKey, setOperationKey] = useState(() => `migration-from-local:${crypto.randomUUID()}`);
-  const emptyLocal = { parserVersion: "relay-normalizer-v1", productVersion: "", solution: "", module: "", limit: "", retry: false };
-  const [provider, setProvider] = useState<string>();
-  const [target, setTarget] = useState<"relay_local" | "weknora">("weknora");
-  const [migrationId, setMigrationId] = useState("");
-  const [migration, setMigration] = useState<JsonRecord>();
-  const [cleanup, setCleanup] = useState<JsonRecord>();
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [local, setLocal] = useState(emptyLocal);
-  const selectJob = (id: string) => setSearchParams(previous => { const next = new URLSearchParams(previous); if (id) next.set("migrationJob", id); else next.delete("migrationJob"); return next; });
-  useEffect(() => {
-    if (!isAdmin || !jobId) return;
-    let cancelled = false; let loaded = false; let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
-        const data = asRecord(await api.knowledgeIngestJob(jobId));
-        if (cancelled) return;
-        const job = asRecord(data.job);
-        if (job.kind !== "product_migration") throw new Error("This task is not a product migration");
-        setError("");
-        setJob(job);
-        const id = text(job.result?.migrationId);
-        if (id && (!loaded || !["queued", "running"].includes(job.status))) {
-          setMigrationId(id);
-          const detail = asRecord(await api.knowledgeMigrations(id));
-          if (cancelled) return;
-          const migration = asRecord(detail.migration);
-          setMigration(migration);
-          setOperationKey(text(migration.idempotencyKey));
-          loaded = true;
-        }
-        if (["queued", "running"].includes(job.status)) timer = setTimeout(poll, 2000);
-        else if (job.status === "failed") setError(job.error || "Migration failed. Retry explicitly after checking the report.");
-        else setNotice("Migration staging completed. Review the report before publishing.");
-      } catch (err) {
-        if (!cancelled) { setError(errText(err, "Unable to read migration progress; retrying status query")); timer = setTimeout(poll, 5000); }
-      }
-    };
-    void poll();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [jobId, isAdmin, pollVersion]);
-  useEffect(() => { api.knowledgeProductProvider().then((result) => setProvider(text(result.provider))).catch((err) => setError(errText(err, "Unable to load product provider routing"))); }, []);
-  const run = async (task: () => Promise<unknown>, ok: string) => { setError(""); setNotice(""); try { const data = await task(); setNotice(ok); return data; } catch (err) { setError(errText(err, "Migration operation failed")); } };
-  const loadMigration = async (id: string) => { setCleanup(undefined); const data = asRecord(await run(() => api.knowledgeMigrations(id.trim()), "Migration loaded.")); if (data.migration) setMigration(asRecord(data.migration)); };
-  const refreshRouting = () => api.knowledgeProductProvider().then((result) => setProvider(text(result.provider))).catch(() => undefined);
-  return <div className="space-y-4">
-    <section className={cardClass}>
-      <div className="flex items-center gap-2"><GitBranch size={16} className="text-iris" /><h3 className="font-medium text-fg">Product provider routing</h3></div>
-      <div className="mt-2 flex flex-wrap items-center gap-3 text-sm">
-        <span className="text-muted">Active provider</span>
-        {provider === undefined ? <span className="text-muted">loading…</span> : <StatusBadge value={provider} />}
-      </div>
-      {isAdmin && <div className="mt-3 flex flex-wrap items-center gap-2">
-        <select className={inputClass} value={target} onChange={(event) => setTarget(event.target.value as "relay_local" | "weknora")}><option value="relay_local">relay_local</option><option value="weknora">Product engine</option></select>
-        {target === "weknora" && <input className={`${inputClass} w-72`} placeholder="Published migration id (required)" value={migrationId} onChange={(event) => setMigrationId(event.target.value)} />}
-        <button className={btn} disabled={target === "weknora" && !migrationId.trim()} onClick={async () => { await run(async () => { const result = await api.knowledgeSetProductProvider(target, target === "weknora" ? migrationId.trim() : undefined); setProvider(text(result.provider)); return result; }, "Routing updated."); refreshRouting(); }}>Apply routing</button>
-      </div>}
-      <p className="mt-2 text-xs text-muted">Switching to the Product engine requires a published migration; switching back to relay_local is always allowed.</p>
-    </section>
-    <section className={cardClass}>
-      <h3 className="font-medium text-fg">Migration lookup</h3>
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <input className={`${inputClass} w-96`} placeholder="migration-…" value={migrationId} onChange={(event) => setMigrationId(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && migrationId.trim()) loadMigration(migrationId); }} />
-        <button className={btnGhost} disabled={!migrationId.trim()} onClick={() => loadMigration(migrationId)}>Load</button>
-      </div>
-      {migration && <div className="mt-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <p className="text-sm text-fg">{migration.id} — {migration.kind}</p>
-          <StatusBadge value={migration.status} />
-        </div>
-        <p className="mt-1 text-xs text-muted">created {formatDate(migration.createdAt)}{migration.publishedAt ? ` — published ${formatDate(migration.publishedAt)}` : ""}{migration.rolledBackAt ? ` — rolled back ${formatDate(migration.rolledBackAt)}` : ""}{migration.rollbackReason ? ` — reason: ${migration.rollbackReason}` : ""}</p>
-        {Object.keys(migration.report ?? {}).length > 0 && <details className="mt-2"><summary className="cursor-pointer text-xs text-muted">Report</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-white/10 bg-black/20 p-3 text-xs text-fg">{JSON.stringify(migration.report, null, 2)}</pre></details>}
-        {isAdmin && <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button className={btn} disabled={migration.status !== "staged" || ["queued", "running"].includes(text(job?.status))} onClick={() => run(async () => { const data = await api.knowledgeMigrationPublish(migration.id); setMigration(asRecord(data.migration)); }, "Migration validated and published.")}>Validate & publish</button>
-          <ReasonAction label="Rollback" tone="danger" onRun={async (reason) => { const data = await api.knowledgeMigrationRollback(migration.id, reason); setMigration(asRecord(data.migration)); }} />
-          <button className={btnGhost} onClick={() => run(async () => { setCleanup(asRecord(await api.knowledgeMigrationCleanup(migration.id))); }, "Cleanup dry-run computed.")}>Cleanup dry-run</button>
-        </div>}
-        {cleanup && <div className="mt-3 rounded-md border border-white/10 bg-black/20 p-3 text-xs text-subtle">
-          <p className="text-fg">Cleanup dry-run — {formatDate(cleanup.generatedAt)}</p>
-          <p className="mt-1">failed {text(cleanup.totals?.failed, "0")} — deprecated {text(cleanup.totals?.deprecated, "0")} — pending external {text(cleanup.totals?.pendingExternal, "0")} — would delete {text(cleanup.totals?.wouldDelete, "0")}{cleanup.totals?.truncated ? " (truncated)" : ""}</p>
-          {cleanup.note && <p className="mt-1 text-muted">{text(cleanup.note)}</p>}
-        </div>}
-      </div>}
-    </section>
-    {isAdmin && <section className={cardClass}>
-      <h3 className="mb-3 font-medium text-fg">Migrate local product documents (admin)</h3>
-      <ScopeControls selection={selection} allowAllProjects environmentPlaceholder="All environments" />
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <input aria-label="Migration operation key" className={`${inputClass} w-96`} value={operationKey} onChange={event => setOperationKey(event.target.value)} />
-        <button className={btnGhost} disabled={submitting || ["queued", "running"].includes(text(job?.status))} onClick={() => { selectJob(""); setJob(undefined); setOperationKey(`migration-from-local:${crypto.randomUUID()}`); setError(""); setNotice(""); }}>New operation</button>
-      </div>
-      {jobId && <div className="mt-2 text-xs text-subtle">
-        <p>{jobId} — {job?.status ?? "loading"}</p>
-        <p>Processed {job?.result?.processed ?? 0} / {job?.result?.total ?? 0} — mapped {job?.result?.mapped ?? 0} — failed {job?.result?.failed ?? 0}</p>
-        <p>This page URL restores task progress after reload. Publication is a separate action.</p>
-      </div>}
-      <div className="mt-3 grid gap-2 sm:grid-cols-5">
-        <input className={inputClass} placeholder="Parser version" value={local.parserVersion} onChange={(event) => setLocal({ ...local, parserVersion: event.target.value })} />
-        <input className={inputClass} placeholder="Product version" value={local.productVersion} onChange={(event) => setLocal({ ...local, productVersion: event.target.value })} />
-        <input className={inputClass} placeholder="Solution" value={local.solution} onChange={(event) => setLocal({ ...local, solution: event.target.value })} />
-        <input className={inputClass} placeholder="Module" value={local.module} onChange={(event) => setLocal({ ...local, module: event.target.value })} />
-        <input className={inputClass} placeholder="Limit" value={local.limit} onChange={(event) => setLocal({ ...local, limit: event.target.value })} />
-      </div>
-      <div className="mt-2 flex flex-wrap items-center gap-3">
-        {job?.status === "failed" && migration?.sourceManifest?.asyncRequest && <button className={btn} disabled={submitting} onClick={() => run(async () => {
-          setSubmitting(true);
-          try {
-            const data = asRecord(await api.knowledgeMigrationFromLocal({ ...migration.sourceManifest.asyncRequest, asynchronous: true, retry: true }));
-            setJob(asRecord(data.job)); setMigration(asRecord(data.migration));
-            selectJob(text(asRecord(data.job).id)); setPollVersion(value => value + 1);
-          } finally { setSubmitting(false); }
-        }, "Migration retry queued.")}>Retry failed migration</button>}
-        <button className={btn} disabled={submitting || !!jobId || !operationKey.trim() || !local.parserVersion.trim()} onClick={() => run(async () => {
-          const body: Record<string, unknown> = { ...selection.scope, idempotencyKey: operationKey.trim(), parserVersion: local.parserVersion.trim(), asynchronous: true };
-          for (const key of ["productVersion", "solution", "module"] as const) if (local[key].trim()) body[key] = local[key].trim();
-          if (local.limit.trim()) body.limit = Number(local.limit);
-          setSubmitting(true);
-          try {
-            const data = asRecord(await api.knowledgeMigrationFromLocal(body));
-            setMigration(asRecord(data.migration)); setMigrationId(text(asRecord(data.migration).id)); setJob(asRecord(data.job)); selectJob(text(asRecord(data.job).id));
-          } finally { setSubmitting(false); }
-        }, "Migration queued. Progress is saved after each document.")}>Create migration</button>
-      </div>
-    </section>}
-    <Err message={error} />
-    {notice && <p className="rounded-md border border-mint/40 bg-mint/10 p-3 text-sm text-mint">{notice}</p>}
-  </div>;
-}
-
 function GatesPane() {
   const [gates, setGates] = useState<JsonRecord>();
   const [error, setError] = useState("");
@@ -848,8 +630,6 @@ const TABS = [
   ["providers", "Providers", ServerCog],
   ["candidates", "Candidates", FileText],
   ["wiki", "Wiki", BookOpen],
-  ["weknora", "Product engine", GitBranch],
-  ["migration", "Migration", GitBranch],
   ["gates", "Release gates", CheckCircle2],
 ] as const;
 
@@ -857,7 +637,8 @@ export default function KnowledgeIntegrated() {
   const { user } = useAuth();
   const isAdmin = Boolean(user?.isAdmin);
   const [params, setParams] = useSearchParams();
-  const tab = params.get("tab") ?? "sessions";
+  const requestedTab = params.get("tab");
+  const tab = TABS.some(([key]) => key === requestedTab) ? requestedTab! : "sessions";
   const setTab = (value: string) => setParams((current) => { const next = new URLSearchParams(current); next.set("tab", value); return next; });
   return <div className="mx-auto max-w-[1280px] px-5 py-8 sm:px-8">
     <PageHeader title="Control plane" description="Sessions, providers, review and publication for Relay knowledge." />
@@ -868,8 +649,6 @@ export default function KnowledgeIntegrated() {
     {tab === "providers" && <ProvidersPane isAdmin={isAdmin} />}
     {tab === "candidates" && <CandidatesPane isAdmin={isAdmin} />}
     {tab === "wiki" && <WikiPane isAdmin={isAdmin} />}
-    {tab === "weknora" && <WeknoraPane isAdmin={isAdmin} />}
-    {tab === "migration" && <MigrationPane isAdmin={isAdmin} />}
     {tab === "gates" && <GatesPane />}
   </div>;
 }

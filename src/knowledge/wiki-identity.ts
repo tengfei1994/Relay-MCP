@@ -32,7 +32,8 @@ export function wikiCanonicalKey(row: WikiIdentityRow): string {
 export function wikiTopicIdentity(row: WikiIdentityRow): string {
   // Product topic IDs and upstream slugs are opaque identifiers. Do not
   // normalize them: TOPIC_A, topic-a, and two distinct Wiki slugs are different
-  // identities.
+  const topicGroup = text(row.topic_group_id);
+  if (topicGroup) return `topic-group:${JSON.stringify(topicGroup)}`;
   const explicit = text(row.topic_id);
   if (explicit) return `topic:${JSON.stringify(explicit)}`;
   const externalSlug = text(row.external_slug) ?? (text(row.id)?.startsWith("engine-wiki:") ? text(row.page_key) : undefined);

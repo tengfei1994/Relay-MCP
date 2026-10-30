@@ -5,6 +5,7 @@ import type { IntentEnvelope } from "./work-session.js";
 import { MigrationController } from "./migration-control.js";
 import { searchKnowledgeProducts, diffKnowledgeProducts, type ProductDocumentDiff, type ProductDocumentSearchRequest } from "./knowledge-products.js";
 import { WeKnoraError, type WeKnoraClient, type WeKnoraReferenceMetadata, type KnowledgeReference } from "./weknora.js";
+import { loadProductDocumentDomainObject, productDocumentEngineView, productDocumentPublicView, type ProductDocumentEngineState } from "./product-document.js";
 
 import { routeProductSearchIntent } from "./search-intent.js";
 import { queryAndAugmentProductCandidates, type ProductGraphCandidate } from "./product-graph-augment.js";
@@ -104,17 +105,17 @@ function locatedSource(row: Row, locators?: KnowledgeReference["sourceLocators"]
   if (position?.type === "text" && position.start !== undefined) return `${path.split("#")[0]}#char=${position.start}-${position.end ?? position.start}`;
   return path;
 }
-function dto(row: Row, reference?: KnowledgeReference): Row {
+function dto(store: KnowledgeStore, row: Row, reference?: KnowledgeReference): Row {
   const legacy = (row.legacy ?? {}) as Row, id = text(legacy.localDocumentId) ?? String(row.id);
-  const source = metadata(row);
+  const source = metadata(row), local = text(legacy.localDocumentId) ? loadProductDocumentDomainObject(store, String(legacy.localDocumentId)) : undefined;
   return {
     id, documentId: id, externalDocumentId: row.external_document_id, kind: "product_document", provider: "weknora",
     title: row.title, lifecycle: "approved", status: "published", projectId: source.projectId, environment: source.environment,
-    sampleManagerVersion: source.version, version: source.version, topicId: source.topicId, solution: source.solution, module: source.module, language: source.language,
+    sampleManagerVersion: source.version, version: source.version, topicId: source.topicId, topicGroupId: local?.topicGroupId ?? source.topicId, solution: source.solution, module: source.module, language: source.language,
     sourcePath: source.sourcePath, sourceLocator: locatedSource(row, reference?.sourceLocators), sourceSha256: source.sourceSha256,
     projectNameSnapshot: legacy.project_name_snapshot, sourceCommit: legacy.source_commit, documentFamilyId: legacy.document_family_id,
     documentType: legacy.document_type, authority: legacy.authority, diffReviewStatus: legacy.diff_review_status,
-    parserVersion: row.parser_version, createdAt: row.created_at, updatedAt: row.updated_at,
+    parserVersion: local?.parserVersion ?? row.parser_version, engine: local ? productDocumentEngineView(local.engine) : ({ status: row.status === "published" ? "published" : "failed", externalDocumentId: text(row.external_document_id), chunkIds: chunkIds(row), attemptCount: Number(row.attempt_count ?? 0), updatedAt: text(row.updated_at) } satisfies ProductDocumentEngineState), createdAt: row.created_at, updatedAt: row.updated_at,
     snippet: reference?.snippet, summary: reference?.snippet ?? String(row.title), score: reference?.score,
     rank: reference?.score === undefined ? undefined : -reference.score, matchReason: reference?.matchReason,
     retrievalRunId: reference?.retrievalRunId, citation: locatedSource(row, reference?.sourceLocators), chunkId: reference?.chunkId,
@@ -221,7 +222,7 @@ export async function searchProductBackend(store: KnowledgeStore, input: Product
   const control = await controlPlane(store, injected), rows = publishedRows(store, input, control.knowledgeBaseId);
   if (!rows.length) return [];
   // Unqueried listings are control-plane summaries; content is always read from the selected engine.
-  if (!input.query?.trim()) return rows.slice(0, limit).map(row => dto(row));
+  if (!input.query?.trim()) return rows.slice(0, limit).map(row => dto(store, row));
   const byExternalId = new Map(rows.map(row => [String(row.external_document_id), row]));
   const result = await engine(() => control.client.search({ query: input.query!.trim(), knowledgeIds: [...byExternalId.keys()], limit: Math.min(200, limit), distinctDocuments: true,
     documentMetadata: Object.fromEntries(rows.map(row => [String(row.external_document_id), metadata(row)])) }));
@@ -235,7 +236,7 @@ export async function searchProductBackend(store: KnowledgeStore, input: Product
     if (!ref.chunkId || !chunkIds(row).includes(ref.chunkId)) throw new WeKnoraError("invalid_response", "Product Knowledge returned an unverified chunk reference");
     const previous = found.get(ref.documentId);
     if (previous) (previous.citations as Row[]).push(citation(row, ref.chunkId, ref.sourceLocators));
-    else found.set(ref.documentId, { ...dto(row, ref), citations: [citation(row, ref.chunkId, ref.sourceLocators)] });
+    else found.set(ref.documentId, { ...dto(store, row, ref), citations: [citation(row, ref.chunkId, ref.sourceLocators)] });
   }
   return (await augmentProductRows(store, input, [...found.values()], injected)).slice(0, limit);
 }
@@ -249,12 +250,13 @@ export async function getProductBackend(store: KnowledgeStore, input: ProductBac
     const row = store.db.prepare(`SELECT d.*,p.document_family_id,p.document_type,p.language,p.authority,p.source_path,p.version,p.sections_json,p.metadata_json,p.diff_review_status
       FROM knowledge_documents d LEFT JOIN knowledge_product_documents p ON p.id=d.id WHERE d.id=? AND d.kind='product_document' AND d.lifecycle IN ('approved','verified')`).get(input.documentId) as Row | undefined;
     if (!row || !localAllowed(store, row, input)) throw new Error("Product document not found or access denied");
+    const unified = loadProductDocumentDomainObject(store, String(row.id));
     return { id: row.id, kind: "product_document", provider: "relay_local", title: row.title, body: row.body, lifecycle: row.lifecycle,
       projectId: text(row.project_id), environment: text(row.environment), projectNameSnapshot: row.project_name_snapshot,
-      sampleManagerVersion: row.samplemanager_version, version: row.version, solution: row.solution, module: row.module,
+      sampleManagerVersion: row.samplemanager_version, version: row.version, topicGroupId: unified?.topicGroupId, solution: row.solution, module: row.module,
       sourceLocator: row.source_locator, sourcePath: row.source_path, sourceSha256: row.source_sha256, sourceCommit: row.source_commit,
       documentFamilyId: row.document_family_id, documentType: row.document_type, language: row.language, authority: row.authority,
-      sections: parse(row.sections_json, []), metadata: parse(row.metadata_json, {}), createdAt: row.created_at, updatedAt: row.updated_at,
+      sections: parse(row.sections_json, []), metadata: parse(row.metadata_json, {}), productDocument: unified ? productDocumentPublicView(unified) : undefined, engine: unified ? productDocumentEngineView(unified.engine) : undefined, createdAt: row.created_at, updatedAt: row.updated_at,
       citations: [{ documentId: row.id, sourceLocator: row.source_locator, sourceSha256: row.source_sha256, version: row.samplemanager_version }] };
   }
   const control = await controlPlane(store, injected);
@@ -283,7 +285,7 @@ export async function getProductBackend(store: KnowledgeStore, input: ProductBac
   // the identity captured before the read. Injected clients cannot bypass this.
   if (row.normalized_content_sha256 !== expectedHash || createHash("sha256").update(remote.content, "utf8").digest("hex") !== expectedHash)
     throw new WeKnoraError("invalid_response", "Product normalized source hash does not match the published identity");
-  return { ...dto(row), body: remote.content, summary: remote.content.slice(0, 500),
+  return { ...dto(store, row), body: remote.content, summary: remote.content.slice(0, 500),
     citations: remote.chunks.map(chunk => citation(row!, chunk.chunkId, chunk.sourceLocators)),
     sections: remote.chunks.map(chunk => ({ key: chunk.chunkId, path: text(row!.source_path), title: text(chunk.sourceLocators?.[0]?.title) ?? String(row!.title),
       text: chunk.content, chunkId: chunk.chunkId, sourceLocators: chunk.sourceLocators, seq: chunk.seq })),
@@ -328,7 +330,7 @@ export async function listEngineProductBackend(store: KnowledgeStore, input: Pro
   if(status&&!['approved','published'].includes(status))return {documents:[],page:{limit,offset,total:0},provider:"weknora"};
   const control=await controlPlane(store,injected); assertScope(store,input);
   const rows=publishedRows(store,input,control.knowledgeBaseId);
-  return {documents:rows.slice(offset,offset+limit).map(row=>dto(row)),page:{limit,offset,total:rows.length},provider:"weknora"};
+  return {documents:rows.slice(offset,offset+limit).map(row=>dto(store, row)),page:{limit,offset,total:rows.length},provider:"weknora"};
 }
 
 export async function diffProductBackend(store:KnowledgeStore,input:ProductBackendScope & {leftId:string;rightId:string},injected?:ProductBackendControlPlane):Promise<ProductDocumentDiff> {

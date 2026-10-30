@@ -8,6 +8,7 @@ import {remarkWikiLinks, wikiLinkHref} from "../knowledge/wiki-links";
 import type {KnowledgeScope} from "../knowledge/integrated-search";
 
 const anchorPrefix = "knowledge-content-";
+const linkClass = "text-mint underline underline-offset-2 hover:text-fg";
 const InCodeBlock = createContext(false);
 const SourceText = createContext("");
 function sourceReferences(node: unknown): string[] {
@@ -20,7 +21,17 @@ const schema = {
   tagNames: ["a","p","br","hr","h1","h2","h3","h4","h5","h6","pre","code","strong","em","del","s","b","i","blockquote","ul","ol","li","table","thead","tbody","tfoot","tr","th","td","caption","div","span","img","sup","sub","dl","dt","dd"],
 };
 
-const linkClass = "text-mint underline decoration-mint/60 underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint";
+function headingText(value: React.ReactNode): string {
+  if (Array.isArray(value)) return value.map(headingText).join("");
+  if (React.isValidElement(value)) return headingText((value as React.ReactElement<{ children?: React.ReactNode }>).props.children);
+  return typeof value === "string" || typeof value === "number" ? String(value) : "";
+}
+
+function headingAnchor(children: React.ReactNode) {
+  const title = headingText(children);
+  const slug = title.replace(/[`*_~]/g, "").trim().toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, "").replace(/\s+/g, "-");
+  return `${anchorPrefix}${slug || "section"}`;
+}
 
 /** Render source structure without executing source HTML or fetching its assets.
  * Relative files remain source references until Relay has an authorized asset
@@ -28,6 +39,12 @@ const linkClass = "text-mint underline decoration-mint/60 underline-offset-2 foc
 export function KnowledgeMarkup({source, wikiScope, wikiPageKey}: {source: string; wikiScope?: KnowledgeScope; wikiPageKey?: string}) {
   return <SourceText.Provider value={source}><div className="min-w-0 space-y-3 break-words text-sm leading-6 text-fg [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:text-fg [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:text-fg [&_h3]:font-semibold [&_h3]:text-fg [&_h4]:font-semibold [&_h4]:text-fg [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:list-decimal [&_ol]:pl-6 [&_li]:my-1 [&_pre]:my-3 [&_pre]:overflow-x-auto [&_pre]:rounded-field [&_pre]:border [&_pre]:border-line [&_pre]:bg-black/20 [&_pre]:p-3 [&_pre]:text-xs [&_code]:font-mono [&_blockquote]:border-l-2 [&_blockquote]:border-mint [&_blockquote]:pl-3">
     <Markdown remarkPlugins={wikiPageKey ? [remarkGfm,remarkWikiLinks] : [remarkGfm]} rehypePlugins={[rehypeRaw,[rehypeSanitize,schema]]} components={{
+      h1: ({children,id}) => <h1 id={id ?? headingAnchor(children)}>{children}</h1>,
+      h2: ({children,id}) => <h2 id={id ?? headingAnchor(children)}>{children}</h2>,
+      h3: ({children,id}) => <h3 id={id ?? headingAnchor(children)}>{children}</h3>,
+      h4: ({children,id}) => <h4 id={id ?? headingAnchor(children)}>{children}</h4>,
+      h5: ({children,id}) => <h5 id={id ?? headingAnchor(children)}>{children}</h5>,
+      h6: ({children,id}) => <h6 id={id ?? headingAnchor(children)}>{children}</h6>,
       table: ({children,id}) => <div className="max-w-full overflow-x-auto"><table id={id} className="w-full border-collapse text-left text-sm">{children}</table></div>,
       th: ({children,colSpan,rowSpan,id}) => <th id={id} colSpan={colSpan} rowSpan={rowSpan} className="border border-line bg-mint/10 px-3 py-2 align-top font-medium text-fg">{children}</th>,
       td: ({children,colSpan,rowSpan,id}) => <td id={id} colSpan={colSpan} rowSpan={rowSpan} className="border border-line px-3 py-2 align-top text-muted">{children}</td>,

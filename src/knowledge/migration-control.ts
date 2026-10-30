@@ -182,6 +182,7 @@ create(input: { actorId: number; kind?: string; idempotencyKey: string; sourceMa
       const documentKey = `${key}:${document.localDocumentId}`;
       const weknoraInput: WeKnoraDocumentInput = {
         idempotencyKey: documentKey,
+        productDocumentId: document.localDocumentId,
         title: document.title,
         content: document.body,
         productVersion: document.productVersion,

@@ -9,7 +9,7 @@ const render=(source:string)=>renderToStaticMarkup(React.createElement(Knowledge
 
 test('knowledge reader renders table relationships and exact code whitespace',()=>{
  const html=render('# Guide\n\n| First | Second |\n| --- | --- |\n| A | B |\n\n```xml\n  <Node>  \n\n\n  </Node>\n```');
- assert.match(html,/<h1>Guide<\/h1>/);assert.match(html,/<th[^>]*>First<\/th>/);assert.match(html,/<td[^>]*>B<\/td>/);
+ assert.match(html,/<h1 id="knowledge-content-guide">Guide<\/h1>/);assert.match(html,/<th[^>]*>First<\/th>/);assert.match(html,/<td[^>]*>B<\/td>/);
  assert.ok(html.includes('  &lt;Node&gt;  \n\n\n  &lt;/Node&gt;\n'));
 });
 test('knowledge reader preserves sanitized complex structures and source anchors',()=>{

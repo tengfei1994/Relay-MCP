@@ -6,7 +6,7 @@
 > Confirmed Memory kinds are `Fact|Decision|Case|Pattern`. The legacy
 > Case/Pattern/Playbook tables remain readable for compatibility. Playbooks are
 > Approved Operations and are never the default memory endpoint or Context Pack
-> section. Product Knowledge, Wiki and WeKnora remain separate planes.
+> section. Product Documents are the canonical product domain object. Engine indexing is a projection on the same Product Document; Wiki is a topic-level derived document with source citations.
 
 **文档版本**：v1.1  
 **日期**：2026-09-02  
@@ -210,7 +210,13 @@ knowledge_fts
 - `created_by`、`reviewed_by`、`confidence`；
 - `embedding_model`、`embedding_dimensions`、`chunk_hash`。
 
-### 4.4 Markdown/YAML 技术案例格式
+### 4.4 Product Document and Wiki version model
+
+`knowledge_documents` plus `knowledge_product_documents` is the single Product Document domain object. Engine identifiers, chunk status, parser/model provenance and failure state live as projection fields on that object. `knowledge_weknora_documents` and historical migration tables remain compatibility/audit storage; they are not separate user-facing Product concepts and are not a manual Wiki workflow.
+
+One `topic_group_id` maps all versions of the same topic to one Wiki page. The page contains `common`, `version` and `difference` sections. Common claims cite every represented version; version sections cite only their version; difference sections cite the compared source chunks. Product import queues background LLM generation, writes a draft, and exposes a solution → module → topic directory with version filters and section-level citations. Review/publish remains a separate human action.
+
+### 4.5 Markdown/YAML 技术案例格式
 
 ```yaml
 id: PT35-INC-20260901-001

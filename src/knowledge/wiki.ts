@@ -5,6 +5,45 @@ import { scanCandidateContent } from "./candidate-insight.js";
 import type { KnowledgeStore } from "./store.js";
 import { canonicalWikiRow, isCanonicalWikiRow } from "./wiki-identity.js";
 
+export const WIKI_SECTION_KINDS = ["common", "version", "difference"] as const;
+export type WikiSectionKind = (typeof WIKI_SECTION_KINDS)[number];
+export interface WikiCitation {
+  documentId: string;
+  externalDocumentId?: string;
+  title?: string;
+  productVersion?: string;
+  sourceLocator?: string;
+  sourceSha256?: string;
+  chunkIds: string[];
+}
+export interface WikiSection {
+  id: string;
+  key: string;
+  kind: WikiSectionKind;
+  productVersion?: string;
+  title: string;
+  body: string;
+  sortOrder: number;
+  currentRevision: number;
+  citations: WikiCitation[];
+}
+
+export interface WikiGenerationInput {
+  topicGroupId: string;
+  pageKey: string;
+  title: string;
+  body: string;
+  projectId?: string;
+  environment?: string;
+  solution?: string;
+  module?: string;
+  supportedVersions: string[];
+  sourceRefs: string[];
+  sections: Array<Omit<WikiSection, "id" | "currentRevision" | "citations"> & { citations: WikiCitation[] }>;
+  directoryPath?: string;
+  fingerprint: string;
+}
+
 export const WIKI_PAGE_STATUSES = ["draft", "published", "deprecated"] as const;
 export type WikiPageStatus = (typeof WIKI_PAGE_STATUSES)[number];
 
@@ -23,9 +62,18 @@ export interface WikiPage {
   environment?: string;
   productVersion?: string;
   topicId?: string;
+  topicGroupId?: string;
+  supportedVersions?: string[];
   solution?: string;
   module?: string;
   sourceRefs: string[];
+  citations?: WikiCitation[];
+  sections?: WikiSection[];
+  generationStatus?: string;
+  generationFingerprint?: string;
+  directoryPath?: string;
+  sectionCount?: number;
+  sourceCount?: number;
   currentRevision: number;
   createdBy: number;
   createdAt: string;
@@ -57,6 +105,7 @@ export interface WikiPageListQuery {
   status?: WikiPageStatus;
   productVersion?: string;
   topicId?: string;
+  topicGroupId?: string;
   solution?: string;
   module?: string;
   search?: string;
@@ -82,9 +131,17 @@ function pageFromRow(row: Record<string, unknown>, duplicateOf?: string): WikiPa
     environment: row.environment ? String(row.environment) : undefined,
     productVersion: row.product_version ? String(row.product_version) : undefined,
     topicId: row.topic_id ? String(row.topic_id) : undefined,
+    topicGroupId: row.topic_group_id ? String(row.topic_group_id) : undefined,
+    supportedVersions: parseStrings(row.supported_versions_json),
     solution: row.solution ? String(row.solution) : undefined,
     module: row.module ? String(row.module) : undefined,
-    sourceRefs: JSON.parse(String(row.source_refs_json)) as string[],
+    sourceRefs: parseStrings(row.source_refs_json),
+    sections: [],
+    generationStatus: row.generation_status ? String(row.generation_status) : undefined,
+    generationFingerprint: row.generation_fingerprint ? String(row.generation_fingerprint) : undefined,
+    directoryPath: row.directory_path ? String(row.directory_path) : undefined,
+    sectionCount: row.__section_count == null ? undefined : Number(row.__section_count),
+    sourceCount: row.__source_count == null ? undefined : Number(row.__source_count),
     currentRevision: Number(row.current_revision),
     createdBy: Number(row.created_by),
     createdAt: String(row.created_at),
@@ -94,6 +151,15 @@ function pageFromRow(row: Record<string, unknown>, duplicateOf?: string): WikiPa
   };
   if (duplicateOf) page.duplicateOf = duplicateOf;
   return page;
+}
+
+function parseStrings(value: unknown): string[] {
+  try {
+    const parsed = JSON.parse(String(value ?? "[]"));
+    return Array.isArray(parsed) ? [...new Set(parsed.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map(item => item.trim()))] : [];
+  } catch {
+    return [];
+  }
 }
 
 function revisionFromRow(row: Record<string, unknown>): WikiPageRevision {
@@ -112,6 +178,46 @@ function revisionFromRow(row: Record<string, unknown>): WikiPageRevision {
 function summaryFromRow(row: Record<string, unknown>): WikiPageSummary {
   const { body: _body, ...summary } = pageFromRow(row);
   return summary;
+}
+
+function hydratePage(store: KnowledgeStore, page: WikiPage): WikiPage {
+  const sectionRows = store.db.prepare("SELECT * FROM knowledge_wiki_sections WHERE page_id=? ORDER BY sort_order,id").all(page.id) as Array<Record<string, unknown>>;
+  if (!sectionRows.length) { page.citations = []; return page; }
+  const citationRows = store.db.prepare(`SELECT c.section_id,c.document_id,c.external_document_id,c.chunk_id,c.product_version,c.quote_hash,
+    d.title,d.source_locator,d.source_sha256,p.version,p.source_path,p.engine_external_document_id
+    FROM knowledge_wiki_section_citations c
+    LEFT JOIN knowledge_documents d ON d.id=c.document_id
+    LEFT JOIN knowledge_product_documents p ON p.id=c.document_id
+    WHERE c.section_id IN (${sectionRows.map(() => "?").join(",")}) ORDER BY c.created_at,c.id`).all(...sectionRows.map(row => String(row.id))) as Array<Record<string, unknown>>;
+  const bySection = new Map<string, Map<string, WikiCitation>>();
+  for (const row of citationRows) {
+    const sectionId = String(row.section_id), documentId = String(row.document_id);
+    const key = `${documentId}\u0000${String(row.external_document_id ?? "")}`;
+    let citations = bySection.get(sectionId);
+    if (!citations) { citations = new Map(); bySection.set(sectionId, citations); }
+    let citation = citations.get(key);
+    if (!citation) {
+      citation = {
+        documentId,
+        externalDocumentId: row.external_document_id ? String(row.external_document_id) : row.engine_external_document_id ? String(row.engine_external_document_id) : undefined,
+        title: row.title ? String(row.title) : undefined,
+        productVersion: row.product_version ? String(row.product_version) : row.version ? String(row.version) : undefined,
+        sourceLocator: row.source_locator ? String(row.source_locator) : row.source_path ? String(row.source_path) : undefined,
+        sourceSha256: row.source_sha256 ? String(row.source_sha256) : undefined,
+        chunkIds: [],
+      };
+      citations.set(key, citation);
+    }
+    if (row.chunk_id && !citation.chunkIds.includes(String(row.chunk_id))) citation.chunkIds.push(String(row.chunk_id));
+  }
+  page.sections = sectionRows.map(row => ({
+    id: String(row.id), key: String(row.section_key), kind: String(row.section_kind) as WikiSectionKind,
+    productVersion: row.product_version ? String(row.product_version) : undefined, title: String(row.title), body: String(row.body),
+    sortOrder: Number(row.sort_order), currentRevision: Number(row.current_revision),
+    citations: [...(bySection.get(String(row.id))?.values() ?? [])],
+  }));
+  page.citations = [...new Map(page.sections.flatMap(section => section.citations).map(citation => [`${citation.documentId}\u0000${citation.externalDocumentId ?? ""}`, citation])).values()];
+  return page;
 }
 
 function requireReason(reason: string): string {
@@ -241,11 +347,15 @@ export class WikiService {
       )`);
     }
     const predicate = where.join("\n AND ");
-    const rows = this.store.db.prepare(`SELECT p.rowid AS __wiki_rowid,p.* FROM knowledge_wiki_pages p WHERE ${predicate} ORDER BY p.updated_at DESC, p.id`).all(params) as Array<Record<string, unknown>>;
+    const rows = this.store.db.prepare(`SELECT p.rowid AS __wiki_rowid,p.*,
+      (SELECT COUNT(*) FROM knowledge_wiki_sections s WHERE s.page_id=p.id) AS __section_count,
+      (SELECT COUNT(DISTINCT c.document_id) FROM knowledge_wiki_section_citations c JOIN knowledge_wiki_sections s ON s.id=c.section_id WHERE s.page_id=p.id) AS __source_count
+      FROM knowledge_wiki_pages p WHERE ${predicate} ORDER BY p.updated_at DESC, p.id`).all(params) as Array<Record<string, unknown>>;
     let canonical = rows.filter(row => isCanonicalWikiRow(rows, row));
     if (input.status) canonical = canonical.filter(row => row.status === input.status);
-    if (input.productVersion) canonical = canonical.filter(row => row.product_version === input.productVersion);
-    if (input.topicId) canonical = canonical.filter(row => row.topic_id === input.topicId);
+    if (input.productVersion) canonical = canonical.filter(row => row.product_version === input.productVersion || parseStrings(row.supported_versions_json).includes(input.productVersion!) || this.store.db.prepare("SELECT 1 FROM knowledge_wiki_sections WHERE page_id=? AND product_version=?").get(row.id, input.productVersion));
+    if (input.topicId) canonical = canonical.filter(row => row.topic_id === input.topicId || row.topic_group_id === input.topicId);
+    if (input.topicGroupId) canonical = canonical.filter(row => row.topic_group_id === input.topicGroupId);
     if (input.solution) canonical = canonical.filter(row => row.solution === input.solution);
     if (input.module) canonical = canonical.filter(row => row.module === input.module);
     if (input.search?.trim()) {
@@ -261,7 +371,7 @@ export class WikiService {
     const projectId = row.project_id ? String(row.project_id) : undefined;
     const environment = row.environment ? String(row.environment) : undefined;
     this.assertReader(input.actorId, projectId, String(row.status) as WikiPageStatus, input.isAdmin, environment);
-    return pageFromRow(row, this.duplicateOf(row));
+    return hydratePage(this.store, pageFromRow(row, this.duplicateOf(row)));
   }
 
   getByKey(input: { actorId: number; isAdmin?: boolean; pageKey: string; projectId?: string; environment?: string }): WikiPage {
@@ -271,7 +381,7 @@ export class WikiService {
     const projectId = row.project_id ? String(row.project_id) : undefined;
     const environment = row.environment ? String(row.environment) : undefined;
     this.assertReader(input.actorId, projectId, String(row.status) as WikiPageStatus, input.isAdmin, environment);
-    return pageFromRow(row, this.duplicateOf(row));
+    return hydratePage(this.store, pageFromRow(row, this.duplicateOf(row)));
   }
 
   /** Idempotent on page_key: a replay returns the existing page unchanged. */
@@ -285,6 +395,8 @@ export class WikiService {
     environment?: string;
     productVersion?: string;
     topicId?: string;
+    topicGroupId?: string;
+    supportedVersions?: string[];
     solution?: string;
     module?: string;
     sourceRefs?: string[];
@@ -305,7 +417,7 @@ export class WikiService {
     if (existing) {
       this.assertRequestedScope(existing, projectId, environment, input.isAdmin !== undefined);
       this.assertReader(input.actorId, existing.project_id ? String(existing.project_id) : undefined, String(existing.status) as WikiPageStatus, input.isAdmin, existing.environment ? String(existing.environment) : undefined);
-      return pageFromRow(existing, this.duplicateOf(existing));
+      return hydratePage(this.store, pageFromRow(existing, this.duplicateOf(existing)));
     }
 
     if (projectId) this.assertReader(input.actorId, projectId);
@@ -315,7 +427,7 @@ export class WikiService {
     const candidate: Record<string, unknown> = {
       id: randomUUID(), page_key: pageKey, title, body, status: "draft", project_id: projectId ?? null,
       environment: environment ?? null, product_version: optionalText(input.productVersion, 120) ?? null,
-      topic_id: optionalText(input.topicId, 200) ?? null, solution: optionalText(input.solution, 200) ?? null,
+      topic_id: optionalText(input.topicId, 200) ?? null, topic_group_id: optionalText(input.topicGroupId, 200) ?? optionalText(input.topicId, 200) ?? null, solution: optionalText(input.solution, 200) ?? null,
       module: optionalText(input.module, 200) ?? null, source_refs_json: JSON.stringify(sourceRefs),
       created_at: this.clock().toISOString(),
     };
@@ -333,12 +445,75 @@ export class WikiService {
         ? [id, pageKey, title.slice(0, 500), body, projectId ?? null, environment ?? null, optionalText(input.productVersion, 120) ?? null, optionalText(input.topicId, 200) ?? null, optionalText(input.solution, 200) ?? null, optionalText(input.module, 200) ?? null, JSON.stringify(sourceRefs), 1, input.actorId, now, now]
         : [id, pageKey, title.slice(0, 500), body, projectId ?? null, optionalText(input.productVersion, 120) ?? null, optionalText(input.topicId, 200) ?? null, optionalText(input.solution, 200) ?? null, optionalText(input.module, 200) ?? null, JSON.stringify(sourceRefs), 1, input.actorId, now, now];
       this.store.db.prepare(`INSERT INTO knowledge_wiki_pages ${columns} ${placeholders}`).run(...values);
+      this.store.db.prepare("UPDATE knowledge_wiki_pages SET topic_group_id=?,supported_versions_json=?,generation_status='manual' WHERE id=?").run(input.topicGroupId ?? input.topicId ?? null, JSON.stringify([...new Set((input.supportedVersions ?? (input.productVersion ? [input.productVersion] : [])).filter(Boolean))]), id);
       this.store.db.prepare("INSERT INTO knowledge_wiki_page_revisions(id,page_id,revision,title,body,change_reason,author_id,created_at) VALUES (?,?,?,?,?,?,?,?)")
         .run(randomUUID(), id, 1, title.slice(0, 500), body, reason, input.actorId, now);
       this.store.audit({ actorId: input.actorId, projectId, action: "wiki.create", entityType: "wiki_page", entityId: id, details: { pageKey, title: title.slice(0, 500), reason, revision: 1, sourceRefCount: sourceRefs.length } });
     })();
     const saved = this.loadRow(id);
-    return pageFromRow(saved, this.duplicateOf(saved));
+    return hydratePage(this.store, pageFromRow(saved, this.duplicateOf(saved)));
+  }
+
+  /** Idempotent system write used by the background topic-level generator. */
+  upsertGenerated(input: WikiGenerationInput): WikiPage {
+    const pageKey = input.pageKey.trim(), title = input.title.trim(), body = input.body;
+    if (!pageKey || pageKey.length > 300 || !title || !body.trim()) throw new Error("Generated Wiki identity and content are required");
+    const topicGroupId = input.topicGroupId.trim();
+    if (!topicGroupId) throw new Error("Generated Wiki topic group is required");
+    const sourceRefs = [...new Set(input.sourceRefs.map(ref => ref.trim()).filter(Boolean))];
+    if (!sourceRefs.length || sourceRefs.length > 500) throw new Error("Generated Wiki requires bounded source citations");
+    this.assertNoSecrets({ title, body, sourceRefs });
+    const sections = input.sections.map((section, index) => {
+      const key = section.key.trim(), sectionTitle = section.title.trim(), sectionBody = section.body;
+      if (!key || !sectionTitle || !sectionBody.trim()) throw new Error("Generated Wiki sections require a key, title and body");
+      if (!WIKI_SECTION_KINDS.includes(section.kind)) throw new Error("Generated Wiki section kind is invalid");
+      this.assertNoSecrets({ title: sectionTitle, body: sectionBody });
+      const citations = [...new Map(section.citations.map(citation => [`${citation.documentId}\u0000${citation.chunkIds.join(",")}`, citation])).values()];
+      if (!citations.length) throw new Error(`Generated Wiki section '${key}' has no citations`);
+      for (const citation of citations) if (!sourceRefs.includes(citation.documentId)) throw new Error(`Generated Wiki citation '${citation.documentId}' is not in the page source set`);
+      return { ...section, key, title: sectionTitle, body: sectionBody, sortOrder: Number.isFinite(section.sortOrder) ? section.sortOrder : index, citations };
+    });
+    if (!sections.length) throw new Error("Generated Wiki requires at least one section");
+    const projectId = optionalText(input.projectId, 200) ?? null, environment = optionalText(input.environment, 200) ?? null;
+    const existing = this.store.db.prepare("SELECT * FROM knowledge_wiki_pages WHERE topic_group_id=? AND project_id IS ? AND environment IS ? ORDER BY updated_at DESC,id LIMIT 1").get(topicGroupId, projectId, environment) as Record<string, unknown> | undefined;
+    const now = this.clock().toISOString(), savedId = existing ? String(existing.id) : randomUUID();
+    const changed = !existing || String(existing.generation_fingerprint ?? "") !== input.fingerprint;
+    this.store.db.transaction(() => {
+      if (!existing) {
+        this.store.db.prepare(`INSERT INTO knowledge_wiki_pages(id,page_key,title,body,status,project_id,environment,product_version,topic_id,topic_group_id,solution,module,source_refs_json,supported_versions_json,generation_status,generation_fingerprint,directory_path,current_revision,created_by,created_at,updated_at)
+          VALUES (?,?,?,?,'draft',?,?,?,?,?,?,?,?,?,'succeeded',?,?,1,0,?,?)`).run(
+          savedId, pageKey, title, body, projectId, environment, null, topicGroupId, topicGroupId, input.solution ?? null, input.module ?? null,
+          JSON.stringify(sourceRefs), JSON.stringify([...new Set(input.supportedVersions.filter(Boolean))]), input.fingerprint, input.directoryPath ?? null, now, now,
+        );
+        this.store.db.prepare("INSERT INTO knowledge_wiki_page_revisions(id,page_id,revision,title,body,change_reason,author_id,created_at) VALUES (?,?,?,?,?,?,?,?)")
+          .run(randomUUID(), savedId, 1, title, body, "Automatic topic-level Wiki generation", 0, now);
+      } else if (changed) {
+        const nextRevision = Number(existing.current_revision) + 1, status = String(existing.status) === "published" ? "draft" : String(existing.status);
+        this.store.db.prepare("INSERT INTO knowledge_wiki_page_revisions(id,page_id,revision,title,body,change_reason,author_id,created_at) VALUES (?,?,?,?,?,?,?,?)")
+          .run(randomUUID(), savedId, nextRevision, title, body, "Automatic topic-level Wiki generation", 0, now);
+        this.store.db.prepare(`UPDATE knowledge_wiki_pages SET page_key=?,title=?,body=?,status=?,topic_id=?,topic_group_id=?,solution=?,module=?,source_refs_json=?,supported_versions_json=?,generation_status='succeeded',generation_fingerprint=?,directory_path=?,current_revision=?,updated_at=? WHERE id=?`)
+          .run(pageKey, title, body, status, topicGroupId, topicGroupId, input.solution ?? null, input.module ?? null, JSON.stringify(sourceRefs), JSON.stringify([...new Set(input.supportedVersions.filter(Boolean))]), input.fingerprint, input.directoryPath ?? null, nextRevision, now, savedId);
+      } else {
+        this.store.db.prepare("UPDATE knowledge_wiki_pages SET generation_status='succeeded',updated_at=? WHERE id=?").run(now, savedId);
+      }
+      const oldSections = this.store.db.prepare("SELECT id,section_key FROM knowledge_wiki_sections WHERE page_id=?").all(savedId) as Array<{ id: string; section_key: string }>;
+      const nextKeys = new Set(sections.map(section => section.key));
+      for (const old of oldSections.filter(row => !nextKeys.has(String(row.section_key)))) this.store.db.prepare("DELETE FROM knowledge_wiki_sections WHERE id=?").run(old.id);
+      for (const section of sections) {
+        const old = oldSections.find(row => row.section_key === section.key), sectionId = old?.id ?? randomUUID();
+        this.store.db.prepare(`INSERT INTO knowledge_wiki_sections(id,page_id,section_key,section_kind,product_version,title,body,sort_order,current_revision,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(page_id,section_key) DO UPDATE SET section_kind=excluded.section_kind,product_version=excluded.product_version,title=excluded.title,body=excluded.body,sort_order=excluded.sort_order,current_revision=current_revision+CASE WHEN body<>excluded.body THEN 1 ELSE 0 END,updated_at=excluded.updated_at`)
+          .run(sectionId, savedId, section.key, section.kind, section.productVersion ?? null, section.title, section.body, section.sortOrder, 1, now, now);
+        this.store.db.prepare("DELETE FROM knowledge_wiki_section_citations WHERE section_id=?").run(sectionId);
+        for (const citation of section.citations) for (const chunkId of citation.chunkIds.length ? citation.chunkIds : [null]) {
+          this.store.db.prepare(`INSERT INTO knowledge_wiki_section_citations(id,section_id,document_id,external_document_id,chunk_id,product_version,quote_hash,created_at)
+            VALUES (?,?,?,?,?,?,?,?)`).run(randomUUID(), sectionId, citation.documentId, citation.externalDocumentId ?? null, chunkId, citation.productVersion ?? section.productVersion ?? null, citation.sourceSha256 ?? null, now);
+        }
+      }
+      this.store.audit({ actorId: 0, projectId: projectId ?? undefined, action: "wiki.generate", entityType: "wiki_page", entityId: savedId, details: { topicGroupId, fingerprint: input.fingerprint, sectionCount: sections.length, sourceCount: sourceRefs.length } });
+    })();
+    return hydratePage(this.store, pageFromRow(this.loadRow(savedId)));
   }
 
   /** Edit appends a new revision and bumps current_revision. */

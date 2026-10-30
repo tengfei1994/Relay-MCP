@@ -26,6 +26,21 @@ export class ActiveWikiService {
     private readonly engineAuthoritative = false,
   ) {}
 
+
+  private enginePageShadowed(item: WikiPageListResult["items"][number], local: WikiPageListResult["items"]): boolean {
+    const topicGroups = [...new Set(local.map(page => page.topicGroupId).filter((value): value is string => Boolean(value)))];
+    if (!topicGroups.length || !item.sourceRefs.length) return false;
+    try {
+      const placeholders = item.sourceRefs.map(() => "?").join(","), groupPlaceholders = topicGroups.map(() => "?").join(",");
+      return Boolean(this.store.db.prepare(`SELECT 1
+        FROM knowledge_product_documents p
+        JOIN knowledge_weknora_documents w ON w.external_document_id=p.engine_external_document_id
+        WHERE (w.id IN (${placeholders}) OR w.external_document_id IN (${placeholders}))
+          AND p.topic_group_id IN (${groupPlaceholders}) LIMIT 1`).get(...item.sourceRefs, ...item.sourceRefs, ...topicGroups));
+    } catch {
+      return false;
+    }
+  }
   private isEngineId(id: string): boolean { return id.startsWith("engine-wiki:"); }
 
   private isEngineKey(pageKey: string): boolean {
@@ -82,7 +97,7 @@ export class ActiveWikiService {
       return this.local.list({ ...localInput, limit, offset });
     }
 
-    const merged = [...local, ...engine];
+    const merged = [...local, ...engine.filter(item => !this.enginePageShadowed(item, local))];
     const identity = (item: WikiPageListResult["items"][number]) => {
       const raw = item as unknown as Record<string, unknown>;
       return {
@@ -91,7 +106,7 @@ export class ActiveWikiService {
         project_id: item.projectId,
         environment: typeof raw.environment === "string" ? raw.environment : undefined,
         topic_id: item.topicId,
-        product_version: item.productVersion,
+        topic_group_id: item.topicGroupId,
         source_refs_json: JSON.stringify(item.sourceRefs),
         created_at: item.createdAt,
       };

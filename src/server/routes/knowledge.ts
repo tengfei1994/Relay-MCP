@@ -36,7 +36,7 @@ import { createCandidateInsightProvider } from "../../knowledge/candidate-provid
 import { CandidateInsightReviewService } from "../../knowledge/candidate-review.js";
 import { ConfirmedMemoryService, CONFIRMED_MEMORY_TYPES } from "../../knowledge/confirmed-memory.js";
 import { enqueueCandidateInsight, getCandidateInsightJob } from "../../knowledge/candidate-worker.js";
-import { WIKI_PAGE_STATUSES } from "../../knowledge/wiki.js";
+import { WikiService, WIKI_PAGE_STATUSES } from "../../knowledge/wiki.js";
 import { WeKnoraError } from "../../knowledge/weknora.js";
 import { WeKnoraIngestor } from "../../knowledge/weknora-ingest.js";
 import { ContextPackService } from "../../knowledge/context-pack.js";
@@ -99,6 +99,16 @@ function safeDocument(row: KnowledgeRow, includeBody = true, card?: ReturnType<R
     language: row.language ? String(row.language) : undefined,
     authority: row.authority ? String(row.authority) : undefined,
     sourcePath: row.source_path ? String(row.source_path) : undefined,
+    topicGroupId: row.topic_group_id ? String(row.topic_group_id) : undefined,
+    ...(row.engine_status ? { engine: {
+      status: String(row.engine_status), externalDocumentId: row.engine_external_document_id ? String(row.engine_external_document_id) : undefined,
+      chunkIds: parseList(row.engine_chunk_ids_json).map(String),
+      parseStatus: row.engine_parse_status ? String(row.engine_parse_status) : undefined, verifiedAt: row.engine_verified_at ? String(row.engine_verified_at) : undefined,
+      modelProvenance: row.engine_model_provenance_json ? safeRows(() => JSON.parse(String(row.engine_model_provenance_json)), {}) : {},
+      failureCode: row.engine_failure_code ? String(row.engine_failure_code) : undefined, failureMessage: row.engine_failure_message ? String(row.engine_failure_message) : undefined,
+      attemptCount: Number(row.engine_attempt_count ?? 0), publishedAt: row.engine_published_at ? String(row.engine_published_at) : undefined,
+      deprecatedAt: row.engine_deprecated_at ? String(row.engine_deprecated_at) : undefined, updatedAt: row.engine_updated_at ? String(row.engine_updated_at) : undefined,
+    } } : {}),
     metadata: row.metadata_json ? safeRows(() => JSON.parse(String(row.metadata_json)), undefined) : undefined,
     diffReviewStatus: row.diff_review_status ? String(row.diff_review_status) : undefined,
     diffReviewedAt: row.diff_reviewed_at ? String(row.diff_reviewed_at) : undefined,
@@ -1199,7 +1209,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     else {if(requestedEnvironment)return reply.status(400).send({error:"environment requires projectId"});where.push("d.project_id IS NULL AND d.environment IS NULL");}
     const sortColumn = ({ updatedAt: "d.updated_at", title: "d.title", version: "p.version", sourcePath: "p.source_path" } as Record<string, string>)[queryValue(query, "sort") ?? "updatedAt"] ?? "d.updated_at";
     const order = String(queryValue(query, "order") ?? "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
-    const rows = store.db.prepare(`SELECT d.id,d.title,d.body,d.lifecycle,d.project_id,d.project_name_snapshot,d.samplemanager_version,d.solution,d.module,d.environment,d.source_locator,d.source_commit,d.source_sha256,d.created_at,d.updated_at,p.document_family_id,p.document_type,p.language,p.authority,p.source_path,p.version,p.sections_json,p.metadata_json,p.diff_review_status,p.diff_reviewed_at,(SELECT COUNT(*) FROM knowledge_chunks c WHERE c.document_id=d.id) AS chunk_count FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE ${where.join(" AND ")} ORDER BY ${sortColumn} ${order} LIMIT ? OFFSET ?`).all(...params, limit, offset) as KnowledgeRow[];
+    const rows = store.db.prepare(`SELECT d.id,d.title,d.body,d.lifecycle,d.project_id,d.project_name_snapshot,d.samplemanager_version,d.solution,d.module,d.environment,d.source_locator,d.source_commit,d.source_sha256,d.created_at,d.updated_at,p.document_family_id,p.document_type,p.language,p.authority,p.source_path,p.version,p.sections_json,p.metadata_json,p.diff_review_status,p.diff_reviewed_at,p.topic_group_id,p.engine_external_document_id,p.engine_knowledge_base_id,p.engine_chunk_ids_json,p.engine_status,p.engine_parse_status,p.engine_verified_at,p.engine_model_provenance_json,p.engine_failure_code,p.engine_failure_message,p.engine_attempt_count,p.engine_published_at,p.engine_deprecated_at,p.engine_updated_at,(SELECT COUNT(*) FROM knowledge_chunks c WHERE c.document_id=d.id) AS chunk_count FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE ${where.join(" AND ")} ORDER BY ${sortColumn} ${order} LIMIT ? OFFSET ?`).all(...params, limit, offset) as KnowledgeRow[];
     const total = store.db.prepare(`SELECT COUNT(*) AS count FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE ${where.join(" AND ")}`).get(...params) as { count?: number };
     return reply.send({ documents: rows.map((row) => ({ ...safeDocument(row, false, undefined, store.getScopeBinding(String(row.id))), chunkCount: Number(row.chunk_count ?? 0), lastIndexedAt: row.updated_at })), page: { limit, offset, total: Number(total.count ?? 0) } });
   });
@@ -1587,11 +1597,53 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     if (!projectId && environment) return reply.status(400).send({ error: "environment requires projectId" });
     const status = typeof query.status === "string" && WIKI_PAGE_STATUSES.includes(query.status as never) ? query.status as never : undefined;
     try {
-      return reply.send(await activeWikiService(getKnowledgeStore()).list({ actorId: request.user.id, isAdmin: request.user.isAdmin, projectId, environment, status, productVersion: queryValue(query, "productVersion"), topicId: queryValue(query, "topicId"), solution: queryValue(query, "solution"), module: queryValue(query, "module"), search: queryValue(query, "search"), limit: parseBoundedInt(query.limit, 50, 1, 200), offset: parseBoundedInt(query.offset, 0, 0, 1_000_000) }));
+      return reply.send(await activeWikiService(getKnowledgeStore()).list({ actorId: request.user.id, isAdmin: request.user.isAdmin, projectId, environment, status, productVersion: queryValue(query, "productVersion"), topicId: queryValue(query, "topicId"), topicGroupId: queryValue(query, "topicGroupId"), solution: queryValue(query, "solution"), module: queryValue(query, "module"), search: queryValue(query, "search"), limit: parseBoundedInt(query.limit, 50, 1, 200), offset: parseBoundedInt(query.offset, 0, 0, 1_000_000) }));
     } catch (error) { return sendError(reply, error, 403); }
   });
+
+  app.get("/api/knowledge/wiki/directory", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    const projectId = queryValue(query, "projectId"), environment = queryValue(query, "environment");
+    if (!projectId && environment) return reply.status(400).send({ error: "environment requires projectId" });
+    const status = typeof query.status === "string" && WIKI_PAGE_STATUSES.includes(query.status as never) ? query.status as never : undefined;
+    try {
+      const result = new WikiService(getKnowledgeStore()).list({
+        actorId: request.user.id, isAdmin: request.user.isAdmin, projectId, environment, status,
+        productVersion: queryValue(query, "productVersion"), topicId: queryValue(query, "topicId"), topicGroupId: queryValue(query, "topicGroupId"),
+        solution: queryValue(query, "solution"), module: queryValue(query, "module"), search: queryValue(query, "search"),
+        limit: parseBoundedInt(query.limit, 200, 1, 200), offset: parseBoundedInt(query.offset, 0, 0, 1_000_000),
+      });
+      const grouped = new Map<string, Map<string, typeof result.items>>();
+      for (const item of result.items) {
+        const solution = item.solution ?? "Unassigned", module = item.module ?? "General";
+        if (!grouped.has(solution)) grouped.set(solution, new Map());
+        const modules = grouped.get(solution)!;
+        if (!modules.has(module)) modules.set(module, []);
+        modules.get(module)!.push(item);
+      }
+      return reply.send({
+        ...result,
+        directory: [...grouped.entries()].map(([solution, modules]) => ({
+          solution,
+          modules: [...modules.entries()].map(([module, topics]) => ({ module, topics })),
+        })),
+      });
+    } catch (error) { return sendError(reply, error, 403); }
+  });
+
+  app.get("/api/knowledge/wiki/generation", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>, projectId = queryValue(query, "projectId"), environment = queryValue(query, "environment");
+    if (!projectId && environment) return reply.status(400).send({ error: "environment requires projectId" });
+    const store = getKnowledgeStore();
+    if (projectId && !request.user.isAdmin && !store.canRead(request.user.id, projectId)) return reply.status(403).send({ error: "Project access denied" });
+    const scopeProject = projectId ?? "", scopeEnvironment = environment ?? "";
+    const states = store.db.prepare("SELECT * FROM knowledge_wiki_generation_state WHERE project_id=? AND environment=? ORDER BY updated_at DESC LIMIT ?").all(scopeProject, scopeEnvironment, parseBoundedInt(query.limit, 100, 1, 200));
+    const jobs = store.db.prepare("SELECT id,status,result_json,error,created_at,updated_at,finished_at FROM knowledge_ingest_jobs WHERE kind='wiki_generation' ORDER BY updated_at DESC LIMIT ?").all(parseBoundedInt(query.limit, 100, 1, 200));
+    return reply.send({ states, jobs });
+  });
+
   app.post("/api/knowledge/wiki", { onRequest: [app.authenticate] }, async (request, reply) => {
-    const body = z.object({ environment: z.string().optional(), pageKey: z.string().min(1).max(300), title: z.string().min(1).max(500), body: z.string().min(1), projectId: z.string().optional(), productVersion: z.string().optional(), topicId: z.string().optional(), solution: z.string().optional(), module: z.string().optional(), sourceRefs: z.array(z.string()).max(100).optional(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {});
+    const body = z.object({ environment: z.string().optional(), pageKey: z.string().min(1).max(300), title: z.string().min(1).max(500), body: z.string().min(1), projectId: z.string().optional(), productVersion: z.string().optional(), topicId: z.string().optional(), topicGroupId: z.string().optional(), supportedVersions: z.array(z.string()).max(20).optional(), solution: z.string().optional(), module: z.string().optional(), sourceRefs: z.array(z.string()).max(100).optional(), reason: z.string().min(1).max(2_000) }).safeParse(request.body ?? {});
     if (!body.success) return reply.status(400).send({ error: "Invalid Wiki page" });
     if (body.data.environment && !body.data.projectId) return reply.status(400).send({ error: "environment requires projectId" });
     try { return reply.status(201).send({ page: await activeWikiService(getKnowledgeStore()).create({ actorId: request.user.id, isAdmin: request.user.isAdmin, ...body.data }) }); } catch (error) { return sendError(reply, error, 403); }

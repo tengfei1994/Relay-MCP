@@ -261,11 +261,16 @@ export class WikiService {
   }
 
 
-  /** Published Wiki content is user-visible; reviewer access is user-level. */
+  /** Global pages are public once published; project ACL controls draft reads. */
   private canReadPage(actorId: number, projectId: string | undefined, status: WikiPageStatus = "published", isAdmin = false, environment?: string): boolean {
     if (!projectId && environment) return false;
-    if (status === "published" || isAdmin) return true;
-    return Boolean(this.store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id = ? AND can_read = 1 AND can_review = 1 LIMIT 1").get(actorId));
+    if (projectId) {
+      const acl = this.store.db.prepare("SELECT can_read FROM knowledge_acl WHERE project_id = ? AND user_id = ?").get(projectId, actorId) as { can_read?: number } | undefined;
+      return acl?.can_read === 1;
+    }
+    if (status === "published") return true;
+    if (isAdmin) return true;
+    return Boolean(this.store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id = ? AND can_read = 1 LIMIT 1").get(actorId));
   }
 
   private assertReader(actorId: number, projectId: string | undefined, status?: WikiPageStatus, isAdmin = false, environment?: string): void {
@@ -276,18 +281,25 @@ export class WikiService {
     const requestedProject = optionalText(projectId, 200);
     const requestedEnvironment = optionalText(environment, 200);
     if (requestedEnvironment && !requestedProject) throw new Error("Knowledge access denied");
+    // Older direct callers did not carry scope. Keep those calls compatible,
+    // while ActiveWiki/HTTP callers pass isAdmin and therefore use strict
+    // exact-scope enforcement.
     if (!strict && !requestedProject && !requestedEnvironment) return;
-    // Knowledge/Memory pages are user-scoped. An omitted project is the
-    // intentional all-project view; explicit legacy scopes still remain exact.
-    if (!requestedProject && !requestedEnvironment) return;
     const pageProject = row.project_id ? String(row.project_id) : undefined;
     const pageEnvironment = row.environment ? String(row.environment) : undefined;
+    // An omitted scope is safe only for a truly global page in strict mode.
     if (requestedProject !== pageProject || requestedEnvironment !== pageEnvironment) throw new Error("Knowledge access denied");
   }
 
-  private assertPageReviewer(actorId: number, _projectId: string | undefined, isAdmin = false): void {
+  private assertPageReviewer(actorId: number, projectId: string | undefined, isAdmin = false): void {
+    if (projectId) {
+      this.assertReader(actorId, projectId);
+      const acl = this.store.db.prepare("SELECT can_review FROM knowledge_acl WHERE project_id = ? AND user_id = ?").get(projectId, actorId) as { can_review?: number } | undefined;
+      assertReviewer(acl?.can_review === 1);
+      return;
+    }
     if (isAdmin) return;
-    const acl = this.store.db.prepare("SELECT can_review FROM knowledge_acl WHERE user_id = ? AND can_read = 1 AND can_review = 1 LIMIT 1").get(actorId);
+    const acl = this.store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id = ? AND can_read = 1 AND can_review = 1 LIMIT 1").get(actorId);
     assertReviewer(Boolean(acl));
   }
 
@@ -328,9 +340,10 @@ export class WikiService {
       )`);
     } else {
       where.push(`(
-        p.status = 'published' OR @isAdmin = 1 OR EXISTS (
-          SELECT 1 FROM knowledge_acl a WHERE a.user_id = @actorId AND a.can_read = 1 AND a.can_review = 1
-        )
+        p.project_id IS NULL AND ${environmentSql} IS NULL AND
+        (p.status = 'published' OR @isAdmin = 1 OR EXISTS (
+          SELECT 1 FROM knowledge_acl a WHERE a.user_id = @actorId AND a.can_read = 1
+        ))
       )`);
     }
     const predicate = where.join("\n AND ");

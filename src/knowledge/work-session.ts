@@ -231,11 +231,14 @@ export class WorkSessionService {
 
   get(input: { actorId: number; sessionId: string }): WorkSession { return this.load(input.actorId, input.sessionId); }
 
-  /** User-level listing: a Knowledge-enabled user can see their own sessions across projects. */
+  /** ACL-filtered listing: sessions on projects the actor can no longer read are hidden. */
   list(input: { actorId: number; limit?: number }): WorkSession[] {
     const limit = Math.max(1, Math.min(input.limit ?? 50, 200));
     const rows = this.store.db.prepare("SELECT * FROM knowledge_work_sessions WHERE actor_id=? ORDER BY updated_at DESC LIMIT ?").all(input.actorId, limit) as Array<Record<string, unknown>>;
-    return rows.map(sessionFromRow);
+    return rows.map(sessionFromRow).filter((session) => {
+      try { this.assertAccess(input.actorId, session.projectId); return true; }
+      catch { return false; }
+    });
   }
 
   /**

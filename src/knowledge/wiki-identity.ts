@@ -35,7 +35,7 @@ export function wikiTopicIdentity(row: WikiIdentityRow): string {
   // identities.
   const explicit = text(row.topic_id);
   if (explicit) return `topic:${JSON.stringify(explicit)}`;
-  const externalSlug = text(row.external_slug);
+  const externalSlug = text(row.external_slug) ?? (text(row.id)?.startsWith("engine-wiki:") ? text(row.page_key) : undefined);
   if (externalSlug) return `external:${JSON.stringify(externalSlug)}`;
   const refs = (() => {
     try {

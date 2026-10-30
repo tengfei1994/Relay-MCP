@@ -69,6 +69,15 @@ test("engine-authoritative merge prefers the engine page for one identity", asyn
   assert.equal(result.items[0]?.id, "engine-wiki:1");
 });
 
+test("engine Wiki pages with shared sources remain distinct by upstream page key", async () => {
+  const one = page("engine-wiki:one", { pageKey: "engine-wiki:one", sourceRefs: ["same-source"] });
+  const two = page("engine-wiki:two", { pageKey: "engine-wiki:two", sourceRefs: ["same-source"] });
+  const result = await active([], [one, two], true).list({ actorId: 7, projectId: "project-1" });
+
+  assert.equal(result.total, 2);
+  assert.deepEqual(new Set(result.items.map(item => item.id)), new Set(["engine-wiki:one", "engine-wiki:two"]));
+});
+
 test("canonical identity keeps same topic isolated by environment", async () => {
   const dev = page("local-dev", { topicId: "same-topic", sourceRefs: ["same-source"], environment: "dev" });
   const prod = page("local-prod", { topicId: "same-topic", sourceRefs: ["same-source"], environment: "prod" });

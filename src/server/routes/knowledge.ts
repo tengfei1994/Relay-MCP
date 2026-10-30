@@ -405,13 +405,31 @@ function rebuildKnowledgeIndexes(store: ReturnType<typeof getKnowledgeStore>, pr
 function knowledgeProviderSummary(store: ReturnType<typeof getKnowledgeStore>): Array<Record<string, unknown>> {
   const vectorCount = safeRows(() => Number((store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_embeddings").get() as { count?: number }).count ?? 0), 0);
   const configured = (name: string) => Boolean(process.env[name] && String(process.env[name]).trim());
-  return [
+  const builtIns = [
     { name: "FTS5", type: "lexical", model: "sqlite-fts5", status: "ready", configured: true, secretConfigured: false, lastCallAt: null, errorRate: null },
     { name: "Embeddings", type: "vector", model: process.env.KNOWLEDGE_EMBEDDING_MODEL ?? "local-deterministic-v1", status: vectorCount ? "ready" : "disabled_or_empty", configured: true, indexedRows: vectorCount, secretConfigured: false, lastCallAt: null, errorRate: null },
     { name: "Rerank", type: "rerank", model: process.env.KNOWLEDGE_RERANK_MODEL ?? "local-lexical-v1", status: "ready", configured: true, secretConfigured: false, lastCallAt: null, errorRate: null },
     { name: "Inference", type: "inference", model: process.env.KNOWLEDGE_INFERENCE_MODEL ?? "not configured", status: configured("KNOWLEDGE_INFERENCE_PROVIDER") ? "ready" : "disabled", configured: configured("KNOWLEDGE_INFERENCE_PROVIDER"), secretConfigured: configured("KNOWLEDGE_INFERENCE_SECRET_REF"), lastCallAt: null, errorRate: null },
     { name: "Redaction", type: "redaction", model: process.env.KNOWLEDGE_REDACTION_MODEL ?? "local-regex-v1", status: "ready", configured: true, secretConfigured: false, lastCallAt: null, errorRate: null },
   ];
+  const managed = safeRows(() => managedProviderRegistry(store).list().map((provider) => ({
+    name: provider.id,
+    id: provider.id,
+    kind: provider.kind,
+    provider: provider.provider,
+    type: provider.kind,
+    model: provider.modelId,
+    modelId: provider.modelId,
+    baseUrl: provider.baseUrl,
+    status: provider.status,
+    configured: provider.tokenConfigured,
+    secretConfigured: provider.tokenConfigured,
+    lastCallAt: provider.lastTestAt ?? null,
+    errorRate: null,
+    reindexRequired: provider.reindexRequired,
+    indexVersion: provider.indexVersion,
+  })), []);
+  return [...builtIns, ...managed];
 }
 
 function parseKinds(raw: unknown): Array<"candidate" | "case" | "pattern" | "playbook" | "fact" | "decision" | "confirmed_memory"> | undefined {

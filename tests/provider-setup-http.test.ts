@@ -87,6 +87,13 @@ test("provider setup discovers models, tests before saving and persists only enc
       assert.equal(response.json().provider.tokenConfigured, true);
       assert.equal(response.json().report.ok, true);
       assert.ok(!response.body.includes(token));
+      const summary = await app.inject({ method: "GET", url: "/api/knowledge/operations/providers" });
+      assert.equal(summary.statusCode, 200, summary.body);
+      const listed = summary.json().providers.find((provider: Record<string, unknown>) => provider.id === "embed");
+      assert.equal(listed?.name, "embed");
+      assert.equal(listed?.kind, "embedding");
+      assert.equal(listed?.modelId, "embed-model");
+      assert.equal(listed?.secretConfigured, true);
       const rows = store.db.prepare("SELECT * FROM knowledge_provider_secrets").all();
       assert.equal(rows.length, 1);
       assert.ok(!JSON.stringify(rows).includes(token));

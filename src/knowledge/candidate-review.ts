@@ -96,17 +96,18 @@ export class CandidateInsightReviewService {
     }
   }
 
-  list(input: { actorId: number; projectId: string; status?: CandidateInsightStatus; limit?: number; offset?: number }): CandidateInsight[] {
-    this.assertReader(input.actorId, input.projectId);
+  list(input: { actorId: number; projectId?: string; status?: CandidateInsightStatus; limit?: number; offset?: number }): CandidateInsight[] {
+    if (input.projectId) this.assertReader(input.actorId, input.projectId);
     const limit = Math.max(1, Math.min(200, Math.trunc(input.limit ?? 50)));
     const offset = Math.max(0, Math.trunc(input.offset ?? 0));
-    const rows = input.status
-      ? this.store.db.prepare("SELECT * FROM knowledge_candidate_insights WHERE project_id = ? AND status = ? ORDER BY updated_at DESC, id LIMIT ? OFFSET ?").all(input.projectId, input.status, limit, offset)
-      : this.store.db.prepare("SELECT * FROM knowledge_candidate_insights WHERE project_id = ? ORDER BY updated_at DESC, id LIMIT ? OFFSET ?").all(input.projectId, limit, offset);
+    const conditions = input.projectId ? ["project_id = ?"] : [], params: unknown[] = input.projectId ? [input.projectId] : [];
+    if (input.status) { conditions.push("status = ?"); params.push(input.status); }
+    const where = conditions.length ? ` WHERE ${conditions.join(" AND ")}` : "";
+    const rows = this.store.db.prepare(`SELECT * FROM knowledge_candidate_insights${where} ORDER BY updated_at DESC, id LIMIT ? OFFSET ?`).all(...params, limit, offset);
     return (rows as Array<Record<string, unknown>>).map(row => candidateInsightFromRow(row, this.store));
   }
 
-  listDrafts(input: { actorId: number; projectId: string; limit?: number; offset?: number }): CandidateInsight[] {
+  listDrafts(input: { actorId: number; projectId?: string; limit?: number; offset?: number }): CandidateInsight[] {
     return this.list({ ...input, status: "draft" });
   }
 

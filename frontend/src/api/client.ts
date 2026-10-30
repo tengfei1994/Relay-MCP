@@ -62,8 +62,9 @@ export const api = {
     ),
 
   // Knowledge governance plane
-  memorySearch: (params: { projectId: number; q: string; limit?: number; sampleManagerVersion?: string; solution?: string; module?: string; environment?: string; scopeType?: string; scopeKey?: string; kinds?: string; includeDeprecated?: boolean }) => {
-    const query = new URLSearchParams({ projectId: String(params.projectId), q: params.q });
+  memorySearch: (params: { projectId?: number | string; q: string; limit?: number; sampleManagerVersion?: string; solution?: string; module?: string; environment?: string; scopeType?: string; scopeKey?: string; kinds?: string; includeDeprecated?: boolean }) => {
+    const query = new URLSearchParams({ q: params.q });
+    if (params.projectId !== undefined && params.projectId !== "") query.set("projectId", String(params.projectId));
     for (const key of ["limit", "sampleManagerVersion", "solution", "module", "environment", "scopeType", "scopeKey", "kinds", "includeDeprecated"] as const) {
       const value = params[key];
       if (value !== undefined && value !== "") query.set(key, String(value));
@@ -74,7 +75,7 @@ export const api = {
   knowledgeDocuments: (projectId: number, kinds?: string, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); if (kinds) query.set("kinds", kinds); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ documents: unknown[]; page?: unknown }>("GET", `/knowledge/documents?${query.toString()}`); },
   knowledgeEvidence: (id: string) => request<{ evidence: unknown }>("GET", `/knowledge/evidence/${encodeURIComponent(id)}`),
   knowledgeObservation: (id: string) => request<{ observation: unknown }>("GET", `/knowledge/observations/${encodeURIComponent(id)}`),
-  knowledgeObservations: (projectId: number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ observations: unknown[]; page?: unknown }>("GET", `/knowledge/observations?${query.toString()}`); },
+  knowledgeObservations: (projectId?: number | string, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); if (projectId !== undefined && projectId !== "") query.set("projectId", String(projectId)); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ observations: unknown[]; page?: unknown }>("GET", `/knowledge/observations?${query.toString()}`); },
   knowledgeDocumentEvidence: (id: string, body: { evidenceId: string; operation: "attach" | "detach"; reason: string }, idempotencyKey?: string) => request<unknown>("POST", `/knowledge/documents/${encodeURIComponent(id)}/evidence`, body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
   knowledgeEvidenceList: (projectId?: number, params: Record<string, string | number | undefined> = {}, options?: { signal?: AbortSignal }) => {
     const query = new URLSearchParams();
@@ -166,7 +167,7 @@ export const api = {
   knowledgeManagedProviderRotate: (id: string, secretRef: string) => request<{ provider: unknown }>("POST", `/knowledge/providers/managed/${encodeURIComponent(id)}/rotate`, { secretRef }),
   knowledgeManagedProviderDisable: (id: string) => request<{ provider: unknown }>("POST", `/knowledge/providers/managed/${encodeURIComponent(id)}/disable`, {}),
   knowledgeManagedProviderReindexComplete: (jobId: string) => request<{ job: unknown }>("POST", `/knowledge/providers/managed/reindex/${encodeURIComponent(jobId)}/complete`, {}),
-  knowledgeCandidateInsights: (projectId: string | number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ insights: unknown[] }>("GET", `/knowledge/candidate-insights?${query.toString()}`); },
+  knowledgeCandidateInsights: (projectId?: string | number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); if (projectId !== undefined && projectId !== "") query.set("projectId", String(projectId)); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ insights: unknown[] }>("GET", `/knowledge/candidate-insights?${query.toString()}`); },
   knowledgeCandidateInsight: (id: string) => request<{ insight: unknown }>("GET", `/knowledge/candidate-insights/${encodeURIComponent(id)}`),
   knowledgeCandidateInsightHistory: (id: string) => request<{ history: unknown[] }>("GET", `/knowledge/candidate-insights/${encodeURIComponent(id)}/history`),
   knowledgeCandidateInsightCompile: (body: Record<string, unknown>) => request<unknown>("POST", "/knowledge/candidate-insights/compile", body),
@@ -175,7 +176,7 @@ export const api = {
   knowledgeCandidateInsightEdit: (id: string, patch: Record<string, unknown>, reason: string) => request<{ insight: unknown }>("PATCH", `/knowledge/candidate-insights/${encodeURIComponent(id)}`, { patch, reason }),
   knowledgeCandidateInsightReviewScope: (id: string, reason: string, expectedSessionUpdatedAt: string) => request<{ insight: unknown }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/review-scope`, { reason, expectedSessionUpdatedAt }),
   knowledgeCandidateInsightPromote: (id: string, body: { target: "fact" | "decision" | "case" | "pattern"; reason: string; title?: string }) => request<{ promotion: unknown }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/promote`, body),
-  knowledgeConfirmedMemories: (projectId: string | number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ memories: unknown[] }>("GET", `/knowledge/confirmed-memories?${query.toString()}`); },
+  knowledgeConfirmedMemories: (projectId?: string | number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); if (projectId !== undefined && projectId !== "") query.set("projectId", String(projectId)); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ memories: unknown[] }>("GET", `/knowledge/confirmed-memories?${query.toString()}`); },
   knowledgeConfirmedMemory: (id: string) => request<{ memory: unknown }>("GET", `/knowledge/confirmed-memories/${encodeURIComponent(id)}`),
   knowledgeSearch: (body: Record<string, unknown>) => request<unknown>("POST", "/knowledge/search", body),
   knowledgeWikiDirectory: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<unknown>("GET", `/knowledge/wiki/directory?${query.toString()}`); },
@@ -313,12 +314,14 @@ export const api = {
   // Users (admin)
   listUsers: () =>
     request<{ users: unknown[] }>("GET", "/users"),
-  createUser: (username: string, password: string, isAdmin = false) =>
-    request<{ user: unknown }>("POST", "/users", { username, password, isAdmin }),
+  createUser: (username: string, password: string, isAdmin = false, knowledgeEnabled = true) =>
+    request<{ user: unknown }>("POST", "/users", { username, password, isAdmin, knowledgeEnabled }),
   changePassword: (id: number, password: string) =>
     request<{ ok: boolean }>("PATCH", `/users/${id}/password`, { password }),
   toggleAdmin: (id: number, isAdmin: boolean) =>
     request<{ ok: boolean }>("PATCH", `/users/${id}/admin`, { isAdmin }),
+  toggleKnowledge: (id: number, knowledgeEnabled: boolean) =>
+    request<{ ok: boolean; knowledgeEnabled: boolean }>("PATCH", `/users/${id}/knowledge`, { knowledgeEnabled }),
   deleteUser: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/users/${id}`),
 };

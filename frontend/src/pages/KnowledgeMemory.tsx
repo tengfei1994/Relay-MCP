@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
-import { useProjectScope } from "../context/ProjectScope";
 import { PageTabs } from "../components/shell/PageTabs";
 import { Badge, DataTable, Drawer, EmptyState, ErrorState, Input, PageHeader, Select, StatusPill } from "../components/ui";
 
@@ -78,7 +77,7 @@ export default function KnowledgeMemory() {
   const location = useLocation();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  const { projects, projectId, setProjectId, loading: scopeLoading, error: scopeError } = useProjectScope();
+
   const routeTab = (TABS.find((item) => location.pathname.endsWith(`/${item}`)) ?? "confirmed-memory") as MemoryTab;
   const [tab, setTab] = useState<MemoryTab>(routeTab);
   const [type, setType] = useState("");
@@ -92,25 +91,20 @@ export default function KnowledgeMemory() {
 
   useEffect(() => { setTab(routeTab); }, [routeTab]);
   useEffect(() => {
-    if (tab !== "sessions" && projectId === undefined) {
-      setRows([]);
-      return;
-    }
     let active = true;
     setLoading(true);
     setError("");
     let task: Promise<unknown>;
     if (tab === "confirmed-memory") {
-      task = api.knowledgeConfirmedMemories(projectId ?? "", type ? { type } : {});
+      task = api.knowledgeConfirmedMemories(undefined, type ? { type } : {});
     } else if (tab === "candidate-insights") {
-      task = api.knowledgeCandidateInsights(projectId ?? "");
+      task = api.knowledgeCandidateInsights();
     } else if (tab === "sessions") {
       task = api.knowledgeSessions();
     } else if (tab === "evidence") {
-      task = api.knowledgeEvidenceList(projectId);
+      task = api.knowledgeEvidenceList();
     } else {
-      if (projectId === undefined) return;
-      task = api.knowledgeObservations(projectId);
+      task = api.knowledgeObservations();
     }
     task.then((result: unknown) => {
       if (!active) return;
@@ -128,7 +122,7 @@ export default function KnowledgeMemory() {
       if (active) setLoading(false);
     });
     return () => { active = false; };
-  }, [projectId, tab, type, reloadCount]);
+  }, [tab, type, reloadCount]);
 
   const open = (id: string) => {
     const next = new URLSearchParams(params);
@@ -163,19 +157,11 @@ export default function KnowledgeMemory() {
           <Search size={15} aria-hidden="true" className="pointer-events-none absolute left-3 top-3 text-muted" />
           <Input className="pl-9" placeholder={`Search ${title.toLowerCase()}`} value={query} onChange={(event) => applyQuery(event.target.value)} />
         </label>
-        <label className="min-w-[210px]">
-          <span className="sr-only">Project</span>
-          <Select value={projectId === undefined ? "" : String(projectId)} onChange={(event) => setProjectId(Number(event.target.value))} disabled={scopeLoading || projects.length === 0}>
-            <option value="">Select project</option>
-            {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-          </Select>
-        </label>
         {tab === "confirmed-memory" && <label className="min-w-[190px]"><span className="sr-only">Memory type</span><Select value={type} onChange={(event) => setType(event.target.value)}><option value="">All confirmed memory</option>{TYPES.map((item) => <option key={item} value={item}>{item}</option>)}</Select></label>}
         <span className="text-sm text-muted">{visibleRows.length} results</span>
       </div>
-      {scopeError && <ErrorState className="mb-4" message={scopeError} description="The project scope could not be loaded." />}
       {error && <ErrorState className="mb-4" message={error} onRetry={() => setReloadCount((count) => count + 1)} />}
-      {loading || scopeLoading ? <div className="ui-glass p-6 text-sm text-muted" role="status">Loading {title.toLowerCase()}…</div> : !visibleRows.length ? <EmptyState title={`No ${title.toLowerCase()} records`} description="Try another filter or capture more knowledge." /> : <DataTable columns={columns} rows={visibleRows} rowKey={(row) => text(row.id)} selectedRowKey={selectedId ?? undefined} onRowClick={(row) => open(text(row.id))} />}
+      {loading ? <div className="ui-glass p-6 text-sm text-muted" role="status">Loading {title.toLowerCase()}…</div> : !visibleRows.length ? <EmptyState title={`No ${title.toLowerCase()} records`} description="Try another filter or capture more knowledge." /> : <DataTable columns={columns} rows={visibleRows} rowKey={(row) => text(row.id)} selectedRowKey={selectedId ?? undefined} onRowClick={(row) => open(text(row.id))} />}
       {selected && <RecordDrawer row={selected} tab={tab} onClose={close} />}
     </div>
   );

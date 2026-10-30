@@ -6,7 +6,7 @@ import { and, eq } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { db } from "../db/index.js";
-import { projects } from "../db/schema.js";
+import { projects, users } from "../db/schema.js";
 import { getKnowledgeStore } from "../knowledge-context.js";
 import { EvidenceStore } from "../../knowledge/evidence-store.js";
 import { KnowledgeRepository } from "../../knowledge/repository.js";
@@ -339,6 +339,12 @@ function knowledgeReviewAllowed(store: ReturnType<typeof getKnowledgeStore>, use
   return store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id = ? AND can_review = 1 LIMIT 1").get(userId) !== undefined;
 }
 
+function knowledgeUserEnabled(userId: number): boolean {
+  const row = db.select({ enabled: users.knowledgeEnabled }).from(users).where(eq(users.id, userId)).get();
+  // Older test/embedded callers may authenticate a user without an app.db row.
+  return row === undefined || row.enabled !== false;
+}
+
 function knowledgeReadAllowed(store: ReturnType<typeof getKnowledgeStore>, userId: number): boolean {
   if (store.db.prepare("SELECT 1 FROM knowledge_acl WHERE user_id = ? AND can_read = 1 LIMIT 1").get(userId) !== undefined) return true;
   // A control-plane project owner is allowed to read global Product Knowledge
@@ -444,6 +450,11 @@ function loadDocumentForUser(store: ReturnType<typeof getKnowledgeStore>, userId
 }
 
 export async function knowledgeRoutes(app: FastifyInstance) {
+  app.addHook("preHandler", async (request, reply) => {
+    if (request.user && !knowledgeUserEnabled(request.user.id)) {
+      return reply.status(403).send({ error: "Knowledge and Memory access is disabled for this user" });
+    }
+  });
   app.get("/api/memory/search", { onRequest: [app.authenticate] }, async (request, reply) => {
     const query = request.query as Record<string, unknown>;
     try {
@@ -631,12 +642,17 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   app.get("/api/knowledge/observations", { onRequest: [app.authenticate] }, async (request, reply) => {
     const query = request.query as Record<string, unknown>;
     try {
-      const { store, projectId } = resolveProject(request.user.id, query.projectId);
+      const store = getKnowledgeStore();
+      const projectId = queryValue(query, "projectId");
       const limit = parseBoundedInt(query.limit, 50, 1, 200);
       const offset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
-      const rows = store.db.prepare(`${OBSERVATION_WITH_REVIEW} WHERE o.project_id = ? ORDER BY o.updated_at DESC LIMIT ? OFFSET ?`).all(projectId, limit, offset) as KnowledgeRow[];
-      const total = store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_observations WHERE project_id = ?").get(projectId) as { count?: number };
-      return reply.send({ observations: rows.map(safeObservation), page: { limit, offset, total: Number(total.count ?? 0) } });
+      const rows = projectId
+        ? store.db.prepare(`${OBSERVATION_WITH_REVIEW} WHERE o.project_id = ? ORDER BY o.updated_at DESC LIMIT ? OFFSET ?`).all(projectId, limit, offset)
+        : store.db.prepare(`${OBSERVATION_WITH_REVIEW} ORDER BY o.updated_at DESC LIMIT ? OFFSET ?`).all(limit, offset);
+      const total = projectId
+        ? store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_observations WHERE project_id = ?").get(projectId) as { count?: number }
+        : store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_observations").get() as { count?: number };
+      return reply.send({ observations: (rows as KnowledgeRow[]).map(safeObservation), page: { limit, offset, total: Number(total.count ?? 0) } });
     } catch (error) { return sendError(reply, error, 400); }
   });
 
@@ -787,11 +803,9 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       if (projectId) {
         where.push("(e.project_id = ? OR EXISTS (SELECT 1 FROM knowledge_evidence_acl a WHERE a.evidence_id=e.id AND a.project_id=?))");
         params.push(projectId, projectId);
-      } else if (!request.user.isAdmin) {
-        const owned = db.select({ id: projects.id }).from(projects).where(eq(projects.userId, request.user.id)).all().map((row) => String(row.id));
-        if (!owned.length) return reply.send({ evidence: [], page: { limit, offset, total: 0 } });
-        where.push(`(e.project_id IN (${owned.map(() => "?").join(",")}) OR EXISTS (SELECT 1 FROM knowledge_evidence_acl a WHERE a.evidence_id=e.id AND a.project_id IN (${owned.map(() => "?").join(",")})))`);
-        params.push(...owned, ...owned);
+      } else {
+        // Knowledge/Memory visibility is controlled by the authenticated user,
+        // not by the selected project.
       }
       if (parseBoolean(query.unlinked)) where.push("NOT EXISTS (SELECT 1 FROM knowledge_entity_evidence x WHERE x.evidence_id = e.id)");
       const sourceKind = queryValue(query, "sourceKind"); if (sourceKind) { where.push("e.source_kind = ?"); params.push(sourceKind); }
@@ -1545,8 +1559,8 @@ export async function knowledgeRoutes(app: FastifyInstance) {
 
   app.get("/api/knowledge/candidate-insights", { onRequest: [app.authenticate] }, async (request, reply) => {
     const query = request.query as Record<string, unknown>;
-    const body = z.object({ projectId: z.string().min(1), status: z.enum(["draft", "accepted", "edited", "rejected"]).optional(), limit: z.coerce.number().int().min(1).max(200).optional(), offset: z.coerce.number().int().min(0).optional() }).safeParse(query);
-    if (!body.success) return reply.status(400).send({ error: "projectId is required" });
+    const body = z.object({ projectId: z.string().min(1).optional(), status: z.enum(["draft", "accepted", "edited", "rejected"]).optional(), limit: z.coerce.number().int().min(1).max(200).optional(), offset: z.coerce.number().int().min(0).optional() }).safeParse(query);
+    if (!body.success) return reply.status(400).send({ error: "Invalid Candidate Insights query" });
     try { return reply.send({ insights: new CandidateInsightReviewService(getKnowledgeStore()).list({ actorId: request.user.id, ...body.data }) }); } catch (error) { return sendError(reply, error, 403); }
   });
   app.post("/api/knowledge/candidate-insights/compile", { onRequest: [app.authenticate] }, async (request, reply) => {
@@ -1583,8 +1597,8 @@ export async function knowledgeRoutes(app: FastifyInstance) {
 
   app.get("/api/knowledge/confirmed-memories", { onRequest: [app.authenticate] }, async (request, reply) => {
     const query = request.query as Record<string, unknown>;
-    const body = z.object({ projectId: z.string().min(1), type: z.enum(CONFIRMED_MEMORY_TYPES).optional(), environment: z.string().optional(), limit: z.coerce.number().int().min(1).max(100).optional() }).safeParse(query);
-    if (!body.success) return reply.status(400).send({ error: "projectId is required" });
+    const body = z.object({ projectId: z.string().min(1).optional(), type: z.enum(CONFIRMED_MEMORY_TYPES).optional(), environment: z.string().optional(), limit: z.coerce.number().int().min(1).max(100).optional() }).safeParse(query);
+    if (!body.success) return reply.status(400).send({ error: "Invalid confirmed Memory query" });
     try { return reply.send({ memories: new ConfirmedMemoryService(getKnowledgeStore()).list({ actorId: request.user.id, ...body.data }) }); } catch (error) { return sendError(reply, error, 403); }
   });
   app.get("/api/knowledge/confirmed-memories/:id", { onRequest: [app.authenticate] }, async (request, reply) => {

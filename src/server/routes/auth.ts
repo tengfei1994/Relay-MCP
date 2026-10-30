@@ -32,7 +32,7 @@ export async function authRoutes(app: FastifyInstance) {
     const result = db
       .insert(users)
       .values({ username, passwordHash, isAdmin })
-      .returning({ id: users.id, username: users.username, isAdmin: users.isAdmin })
+      .returning({ id: users.id, username: users.username, isAdmin: users.isAdmin, knowledgeEnabled: users.knowledgeEnabled })
       .get();
 
     const token = app.jwt.sign({ id: result.id, username: result.username, isAdmin: result.isAdmin ?? false });
@@ -60,7 +60,7 @@ export async function authRoutes(app: FastifyInstance) {
     const token = app.jwt.sign({ id: user.id, username: user.username, isAdmin: user.isAdmin ?? false });
     return reply.send({
       token,
-      user: { id: user.id, username: user.username, isAdmin: user.isAdmin ?? false },
+      user: { id: user.id, username: user.username, isAdmin: user.isAdmin ?? false, knowledgeEnabled: user.knowledgeEnabled ?? true },
     });
   });
 

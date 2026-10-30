@@ -20,7 +20,7 @@ export async function userRoutes(app: FastifyInstance) {
     { onRequest: [app.authenticate, requireAdmin] },
     async (_req, reply) => {
       const result = db
-        .select({ id: users.id, username: users.username, isAdmin: users.isAdmin, createdAt: users.createdAt })
+        .select({ id: users.id, username: users.username, isAdmin: users.isAdmin, knowledgeEnabled: users.knowledgeEnabled, createdAt: users.createdAt })
         .from(users)
         .all();
       return reply.send({ users: result });
@@ -36,6 +36,7 @@ export async function userRoutes(app: FastifyInstance) {
         username: z.string().min(2).max(50),
         password: z.string().min(6),
         isAdmin: z.boolean().default(false),
+        knowledgeEnabled: z.boolean().default(true),
       });
       const body = Schema.safeParse(req.body);
       if (!body.success) return reply.status(400).send({ error: "Invalid input" });
@@ -46,8 +47,8 @@ export async function userRoutes(app: FastifyInstance) {
       const passwordHash = await bcrypt.hash(body.data.password, 12);
       const result = db
         .insert(users)
-        .values({ username: body.data.username, passwordHash, isAdmin: body.data.isAdmin })
-        .returning({ id: users.id, username: users.username, isAdmin: users.isAdmin })
+        .values({ username: body.data.username, passwordHash, isAdmin: body.data.isAdmin, knowledgeEnabled: body.data.knowledgeEnabled })
+        .returning({ id: users.id, username: users.username, isAdmin: users.isAdmin, knowledgeEnabled: users.knowledgeEnabled })
         .get();
 
       return reply.status(201).send({ user: result });
@@ -99,6 +100,20 @@ export async function userRoutes(app: FastifyInstance) {
       db.update(users).set({ isAdmin: body.data.isAdmin }).where(eq(users.id, targetId)).run();
       return reply.send({ ok: true });
     }
+  );
+  // Knowledge and Memory access is a user-level permission, never a project grant.
+  app.patch(
+    "/api/users/:id/knowledge",
+    { onRequest: [app.authenticate, requireAdmin] },
+    async (req, reply) => {
+      const targetId = Number((req.params as { id: string }).id);
+      if (req.user.id === targetId) return reply.status(400).send({ error: "Cannot disable your own Knowledge access" });
+      const body = z.object({ knowledgeEnabled: z.boolean() }).safeParse(req.body);
+      if (!body.success) return reply.status(400).send({ error: "Invalid input" });
+      const changed = db.update(users).set({ knowledgeEnabled: body.data.knowledgeEnabled }).where(eq(users.id, targetId)).run();
+      if (!changed.changes) return reply.status(404).send({ error: "User not found" });
+      return reply.send({ ok: true, knowledgeEnabled: body.data.knowledgeEnabled });
+    },
   );
 
   // Delete user (admin only, cannot delete yourself)

@@ -7,8 +7,7 @@ import { useAuth } from "../App";
 import { Badge, cardClass, formatDate, inputClass, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
 import { ConfirmDialog, PageHeader } from "../components/ui";
 import { ProviderSetupForm, type ProviderSetupDefaults } from "../components/ProviderSetupForm";
-import { buildKnowledgeScope, knowledgeItemScope, withKnowledgeScope, type KnowledgeScope } from "../knowledge/integrated-search";
-import { useProjectScope } from "../context/ProjectScope";
+import { knowledgeItemScope, withKnowledgeScope, type KnowledgeScope } from "../knowledge/integrated-search";
 const btn = "ui-button ui-button-primary ui-button-sm";
 const btnGhost = "ui-button ui-button-ghost ui-button-sm";
 const btnDanger = "ui-button ui-button-danger ui-button-sm";
@@ -226,7 +225,6 @@ const INSIGHT_KINDS = ["fact", "decision", "case", "pattern"] as const;
 const PAGE_LIMIT = 20;
 
 function CandidatesPane({ isAdmin }: { isAdmin: boolean }) {
-  const { projectId } = useProjectScope();
   const [status, setStatus] = useState("");
   const [offset, setOffset] = useState(0);
   const [insights, setInsights] = useState<JsonRecord[]>();
@@ -237,13 +235,12 @@ function CandidatesPane({ isAdmin }: { isAdmin: boolean }) {
   const [promoteTarget, setPromoteTarget] = useState<"fact" | "decision" | "case" | "pattern">("fact");
   const [promoteTitle, setPromoteTitle] = useState("");
   const load = (nextOffset = offset) => {
-    if (projectId === undefined) return;
     setError("");
-    api.knowledgeCandidateInsights(projectId, { status: status || undefined, limit: PAGE_LIMIT, offset: nextOffset })
+    api.knowledgeCandidateInsights(undefined, { status: status || undefined, limit: PAGE_LIMIT, offset: nextOffset })
       .then((result) => setInsights(records(result.insights)))
       .catch((err) => { setInsights([]); setError(errText(err, "Unable to load Candidate Insights")); });
   };
-  useEffect(() => { setOffset(0); setSelected(undefined); load(0); }, [projectId, status]);
+  useEffect(() => { setOffset(0); setSelected(undefined); load(0); }, [status]);
   const openDetail = async (id: string) => {
     setError("");
     try {
@@ -330,10 +327,7 @@ function CandidatesPane({ isAdmin }: { isAdmin: boolean }) {
 const WIKI_STATUSES = ["draft", "published", "deprecated"] as const;
 
 function useKnowledgeScope(): KnowledgeScope {
-  const { projectId } = useProjectScope();
-  const [params] = useSearchParams();
-  const allProjects = params.get("allProjects") === "true";
-  return buildKnowledgeScope({ projectId: allProjects ? undefined : projectId, environment: params.get("environment") ?? "" });
+  return {};
 }
 
 function slugHeading(value: string) {

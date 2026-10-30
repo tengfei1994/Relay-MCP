@@ -8,6 +8,7 @@ Relay runs the pinned WeKnora Lite engine as a private child service in the exis
 - The private engine remains a runtime index/search service. `knowledge_weknora_documents` and `knowledge_migrations` are retained compatibility/audit records, not separate user-facing Product objects. The browser no longer exposes a manual Product migration workflow.
 - HTML/CHM normalization, source manifests, local Product bodies and Wiki generation inputs remain in Relay. Source/code baselines stay Relay-owned.
 - Model credentials remain encrypted by Relay's existing Provider Registry. The engine uses purpose-bound model aliases and an internal gateway token, not the Bailian/OpenAI token. Live registry resolution makes token rotation effective on subsequent calls.
+- Knowledge/Memory access is controlled by the application user's `knowledge_enabled` flag. It is not granted or removed per Project; Project and Environment fields remain provenance metadata only.
 - The engine binds to `127.0.0.1`. Its runtime directories are mode 0700 and configuration/key files mode 0600. Never publish `engine.json`, `control.json`, the provider encryption key, `.env`, backups or test auth files.
 
 ## Build and normal deployment

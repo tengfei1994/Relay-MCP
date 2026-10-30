@@ -126,14 +126,15 @@ export class ConfirmedMemoryService {
     return confirmedMemoryFromRow(row);
   }
 
-  list(input: { actorId: number; projectId: string; type?: ConfirmedMemoryType; environment?: string; limit?: number }): ConfirmedMemory[] {
-    if (!this.store.canRead(input.actorId, input.projectId)) throw new Error("Confirmed Memory access denied for project");
-    const conditions = ["(project_id = ? OR json_extract(scope_json, '$.visibility') IN ('global','organization'))", "status = 'confirmed'"]; const params: unknown[] = [input.projectId];
+  list(input: { actorId: number; projectId?: string; type?: ConfirmedMemoryType; environment?: string; limit?: number }): ConfirmedMemory[] {
+    if (input.projectId && !this.store.canRead(input.actorId, input.projectId)) throw new Error("Confirmed Memory access denied for project");
+    const conditions = ["status = 'confirmed'"], params: unknown[] = [];
+    if (input.projectId) { conditions.unshift("(project_id = ? OR json_extract(scope_json, '$.visibility') IN ('global','organization'))"); params.push(input.projectId); }
     if (input.type) { conditions.push("memory_type = ?"); params.push(input.type); }
     if (input.environment) { conditions.push("(environment IS NULL OR environment = ?)"); params.push(input.environment); }
     const rows = this.store.db.prepare(`SELECT * FROM knowledge_confirmed_memories WHERE ${conditions.join(" AND ")} ORDER BY confirmed_at DESC LIMIT ?`).all(...params, Math.max(1, Math.min(input.limit ?? 50, 100))) as Array<Record<string, unknown>>;
     return rows.map(confirmedMemoryFromRow).filter((memory) => {
-      if (memory.scope.projectId === input.projectId) return true;
+      if (!input.projectId || memory.scope.projectId === input.projectId) return true;
       return memory.evidenceRefs.every((evidenceId) => Boolean(this.store.db.prepare("SELECT 1 FROM knowledge_evidence_acl WHERE evidence_id = ? AND project_id = ?").get(evidenceId, input.projectId)));
     });
   }

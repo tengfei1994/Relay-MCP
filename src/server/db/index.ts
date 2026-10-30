@@ -23,6 +23,7 @@ export function runMigrations() {
       username TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       is_admin INTEGER DEFAULT 0,
+      knowledge_enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT DEFAULT (datetime('now'))
     );
 
@@ -165,6 +166,7 @@ export function runMigrations() {
 
   // Incremental migrations for existing databases
   try { sqlite.exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0`); } catch {}
+  try { sqlite.exec(`ALTER TABLE users ADD COLUMN knowledge_enabled INTEGER NOT NULL DEFAULT 1`); } catch {}
   try { sqlite.exec(`ALTER TABLE servers ADD COLUMN os TEXT DEFAULT 'linux'`); } catch {}
   try { sqlite.exec(`ALTER TABLE servers ADD COLUMN connection_mode TEXT DEFAULT 'ssh'`); } catch {}
   try { sqlite.exec(`ALTER TABLE servers ADD COLUMN agent_id TEXT`); } catch {}

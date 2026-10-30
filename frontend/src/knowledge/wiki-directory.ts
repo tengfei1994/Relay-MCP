@@ -67,6 +67,29 @@ function countNode(node: WikiDirectoryNode): number {
   return node.count;
 }
 
+function collectPages(node: WikiDirectoryNode): WikiDirectoryPage[] {
+  return [...node.pages, ...node.children.flatMap(collectPages)];
+}
+
+/**
+ * Graph paths are useful evidence, but a heading/concept that occurs once is
+ * not a useful navigation category. Keep the stable solution/module levels and
+ * promote singleton graph branches to their nearest shared parent.
+ */
+function summarizeSingletonBranches(node: WikiDirectoryNode, depth: number): void {
+  const keptChildren: WikiDirectoryNode[] = [];
+  for (const child of node.children) {
+    if (depth >= 1 && child.count === 1) {
+      node.pages.push(...collectPages(child));
+      continue;
+    }
+    summarizeSingletonBranches(child, depth + 1);
+    keptChildren.push(child);
+  }
+  node.children = keptChildren;
+  node.pages.sort((left, right) => compareLabels(pageTitle(left), pageTitle(right)));
+}
+
 /** Build a stable, expandable tree from directory_path and page metadata. */
 export function buildWikiDirectoryTree(items: WikiDirectoryPage[]): WikiDirectoryTree {
   const roots: WikiDirectoryNode[] = [];
@@ -84,7 +107,7 @@ export function buildWikiDirectoryTree(items: WikiDirectoryPage[]): WikiDirector
     const traversed: string[] = [];
     for (const label of path) {
       traversed.push(label);
-      current = siblings.find((candidate) => candidate.label === label);
+      current = siblings.find((candidate) => normalized(candidate.label) === normalized(label));
       if (!current) {
         current = { key: traversed.join("/"), label, path: [...traversed], children: [], pages: [], count: 0 };
         siblings.push(current);
@@ -97,6 +120,7 @@ export function buildWikiDirectoryTree(items: WikiDirectoryPage[]): WikiDirector
   roots.sort((left, right) => compareLabels(left.label, right.label));
   roots.forEach(sortNode);
   roots.forEach(countNode);
+  roots.forEach((root) => summarizeSingletonBranches(root, 0));
   rootPages.sort((left, right) => compareLabels(pageTitle(left), pageTitle(right)));
   return { nodes: roots, pages: rootPages };
 }

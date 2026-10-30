@@ -1,0 +1,339 @@
+.wiki-workspace {
+  display: grid;
+  grid-template-columns: minmax(270px, 320px) minmax(0, 1fr);
+  min-height: 680px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(4, 14, 18, .58);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .22);
+}
+
+.wiki-directory-panel {
+  display: flex;
+  min-width: 0;
+  min-height: 680px;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  background: rgba(255, 255, 255, .025);
+}
+
+.wiki-directory-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 22px 18px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.wiki-directory-kicker,
+.wiki-reader-kicker {
+  margin: 0;
+  color: rgb(var(--mint));
+  font: 500 11px/1.4 var(--font-mono);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.wiki-directory-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+  color: rgb(var(--fg));
+  font: 600 20px/1.2 var(--font-display);
+  letter-spacing: -.02em;
+}
+
+.wiki-directory-summary {
+  margin-top: 6px;
+  color: rgb(var(--muted));
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.wiki-directory-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.wiki-directory-controls {
+  display: grid;
+  gap: 8px;
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.wiki-directory-search {
+  width: 100%;
+}
+
+.wiki-directory-filter-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.wiki-directory-filter-row select {
+  min-width: 0;
+  width: 100%;
+}
+
+.wiki-directory-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: rgb(var(--muted));
+  font-size: 11px;
+}
+
+.wiki-directory-status strong {
+  color: rgb(var(--fg));
+  font-weight: 500;
+}
+
+.wiki-directory-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 10px;
+}
+
+.wiki-directory-tree {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 11px;
+  background: rgba(0, 0, 0, .12);
+}
+
+.wiki-tree-folder,
+.wiki-tree-page {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding-top: 7px;
+  padding-bottom: 7px;
+  color: rgb(var(--fg));
+  font-size: 13px;
+  line-height: 1.35;
+  text-align: left;
+  transition: background-color .16s, color .16s;
+}
+
+.wiki-tree-folder:hover,
+.wiki-tree-page:hover {
+  background: rgba(255, 255, 255, .055);
+}
+
+.wiki-tree-folder {
+  color: rgb(var(--fg));
+  font-weight: 500;
+}
+
+.wiki-tree-page {
+  color: rgb(var(--muted));
+}
+
+.wiki-tree-page-selected {
+  color: rgb(var(--mint));
+  background: rgba(110, 231, 200, .11);
+  box-shadow: inset 2px 0 0 rgb(var(--mint));
+}
+
+.wiki-tree-page-selected:hover {
+  background: rgba(110, 231, 200, .15);
+}
+
+.wiki-tree-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wiki-tree-count,
+.wiki-tree-status {
+  flex-shrink: 0;
+  color: rgb(var(--muted));
+  font: 400 10px/1 var(--font-mono);
+}
+
+.wiki-tree-status {
+  padding: 3px 5px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 5px;
+  text-transform: lowercase;
+}
+
+.wiki-directory-empty {
+  padding: 28px 14px;
+  color: rgb(var(--muted));
+  font-size: 13px;
+  text-align: center;
+}
+
+.wiki-directory-progress,
+.wiki-directory-create {
+  margin: 0 10px 10px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, .15);
+}
+
+.wiki-directory-progress {
+  color: rgb(var(--muted));
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.wiki-directory-create {
+  display: grid;
+  gap: 9px;
+}
+
+.wiki-reading-panel {
+  min-width: 0;
+  background: rgba(255, 255, 255, .012);
+}
+
+.wiki-reader-empty {
+  display: grid;
+  min-height: 680px;
+  place-items: center;
+  padding: 48px;
+  color: rgb(var(--muted));
+  text-align: center;
+}
+
+.wiki-reader-empty-inner {
+  max-width: 440px;
+}
+
+.wiki-reader-empty-icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 16px;
+  place-items: center;
+  border: 1px solid rgba(110, 231, 200, .25);
+  border-radius: 14px;
+  color: rgb(var(--mint));
+  background: rgba(110, 231, 200, .08);
+}
+
+.wiki-reader-empty h2 {
+  color: rgb(var(--fg));
+  font: 600 22px/1.2 var(--font-display);
+  letter-spacing: -.02em;
+}
+
+.wiki-reader-empty p {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.wiki-detail-card {
+  min-height: 680px;
+  padding: 28px 34px 40px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.wiki-detail-path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin: 12px 0 2px;
+  color: rgb(var(--muted));
+  font-size: 11px;
+}
+
+.wiki-detail-path svg {
+  color: rgb(var(--mint));
+}
+
+.wiki-detail-path-segment {
+  padding: 3px 7px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, .025);
+}
+
+.wiki-detail-path-separator {
+  color: rgb(var(--muted));
+  opacity: .7;
+}
+
+.wiki-mobile-back {
+  display: none;
+}
+
+@media (max-width: 960px) {
+  .wiki-workspace {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+
+  .wiki-directory-panel {
+    min-height: 0;
+    max-height: none;
+    border-right: 0;
+  }
+
+  .wiki-directory-scroll {
+    max-height: 58vh;
+  }
+
+  .wiki-reading-panel {
+    border-top: 1px solid var(--line);
+  }
+
+  .wiki-detail-card,
+  .wiki-reader-empty {
+    min-height: 0;
+  }
+
+  .wiki-detail-card {
+    padding: 24px 20px 34px;
+  }
+
+  .wiki-mobile-back {
+    display: inline-flex;
+    margin: 14px 20px 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .wiki-directory-header {
+    padding: 18px 14px 14px;
+  }
+
+  .wiki-directory-controls {
+    padding-inline: 10px;
+  }
+
+  .wiki-directory-filter-row {
+    grid-template-columns: 1fr;
+  }
+
+  .wiki-reader-empty {
+    padding: 36px 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wiki-tree-folder,
+  .wiki-tree-page {
+    transition: none;
+  }
+}

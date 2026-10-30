@@ -1,14 +1,15 @@
 import { LazyKnowledgeMarkup as KnowledgeMarkup } from "../components/LazyKnowledgeMarkup";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { BookOpen, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, FileText, Folder, GitCompare, History, KeyRound, RefreshCw, ServerCog, ShieldAlert, Workflow } from "lucide-react";
+import { BookOpen, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, FileText, Folder, GitCompare, History, KeyRound, Network, RefreshCw, ServerCog, ShieldAlert, Workflow } from "lucide-react";
 import { api } from "../api/client";
 import { useAuth } from "../App";
 import { Badge, cardClass, formatDate, inputClass, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
 import { ConfirmDialog, Drawer, PageHeader } from "../components/ui";
 import { ProviderSetupForm, type ProviderSetupDefaults } from "../components/ProviderSetupForm";
 import { knowledgeItemScope, withKnowledgeScope, type KnowledgeScope } from "../knowledge/integrated-search";
-import { buildWikiDirectoryTree, type WikiDirectoryNode } from "../knowledge/wiki-directory";
+import { buildWikiDirectoryTree, type WikiDirectoryNode, type WikiDirectoryPage } from "../knowledge/wiki-directory";
+import "./wiki.css";
 const btn = "ui-button ui-button-primary ui-button-sm";
 const btnGhost = "ui-button ui-button-ghost ui-button-sm";
 const btnDanger = "ui-button ui-button-danger ui-button-sm";
@@ -222,7 +223,7 @@ function ProvidersPane({ isAdmin }: { isAdmin: boolean }) {
             ? () => api.knowledgeManagedProviderDelete(action.id)
             : () => api.knowledgeManagedProviderDisable(action.id);
         const message = action.kind === "clear" ? "Token cleared; provider disabled." : action.kind === "delete" ? "Provider deleted." : "Provider disabled.";
-        await run(task, message);
+        await run(async () => { await task(); }, message);
       }}
     />
   </div>;
@@ -353,9 +354,8 @@ function wikiSections(page: JsonRecord) {
   const sections = [...records(page.sections), ...records(page.differences).map((difference) => ({ ...difference, kind: "difference" }))];
   return sections.map((section) => ({
     ...section,
-    title: text(section.title, text(section.key, "Section")),
+    title: text(section.title, text(asRecord(section).key, "Section")),
     kind: text(section.kind, "common") as "common" | "version" | "difference",
-    body: text(section.body, text(section.summary)),
     productVersion: text(section.productVersion),
     citations: records(section.citations),
   }));
@@ -375,8 +375,17 @@ function WikiSectionSources({ citations, scope }: { citations: JsonRecord[]; sco
   </ul>;
 }
 
-function wikiPageLabel(page: JsonRecord): string {
+function wikiPageLabel(page: WikiDirectoryPage): string {
   return text(page.title, text(page.pageKey, text(page.id, "Untitled topic")));
+}
+
+function wikiDirectoryLabels(page: WikiDirectoryPage): string[] {
+  const raw = text(page.directoryPath);
+  const labels = raw.split(/[\\/]+/).map((part) => part.trim()).filter(Boolean);
+  if (labels.length > 0) {
+    return labels[labels.length - 1].toLocaleLowerCase() === wikiPageLabel(page).toLocaleLowerCase() ? labels.slice(0, -1) : labels;
+  }
+  return [text(page.solution), text(page.module)].filter((label) => label && label.toLocaleLowerCase() !== "unassigned");
 }
 
 function mergeWikiRows(rows: JsonRecord[]): JsonRecord[] {
@@ -399,41 +408,56 @@ function mergeWikiRows(rows: JsonRecord[]): JsonRecord[] {
   return [...grouped.values()];
 }
 
-function WikiDirectoryNodeView({ node, depth, collapsed, onToggle, onOpen }: { node: WikiDirectoryNode; depth: number; collapsed: Set<string>; onToggle: (key: string) => void; onOpen: (page: JsonRecord) => void }) {
+function wikiPageId(page: WikiDirectoryPage): string {
+  return text(page.id, text(page.pageKey, wikiPageLabel(page)));
+}
+
+function isWikiPageSelected(page: WikiDirectoryPage, selectedId?: string): boolean {
+  return Boolean(selectedId) && (wikiPageId(page) === selectedId || text(page.pageKey) === selectedId);
+}
+
+function WikiDirectoryNodeView({ node, depth, collapsed, selectedId, onToggle, onOpen }: { node: WikiDirectoryNode; depth: number; collapsed: Set<string>; selectedId?: string; onToggle: (key: string) => void; onOpen: (page: WikiDirectoryPage) => void }) {
   const isCollapsed = collapsed.has(node.key);
   return <div>
-    <button type="button" aria-expanded={!isCollapsed} onClick={() => onToggle(node.key)} className="flex w-full items-center gap-2 rounded-md py-2 text-left text-sm text-fg hover:bg-white/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint" style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: 12 }}>
+    <button type="button" aria-expanded={!isCollapsed} onClick={() => onToggle(node.key)} className="wiki-tree-folder focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint" style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: 12 }}>
       {isCollapsed ? <ChevronRight size={15} className="shrink-0 text-muted" /> : <ChevronDown size={15} className="shrink-0 text-muted" />}
       <Folder size={15} className="shrink-0 text-iris" />
-      <span className="min-w-0 flex-1 truncate">{node.label}</span>
-      <span className="font-mono text-[11px] text-muted">{node.count}</span>
+      <span className="wiki-tree-label">{node.label}</span>
+      <span className="wiki-tree-count">{node.count}</span>
     </button>
     {!isCollapsed && <div>
-      {node.children.map((child) => <WikiDirectoryNodeView key={child.key} node={child} depth={depth + 1} collapsed={collapsed} onToggle={onToggle} onOpen={onOpen} />)}
-      {node.pages.map((page) => <button type="button" key={text(page.id, text(page.pageKey, wikiPageLabel(page)))} onClick={() => onOpen(page)} className="flex w-full items-center gap-2 rounded-md py-2 text-left text-sm text-subtle hover:bg-white/[0.04] hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint" style={{ paddingLeft: `${28 + (depth + 1) * 16}px`, paddingRight: 12 }}>
-        <FileText size={14} className="shrink-0 text-mint/80" />
-        <span className="min-w-0 flex-1 truncate">{wikiPageLabel(page)}</span>
-        <span className="shrink-0 text-[11px] text-muted">{text(page.status, "draft")}</span>
-      </button>)}
+      {node.children.map((child) => <WikiDirectoryNodeView key={child.key} node={child} depth={depth + 1} collapsed={collapsed} selectedId={selectedId} onToggle={onToggle} onOpen={onOpen} />)}
+      {node.pages.map((page) => {
+        const selected = isWikiPageSelected(page, selectedId);
+        return <button type="button" key={wikiPageId(page)} aria-current={selected ? "page" : undefined} onClick={() => onOpen(page)} className={`wiki-tree-page focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint ${selected ? "wiki-tree-page-selected" : ""}`} style={{ paddingLeft: `${28 + (depth + 1) * 16}px`, paddingRight: 12 }}>
+          <FileText size={14} className="shrink-0 text-mint/80" />
+          <span className="wiki-tree-label">{wikiPageLabel(page)}</span>
+          <span className="wiki-tree-status">{text(page.status, "draft")}</span>
+        </button>;
+      })}
     </div>}
   </div>;
 }
 
-function WikiDirectoryTreeView({ items, collapsed, onToggle, onOpen }: { items: JsonRecord[]; collapsed: Set<string>; onToggle: (key: string) => void; onOpen: (page: JsonRecord) => void }) {
+function WikiDirectoryTreeView({ items, collapsed, selectedId, onToggle, onOpen }: { items: JsonRecord[]; collapsed: Set<string>; selectedId?: string; onToggle: (key: string) => void; onOpen: (page: WikiDirectoryPage) => void }) {
   const tree = buildWikiDirectoryTree(items);
-  return <div className="divide-y divide-white/[0.06] rounded-field border border-white/10 bg-black/10">
-    {tree.nodes.map((node) => <WikiDirectoryNodeView key={node.key} node={node} depth={0} collapsed={collapsed} onToggle={onToggle} onOpen={onOpen} />)}
-    {tree.pages.map((page) => <button type="button" key={text(page.id, text(page.pageKey, wikiPageLabel(page)))} onClick={() => onOpen(page)} className="flex w-full items-center gap-2 rounded-md py-2 text-left text-sm text-subtle hover:bg-white/[0.04] hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint" style={{ paddingLeft: 12, paddingRight: 12 }}>
-      <FileText size={14} className="shrink-0 text-mint/80" />
-      <span className="min-w-0 flex-1 truncate">{wikiPageLabel(page)}</span>
-      <span className="shrink-0 text-[11px] text-muted">{text(page.status, "draft")}</span>
-    </button>)}
-    {tree.nodes.length === 0 && tree.pages.length === 0 && <p className="p-4 text-sm text-muted">No directory entries match these filters.</p>}
+  return <div className="wiki-directory-tree">
+    {tree.nodes.map((node) => <WikiDirectoryNodeView key={node.key} node={node} depth={0} collapsed={collapsed} selectedId={selectedId} onToggle={onToggle} onOpen={onOpen} />)}
+    {tree.pages.map((page) => {
+      const selected = isWikiPageSelected(page, selectedId);
+      return <button type="button" key={wikiPageId(page)} aria-current={selected ? "page" : undefined} onClick={() => onOpen(page)} className={`wiki-tree-page focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint ${selected ? "wiki-tree-page-selected" : ""}`} style={{ paddingLeft: 12, paddingRight: 12 }}>
+        <FileText size={14} className="shrink-0 text-mint/80" />
+        <span className="wiki-tree-label">{wikiPageLabel(page)}</span>
+        <span className="wiki-tree-status">{text(page.status, "draft")}</span>
+      </button>;
+    })}
+    {tree.nodes.length === 0 && tree.pages.length === 0 && <p className="wiki-directory-empty">No directory entries match these filters.</p>}
   </div>;
 }
 
 function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; scope: KnowledgeScope; isAdmin: boolean; onRefresh: (updated: JsonRecord) => Promise<void> }) {
   const sections = wikiSections(page);
+  const directoryLabels = wikiDirectoryLabels(page);
   const versions = [...new Set([...strings(page.supportedVersions), ...sections.filter((section) => section.kind === "version" && section.productVersion).map((section) => section.productVersion)])];
   const [version, setVersion] = useState("");
   const [view, setView] = useState<"all" | "common" | "differences">("all");
@@ -498,7 +522,7 @@ function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; sco
   const headings = visible.length > 0 ? visible.flatMap((section) => markdownHeadings(section.body)) : markdownHeadings(text(page.body));
   const revisionRows = [...revisions];
   if (currentRevision > 0 && !revisionRows.some((revision) => Number(revision.revision) === currentRevision)) {
-    revisionRows.push({ id: `current-${text(page.id)}`, revision: currentRevision, title: page.title, body: page.body, changeReason: "Current page", createdAt: page.updatedAt });
+    revisionRows.push(asRecord({ id: `current-${text(page.id)}`, revision: currentRevision, title: page.title, body: page.body, changeReason: "Current page", createdAt: page.updatedAt }));
   }
   revisionRows.sort((left, right) => Number(right.revision) - Number(left.revision));
   const selectedRevisionRow = revisionRows.find((revision) => Number(revision.revision) === selectedRevision);
@@ -508,12 +532,16 @@ function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; sco
     setRevisionDiffMode("incremental");
     setHistoryOpen(true);
   };
-  return <section className={`${cardClass} overflow-hidden`} aria-labelledby="wiki-detail-title">
+  return <section className="wiki-detail-card overflow-hidden" aria-labelledby="wiki-detail-title">
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div className="min-w-0">
-        <p className="text-xs font-medium text-iris">{text(page.solution, "Knowledge")} / {text(page.module, "General")}</p>
+        <p className="wiki-reader-kicker">{text(page.solution, "Knowledge")} / {text(page.module, "General")}</p>
         <h2 id="wiki-detail-title" className="mt-1 text-xl font-semibold text-fg">{text(page.title, text(page.pageKey, "Wiki page"))}</h2>
         <p className="mt-1 text-xs text-muted">{text(page.pageKey)} · page revision r{currentRevision || "—"} · {text(page.generationStatus, text(page.status, "unknown"))}</p>
+        {directoryLabels.length > 0 && <div className="wiki-detail-path" aria-label="Knowledge graph path">
+          <Network size={13} aria-hidden="true" />
+          {directoryLabels.map((label, index) => <span key={`${label}-${index}`} className="contents"><span className="wiki-detail-path-segment">{label}</span>{index < directoryLabels.length - 1 && <span className="wiki-detail-path-separator" aria-hidden="true">/</span>}</span>)}
+        </div>}
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <button className={btnGhost} onClick={openHistory}><History size={13} /> Page history</button>
@@ -603,13 +631,15 @@ function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; sco
 function directoryItems(value: unknown): JsonRecord[] {
   if (Array.isArray(value)) return value.flatMap(directoryItems);
   const source = asRecord(value);
-  const direct = records(source.items ?? source.pages ?? source.nodes ?? source.directory ?? source.groups);
-  if (direct.length) return direct.flatMap((item) => {
-    const children = records(item.children ?? item.modules ?? item.topics ?? item.items);
-    if (children.length) return children.flatMap(directoryItems);
-    const page = asRecord(item.page);
-    return Object.keys(page).length ? [page] : [item];
-  });
+  const collection = source.items ?? source.pages ?? source.nodes ?? source.directory ?? source.groups;
+  if (Array.isArray(collection)) {
+    return collection.flatMap((item) => {
+      const children = records(item.children ?? item.modules ?? item.topics ?? item.items);
+      if (children.length) return children.flatMap(directoryItems);
+      const page = asRecord(item.page);
+      return Object.keys(page).length ? [page] : [item];
+    });
+  }
   return Object.keys(source).length > 0 ? [source] : [];
 }
 
@@ -674,6 +704,7 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
     let cancelled = false;
     if (!selectedPage && !selectedKey) { setPage(undefined); return; }
     setError("");
+    setPage(undefined);
     (async () => {
       try {
         const data = selectedKey ? await api.knowledgeWikiResolve(selectedKey, scope) : await api.knowledgeWikiPage(selectedPage!, scope);
@@ -689,7 +720,7 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
     if (!showCreate) return;
     api.productDocumentsList({ ...scope, status: "published", limit: 100, offset: 0 }).then((data) => setSources(records(data.documents))).catch((err) => setError(errText(err, "Unable to load published sources")));
   }, [showCreate, scope.projectId, scope.environment]);
-  const openPage = (item: JsonRecord) => setParams((current) => { const next = new URLSearchParams(current); const id = text(item.id); const key = text(item.pageKey); if (id) { next.set("wikiPage", id); next.delete("wikiKey"); } else if (key) { next.set("wikiKey", key); next.delete("wikiPage"); } return next; });
+  const openPage = (item: WikiDirectoryPage) => setParams((current) => { const next = new URLSearchParams(current); const id = text(item.id); const key = text(item.pageKey); if (id) { next.set("wikiPage", id); next.delete("wikiKey"); } else if (key) { next.set("wikiKey", key); next.delete("wikiPage"); } return next; });
   const closePage = () => setParams((current) => { const next = new URLSearchParams(current); next.delete("wikiPage"); next.delete("wikiKey"); return next; });
   const startGeneration = async () => {
     setError("");
@@ -711,23 +742,33 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   const generationStates = records(generation?.states);
   const activeGeneration = generationStates.filter((state) => ["queued", "running"].includes(text(state.status))).length;
   const failedGeneration = generationStates.filter((state) => text(state.status) === "failed").length;
-  return <div className="space-y-4">
-    <section className={cardClass}>
-      <div className="flex flex-wrap items-end gap-3">
-        <div><h2 className="text-lg font-semibold text-fg">Wiki directory</h2><p className="mt-1 text-xs text-muted">Generated topic paths stay navigable as folders; open a page to inspect product versions and history.</p></div>
-        <input aria-label="Search Wiki" className={`${inputClass} ml-auto w-64`} placeholder="Search topics…" value={filters.search} onChange={(event) => setFilters({ ...filters, search: event.target.value })} />
-        <select aria-label="Filter by status" className={inputClass} value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}><option value="">All statuses</option>{WIKI_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}</select>
-        <select aria-label="Filter by version" className={inputClass} value={filters.version} onChange={(event) => setFilters({ ...filters, version: event.target.value })}><option value="">All versions</option>{[...new Set((result ?? []).flatMap((item) => [...strings(item.supportedVersions), text(item.productVersion)].filter(Boolean)))].map((version) => <option key={version} value={version}>{version}</option>)}</select>
-        <button className={btnGhost} disabled={directoryBusy} onClick={() => void loadDirectoryPage(false)}><RefreshCw size={13} className={directoryBusy ? "animate-spin" : ""} /> Refresh</button>
-        {isAdmin && <button className={btnGhost} onClick={() => void startGeneration()}><Workflow size={13} /> Generate all</button>}
-        {isAdmin && <button className={btn} onClick={() => setShowCreate(!showCreate)}>New page</button>}
+  return <div className="wiki-workspace">
+    <section className="wiki-directory-panel" aria-label="Wiki directory">
+      <header className="wiki-directory-header">
+        <div>
+          <p className="wiki-directory-kicker">Knowledge base</p>
+          <h2 className="wiki-directory-title"><BookOpen size={18} aria-hidden="true" /> Wiki</h2>
+          <p className="wiki-directory-summary"><strong>{result?.length ?? 0}</strong> topic groups{directoryTotal > (result?.length ?? 0) ? ` · ${directoryTotal} directory entries` : ""} · graph paths summarized into shared folders</p>
+        </div>
+        <div className="wiki-directory-actions">
+          <button aria-label="Refresh Wiki directory" title="Refresh Wiki directory" className={btnGhost} disabled={directoryBusy} onClick={() => void loadDirectoryPage(false)}><RefreshCw size={13} className={directoryBusy ? "animate-spin" : ""} /></button>
+          {isAdmin && <button aria-label="Generate all Wiki topics" title="Generate all Wiki topics" className={btnGhost} onClick={() => void startGeneration()}><Workflow size={13} /></button>}
+          {isAdmin && <button className={btn} onClick={() => setShowCreate(!showCreate)}>New page</button>}
+        </div>
+      </header>
+      <div className="wiki-directory-controls">
+        <input aria-label="Search Wiki" className={`${inputClass} wiki-directory-search`} placeholder="Search Wiki pages…" value={filters.search} onChange={(event) => setFilters({ ...filters, search: event.target.value })} />
+        <div className="wiki-directory-filter-row">
+          <select aria-label="Filter by status" className={inputClass} value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}><option value="">All statuses</option>{WIKI_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}</select>
+          <select aria-label="Filter by version" className={inputClass} value={filters.version} onChange={(event) => setFilters({ ...filters, version: event.target.value })}><option value="">All versions</option>{[...new Set((result ?? []).flatMap((item) => [...strings(item.supportedVersions), text(item.productVersion)].filter(Boolean)))].map((version) => <option key={version} value={version}>{version}</option>)}</select>
+        </div>
+        <div className="wiki-directory-status"><FileText size={12} aria-hidden="true" /><span><strong>{result?.length ?? 0}</strong> visible topics{directoryOffset < directoryTotal ? ` · ${Math.max(0, directoryTotal - directoryOffset)} more available` : ""}</span></div>
       </div>
-      {generation && (activeGeneration > 0 || failedGeneration > 0) && <div className="mt-3 flex flex-wrap items-center gap-2 rounded-field border border-white/10 bg-black/20 px-3 py-2 text-xs text-subtle">
-        <Workflow size={13} className={activeGeneration > 0 ? "text-iris" : "text-coral"} />
-        {activeGeneration > 0 ? `${activeGeneration} Wiki topic generation job${activeGeneration === 1 ? "" : "s"} in progress.` : `${failedGeneration} Wiki topic generation${failedGeneration === 1 ? "" : "s"} failed.`}
-        <button className={`${btnGhost} ml-auto`} disabled={directoryBusy} onClick={() => void loadDirectoryPage(false)}>Refresh progress</button>
+      {generation && (activeGeneration > 0 || failedGeneration > 0) && <div className="wiki-directory-progress">
+        <div className="flex items-center gap-2"><Workflow size={13} className={activeGeneration > 0 ? "text-iris" : "text-coral"} /><span>{activeGeneration > 0 ? `${activeGeneration} topic generation job${activeGeneration === 1 ? "" : "s"} in progress.` : `${failedGeneration} topic generation${failedGeneration === 1 ? "" : "s"} failed.`}</span></div>
+        <button className={`${btnGhost} mt-2`} disabled={directoryBusy} onClick={() => void loadDirectoryPage(false)}>Refresh progress</button>
       </div>}
-      {showCreate && isAdmin && <div className="mt-4 space-y-3 border-t border-white/10 pt-4">
+      {showCreate && isAdmin && <div className="wiki-directory-create">
         <div className="grid gap-2 sm:grid-cols-3"><input className={inputClass} placeholder="pageKey (stable identity)" value={create.pageKey} onChange={(event) => setCreate({ ...create, pageKey: event.target.value })} /><input className={inputClass} placeholder="Title" value={create.title} onChange={(event) => setCreate({ ...create, title: event.target.value })} /><input className={inputClass} placeholder="Product version (optional)" value={create.productVersion} onChange={(event) => setCreate({ ...create, productVersion: event.target.value })} /></div>
         <label className="block space-y-1 text-xs text-subtle"><span>Published source documents</span><select multiple size={4} className={`${inputClass} h-auto w-full`} value={sourceRefs} onChange={(event) => setSourceRefs(Array.from(event.target.selectedOptions, (option) => option.value))}>{sources.map((source) => <option key={source.id} value={text(source.id)}>{text(source.title)}{source.productVersion ? ` — v${source.productVersion}` : ""}</option>)}</select></label>
         <textarea className="min-h-24 w-full rounded-md border border-white/10 bg-[var(--field)] px-3 py-2 text-sm text-fg outline-none focus:border-mint" placeholder="Page body" value={create.body} onChange={(event) => setCreate({ ...create, body: event.target.value })} />
@@ -735,14 +776,24 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
       </div>}
       {error && !result && <StatePanel state="error" message={error} onRetry={() => void loadDirectoryPage(false)} />}
       {error && result && <Err message={error} />}
-      {notice && <p className="mt-3 rounded-md border border-mint/40 bg-mint/10 p-3 text-sm text-mint">{notice}</p>}
-      {!result ? <StatePanel state="loading" message="Loading Wiki directory…" /> : result.length === 0 ? <p className="mt-4 text-sm text-muted">No Wiki topics match these filters.</p> : <div className="mt-5 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted"><span>Showing {result.length} topic groups{directoryTotal > 0 ? ` from ${directoryTotal} directory entries` : ""}.</span>{directoryOffset < directoryTotal && <span>More topics are available below.</span>}</div>
-        <WikiDirectoryTreeView items={result} collapsed={collapsedDirectoryPaths} onToggle={toggleDirectoryPath} onOpen={openPage} />
-        {directoryOffset < directoryTotal && <div className="flex justify-center pt-2"><button className={btnGhost} disabled={directoryBusy} onClick={() => void loadDirectoryPage(true)}>{directoryBusy ? "Loading topics…" : `Load more topics (${Math.max(0, directoryTotal - directoryOffset)} remaining)`}</button></div>}
-      </div>}
+      {notice && <p className="mx-3 mb-2 rounded-md border border-mint/40 bg-mint/10 p-3 text-sm text-mint">{notice}</p>}
+      <div className="wiki-directory-scroll">
+        {!result ? <StatePanel state="loading" message="Loading Wiki directory…" /> : result.length === 0 ? <p className="wiki-directory-empty">No Wiki topics match these filters.</p> : <div className="space-y-3">
+          <WikiDirectoryTreeView items={result} collapsed={collapsedDirectoryPaths} selectedId={selectedPage ?? selectedKey ?? (page ? wikiPageId(page) : undefined)} onToggle={toggleDirectoryPath} onOpen={openPage} />
+          {directoryOffset < directoryTotal && <div className="flex justify-center pt-2"><button className={btnGhost} disabled={directoryBusy} onClick={() => void loadDirectoryPage(true)}>{directoryBusy ? "Loading topics…" : `Load more topics (${Math.max(0, directoryTotal - directoryOffset)} remaining)`}</button></div>}
+        </div>}
+      </div>
     </section>
-    {page && <><button className={`${btnGhost} self-start`} onClick={closePage}>← Back to directory</button><WikiDetail page={page} scope={scope} isAdmin={isAdmin} onRefresh={async (updated) => { setPage(updated); await loadDirectoryPage(false); }} /></>}
+    <main className="wiki-reading-panel">
+      {page ? <><button className={`${btnGhost} wiki-mobile-back`} onClick={closePage}>← Back to directory</button><WikiDetail page={page} scope={scope} isAdmin={isAdmin} onRefresh={async (updated) => { setPage(updated); await loadDirectoryPage(false); }} /></> : <div className="wiki-reader-empty">
+        <div className="wiki-reader-empty-inner">
+          <div className="wiki-reader-empty-icon"><Network size={22} aria-hidden="true" /></div>
+          <p className="wiki-reader-kicker">Source-linked reading</p>
+          <h2>Select a Wiki topic</h2>
+          <p>Choose a page from the directory. The reader stays beside the tree so you can move between related topics without losing your place.</p>
+        </div>
+      </div>}
+    </main>
   </div>;
 }
 function GatesPane() {

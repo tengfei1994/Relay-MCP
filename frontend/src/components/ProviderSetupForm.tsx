@@ -13,7 +13,15 @@ const isProviderRecord = (value: unknown): value is { dimensions?: number } =>
   (!("dimensions" in value) || value.dimensions === undefined || typeof value.dimensions === "number");
 
 export function ProviderSetupForm({ initial, onSaved, onCancel }: { initial?: ProviderSetupDefaults; onSaved: (dimensions?: number) => void; onCancel: () => void }) {
-  const [form, setForm] = useState<ProviderForm>({ ...empty, ...initial, token: "" });
+  const [form, setForm] = useState<ProviderForm>({
+    ...empty,
+    id: initial?.id ?? empty.id,
+    kind: initial?.kind ?? empty.kind,
+    provider: initial?.provider ?? empty.provider,
+    baseUrl: initial?.baseUrl ?? empty.baseUrl,
+    modelId: initial?.modelId ?? empty.modelId,
+    token: "",
+  });
   const [models, setModels] = useState<Array<{ id: string }> | null>(null);
   const [filter, setFilter] = useState("");
   const [busy, setBusy] = useState<"" | "loading" | "saving">("");

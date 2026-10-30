@@ -44,6 +44,7 @@ export const primaryNavigation = [
 export const knowledgeNavigation = [
   { label: "Overview", path: "/knowledge", matches: (pathname: string) => matchesPath(pathname, "/knowledge", true) },
   { label: "Control plane", path: "/knowledge/integrated", matches: (pathname: string) => matchesPath(pathname, "/knowledge/integrated") },
+  { label: "Wiki", path: "/knowledge/wiki", matches: (pathname: string) => matchesPath(pathname, "/knowledge/wiki") },
   { label: "Product docs", path: "/knowledge/product-docs", matches: (pathname: string) => matchesPath(pathname, "/knowledge/product-docs") },
   { label: "Solutions", path: "/knowledge/solution", matches: (pathname: string) => matchesPath(pathname, "/knowledge/solution") },
   {

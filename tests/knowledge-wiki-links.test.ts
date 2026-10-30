@@ -11,7 +11,7 @@ const render=(source:string, wikiScope:any={projectId:'project-a',environment:'t
 
 test('generated Wiki labels and bare slugs navigate within the current Relay scope',()=>{
  const html=render('See [[entity/samplemanager-pims|SampleManager PIMS]] and [[concept/pims-configuration-items]].');
- assert.match(html,/href="\/knowledge\/integrated\?tab=wiki&amp;wikiKey=engine-wiki%3A0123456789abcdef%3Aentity%2Fsamplemanager-pims&amp;projectId=project-a&amp;environment=test"/);
+ assert.match(html,/href="\/knowledge\/wiki\?wikiKey=engine-wiki%3A0123456789abcdef%3Aentity%2Fsamplemanager-pims&amp;projectId=project-a&amp;environment=test"/);
  assert.match(html,/>SampleManager PIMS<\/a>/);
  assert.match(html,/>concept\/pims-configuration-items<\/a>/);
  assert.doesNotMatch(html,/target="_blank"/);
@@ -28,7 +28,7 @@ test('Wiki links reject external URLs, traversal and scope overrides while allow
  const html=render('[[https://evil.test/x|external]] [[https://evil.test/x|label with spaces]] [[//evil.test/x]] [[../entity/x]] [[entity/%2e%2e/x]] [[entity/x?projectId=other]] [[entity/x#part]] [[entity\\x]]');
  assert.doesNotMatch(html,/<a\b/);
  const globalHtml=render('[[entity/safe]]',{});
- assert.match(globalHtml,/href="\/knowledge\/integrated\?tab=wiki&amp;wikiKey=engine-wiki%3A0123456789abcdef%3Aentity%2Fsafe"/);
+ assert.match(globalHtml,/href="\/knowledge\/wiki\?wikiKey=engine-wiki%3A0123456789abcdef%3Aentity%2Fsafe"/);
 });
 
 test('Wiki resolver sends full bound key and only the caller current scope to Relay',async()=>{

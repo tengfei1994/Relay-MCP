@@ -390,12 +390,12 @@ test("migrations tolerate a partially applied event_key column", async (t) => {
       "017-product-document-operations",
       "018-evidence-metadata",
       "019-human-display-projection", "020-observation-candidate", "021-observation-review", "022-chunk-fts-ownership", "023-business-context", "024-product-topics", "025-artifact-baselines", "026-source-index", "027-ingest-jobs", "028-product-revisions", "029-work-sessions", "030-provider-configs", "031-weknora-documents", "032-candidate-insights", "033-work-session-ops", "034-provider-runtime", "035-weknora-ingest-identity", "036-candidate-insight-review", "037-wiki", "038-integration-routing", "039-provider-secrets", "040-managed-engine", "041-candidate-scope", "042-candidate-worker-lease", "043-migration-withdrawal", "044-provider-admission", "045-ingest-ownership", "046-product-revision-parser-identity", "047-confirmed-memory",
-      "048-product-topic-query-indexes", "049-product-graph", "050-product-graph-query-indexes", "knowledge-post-repair-backfill-v2",
+      "048-product-topic-query-indexes", "049-product-graph", "050-product-graph-query-indexes", "051-knowledge-entity-evidence-index", "knowledge-post-repair-backfill-v2",
     ]);
       for (const table of ["knowledge_product_graph_entities", "knowledge_product_graph_relations"]) {
         assert.ok(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table));
       }
-      for (const index of ["idx_product_graph_entities_scope", "idx_product_graph_relations_scope", "idx_product_graph_entities_scope_canonical", "idx_product_graph_relations_from_endpoint", "idx_product_graph_relations_to_endpoint"]) {
+      for (const index of ["idx_product_graph_entities_scope", "idx_product_graph_relations_scope", "idx_product_graph_entities_scope_canonical", "idx_product_graph_relations_from_endpoint", "idx_product_graph_relations_to_endpoint", "idx_knowledge_entity_evidence_evidence_id"]) {
         assert.ok(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?").get(index));
       }
       store.append({ id: "event-partial", type: "job.finished", eventKey: "job:partial:finished", ...eventDefaults });

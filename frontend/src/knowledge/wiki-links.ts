@@ -8,7 +8,7 @@ export function wikiLinkHref(slug: string, scope: KnowledgeScope, pageKey?: stri
   if (!validWikiSlug(slug)) return undefined;
   const prefix=pageKey?.match(/^engine-wiki:[a-f0-9]{16}:/)?.[0];
   if (!prefix) return undefined;
-  return withKnowledgeScope(`/knowledge/integrated?tab=wiki&wikiKey=${encodeURIComponent(prefix+slug)}`, scope);
+  return withKnowledgeScope(`/knowledge/wiki?wikiKey=${encodeURIComponent(prefix+slug)}`, scope);
 }
 
 interface MdastNode {

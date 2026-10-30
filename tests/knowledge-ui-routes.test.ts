@@ -9,13 +9,14 @@ test("Knowledge information architecture exposes every #37 route", () => {
   const app = readFileSync(join(root, "App.tsx"), "utf8");
   const navigation = readFileSync(join(root, "components", "shell", "navigation.ts"), "utf8");
   const requiredRoutes = [
-    "knowledge", "knowledge/product-docs", "knowledge/product-docs/imports", "knowledge/product-docs/versions", "knowledge/product-docs/search",
+    "knowledge", "knowledge/wiki", "knowledge/product-docs", "knowledge/product-docs/imports", "knowledge/product-docs/versions", "knowledge/product-docs/search",
     "knowledge/evidence", "knowledge/candidates", "knowledge/cases", "knowledge/patterns", "knowledge/playbooks",
     "knowledge/operations/capture", "knowledge/operations/ingest", "knowledge/operations/index",
   ];
   for (const route of requiredRoutes) assert.match(app, new RegExp(`path=\\"${route.replaceAll("/", "\\/")}\\"`));
   assert.match(navigation, /Product docs/);
   assert.match(navigation, /Capture/);
+  assert.match(navigation, /Wiki/);
   assert.match(navigation, /adminOnly/);
 });
 

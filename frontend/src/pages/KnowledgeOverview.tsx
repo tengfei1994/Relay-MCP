@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
@@ -117,20 +117,24 @@ export default function KnowledgeOverview() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [animationKey, setAnimationKey] = useState(0);
+  const requestRef = useRef<AbortController | undefined>(undefined);
 
   const load = useCallback(async () => {
     if (scopeLoading) return;
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setLoading(true);
     setError("");
     try {
-      const [captureResult, runResult, indexResult, dashboardResult, unlinkedResult, productResult] = await Promise.all([
+      const [captureResult, runResult, indexResult, dashboardResult, productResult] = await Promise.all([
         api.knowledgeOperationsCapture(),
         api.knowledgeOperationsIngestRuns(8),
         api.knowledgeOperationsIndex(),
         projectId === undefined ? Promise.resolve(undefined) : api.knowledgeDashboard(projectId),
-        projectId === undefined ? Promise.resolve(undefined) : api.knowledgeEvidenceList(projectId, { unlinked: "true", limit: 1 }),
         api.productDocumentsList({ limit: 1 }),
       ]);
+      if (requestRef.current !== controller || controller.signal.aborted) return;
       setSnapshot({
         projects,
         projectId,
@@ -139,18 +143,33 @@ export default function KnowledgeOverview() {
         capture: captureData(captureResult),
         runs: runList(runResult),
         productDocumentCount: pageTotal(productResult),
-        unlinkedEvidence: pageTotal(unlinkedResult),
+        unlinkedEvidence: undefined,
       });
       setAnimationKey((key) => key + 1);
+      if (projectId !== undefined) {
+        void api.knowledgeEvidenceList(projectId, { unlinked: "true", limit: 1 }, { signal: controller.signal })
+          .then((result) => {
+            if (requestRef.current !== controller || controller.signal.aborted) return;
+            setSnapshot((current) => current && current.projectId === projectId
+              ? { ...current, unlinkedEvidence: pageTotal(result) }
+              : current);
+          })
+          .catch(() => {
+            // The optional attention count must not block the usable overview.
+          });
+      }
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : "Unable to load Knowledge overview");
+      if (requestRef.current === controller && !controller.signal.aborted) {
+        setError(reason instanceof Error ? reason.message : "Unable to load Knowledge overview");
+      }
     } finally {
-      setLoading(false);
+      if (requestRef.current === controller) setLoading(false);
     }
   }, [projectId, projects, scopeLoading]);
 
   useEffect(() => {
     if (!scopeLoading) void load();
+    return () => requestRef.current?.abort();
   }, [load, scopeLoading]);
 
   const pendingReview = useMemo(() => snapshot?.dashboard?.counts

@@ -382,7 +382,7 @@ function ScopeControls({ selection, allowAllProjects = false, environmentPlaceho
   </div>;
 }
 
-function WikiPane({ isAdmin }: { isAdmin: boolean }) {
+export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   const { scope } = useKnowledgeScope();
   const [params,setParams] = useSearchParams();
   const selectedPage=params.get("wikiPage"), selectedKey=params.get("wikiKey");

@@ -14,6 +14,7 @@ import KnowledgeProject from "./pages/KnowledgeProject";
 import KnowledgeOperations from "./pages/KnowledgeOperations";
 import KnowledgeSource from "./pages/KnowledgeSource";
 import KnowledgeIntegrated from "./pages/KnowledgeIntegrated";
+import KnowledgeWiki from "./pages/KnowledgeWiki";
 import KnowledgeMemory from "./pages/KnowledgeMemory";
 
 import { AppShell } from "./components/shell/AppShell";
@@ -87,6 +88,7 @@ export default function App() {
           <Route path="tools" element={<ToolsPage />} />
           <Route path="knowledge" element={<KnowledgeOverview />} />
           <Route path="knowledge/integrated" element={<KnowledgeIntegrated />} />
+          <Route path="knowledge/wiki" element={<KnowledgeWiki />} />
           <Route path="knowledge/memory" element={<KnowledgeMemory />} />
           <Route path="knowledge/sessions" element={<KnowledgeMemory />} />
           <Route path="knowledge/candidate-insights" element={<KnowledgeMemory />} />

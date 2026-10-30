@@ -76,11 +76,11 @@ export const api = {
   knowledgeObservation: (id: string) => request<{ observation: unknown }>("GET", `/knowledge/observations/${encodeURIComponent(id)}`),
   knowledgeObservations: (projectId: number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams({ projectId: String(projectId) }); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ observations: unknown[]; page?: unknown }>("GET", `/knowledge/observations?${query.toString()}`); },
   knowledgeDocumentEvidence: (id: string, body: { evidenceId: string; operation: "attach" | "detach"; reason: string }, idempotencyKey?: string) => request<unknown>("POST", `/knowledge/documents/${encodeURIComponent(id)}/evidence`, body, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-  knowledgeEvidenceList: (projectId?: number, params: Record<string, string | number | undefined> = {}) => {
+  knowledgeEvidenceList: (projectId?: number, params: Record<string, string | number | undefined> = {}, options?: { signal?: AbortSignal }) => {
     const query = new URLSearchParams();
     if (projectId !== undefined) query.set("projectId", String(projectId));
     Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); });
-    return request<{ evidence: unknown[]; page?: unknown }>("GET", `/knowledge/evidence?${query.toString()}`);
+    return request<{ evidence: unknown[]; page?: unknown }>("GET", `/knowledge/evidence?${query.toString()}`, undefined, undefined, options);
   },
   knowledgeEvidenceSession: (id: string, maxBytes?: number) => request<{ sessionId: string; evidenceId: string; expiresAt: string; maxBytes: number; mimeType: string; sizeBytes: number; sha256: string }>("POST", `/knowledge/evidence/${encodeURIComponent(id)}/download-session`, maxBytes ? { maxBytes } : {}),
   knowledgeEvidenceContentUrl: (id: string, sessionId: string) => `/api/knowledge/evidence/${encodeURIComponent(id)}/content?sessionId=${encodeURIComponent(sessionId)}`,

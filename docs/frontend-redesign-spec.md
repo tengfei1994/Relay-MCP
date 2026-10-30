@@ -244,6 +244,7 @@ L2（SubNav，仅 `/knowledge` 下显示）：
 |---|---|---|
 | Overview | /knowledge | pathname 等于 /knowledge |
 | Control plane | /knowledge/integrated | 以 /knowledge/integrated 开头 |
+| Wiki | /knowledge/wiki | 以 /knowledge/wiki 开头 |
 | Product docs | /knowledge/product-docs | 以 /knowledge/product-docs 开头 |
 | Solutions | /knowledge/solution | 以 /knowledge/solution 开头 |
 | Memory | /knowledge/memory | /knowledge/memory、sessions、evidence、observations、candidate-insights、candidates、cases、patterns、confirmed-memory |

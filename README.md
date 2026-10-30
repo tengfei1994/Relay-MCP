@@ -2,204 +2,121 @@
 
 # Relay MCP
 
-**Self-hosted remote operations relay for MCP clients, SSH servers, Windows Agents, and SampleManager LIMS.**
+**让 AI 编程助手安全地操作远程服务器、Windows 主机与 SampleManager LIMS 的自托管中继。**
 
-[![Release](https://img.shields.io/badge/release-v0.6.3-2563eb)](https://github.com/tengfei1994/Relay-MCP/releases/tag/v0.6.3)
-[![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933)](https://nodejs.org/)
+[![Release](https://img.shields.io/github/v/release/tengfei1994/Relay-MCP?color=2563eb)](https://github.com/tengfei1994/Relay-MCP/releases)
+[![Last commit](https://img.shields.io/github/last-commit/tengfei1994/Relay-MCP)](https://github.com/tengfei1994/Relay-MCP/commits)
 [![License](https://img.shields.io/badge/license-MIT-64748b)](#license)
+
+[![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![MCP](https://img.shields.io/badge/MCP-Streamable%20HTTP-6d28d9)](https://modelcontextprotocol.io/)
+[![SQLite](https://img.shields.io/badge/SQLite-better--sqlite3-003b57?logo=sqlite&logoColor=white)](https://sqlite.org/)
+[![Agent](https://img.shields.io/badge/Agent-Windows%20.NET%20WPF-0078d4?logo=windows&logoColor=white)](https://github.com/tengfei1994/Relay-MCP/releases)
+
+[项目简介](#项目简介) · [架构总览](#架构总览) · [使用流程](#使用流程) · [工作机制](#工作机制) · [部署与配置](#部署与配置) · [MCP 工具](docs/mcp-tools.md) · [安全边界](#安全边界) · [开发与验证](#开发与验证) · [文档索引](#文档索引)
 
 </div>
 
-Relay MCP 让 Codex、Claude、Cursor 等 MCP 客户端通过一台自托管 Relay，按受控的 Project、Server 和 environment 范围执行远程运维与 SampleManager 开发任务。目标服务器可以使用 SSH，也可以运行仅需出站 HTTP 的 Relay Agent。
-
-<details>
-<summary><strong>快速导航</strong></summary>
-
-- [核心能力](#核心能力)
-- [架构](#架构)
-- [Knowledge Plane：统一 Product Document 与 Wiki](#knowledge-plane统一-product-document-与-wiki)
-- [快速部署](#快速部署)
-- [初始配置](#初始配置)
-- [MCP 客户端](#mcp-客户端)
-- [MCP 工具目录](#mcp-工具目录)
-- [开发与验证](#开发与验证)
-
-</details>
-
 > [!IMPORTANT]
-> MCP 默认使用 `Authorization: Bearer <token>`。自 v0.6.3 起，`?token=` query 认证默认关闭；只有无法发送请求头的 legacy 客户端才应显式设置 `RELAY_MCP_ALLOW_QUERY_TOKEN=true`。
+> MCP 默认使用 `Authorization: Bearer <token>`。自 v0.6.3 起，`?token=` query 认证默认关闭，因为 query 中的 token 会进入 URL、代理日志、浏览器历史和监控系统。仅当客户端无法发送请求头时，才显式设置 `RELAY_MCP_ALLOW_QUERY_TOKEN=true`。
 
-### Authentication compatibility
+---
 
-MCP defaults to `Authorization: Bearer <token>`. Legacy `?token=` query
-authentication is disabled by default since v0.6.3; enable
-`RELAY_MCP_ALLOW_QUERY_TOKEN=true` only for clients that cannot send headers.
-This is a compatibility-breaking security change because query tokens may
-leak through URLs, proxy logs, browser history, and monitoring systems.
+## 项目简介
 
-## v0.6.3
+Relay MCP 是一台自托管的中继服务，位于 MCP 客户端（Codex、Claude、Cursor 等）与目标服务器之间：
 
-- Product Document 成为唯一的产品文档领域对象，索引引擎字段作为同一对象的 projection。
-- 同一 `topic_group_id` 的多版本内容合并为一个 Wiki 页面，并按 Common / Version / Differences 组织。
-- Product import 自动排队后台 `wiki_generation`，生成带章节级来源引用的 draft Wiki。
-- Wiki 前端提供 Solution → Module → Topic 目录、版本筛选、稳定 TOC 和生成状态。
-- Agent 通过 `artifact-upload` job 将远程文件流式上传到 Relay，不再把大型二进制塞进 Base64/JSON。
-- 下载接口支持 HTTP Range，本地下载器使用 `.part` 文件断点续传。
-- 文件传输返回并校验字节数和 SHA-256。
-- `/api/health` 返回版本、Git commit 和构建时间，便于确认实际运行版本。
-- 提供单文件 WPF Windows Agent Client，包含服务控制、数据库权限、请求审计、日志和更新管理。
+- **对上**：暴露标准的 HTTP MCP endpoint，把远程运维、文件传输、部署和 SampleManager 开发能力封装成一组受控工具。
+- **对下**：通过 SSH/SFTP，或只需出站 HTTP 的 Windows Relay Agent 操作真实服务器。
+- **中间**：用 Project、Server、environment 和 Token 划定权限边界，每次调用都经过范围校验并写入审计。
 
-Release 与 Windows Agent 下载：
-[v0.6.3](https://github.com/tengfei1994/Relay-MCP/releases/tag/v0.6.3)
+### 它解决什么问题
 
-## 架构
+| 痛点 | Relay MCP 的做法 |
+|---|---|
+| AI 助手要操作远程机器，但不能把私钥或管理员账号直接交给它 | 凭据只保存在 Relay；客户端只持有可撤销的 MCP Token，且限定 Project 与 Server 范围 |
+| Windows 服务器不开放 SSH / WinRM，只能出站访问 | 部署 Relay Agent，主动轮询 Relay 领取任务并回传结果，无需入站端口 |
+| 一个项目对应多台机器（分析 / 开发 / 生产） | Project Server Link 把 environment、Server、远程路径和 LIMS 实例映射起来，调用时只需说 environment |
+| SampleManager 多实例、多版本，部署流程长且难回滚 | LIMS Instance 记录路径、数据库、服务和构建工具链；部署通过 `deploymentId` 关联哈希、备份、日志和回滚 |
+| 大文件塞进 MCP JSON 又慢又不可靠 | MCP 只创建短期 session；字节流走 HTTP，并校验字节数与 SHA-256 |
+| 排查与复盘依赖人的记忆 | 请求审计、Job 记录，以及 Knowledge Plane（Work Session、Wiki、Memory） |
 
-```text
-Codex / Claude / Cursor / custom MCP client
-                    |
-                    | HTTP MCP + MCP Token
-                    v
-        +-----------------------------+
-        | Relay MCP                   |
-        | Web API / UI          :3000 |
-        | MCP endpoint          :3001 |
-        | SQLite + workspace          |
-        +-----------------------------+
-              |                 ^
-         SSH / SFTP             | outbound HTTP polling
-              v                 |
-       SSH target         Relay Agent on Windows
-```
+### 适用场景
 
-Relay 管理层中的对象彼此独立：
+- 让 Codex / Claude 在受控范围内执行远程命令、读写配置、查日志、重启服务。
+- 为 SampleManager LIMS 做诊断、SQL、构建、部署与回滚。
+- 在无法开放入站端口的 Windows 服务器上做远程运维。
+- 沉淀产品文档、项目事实和运维经验，供 AI 检索（Knowledge Plane）。
 
-- **Server**：一台物理机或虚拟机，连接方式为 SSH 或 Agent。
-- **Project**：Relay 工作区和权限边界，可关联多个 Server。
-- **Project Server Link**：Project、Server、environment、remote path 和 LIMS instance 的映射。
-- **LIMS Instance**：某台 Server 上独立的 SampleManager 实例，保存版本、路径、数据库、服务和构建配置。
-- **MCP Token**：授权 Codex 等 MCP 客户端访问哪些 Project 和 Server。
-- **Agent Token**：仅用于一个 Relay Agent 注册、轮询 job 和回传结果，不授予 MCP 客户端权限。
+---
 
-### MCP 组合根与 Knowledge 事件边界
+## 架构总览
 
-`src/mcp/index.ts` 只处理 HTTP Transport、认证、依赖组装和审计入口；MCP 工具注册位于 `src/mcp/register-tools.ts`。新增工具必须放入相应的域 registrar，不能再直接追加到入口文件，以保持工具名称、参数、注解、权限和 legacy alias 的兼容边界。
+<!-- TODO: 在此处插入我方架构流程图（建议放在 docs/assets/architecture.png，插入后删除下方占位块） -->
 
-Knowledge Plane 使用独立的 `knowledge.db`（默认锚定到 `RELAY_STATE_ROOT/knowledge.db`，可通过 `KNOWLEDGE_DB_PATH` 配置），其迁移位于 `src/knowledge/migrations/`。启动时会对 Knowledge DB 与 `DB_PATH` 做规范化路径比较；两者相同会拒绝启动。Job 和 Deployment 仅通过失败隔离的 domain-event outbox 通知 Knowledge Plane：知识库或消费者不可用时，不会改变远程执行、部署、审计或回滚主路径。消费者以 event ID checkpoint 幂等确认；项目解析故障采用指数退避并保留在 outbox 中，不会因普通 poison-event 上限而丢失 Candidate。
+<div align="center">
 
-Knowledge 检索的版本化黄金集、质量门槛和 10 万 chunk FTS5 基线见 [质量基线说明](docs/knowledge-quality-baseline.md)。
+> **架构流程图（占位）**
+>
+> 此处预留给 Relay MCP 我方架构流程图。建议覆盖：MCP 客户端 → Relay MCP → SSH / Relay Agent → 目标服务器，以及 Web UI、`app.db`、`knowledge.db` 和 Workspace。
 
-## Knowledge Plane：统一 Product Document 与 Wiki
+</div>
 
-> [!NOTE]
-> Product Document 是唯一的产品文档领域对象。索引引擎状态是它的投影，Wiki 是按主题和版本从 Product Document 派生出的可审阅知识页面；浏览器端不再提供手动 Product migration 流程。
+### 组件
 
-### 一套对象，三层职责
-
-| 层 | 职责 | 关键事实 |
+| 组件 | 端口 / 进程 | 职责 |
 |---|---|---|
-| **Product Document** | 保存规范化正文、Solution、Module、Topic、版本、语言、来源和 ACL | `knowledge_documents` + `knowledge_product_documents` |
-| **Engine projection** | 保存外部文档 ID、Chunk、解析/验证/失败状态、模型 provenance 和索引状态 | 与 Product Document 同一领域对象 |
-| **Wiki** | 组织跨版本的 Common、Version、Difference 章节，保存逐章节来源引用 | 一个 `topic_group_id` 对应一个 Wiki 页面 |
+| Web API + UI | `:3000`，PM2 `remote-ops-web` | 管理界面与 REST API：用户、Server、Project、Token、LIMS Instance、文件上传/下载、Agent 协议端点、Knowledge 页面 |
+| MCP endpoint | `:3001/mcp`，PM2 `remote-ops-mcp` | 无状态 HTTP MCP：认证、审计、注册工具、按 Token 范围校验并执行 |
+| `app.db` | `DB_PATH`，SQLite | 用户、Server、Project、Link、Token、LIMS Instance 等运营数据 |
+| `knowledge.db` | `KNOWLEDGE_DB_PATH`，SQLite | Knowledge Plane 独立数据库，启动时强制与 `app.db` 隔离 |
+| Workspace / State | `WORKSPACE_ROOT` / `RELAY_STATE_ROOT` | Project 工作区，以及 job、audit、staging、context 状态 |
+| Knowledge 引擎 | PM2 `remote-ops-knowledge-engine`（`KNOWLEDGE_ENGINE_ENABLED=false` 时不启动） | 托管 Knowledge 引擎进程，详见 [运维指南](docs/managed-knowledge-engine-operations.md) |
+| Relay Agent | Windows 服务 | 出站轮询 Relay，执行命令与 Playwright，回传结果和 artifact |
+| SSH 目标 | — | 通过 SSH / SFTP 直连的机器 |
 
-历史 WeKnora/migration 行只作为引擎兼容与审计记录保留，不是第二套产品文档，也不是 Wiki 生成的前置操作。
+---
 
-### 同 Topic 的多版本呈现
+## 使用流程
 
-同一主题在 21.1 和 21.3 中不会生成两个 Wiki。Relay 会生成一个页面：
+从零到第一次调用，共 6 步：
+
+| 步骤 | 角色 | 做什么 | 详见 |
+|---|---|---|---|
+| 1 | 管理员 | 部署 Relay（Web `:3000` + MCP `:3001`），配置 `.env` | [快速部署](#快速部署) |
+| 2 | 管理员 | 登记 Server；创建 Project，并按 environment 关联 Server | [初始配置](#初始配置) |
+| 3 | 管理员 | Windows 目标机安装 Relay Agent（SSH 目标跳过此步） | [连接目标服务器](#连接目标服务器) |
+| 4 | 管理员 | 签发 MCP Token，限定 Project 与 Allowed Servers | [初始配置](#初始配置) |
+| 5 | 使用者 | 在 Codex / Claude / Cursor 中配置 endpoint 与 Bearer Token | [接入 MCP 客户端](#接入-mcp-客户端) |
+| 6 | AI 助手 | 在对话中调用 MCP 工具；每次调用都经范围校验并写入审计 | [工作机制](#工作机制) |
+
+一个典型对话：
+
+> 「看一下 MyProject 的 analysis 环境最近一小时有什么错误日志。」
+
+AI 助手通常会先调用 `project_server_links_list` 确认 environment 与目标 Server，再调用 `fetch_logs` 读取日志并汇总。
+
+---
+
+## 工作机制
+
+### 对象模型
+
+| 对象 | 含义 |
+|---|---|
+| **Server** | 一台物理机或虚拟机，连接方式为 SSH 或 Agent |
+| **Project** | Relay 工作区和权限边界，可关联多个 Server |
+| **Project Server Link** | Project、Server、environment、remote path 与 LIMS Instance 的映射 |
+| **LIMS Instance** | 某台 Server 上独立的 SampleManager 实例，保存版本、路径、数据库、服务和构建配置 |
+| **MCP Token** | 授权 MCP 客户端访问哪些 Project 和 Server |
+| **Agent Token** | 仅用于一个 Relay Agent 注册、轮询 job 和回传结果，不授予 MCP 客户端权限 |
 
 ```text
-Topic Wiki
-├── Common       ← 所有版本都成立，引用每个代表版本
-├── Version 21.1 ← 仅引用 21.1 的文档/Chunk
-├── Version 21.3 ← 仅引用 21.3 的文档/Chunk
-└── Differences  ← 只描述版本差异，至少引用两个版本
+MCP Token ──授权──▶ Project ──Link（environment + remote path）──▶ Server（SSH 或 Agent）
+                                                │
+                                                └──可绑定──▶ LIMS Instance
 ```
-
-Wiki 目录按 `Solution → Module → Topic` 展示；页面支持版本筛选、稳定目录锚点和章节级 source citations。
-
-### 后台生成流水线
-
-```text
-Product import
-      │
-      ├─ assign stable topic_group_id
-      ├─ normalize + chunk + validate
-      └─ enqueue durable wiki_generation job
-                         │
-                         ▼
-                 managed wiki_llm
-                         │
-                         ├─ validate version boundaries
-                         ├─ validate document/chunk citations
-                         └─ write one draft Wiki revision
-```
-
-导入或服务启动会自动补齐待处理 topic group。管理员也可以在 **Knowledge → Wiki** 点击 **Generate all**，调用 `POST /api/knowledge/wiki/generation`，将缺失和失败的 topic group 重新排队；这不是 Product migration。生成失败会保留状态、错误和尝试次数，不会生成无来源的 fallback 内容；Review/Publish 仍是独立的人工动作。已有统一 Product Wiki 后，对应的旧引擎 Wiki 页面会被隐藏，不参与目录计数。
-
-实现与运维细节：
-
-- [Knowledge base architecture](docs/knowledge-base-architecture.md)
-- [Managed Knowledge engine operations](docs/managed-knowledge-engine-operations.md)
-- [Managed Knowledge release notes](docs/managed-knowledge-engine-release-notes.md)
-
-
-## 核心能力
-
-- 项目、服务器、environment 和 token 范围选择。
-- SSH/SFTP 远程执行，或无入站网络权限场景下的 Windows Agent。
-- Encoded PowerShell、脚本上传执行、结构化 JSON 输出和异步 job。
-- Relay workspace 与远端文件的读取、写入、同步、补丁和流式传输。
-- 部署、日志检索、服务重启、执行审计和持久化项目事实。
-- SampleManager 多实例扫描、数据库识别、构建工具发现、SQL、utility、程序集部署和回滚。
-- 大文件上传、断点下载、大小与 SHA-256 完整性验证。
-- 统一 Product Document、版本化 Wiki、后台 LLM 生成和来源引用。
-
-## 快速部署
-
-要求：Linux Relay 主机、Node.js 20+、npm 和 PM2。
-
-```bash
-git clone https://github.com/tengfei1994/Relay-MCP.git ~/Relay-MCP
-cd ~/Relay-MCP
-npm install
-npm --prefix frontend install
-cp .env.example .env
-npm run build
-mkdir -p logs
-pm2 start ecosystem.config.cjs
-pm2 save
-```
-
-至少修改 `.env` 中的 `JWT_SECRET` 和 `RELAY_PUBLIC_URL`。默认 Web 端口是 `3000`，MCP 端口是 `3001`。
-
-健康检查：
-
-```bash
-curl http://127.0.0.1:3000/api/health
-curl http://127.0.0.1:3001/mcp/health
-```
-
-更新已有部署：
-
-```bash
-cd ~/Relay-MCP
-git pull --ff-only
-npm install
-npm --prefix frontend install
-npm run build
-pm2 restart remote-ops-web remote-ops-mcp --update-env
-pm2 save
-```
-
-## 初始配置
-
-打开 `http://<relay-host>:3000`。第一个注册用户自动成为管理员，然后按以下顺序配置：
-
-1. **Servers**：创建 SSH Server，或创建带 `agentId` 的 Agent Server。
-2. **Projects**：独立创建 Project，并按 environment 关联一个或多个 Server。
-3. **LIMS Instances**：对 Agent Server 执行只读扫描，审核候选结果后再导入并绑定到 Project link。
-4. **MCP Tokens**：为 Codex 等客户端创建 token，配置 Project 范围、Allowed Servers 和可选默认目标。
-5. **Agent Tokens**：为每个 Agent 创建独立 token；token 只显示一次。
 
 一个 Project 可以同时关联多台 Server，例如：
 
@@ -209,94 +126,42 @@ pm2 save
 | `development` | `B-SERVER` | 编译、部署和测试 |
 | `production` | `PROD-SERVER` | 受控生产操作 |
 
-调用工具前可用 `project_server_links_list` 获取准确的 environment key、server ID/name、remote path 和 LIMS instance 绑定，不需要猜 UI 显示名。
+### 一次调用的生命周期
 
-## 连接方式
-
-### SSH
-
-适合 Linux、已有 SSH 管理权限、低延迟交互和通用 SFTP 场景。Relay 保存连接信息和私钥，Project link 保存 environment 与 remote path。
-
-### Relay Agent
-
-适合 Windows 服务器无法开放 SSH/WinRM、只能向公网 Relay 发起 HTTP 请求的场景。Agent 主动轮询工作队列，依次执行命令并回传状态、输出或 artifact。
-
-1. 从 Release 下载 `RelayAgent.Client.exe`。
-2. 在目标 Windows Server 上以管理员身份运行。
-3. 输入 Web API 地址，例如 `https://relay.example.com`，不要填写 `/mcp`。
-4. 输入 Server 中配置的 Agent ID 和对应 Agent Token。
-5. 保存配置，执行 **Install Service**，然后 **Start**。
-
-Relay URL 和 Agent Token 使用 Windows DPAPI `LocalMachine` 范围加密。安装为服务后，界面程序可以关闭，Windows Service 会继续运行。
-
-Agent 配置、日志和审计文件位于：
-
-```text
-%ProgramData%\RelayMcpAgent\
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as MCP 客户端
+    participant M as Relay MCP :3001
+    participant Q as Agent 作业队列
+    participant W as Relay Web :3000
+    participant T as 目标服务器
+    C->>M: tools/call + Bearer MCP Token
+    M->>M: 校验 JWT 与 Token 状态，写入审计
+    M->>M: 为本次请求注册工具，校验 Project / Server / Link
+    alt SSH Server
+        M->>T: SSH / SFTP 执行
+        T-->>M: stdout / stderr / 文件
+    else Agent Server
+        M->>Q: 派发 job
+        T->>W: 轮询 GET jobs/next
+        W->>Q: 领取 job
+        W-->>T: job payload
+        T->>W: POST events / result
+        W->>Q: 写入结果
+        Q-->>M: job 完成
+    end
+    M-->>C: 紧凑结果，或异步 jobId
 ```
 
-## MCP 客户端
+1. **认证**：从 `Authorization: Bearer` 解出 JWT，并核对该 MCP Token 在库中仍处于启用状态。
+2. **审计**：记录工具名、分类和脱敏后的参数。
+3. **注册**：每个请求创建独立的 MCP Server 并注册工具，工具内部按 Token 范围校验。
+4. **目标校验**：见下表。
+5. **执行**：SSH Server 走 SSH/SFTP；Agent Server 派发 job，由 Agent 领取执行。
+6. **返回**：输出按 `MCP_OUTPUT_LIMIT` 压缩；长任务用 `async: true`，立即返回 `jobId`。
 
-MCP endpoint：
-
-```text
-http://<relay-host>:3001/mcp
-Authorization: Bearer <MCP_TOKEN>
-```
-
-### Codex
-
-在 `C:\Users\<you>\.codex\config.toml` 中配置：
-
-```toml
-[mcp_servers.relay_mcp]
-url = "http://<relay-host>:3001/mcp"
-bearer_token_env_var = "RELAY_MCP_TOKEN"
-startup_timeout_sec = 20
-tool_timeout_sec = 120
-enabled = true
-default_tools_approval_mode = "prompt"
-```
-
-设置用户环境变量后完整重启 Codex：
-
-```powershell
-[Environment]::SetEnvironmentVariable("RELAY_MCP_TOKEN", "<MCP_TOKEN>", "User")
-```
-
-### 其他客户端
-
-原生支持 HTTP MCP 的客户端直接使用 endpoint 和 Bearer token。只支持 stdio 的客户端可以使用 `mcp-remote`：
-
-```json
-{
-  "mcpServers": {
-    "relay-mcp": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote",
-        "http://<relay-host>:3001/mcp?token=<MCP_TOKEN>",
-        "--allow-http"
-      ]
-    }
-  }
-}
-```
-
-注意：`?token=` 属于 legacy 传输（query 中的 token 会进入代理日志与浏览器历史），**默认已禁用**。仅当客户端无法设置请求头时，才显式设置 `RELAY_MCP_ALLOW_QUERY_TOKEN=true` 启用。
-
-生产环境应使用 HTTPS，优先使用 `Authorization: Bearer`，并通过反向代理限制 Web 与 MCP 入口。
-
-## 目标选择
-
-远程工具支持 Project 和 environment 选择。一个 Project 有多个 link 时，建议先调用：
-
-```text
-project_server_links_list(project="HKJC")
-```
-
-然后传入返回的 `environment`，或在支持的工具中使用准确的 server ID/name。Relay 会同时校验：
+目标校验项（远程工具支持 Project 和 environment 选择，一个 Project 有多个 link 时先调用 `project_server_links_list` 获取准确的 environment、server ID/name 和 remote path，不要猜 UI 显示名）：
 
 - Project 是否在当前 MCP Token 的允许范围内。
 - Server 是否在 MCP Token 的 **Allowed Servers** 中。
@@ -304,11 +169,33 @@ project_server_links_list(project="HKJC")
 - Agent 是否在线，或 SSH 是否可连接。
 - SampleManager 操作是否绑定到明确的 LIMS instance。
 
-## 文件传输
+### 连接方式：SSH 与 Relay Agent
 
-大型二进制不经过 MCP JSON。MCP 只负责创建短期 session，并返回 URL、token、字节数和 SHA-256。
+| | SSH | Relay Agent |
+|---|---|---|
+| 适用 | Linux、已有 SSH 管理权限、低延迟交互、通用 SFTP | Windows 服务器无法开放 SSH/WinRM，只能向 Relay 发起出站 HTTP |
+| 凭据 | Relay 保存连接信息和私钥 | 独立 Agent Token，Agent 端用 DPAPI 加密保存 |
+| 方向 | Relay → 目标 | 目标 → Relay（轮询） |
+| 执行 | SSH exec / SFTP | Agent job：`exec`、`powershell`、`playwright`、`artifact-upload` |
 
-### 本地到远端
+Agent 使用 Agent Token 访问 `/api/agents/*`：`POST /api/agents/heartbeat` 上报在线；`GET /api/agents/:agentId/jobs/next` 领取下一个 job（无任务返回 204）；`POST /api/agents/:agentId/jobs/:jobId/events` 回传过程事件；`POST /api/agents/:agentId/jobs/:jobId/result` 回传 stdout、stderr 和 exitCode。
+
+### 异步 Job
+
+长时间命令应设置 `async: true`，工具立即返回 `jobId`，随后使用：
+
+- `job_status`：查看 queued/running/completed/failed、结果、错误和近期日志。
+- `job_wait`：有界等待终态或阶段变化，到期返回最新快照。
+- `job_list`：列出当前用户的近期 job。
+- `job_cancel`：请求取消仍在运行的 SSH job。
+
+同步调用超时时，优先查询 job 状态，避免重复执行表转换、DLL 部署、清缓存或服务重启等有副作用的操作。通用远程部署的目标锁定、预检、上传、异步等待、幂等和日志规范见 [`docs/deployment-command-guide.md`](docs/deployment-command-guide.md)。
+
+### 文件传输
+
+大型二进制不经过 MCP JSON。MCP 只创建短期 session，并返回 URL、token、字节数和 SHA-256。
+
+**本地到远端**
 
 ```text
 local file
@@ -318,13 +205,11 @@ local file
   -> target server
 ```
 
-创建 session 后可使用：
-
 ```bash
 npm run relay-upload -- --url <url> --token <token> --file <local-file>
 ```
 
-### 远端到本地
+**远端到本地**
 
 ```text
 target server
@@ -343,19 +228,7 @@ npm run relay-download -- --url <url> --token <token> \
 
 短期 session 过期后需要重新调用 MCP 工具。不要把下载 token 写入源码、日志或长期脚本。
 
-## 异步 Job
-
-通用远程部署的目标锁定、预检、上传、异步等待、幂等和日志规范见 [`docs/deployment-command-guide.md`](docs/deployment-command-guide.md)。
-
-长时间命令应设置 `async: true`。工具立即返回 `jobId`，随后使用：
-
-- `job_status`：查看 queued/running/completed/failed、结果、错误和近期日志。
-- `job_list`：列出当前用户的近期 job。
-- `job_cancel`：请求取消仍在运行的 SSH job。
-
-同步调用超时时，优先查询 job 状态，避免重复执行表转换、DLL 部署、清缓存或服务重启等有副作用的操作。
-
-## SampleManager 多实例
+### SampleManager 多实例
 
 同一 Server 可以管理多个 SampleManager 实例，包括不同版本、数据库、Windows Service 和构建工具链。
 
@@ -367,152 +240,166 @@ npm run relay-download -- --url <url> --token <token> \
 - Visual Studio MSBuild、Framework MSBuild 和 .NET SDK。
 - 本地 SQL Server 中符合 SampleManager 核心表特征的业务数据库。
 
-扫描会保留 LocalDB、`EntityContext-*` 和 OData 元数据库作为诊断候选，但不会将其优先识别为 LIMS 业务库。候选必须经用户审核并导入，之后才能绑定到 Project link。
-
-绑定后，SampleManager 工具使用该实例的：
+扫描会保留 LocalDB、`EntityContext-*` 和 OData 元数据库作为诊断候选，但不会优先识别为 LIMS 业务库。候选必须经用户审核并导入，之后才能绑定到 Project link。绑定后，SampleManager 工具使用该实例的：
 
 - `Exe`、`Server`、`SolutionAssemblies` 等路径。
 - 数据库 host/name/auth 配置。
 - Windows Service 与进程范围。
 - .NET Framework MSBuild 或现代 `dotnet build` profile。
 
-构建工具支持 `preflightOnly`、`msbuildProperties` 和仅限非敏感值的 `environmentVariables`。两类设置的名称只要包含 `TOKEN`、`SECRET`、`PASSWORD`、`PWD`、`PASS`、`KEY`（包括 `APIKEY` / `API_KEY`）、`CREDENTIAL`、`AUTH`、`PAT`、`BEARER`、`COOKIE` 或 connection string 等敏感标记就会被拒绝，必须预先配置到目标服务账号。审计、Job 和 deployment metadata 只记录设置键名，不保存值。绑定实例时会自动注入 `SAMPLEMANAGER_EXE` 及 `<INSTANCE>_EXE`；后者将实例名转为大写 ASCII，非字母数字字符替换为 `_`，若首字符不是字母或 `_` 则前置 `_`，因此始终是有效的 MSBuild 属性名。
-
 SQL 查询默认只读。mutation 要求显式参数，并支持 dry run、备份和 before/after 证据。部署操作可通过 `deploymentId` 关联构建、哈希、备份、SQL、日志、重启和回滚状态。
 
-## MCP 工具目录
+<details>
+<summary><strong>构建参数与敏感值规则</strong></summary>
 
-Knowledge 审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [`docs/knowledge-governance.md`](docs/knowledge-governance.md)；可复用 Case/Pattern/Playbook 模板位于 [`docs/templates/`](docs/templates/)。
+构建工具支持 `preflightOnly`、`msbuildProperties` 和仅限非敏感值的 `environmentVariables`。两类设置的名称只要包含 `TOKEN`、`SECRET`、`PASSWORD`、`PWD`、`PASS`、`KEY`（含 `APIKEY` / `API_KEY`）、`CREDENTIAL`、`AUTH`、`PAT`、`BEARER`、`COOKIE` 或 connection string 等敏感标记就会被拒绝，必须预先配置到目标服务账号。审计、Job 和 deployment metadata 只记录设置键名，不保存值。
 
-下表与 `src/shared/tool-catalog.ts` 保持同步，测试会检查注册工具是否出现在 README 中。
+绑定实例时自动注入 `SAMPLEMANAGER_EXE` 和 `<INSTANCE>_EXE`；后者把实例名转为大写 ASCII，非字母数字字符替换为 `_`，首字符不是字母或 `_` 时前置 `_`，因此始终是合法的 MSBuild 属性名。
 
-| 分类 | 工具 | 说明 |
-|---|---|---|
-| Project | `list_projects` | 列出当前 MCP Token 可访问的 Project。 |
-| Project | `project_server_links_list` | 列出 Project link、environment、Server 和 LIMS instance 绑定。 |
-| Project | `relay_mcp_info` | 返回 Relay MCP 路由、命名空间和版本信息。 |
-| Project | `relay_core_tools` | 返回稳定的首选 Relay 工具和兼容旧别名。 |
-| Project | `relay_route_check` | 只读确认请求进入 Relay MCP，并解析可选的 Project/Server 目标。 |
-| Remote execution | `relay_unicode_check` | 只读检查 SQL Server、PowerShell、Agent 到 MCP 的中文往返编码，并返回字节、码点、哈希和编码证据。 |
-| Project | `relay_project_server_links_list` | 使用明确的 Relay 命名空间列出 Project links。 |
-| Project | `project_create` | 创建 Project workspace，并可关联允许的 Server。 |
-| Remote execution | `exec_remote` | 兼容旧调用；新调用优先使用 `relay_exec_remote`。 |
-| Remote execution | `exec_remote_powershell` | 兼容旧调用；新调用优先使用 `relay_exec_remote_powershell`。 |
-| Remote execution | `exec_remote_script` | 兼容旧调用；新调用优先使用 `relay_exec_remote_script`。 |
-| Remote execution | `relay_exec_remote` | 首选 Relay 命名空间 shell command 工具。 |
-| Remote execution | `relay_exec_remote_powershell` | 首选 Relay 命名空间 encoded PowerShell 工具。 |
-| Remote execution | `relay_exec_remote_script` | 首选 Relay 命名空间 PowerShell 脚本工具。 |
-| Playwright | `playwright_runtime_status` | 读取 Agent 管理的 Node.js、Playwright、Chromium 和缓存状态。 |
-| Playwright | `playwright_suite_list` | 列出选定 Agent 保存的 Playwright suite。 |
-| Playwright | `playwright_suite_upload` | 上传 Playwright 测试文件和 suite 元数据，并校验 SHA-256。 |
-| Playwright | `playwright_run_suite` | 通过专用 Agent 协议排队正式 Playwright 测试。 |
-| Playwright | `playwright_run_status` | 读取 Agent 生成的正式 Playwright run 记录。 |
-| Playwright | `playwright_artifact_list` | 列出 Agent 上的 Playwright artifact 元数据。 |
-| Playwright | `playwright_artifact_download` | 将 Playwright artifact 校验后传回 Relay workspace。 |
-| Remote execution | `deploy` | 部署远端 Git checkout，并记录 commit、输出和 rollback 状态。 |
-| Remote execution | `fetch_logs` | 按时间窗口或 deployment run 读取日志。 |
-| Remote execution | `restart_service` | 重启 Windows Service、systemd、PM2 或 Docker workload。 |
-| Remote files | `read_remote_file` | 读取远端文本文件。 |
-| Remote files | `download_remote_file` | 将远端二进制流式下载到本地 workspace。 |
-| Remote files | `write_remote_file` | 通过 SFTP 写入远端 UTF-8 文本。 |
-| Remote files | `list_remote_files` | 列出远端目录。 |
-| Remote files | `patch_remote_file` | 对远端文本应用 unified diff。 |
-| Workspace | `read_local_file` | 读取 Relay Project workspace 文本。 |
-| Workspace | `workspace_info` | 显示 Relay workspace 根目录和受限文件清单，避免与 Codex 本地路径混淆。 |
-| Workspace | `write_local_file` | 写入或追加 Relay workspace 文本。 |
-| Workspace | `write_local_binary` | 将小型 Base64 二进制写入 Relay workspace。 |
-| Workspace | `list_workspace_files` | 有界递归列出 workspace 内容。 |
-| Workspace | `workspace_file_stat` | 查看文件元数据并可计算 SHA-256。 |
-| Workspace | `move_workspace_file` | 移动或重命名 workspace 文件。 |
-| Workspace | `delete_workspace_file` | 删除文件或显式批准的目录树。 |
-| Workspace | `create_workspace_upload` | 创建大型本地文件的短期流式上传 session。 |
-| Workspace | `cleanup_workspace_staging` | 预览或清理旧 `.relay-staging` 内容。 |
-| Workspace | `sync_workspace` | 通过 SFTP 同步 workspace 到远端目录。 |
-| Workspace | `upload_workspace_file` | 通过临时路径上传，校验 SHA-256，相同文件跳过并原子替换目标；可关联 deploymentId。 |
-| Jobs | `job_status` | 查询异步 job 的状态、结果、错误和日志。 |
-| Jobs | `job_wait` | 有界等待 job 终态或阶段变化；等待到期时返回最新快照而不是制造新的执行超时。 |
-| Jobs | `job_list` | 列出当前用户的近期 job。 |
-| Jobs | `job_cancel` | 请求取消运行中的 SSH job。 |
-| Context | `context_record_fact` | 保存持久化 Project fact。 |
-| Context | `context_search` | 搜索持久化 Project fact。 |
-| Context | `memory_search` | 按 Project、SampleManager 版本、解决方案、模块和环境检索 Relay Memory；Candidate Insight 与 Approved Operation 需要显式入口。 |
-| Context | `knowledge_get` | 在 Project ACL 校验后读取 Knowledge 文档完整正文和来源。 |
-| Context | `knowledge_playbook_get` | 读取 Playbook 的步骤、回滚说明、生命周期和提议的 Skill diff。 |
-| Context | `knowledge_evidence_get` | 读取 Evidence 元数据；内容通过受控、审计的下载路径访问。 |
-| Context | `knowledge_relation_query` | 查询带来源、置信度和验证状态的 SampleManager 对象关系。 |
-| Context | `knowledge_feedback` | 记录检索结果是否有帮助，不直接修改 Casebook 或生产 Skill。 |
-| Context | `knowledge_ingest` | 幂等导入 Git Casebook Markdown/YAML 与 legacy context JSONL。 |
-| Context | `knowledge_reindex` | 重建 Project 范围的 FTS 索引，并可受控地失效 embedding 缓存。 |
-| Context | `knowledge_source_search` | 检索已发布 Product/Solution 源码块并返回路径、符号、行号和版本证据。 |
-| Context | `knowledge_source_read` | 读取已发布基线或项目快照中的有界源码片段。 |
-| Context | `knowledge_topic_get` | 读取逻辑 Product Knowledge 主题及其版本绑定。 |
-| Context | `knowledge_topic_diff` | 比较同一主题的两个产品版本。 |
-| Context | `knowledge_solution_upgrade_analysis` | 对 Old Baseline、Current Project、New Baseline 执行升级分析。 |
-| Context | `knowledge_work_session_open` | 创建带 IntentEnvelope 的 ACL 范围 Work Session。 |
-| Context | `knowledge_work_session_update` | 更新 Work Session 阶段和用户可见意图字段。 |
-| Context | `knowledge_work_session_close` | 关闭 Work Session 并保存验收结果与未知项。 |
-| Context | `knowledge_work_session_get` | 读取 Work Session 及其关联事件元数据。 |
-| Context | `knowledge_work_session_list` | 列出或汇总当前用户可读的 Work Session。 |
-| Context | `knowledge_provider_config_list` | 列出不包含密钥的 Relay Provider 配置。 |
-| Context | `knowledge_candidate_insight_compile` | 基于真实 Evidence 编译 Candidate Insight，失败时安全降级且不自动批准。 |
-| Context | `knowledge_candidate_insight_job_get` | 检查异步 Candidate 编译任务状态及结果，验证 Session 访问权限。 |
-| Context | `knowledge_candidate_insight_list` | 按 Project ACL 列出待人工审核或已处理的 Candidate Insight。 |
-| Context | `knowledge_candidate_insight_review` | 使用必填理由确认、编辑、拒绝或晋级 Candidate Insight。 |
-| Context | `knowledge_confirmed_memory_list` | 列出按 ACL 过滤的 Fact、Decision、Case、Pattern Confirmed Memory。 |
-| Context | `knowledge_confirmed_memory_get` | 读取包含 Evidence、范围、来源、确认人和审计信息的 Confirmed Memory。 |
-| Context | `knowledge_wiki_search` | 按 ACL、版本、主题、Solution 和模块搜索 Relay Wiki。 |
-| Context | `knowledge_wiki_get` | 读取 Wiki 页面、修订历史或两个修订的 unified diff。 |
-| Context | `knowledge_wiki_write` | 幂等创建 Wiki 页面或追加受审核编辑修订。 |
-| Context | `knowledge_wiki_review` | 以审计理由发布、弃用或回滚 Wiki 页面。 |
-| Compatibility | `knowledge_migration_create` | 兼容旧引擎的幂等迁移审计记录；Wiki 生成不需要手动调用。 |
-| Compatibility | `knowledge_migration_from_local` | 兼容旧引擎的本地 Product Knowledge 导入路径；新 Product import 会自动建立统一对象并排队 Wiki 生成。 |
-| Compatibility | `knowledge_migration_publish` | 发布兼容引擎迁移记录；不用于创建 Wiki 页面。 |
-| Compatibility | `knowledge_migration_rollback` | 以审计理由回滚兼容引擎迁移记录。 |
-| Context | `knowledge_release_gates` | 执行安全、迁移兼容性、Provider、ACL 和发布可见性门禁。 |
-| Context | `knowledge_search` | 通过 Relay 内部 WeKnora 边界检索 Product Knowledge。 |
-| SampleManager | `samplemanager_capabilities` | 解析实例使用的版本化 Capability Pack，并列出已就绪、规划中和不可用的语义检查能力。 |
-| SampleManager | `samplemanager_instance_preflight` | 一次性只读检查实例目录、指定文件哈希/XML、FormsBin、服务、进程和近期错误摘要。 |
-| SampleManager | `samplemanager_vgl_inspect_entrypoint` | 静态检查 VGL 例程参数、引用/值传递、常量、JOIN、`CALL_ROUTINE` 调用链和源码行证据。 |
-| SampleManager | `samplemanager_diagnose` | 组合版本过滤的 Knowledge 检索与 Form/Task/Assembly 只读检查；不执行 deploy、restart、clear 或 SQL mutation。 |
-| SampleManager | `samplemanager_impact_analysis` | 根据确定性、带来源的关系计算只读影响范围。 |
-| SampleManager | `samplemanager_inspect_assembly_type` | 对单一程序集类型执行受限反射，返回扁平化属性、方法、事件、依赖、版本和 SHA-256 证据。 |
-| SampleManager | `samplemanager_validate_form_task_contract` | 只读核对 FORM/TASK/MASTER_MENU、目标 Form XML/控件、FormsBin cache 与可选程序集类型契约。 |
-| SampleManager | `samplemanager_create_deployment_manifest` | 在 Relay workspace 生成含明确目标与源文件 SHA-256 的只读部署 manifest，不执行构建或部署。 |
-| SampleManager | `samplemanager_restart_instance` | 重启指定实例的核心服务。 |
-| SampleManager | `samplemanager_deployment_start` | 创建用于关联多阶段操作的 `deploymentId`。 |
-| SampleManager | `samplemanager_clear_form_cache` | 清理一个 form 的 FormsBin cache。 |
-| SampleManager | `samplemanager_recent_errors` | 按时间范围检索紧凑错误证据。 |
-| SampleManager | `samplemanager_table_schema` | 查询列、键、identity、默认值和物理映射。 |
-| SampleManager | `samplemanager_entity_schema` | 联合返回 SQL 物理结构、`SCHEMA_TABLE_FIELD` 逻辑类型、Entity Definition 映射和序列化风险。 |
-| SampleManager | `samplemanager_read_query_artifact` | 分页读取已保存的 SQL 响应，不重新执行远程查询。 |
-| SampleManager | `samplemanager_sql_query` | 执行参数化只读 SQL，并返回详细 SQL Server 错误。 |
-| SampleManager | `samplemanager_entity_inspect` | 统一检查 Execution readiness、Plate/Batch integrity、Test/Result lineage 或 Lab Method definition。 |
-| SampleManager | `samplemanager_lab_method_lint` | 检查 Lab Method 的重复标识、断裂引用、类型风险、placeholder 和 Instruction evidence。 |
-| SampleManager | `samplemanager_plate_plan_validate` | 将 Plate/Batch 孔位、数量和 Test 链接与声明式 layout plan 对比。 |
-| SampleManager | `samplemanager_enh_inspect` | 聚合检查 ENH Folder、Criteria、Template、Form/Grid、Column、Grouping、Procedure、Action 和 Navigation。 |
-| SampleManager | `samplemanager_enh_validate_configuration` | 写入前校验 ENH 实体键、字段引用、模板/Grid、重复序号、悬空引用及 XML/JSON 存储格式。 |
-| SampleManager | `samplemanager_workflow_export` | 按目标实例实际表结构导出有界 Workflow 快照、节点、连线、参数和拓扑。 |
-| SampleManager | `samplemanager_workflow_validate` | 校验 Workflow 的断链、孤立节点、环、静态节点契约和证据缺口。 |
-| SampleManager | `samplemanager_workflow_compare` | 将当前 Workflow 快照与导出基线比较，返回节点、连线和元数据差异。 |
-| SampleManager | `samplemanager_inspect_deployment_runtime` | 只读检查部署文件哈希、程序集加载、服务、进程和限定窗口内的运行时错误。 |
-| SampleManager | `samplemanager_sql_execute_file` | 执行 workspace 中的参数化 SQL 文件。 |
-| SampleManager | `samplemanager_sql_mutation` | 执行支持 dry run、备份和 before/after 的 mutation。 |
-| SampleManager | `samplemanager_apply_change_set` | 在一个事务中执行多项 SQL 变更，支持幂等键、失败回滚、验证和 Deployment 恢复状态。 |
-| SampleManager | `samplemanager_run_command` | 以结构化参数运行 `SampleManagerCommand.exe`。 |
-| SampleManager | `samplemanager_create_entity_definition` | 运行 `CreateEntityDefinition.exe`。 |
-| SampleManager | `samplemanager_convert_tables` | 对已验证表名分别运行 `convert_table.exe`。 |
-| SampleManager | `samplemanager_table_loader` | 通过内置 `$table_loader` VGL report 导入远端 CSV。 |
-| SampleManager | `samplemanager_deploy_table_loader_package` | 按 deploymentId 完成 staging、SHA-256 校验、顺序加载和验证。 |
-| SampleManager | `samplemanager_run_utility` | 运行与版本匹配的 allowlisted utility。 |
-| SampleManager | `samplemanager_discover_build_tools` | 按优先级发现 VS2022、VS2019、Framework 和 PATH 中的 MSBuild。 |
-| SampleManager | `samplemanager_build_dotnet` | 使用 MSBuild 构建经典 SampleManager .NET solution。 |
-| SampleManager | `samplemanager_build_deploy_assembly` | 构建、哈希、备份、部署、重启并支持程序集回滚。 |
-| SampleManager | `samplemanager_deployment_status` | 查看 deployment 阶段、artifact、hash、backup 和 rollback 状态。 |
-| SampleManager | `samplemanager_deployment_finish` | 将手动编排的 deployment 标记为成功或失败。 |
-| SampleManager | `samplemanager_deploy_file` | 将 staged file 备份后部署到实例目录。 |
-| SampleManager | `samplemanager_restore_backup` | 将指定 backup 恢复到显式 target。 |
+</details>
 
-## 环境变量
+### Knowledge Plane
+
+Knowledge Plane 是 Relay 内独立的知识层（独立 `knowledge.db`），把运维过程和产品文档沉淀为可检索、可审核的知识。Product Document 是唯一的产品文档领域对象：
+
+| 层 | 职责 |
+|---|---|
+| **Product Document** | 保存规范化正文、Solution、Module、Topic、版本、语言、来源和 ACL |
+| **Engine projection** | 保存外部文档 ID、Chunk、解析/验证/失败状态、模型 provenance 和索引状态 |
+| **Wiki** | 组织跨版本的 Common、Version、Difference 章节，保存逐章节来源引用；一个 `topic_group_id` 对应一个 Wiki 页面 |
+
+同一主题的多个版本合并为一个 Wiki 页面：
+
+```text
+Topic Wiki
+├── Common       ← 所有版本都成立，引用每个代表版本
+├── Version 21.1 ← 仅引用 21.1 的文档/Chunk
+├── Version 21.3 ← 仅引用 21.3 的文档/Chunk
+└── Differences  ← 只描述版本差异，至少引用两个版本
+```
+
+Product import 会自动排队后台 `wiki_generation`，由 managed `wiki_llm` 生成带章节级来源引用的 draft Wiki；生成失败保留状态、错误和尝试次数，不会产生无来源的 fallback 内容，Review/Publish 仍是独立的人工动作。管理员也可在 **Knowledge → Wiki** 点击 **Generate all**（`POST /api/knowledge/wiki/generation`）重新排队缺失和失败的 topic group。
+
+Job 和 Deployment 仅通过失败隔离的 domain-event outbox 通知 Knowledge Plane：知识库不可用时，不会影响远程执行、部署、审计或回滚主路径。
+
+实现与运维细节见 [Knowledge base architecture](docs/knowledge-base-architecture.md)、[Managed Knowledge engine operations](docs/managed-knowledge-engine-operations.md) 和 [质量基线](docs/knowledge-quality-baseline.md)。
+
+---
+
+## 部署与配置
+
+### 快速部署
+
+要求：Linux Relay 主机、Node.js 20+、npm 和 PM2。
+
+```bash
+git clone https://github.com/tengfei1994/Relay-MCP.git ~/Relay-MCP
+cd ~/Relay-MCP
+npm install
+npm --prefix frontend install
+cp .env.example .env
+npm run build
+mkdir -p logs
+pm2 start ecosystem.config.cjs
+pm2 save
+```
+
+至少修改 `.env` 中的 `JWT_SECRET` 和 `RELAY_PUBLIC_URL`。默认 Web 端口是 `3000`，MCP 端口是 `3001`。
+
+```bash
+curl http://127.0.0.1:3000/api/health
+curl http://127.0.0.1:3001/mcp/health
+```
+
+更新已有部署：
+
+```bash
+cd ~/Relay-MCP
+git pull --ff-only
+npm install
+npm --prefix frontend install
+npm run build
+pm2 restart remote-ops-web remote-ops-mcp --update-env
+pm2 save
+```
+
+### 初始配置
+
+打开 `http://<relay-host>:3000`。第一个注册用户自动成为管理员，然后按以下顺序配置：
+
+1. **Servers**：创建 SSH Server，或创建带 `agentId` 的 Agent Server。
+2. **Projects**：独立创建 Project，并按 environment 关联一个或多个 Server。
+3. **LIMS Instances**：对 Agent Server 执行只读扫描，审核候选结果后再导入并绑定到 Project link。
+4. **MCP Tokens**：为 Codex 等客户端创建 token，配置 Project 范围、Allowed Servers 和可选默认目标。
+5. **Agent Tokens**：为每个 Agent 创建独立 token；token 只显示一次。
+
+### 连接目标服务器
+
+**SSH**：Relay 保存连接信息和私钥，Project link 保存 environment 与 remote path。
+
+**Relay Agent**（Windows）：
+
+1. 从 [Release](https://github.com/tengfei1994/Relay-MCP/releases/tag/v0.6.3) 下载 `RelayAgent.Client.exe`。
+2. 在目标 Windows Server 上以管理员身份运行。
+3. 输入 Web API 地址，例如 `https://relay.example.com`，不要填写 `/mcp`。
+4. 输入 Server 中配置的 Agent ID 和对应 Agent Token。
+5. 保存配置，执行 **Install Service**，然后 **Start**。
+
+Relay URL 和 Agent Token 使用 Windows DPAPI `LocalMachine` 范围加密。安装为服务后，界面程序可以关闭，Windows Service 会继续运行。Agent 配置、日志和审计文件位于：
+
+```text
+%ProgramData%\RelayMcpAgent\
+```
+
+### 接入 MCP 客户端
+
+```text
+http://<relay-host>:3001/mcp
+Authorization: Bearer <MCP_TOKEN>
+```
+
+**Codex**：在 `C:\Users\<you>\.codex\config.toml` 中配置：
+
+```toml
+[mcp_servers.relay_mcp]
+url = "http://<relay-host>:3001/mcp"
+bearer_token_env_var = "RELAY_MCP_TOKEN"
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+enabled = true
+default_tools_approval_mode = "prompt"
+```
+
+设置用户环境变量后完整重启 Codex：
+
+```powershell
+[Environment]::SetEnvironmentVariable("RELAY_MCP_TOKEN", "<MCP_TOKEN>", "User")
+```
+
+**其他客户端**：原生支持 HTTP MCP 的客户端直接使用 endpoint 和 Bearer token。只支持 stdio 的客户端可以使用 `mcp-remote`：
+
+```json
+{
+  "mcpServers": {
+    "relay-mcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "http://<relay-host>:3001/mcp?token=<MCP_TOKEN>",
+        "--allow-http"
+      ]
+    }
+  }
+}
+```
+
+该示例使用的 `?token=` 属于 legacy 传输，默认已禁用，需要显式设置 `RELAY_MCP_ALLOW_QUERY_TOKEN=true` 才可用。生产环境应使用 HTTPS，优先使用 `Authorization: Bearer`，并通过反向代理限制 Web 与 MCP 入口。
+
+### 环境变量
+
+<details>
+<summary><strong>完整环境变量表</strong></summary>
 
 | 变量 | 默认值 | 用途 |
 |---|---|---|
@@ -550,56 +437,15 @@ RELAY_PUBLIC_URL=http://relay.example.com:7230
 
 MCP 客户端则连接公网 MCP 端口，例如 `http://relay.example.com:7231/mcp`。
 
-## 开发与验证
+</details>
 
-```bash
-npm install
-npm --prefix frontend install
-npm test
-npm run build
-```
+---
 
-`npm test` and `npm run build` automatically run `npm run check:mcp-boundary`,
-which is the P00 CI gate for the MCP composition root: it
-limits `src/mcp/index.ts` to 350 lines, prevents direct tool registration there,
-and verifies that registrar tool names and `TOOL_CATALOG` remain an exact union.
-The versioned `tests/fixtures/mcp-tools-baseline.json` additionally freezes the
-runtime `tools/list` schemas, descriptions, annotations, aliases, and capability
-metadata so a registrar refactor cannot silently remove or alter a tool.
-Regenerate it only after reviewing an intentional contract change:
+## MCP 工具
 
-```bash
-npm run generate:mcp-baseline
-```
+Relay MCP 暴露的工具分为 8 类：Project、Remote execution、Remote files、Workspace、Jobs、Playwright、Context、SampleManager。各分类的职责、典型工具和选用思路见 **[docs/mcp-tools.md](docs/mcp-tools.md)**。权威清单是 `src/shared/tool-catalog.ts` 和运行时的 `tools/list`。
 
-The snapshot records its source Git commit, MCP SDK version, generation command,
-timestamp, and whether the worktree was dirty when it was generated.
-
-常用开发命令：
-
-```bash
-npm run dev:server
-npm run dev:mcp
-```
-
-技术栈：Node.js、TypeScript、Fastify、Express、MCP SDK、SQLite/Drizzle、React、Vite、Tailwind CSS、PM2、node-ssh，以及 Windows WPF/.NET Agent。
-
-### 前端界面
-
-Web UI 使用顶部主导航与 Knowledge 二级导航；Product docs、Memory 和 Operations 保留各自的分区标签。Knowledge Overview 以 96 孔板展示索引覆盖，项目级页面通过顶部项目范围选择器共享持久化的 `knowledge.projectId`。记录详情、Provider 配置与审核操作使用可键盘操作的 Drawer/Dialog；原生 `window.confirm`/`prompt` 已移除。
-
-设计令牌与实现约束见 [前端重设计规格](docs/frontend-redesign-spec.md)，视觉参考见 [Knowledge Overview 参考页](docs/design/knowledge-overview-reference.html)。字体通过 `frontend` 的本地 `@fontsource` 依赖加载，不依赖 Google Fonts。
-
-前端构建与严格类型检查：
-
-```bash
-npm --prefix frontend run build
-cd frontend && npx tsc --noEmit --jsx react-jsx --module ESNext --moduleResolution bundler --target ES2022 --strict --skipLibCheck src/main.tsx
-```
-
-## Managed Knowledge engine
-
-Product Knowledge 和 Wiki 的统一模型、部署、迁移及故障恢复见 [运维指南](docs/managed-knowledge-engine-operations.md)。本轮能力与升级边界见 [未发布变更说明](docs/managed-knowledge-engine-release-notes.md)，真实验收证据见 [验证报告](docs/verification/managed-engine-progress.md)。
+---
 
 ## 安全边界
 
@@ -612,6 +458,93 @@ Product Knowledge 和 Wiki 的统一模型、部署、迁移及故障恢复见 [
 - SQL 默认只读；mutation、目录树删除、部署和回滚需要显式调用。
 - 生产环境应使用 HTTPS、强 `JWT_SECRET`、最小权限账号和受限网络入口。
 
+---
+
+## 开发与验证
+
+```bash
+npm install
+npm --prefix frontend install
+npm test
+npm run build
+```
+
+常用开发命令：`npm run dev:server`、`npm run dev:mcp`。技术栈：Node.js、TypeScript、Fastify、Express、MCP SDK、SQLite/Drizzle、React、Vite、Tailwind CSS、PM2、node-ssh，以及 Windows WPF/.NET Agent。
+
+### 代码布局
+
+| 路径 | 内容 |
+|---|---|
+| `src/mcp/` | MCP 入口（HTTP Transport、认证、审计、依赖组装）、`register-tools.ts`，以及 `tools/` 下按域划分的工具 registrar |
+| `src/server/` | Fastify Web API：`routes/`、`db/`、迁移和 Knowledge 引擎启动 |
+| `src/shared/` | Job/Deployment store、SSH 与 Agent runner、工具目录 `tool-catalog.ts` 等共享逻辑 |
+| `src/knowledge/` | Knowledge Plane：store、迁移、Work Session、Capture/Ingest Worker |
+| `frontend/` | React + Vite + Tailwind 管理界面 |
+| `agent/windows/` | Windows Relay Agent |
+| `scripts/`、`tests/`、`docs/` | 脚本、测试、文档 |
+
+### MCP 组合根约束
+
+`src/mcp/index.ts` 只处理 HTTP Transport、认证、依赖组装和审计入口；工具注册位于 `src/mcp/register-tools.ts` 和 `src/mcp/tools/`。新增工具必须放入相应的域 registrar，并登记到 `src/shared/tool-catalog.ts`，不能直接追加到入口文件。
+
+`npm test` 和 `npm run build` 会自动运行 `npm run check:mcp-boundary`：限制 `src/mcp/index.ts` 不超过 350 行，禁止在其中直接注册工具，并校验 registrar 工具名与 `TOOL_CATALOG` 完全一致。`tests/fixtures/mcp-tools-baseline.json` 冻结运行时 `tools/list` 的 schema、描述、注解、别名与能力元数据；只有在评审过有意的契约变更后才重新生成：
+
+```bash
+npm run generate:mcp-baseline
+```
+
+快照会记录来源 Git commit、MCP SDK 版本、生成命令、时间，以及生成时工作区是否有未提交改动。
+
+### 前端
+
+Web UI 使用顶部主导航与 Knowledge 二级导航；项目级页面通过顶部项目范围选择器共享持久化的 `knowledge.projectId`。记录详情、Provider 配置与审核操作使用可键盘操作的 Drawer/Dialog。设计令牌与实现约束见 [前端重设计规格](docs/frontend-redesign-spec.md)，视觉参考见 [Knowledge Overview 参考页](docs/design/knowledge-overview-reference.html)。字体通过 `frontend` 的本地 `@fontsource` 依赖加载，不依赖 Google Fonts。
+
+```bash
+npm --prefix frontend run build
+cd frontend && npx tsc --noEmit --jsx react-jsx --module ESNext --moduleResolution bundler --target ES2022 --strict --skipLibCheck src/main.tsx
+```
+
+---
+
+## 文档索引
+
+| 主题 | 文档 |
+|---|---|
+| MCP 工具分类 | [docs/mcp-tools.md](docs/mcp-tools.md) |
+| 通用远程部署规范 | [docs/deployment-command-guide.md](docs/deployment-command-guide.md) |
+| SampleManager 部署流程 | [docs/samplemanager-knowledge-enabled-deployment-flow.md](docs/samplemanager-knowledge-enabled-deployment-flow.md) |
+| Knowledge 架构 | [docs/knowledge-base-architecture.md](docs/knowledge-base-architecture.md) |
+| Managed Knowledge 引擎运维 | [docs/managed-knowledge-engine-operations.md](docs/managed-knowledge-engine-operations.md) |
+| Managed Knowledge 变更说明 | [docs/managed-knowledge-engine-release-notes.md](docs/managed-knowledge-engine-release-notes.md) |
+| Knowledge 治理（审核、晋级、Evidence、Skill diff） | [docs/knowledge-governance.md](docs/knowledge-governance.md) |
+| Knowledge 检索质量基线 | [docs/knowledge-quality-baseline.md](docs/knowledge-quality-baseline.md) |
+| Product 导入运维 | [docs/product-import-operations.md](docs/product-import-operations.md) |
+| Case / Pattern / Playbook 模板 | [docs/templates/](docs/templates/) |
+| 验证报告 | [docs/verification/managed-engine-progress.md](docs/verification/managed-engine-progress.md) |
+| 前端设计规格 | [docs/frontend-redesign-spec.md](docs/frontend-redesign-spec.md) |
+
+---
+
+## 更新要点
+
+<details>
+<summary><strong>v0.6.3</strong></summary>
+
+- Product Document 成为唯一的产品文档领域对象，索引引擎字段作为同一对象的 projection。
+- 同一 `topic_group_id` 的多版本内容合并为一个 Wiki 页面，并按 Common / Version / Differences 组织。
+- Product import 自动排队后台 `wiki_generation`，生成带章节级来源引用的 draft Wiki。
+- Wiki 前端提供 Solution → Module → Topic 目录、版本筛选、稳定 TOC 和生成状态。
+- Agent 通过 `artifact-upload` job 将远程文件流式上传到 Relay，不再把大型二进制塞进 Base64/JSON。
+- 下载接口支持 HTTP Range，本地下载器使用 `.part` 文件断点续传。
+- 文件传输返回并校验字节数和 SHA-256。
+- `/api/health` 返回版本、Git commit 和构建时间，便于确认实际运行版本。
+- 提供单文件 WPF Windows Agent Client，包含服务控制、数据库权限、请求审计、日志和更新管理。
+- 兼容性变更：`?token=` query 认证默认关闭。
+
+[Release 与 Windows Agent 下载](https://github.com/tengfei1994/Relay-MCP/releases/tag/v0.6.3)
+
+</details>
+
 ## License
 
-[MIT](LICENSE)
+MIT

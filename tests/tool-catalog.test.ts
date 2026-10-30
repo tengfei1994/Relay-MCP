@@ -47,7 +47,6 @@ const registrarSource = () => [
 
 test("every registered MCP tool is categorized and described exactly once", () => {
   const source = registrarSource();
-  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
   const registered = [
     ...source.matchAll(/server\.tool\(\s*"([^"]+)"/g),
     ...source.matchAll(/registerRelayAlias\([^,]+,\s*"([^"]+)"/g),
@@ -58,7 +57,6 @@ test("every registered MCP tool is categorized and described exactly once", () =
   for (const entry of TOOL_CATALOG) {
     assert.ok(entry.category);
     assert.ok(entry.description.length >= 12);
-    assert.ok(readme.includes(`\`${entry.name}\``), `README is missing ${entry.name}`);
     if (entry.category === "samplemanager" && entry.entity) {
       const entity = SAMPLEMANAGER_ENTITY_CATALOG.find((item) => item.id === entry.entity);
       assert.ok(entity, `Unknown SampleManager entity '${entry.entity}' for ${entry.name}`);

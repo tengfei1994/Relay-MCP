@@ -25,16 +25,18 @@ export function wikiCanonicalKey(row: WikiIdentityRow): string {
 }
 
 /**
- * Explicit Product topic IDs are authoritative. Older rows without one use
- * stable descriptive metadata rather than the generated upstream slug, so two
- * independently generated slugs for the same topic converge.
+ * Explicit Product topic IDs are authoritative. Engine-backed pages use their
+ * stable upstream slug when no topic binding exists; legacy local rows without
+ * either identity fall back to source references and descriptive metadata.
  */
 export function wikiTopicIdentity(row: WikiIdentityRow): string {
-  // Product topic IDs and source references are opaque identifiers. Do not
-  // slug-normalize them: TOPIC_A and topic-a (or doc_1 and doc-1) are
-  // different upstream identities.
+  // Product topic IDs and upstream slugs are opaque identifiers. Do not
+  // normalize them: TOPIC_A, topic-a, and two distinct Wiki slugs are different
+  // identities.
   const explicit = text(row.topic_id);
   if (explicit) return `topic:${JSON.stringify(explicit)}`;
+  const externalSlug = text(row.external_slug);
+  if (externalSlug) return `external:${JSON.stringify(externalSlug)}`;
   const refs = (() => {
     try {
       const raw = row.source_refs_json;
@@ -46,7 +48,6 @@ export function wikiTopicIdentity(row: WikiIdentityRow): string {
     }
   })();
   if (refs.length) return `fallback:source:${JSON.stringify(refs)}`;
-
   // Legacy rows without authoritative IDs use bounded, field-labelled
   // metadata. Keeping each field separate prevents accidental concatenation
   // collisions while retaining convergence across generated page slugs.

@@ -395,7 +395,7 @@ test("generated Wiki slugs converge to one canonical topic while retaining dupli
   assert.equal(remote.calls.filter(call => call.method === "POST").length, 0);
 }));
 
-test("generated Wiki fallback identity uses shared citations and keeps different topics separate", () => fixture(async ({ store, wiki, remote }) => {
+test("generated Wiki fallback identity keeps distinct upstream slugs separate", () => fixture(async ({ store, wiki, remote }) => {
   document(store);
   document(store, { id: "doc-2" });
   generated(remote, "fallback/one", ["doc-1"]);
@@ -404,7 +404,7 @@ test("generated Wiki fallback identity uses shared citations and keeps different
   await wiki.adopt({ actorId: 7, slug: "fallback/one", projectId: "p1", reason: "Review fallback" });
   await wiki.adopt({ actorId: 7, slug: "fallback/two", projectId: "p1", reason: "Review duplicate fallback" });
   await wiki.adopt({ actorId: 7, slug: "different-topic", projectId: "p1", reason: "Review another topic" });
-  assert.equal((await wiki.list({ actorId: 7, projectId: "p1" })).total, 2);
+  assert.equal((await wiki.list({ actorId: 7, projectId: "p1" })).total, 3);
 }));
 
 test('project Wiki may cite global Product sources while retaining explicitly chosen private scope', () => fixture(async ({ store, wiki }) => {

@@ -28,4 +28,6 @@ test("local Wiki keeps opaque topic IDs distinct", () => {
   assert.notEqual(wikiTopicIdentity({ topic_id: "TOPIC_A" }), wikiTopicIdentity({ topic_id: "topic-a" }));
   assert.notEqual(wikiTopicIdentity({ source_refs_json: JSON.stringify(["doc_1"]) }), wikiTopicIdentity({ source_refs_json: JSON.stringify(["doc-1"]) }));
   assert.equal(wikiTopicIdentity({ source_refs_json: JSON.stringify([" doc-1 ", "doc-1"]) }), wikiTopicIdentity({ source_refs_json: JSON.stringify(["doc-1"]) }));
+  assert.notEqual(wikiTopicIdentity({ external_slug: "generated/one", source_refs_json: JSON.stringify(["doc-1"]) }), wikiTopicIdentity({ external_slug: "generated/two", source_refs_json: JSON.stringify(["doc-1"]) }));
+  assert.equal(wikiTopicIdentity({ external_slug: "generated/one", source_refs_json: JSON.stringify(["doc-1"]) }), wikiTopicIdentity({ external_slug: "generated/one", source_refs_json: JSON.stringify(["doc-2"]) }));
 });

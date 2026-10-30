@@ -41,6 +41,10 @@ test("Product and Wiki detail, revision and mutation requests retain their sourc
       assert.equal(url.searchParams.get("projectId"), "project-a");
       assert.equal(url.searchParams.get("environment"), "test");
     }
+    await api.knowledgeWikiGenerationStart({ ...scope, retryFailed: true });
+    assert.equal(calls[12].body.projectId, "project-a");
+    assert.equal(calls[12].body.environment, "test");
+    assert.equal(calls[12].body.retryFailed, true);
     await api.knowledgeWikiCreate({ ...scope, title: "Wiki", sourceRefs: ["source-1"] });
     await api.knowledgeSearch({ ...scope, query: "probe" });
     for (const call of calls.slice(13)) {

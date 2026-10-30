@@ -552,6 +552,17 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   }, [showCreate, scope.projectId, scope.environment]);
   const openPage = (item: JsonRecord) => setParams((current) => { const next = new URLSearchParams(current); const id = text(item.id); const key = text(item.pageKey); if (id) { next.set("wikiPage", id); next.delete("wikiKey"); } else if (key) { next.set("wikiKey", key); next.delete("wikiPage"); } return next; });
   const closePage = () => setParams((current) => { const next = new URLSearchParams(current); next.delete("wikiPage"); next.delete("wikiKey"); return next; });
+  const startGeneration = async () => {
+    setError("");
+    setNotice("");
+    try {
+      const response = asRecord(await api.knowledgeWikiGenerationStart({ ...scope, retryFailed: true }));
+      setNotice(`Queued ${Number(response.queued ?? 0)} of ${Number(response.total ?? 0)} Wiki topics.`);
+      await load();
+    } catch (err) {
+      setError(errText(err, "Unable to start Wiki generation"));
+    }
+  };
   const grouped = new Map<string, Map<string, JsonRecord[]>>();
   (result ?? []).forEach((item) => {
     const solution = text(item.solution, "Unassigned");
@@ -572,6 +583,7 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
         <select aria-label="Filter by status" className={inputClass} value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}><option value="">All statuses</option>{WIKI_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}</select>
         <select aria-label="Filter by version" className={inputClass} value={filters.version} onChange={(event) => setFilters({ ...filters, version: event.target.value })}><option value="">All versions</option>{[...new Set((result ?? []).flatMap((item) => [...strings(item.supportedVersions), text(item.productVersion)].filter(Boolean)))].map((version) => <option key={version} value={version}>{version}</option>)}</select>
         <button className={btnGhost} onClick={() => void load()}><RefreshCw size={13} /> Refresh</button>
+        {isAdmin && <button className={btnGhost} onClick={() => void startGeneration()}><Workflow size={13} /> Generate all</button>}
         {isAdmin && <button className={btn} onClick={() => setShowCreate(!showCreate)}>New page</button>}
       </div>
       {generation && (activeGeneration > 0 || failedGeneration > 0) && <div className="mt-3 flex flex-wrap items-center gap-2 rounded-field border border-white/10 bg-black/20 px-3 py-2 text-xs text-subtle">

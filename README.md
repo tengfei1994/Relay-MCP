@@ -134,7 +134,7 @@ Product import
                          └─ write one draft Wiki revision
 ```
 
-导入或服务启动会自动补齐待处理 topic group。生成失败会保留状态、错误和尝试次数，不会生成无来源的 fallback 内容；Review/Publish 仍是独立的人工动作。
+导入或服务启动会自动补齐待处理 topic group。管理员也可以在 **Knowledge → Wiki** 点击 **Generate all**，调用 `POST /api/knowledge/wiki/generation`，将缺失和失败的 topic group 重新排队；这不是 Product migration。生成失败会保留状态、错误和尝试次数，不会生成无来源的 fallback 内容；Review/Publish 仍是独立的人工动作。已有统一 Product Wiki 后，对应的旧引擎 Wiki 页面会被隐藏，不参与目录计数。
 
 实现与运维细节：
 

@@ -28,15 +28,22 @@ export class ActiveWikiService {
 
 
   private enginePageShadowed(item: WikiPageListResult["items"][number], local: WikiPageListResult["items"]): boolean {
-    const topicGroups = [...new Set(local.map(page => page.topicGroupId).filter((value): value is string => Boolean(value)))];
-    if (!topicGroups.length || !item.sourceRefs.length) return false;
+    const generatedGroups = [...new Set(local
+      .filter(page => page.generationStatus === "succeeded")
+      .map(page => page.topicGroupId)
+      .filter((value): value is string => Boolean(value)))];
+    if (!generatedGroups.length || !item.sourceRefs.length) return false;
     try {
-      const placeholders = item.sourceRefs.map(() => "?").join(","), groupPlaceholders = topicGroups.map(() => "?").join(",");
+      const refs = [...new Set(item.sourceRefs.filter(Boolean))];
+      const placeholders = refs.map(() => "?").join(","), groupPlaceholders = generatedGroups.map(() => "?").join(",");
       return Boolean(this.store.db.prepare(`SELECT 1
         FROM knowledge_product_documents p
-        JOIN knowledge_weknora_documents w ON w.external_document_id=p.engine_external_document_id
-        WHERE (w.id IN (${placeholders}) OR w.external_document_id IN (${placeholders}))
-          AND p.topic_group_id IN (${groupPlaceholders}) LIMIT 1`).get(...item.sourceRefs, ...item.sourceRefs, ...topicGroups));
+        LEFT JOIN knowledge_weknora_documents w ON w.external_document_id=p.engine_external_document_id
+        WHERE (p.id IN (${placeholders})
+          OR p.engine_external_document_id IN (${placeholders})
+          OR w.id IN (${placeholders})
+          OR w.external_document_id IN (${placeholders}))
+          AND p.topic_group_id IN (${groupPlaceholders}) LIMIT 1`).get(...refs, ...refs, ...refs, ...refs, ...generatedGroups));
     } catch {
       return false;
     }

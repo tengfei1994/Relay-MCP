@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ActiveWikiService } from "../src/knowledge/active-wiki.ts";
 import { EngineWikiError, type EngineWikiService } from "../src/knowledge/engine-wiki.ts";
-import type { WikiPageListQuery, WikiPageListResult, WikiPageSummary } from "../src/knowledge/wiki.ts";
-import type { KnowledgeStore } from "../src/knowledge/store.ts";
-import type { WikiService } from "../src/knowledge/wiki.ts";
+import { WikiService, type WikiPageListQuery, type WikiPageListResult, type WikiPageSummary } from "../src/knowledge/wiki.ts";
+import { createKnowledgeStore, type KnowledgeStore } from "../src/knowledge/store.ts";
 
 function page(id: string, overrides: Record<string, unknown> = {}): WikiPageSummary {
   return {
@@ -67,6 +69,39 @@ test("engine-authoritative merge prefers the engine page for one identity", asyn
 
   assert.equal(result.total, 1);
   assert.equal(result.items[0]?.id, "engine-wiki:1");
+});
+test("generated local Wiki shadows all engine pages citing its Product topic", async () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-active-wiki-"));
+  const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });
+  store.grantAcl("project-1", 7, true);
+  try {
+    const now = "2026-10-25T00:00:00.000Z";
+    store.db.prepare(`INSERT INTO knowledge_documents
+      (id,kind,title,body,lifecycle,source_locator,source_sha256,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run("doc-1", "product_document", "Localization", "body", "approved", "fixture://doc-1", "sha-1", now, now);
+    store.db.prepare(`INSERT INTO knowledge_product_documents
+      (id,document_family_id,document_type,source_path,source_sha256,version,topic_group_id,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run("doc-1", "localization", "guide", "localization.md", "sha-1", "21.3", "topic-localization", now, now);
+    const local = new WikiService(store, () => new Date(now));
+    local.upsertGenerated({
+      topicGroupId: "topic-localization", pageKey: "topic/localization", title: "Localization", body: "# Localization",
+      supportedVersions: ["21.3"], sourceRefs: ["doc-1"], fingerprint: "fingerprint",
+      sections: [{ key: "common", kind: "common", title: "Common", body: "body", sortOrder: 0, citations: [{ documentId: "doc-1", productVersion: "21.3", chunkIds: [] }] }],
+    });
+    const engine = provider([
+      page("engine-wiki:one", { sourceRefs: ["doc-1"] }),
+      page("engine-wiki:two", { sourceRefs: ["doc-1"] }),
+      page("engine-wiki:three", { sourceRefs: ["doc-1"] }),
+      page("engine-wiki:four", { sourceRefs: ["doc-1"] }),
+      page("engine-wiki:five", { sourceRefs: ["doc-1"] }),
+    ]);
+    const result = await new ActiveWikiService(store, local, engine as unknown as EngineWikiService, true).list({ actorId: 7, isAdmin: true, projectId: "project-1" });
+    assert.equal(result.total, 1);
+    assert.equal(result.items[0]?.topicGroupId, "topic-localization");
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("engine Wiki pages with shared sources remain distinct by upstream page key", async () => {

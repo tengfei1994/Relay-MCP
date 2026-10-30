@@ -15,7 +15,8 @@ import { analyzeRelationImpact, queryRelations } from "../../knowledge/relations
 import { searchKnowledge } from "../../knowledge/retriever.js";
 import { correctProductMetadata, updateProductDocumentLifecycle } from "../../knowledge/knowledge-products.js";
 import { ingestArtifactSet, ingestProjectSnapshot } from "../../knowledge/artifact-ingest.js";
-import { enqueueArtifactImport, enqueueProductImport, enqueueProductMigration, MigrationQueueBusyError } from "../../knowledge/ingest-worker.js";
+import { enqueueArtifactImport, enqueueProductImport, enqueueProductMigration, enqueueWikiGeneration, MigrationQueueBusyError } from "../../knowledge/ingest-worker.js";
+import { listWikiTopicGroups } from "../../knowledge/wiki-generation.js";
 import { compareSourceBaselines, type SourceManifest } from "../../knowledge/source-baseline.js";
 import { compareSourceUpgradeWithSymbols } from "../../knowledge/source-symbol.js";
 import { classifyRelayEvent } from "../../knowledge/event-classifier.js";
@@ -1640,6 +1641,17 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     const states = store.db.prepare("SELECT * FROM knowledge_wiki_generation_state WHERE project_id=? AND environment=? ORDER BY updated_at DESC LIMIT ?").all(scopeProject, scopeEnvironment, parseBoundedInt(query.limit, 100, 1, 200));
     const jobs = store.db.prepare("SELECT id,status,result_json,error,created_at,updated_at,finished_at FROM knowledge_ingest_jobs WHERE kind='wiki_generation' ORDER BY updated_at DESC LIMIT ?").all(parseBoundedInt(query.limit, 100, 1, 200));
     return reply.send({ states, jobs });
+  });
+  app.post("/api/knowledge/wiki/generation", { onRequest: [app.authenticate] }, async (request, reply) => {
+    if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator permission required" });
+    const body = z.object({ projectId: z.string().trim().min(1).optional(), environment: z.string().trim().min(1).optional(), retryFailed: z.boolean().optional() }).safeParse(request.body ?? {});
+    if (!body.success) return reply.status(400).send({ error: "Invalid Wiki generation request" });
+    if (body.data.environment && !body.data.projectId) return reply.status(400).send({ error: "environment requires projectId" });
+    const store = getKnowledgeStore(), groups = listWikiTopicGroups(store, body.data);
+    const states = new Map((store.db.prepare("SELECT topic_group_id,status FROM knowledge_wiki_generation_state WHERE project_id=? AND environment=?").all(body.data.projectId ?? "", body.data.environment ?? "") as Array<{ topic_group_id: string; status: string }>).map(row => [row.topic_group_id, row.status]));
+    const topicGroupIds = groups.map(group => group.topicGroupId).filter(topicGroupId => !states.has(topicGroupId) || (body.data.retryFailed === true && states.get(topicGroupId) === "failed"));
+    const job = enqueueWikiGeneration(store, { topicGroupIds, projectId: body.data.projectId, environment: body.data.environment, triggerId: `manual-${randomUUID()}` });
+    return reply.status(job ? 202 : 200).send({ job, queued: topicGroupIds.length, total: groups.length });
   });
 
   app.post("/api/knowledge/wiki", { onRequest: [app.authenticate] }, async (request, reply) => {

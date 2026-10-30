@@ -99,13 +99,22 @@ export function enqueueWikiGeneration(store: KnowledgeStore, input: { topicGroup
   return { id, kind: "wiki_generation", status: "queued" };
 }
 
-export function ensureWikiGeneration(store: KnowledgeStore, input: { projectId?: string; environment?: string } = {}): IngestJob | undefined {
+export function ensureWikiGeneration(store: KnowledgeStore, input: { projectId?: string; environment?: string; retryFailed?: boolean } = {}): IngestJob | undefined {
   const groups = listWikiTopicGroups(store, input).map(group => group.topicGroupId);
+  const retryFailed = input.retryFailed === true;
+  const states = new Map(groups.map(topicGroupId => {
+    const row = store.db.prepare("SELECT status,updated_at FROM knowledge_wiki_generation_state WHERE project_id=? AND environment=? AND topic_group_id=?").get(input.projectId ?? "", input.environment ?? "", topicGroupId) as { status?: string; updated_at?: string } | undefined;
+    return [topicGroupId, row] as const;
+  }));
   const pending = groups.filter(topicGroupId => {
-    const row = store.db.prepare("SELECT status FROM knowledge_wiki_generation_state WHERE project_id=? AND environment=? AND topic_group_id=?").get(input.projectId ?? "", input.environment ?? "", topicGroupId) as { status?: string } | undefined;
-    return !row;
+    const row = states.get(topicGroupId);
+    return !row || (retryFailed && row.status === "failed");
   });
-  return enqueueWikiGeneration(store, { ...input, topicGroupIds: pending, triggerId: "bootstrap" });
+  const retryFingerprint = pending.map(topicGroupId => {
+    const row = states.get(topicGroupId);
+    return [topicGroupId, row?.status ?? "missing", row?.updated_at ?? ""];
+  });
+  return enqueueWikiGeneration(store, { topicGroupIds: pending, projectId: input.projectId, environment: input.environment, triggerId: retryFailed ? `bootstrap-retry-${createHash("sha256").update(JSON.stringify(retryFingerprint)).digest("hex").slice(0, 16)}` : "bootstrap" });
 }
 export function enqueueArtifactImport(store: KnowledgeStore, options: { source: string; kind?: string; name: string; version?: string; solution?: string; storageUri?: string }): IngestJob {
   const id = randomUUID(); const now = new Date().toISOString(); store.db.prepare("INSERT INTO knowledge_ingest_jobs(id,kind,payload_json,status,available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").run(id, "artifact_set", JSON.stringify(options), "queued", now, now, now); scheduleIngestJobs(store); return { id, kind: "artifact_set", status: "queued" };

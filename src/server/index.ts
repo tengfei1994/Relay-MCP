@@ -134,7 +134,7 @@ await app.register(knowledgeEngineRoutes);
 // Resume durable document imports after a process restart. The worker claims
 // only queued rows and keeps the HTTP server responsive while large packages
 // are parsed.
-ensureWikiGeneration(getKnowledgeStore());
+ensureWikiGeneration(getKnowledgeStore(), { retryFailed: true });
 recoverInterruptedIngestJobs(getKnowledgeStore());
 void runPendingIngestJobs(getKnowledgeStore()).catch((error) => app.log.error(error, "knowledge ingest recovery failed"));
 

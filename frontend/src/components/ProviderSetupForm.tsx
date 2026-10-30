@@ -64,7 +64,7 @@ export function ProviderSetupForm({ initial, onSaved, onCancel }: { initial?: Pr
         <Field label="API token"><Input type="password" value={form.token} onChange={(event) => updateConnection("token", event.target.value)} autoComplete="new-password" spellCheck={false} placeholder={initial ? "Enter token to reconnect" : "Enter gateway token"} /></Field>
       </div>
       <p className="text-xs text-muted">Tokens are encrypted on the server and never returned to this page.</p>
-      <Button type="button" disabled={Boolean(busy) || !form.baseUrl.trim() || !form.token.trim()} onClick={() => void discover}>{busy === "loading" ? "Fetching models" : "Fetch models"}</Button>
+      <Button type="button" disabled={Boolean(busy) || !form.baseUrl.trim() || !form.token.trim()} onClick={() => void discover()}>{busy === "loading" ? "Fetching models" : "Fetch models"}</Button>
       {notice && <p role="status" className="text-sm text-fg">{notice}</p>}
       {models && models.length > 0 && <div className="space-y-3 border-t border-white/10 pt-4">
         <div className="grid gap-4 sm:grid-cols-2">
@@ -74,7 +74,7 @@ export function ProviderSetupForm({ initial, onSaved, onCancel }: { initial?: Pr
         <Field label="Model"><Select value={form.modelId} onChange={(event) => setForm({ ...form, modelId: event.target.value })}><option value="">Select a model</option>{shown.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}</Select></Field>
         {!shown.length && <p className="text-sm text-muted">No models match this search.</p>}
         <p className="text-xs text-muted">The selected purpose is verified with a small API request before saving.{form.kind === "embedding" ? " Embedding dimensions are detected automatically." : ""}</p>
-        <Button type="button" disabled={Boolean(busy) || !form.id.trim() || !form.provider.trim() || !models.some((model) => model.id === form.modelId)} onClick={() => void save}>{busy === "saving" ? "Testing and saving" : "Test and save"}</Button>
+        <Button type="button" disabled={Boolean(busy) || !form.id.trim() || !form.provider.trim() || !models.some((model) => model.id === form.modelId)} onClick={() => void save()}>{busy === "saving" ? "Testing and saving" : "Test and save"}</Button>
       </div>}
       {initial && <Button type="button" variant="ghost" onClick={onCancel}>Cancel editing</Button>}
     </fieldset>

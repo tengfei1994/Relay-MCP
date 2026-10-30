@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { KnowledgeStore } from "./store.js";
 
-export const PRODUCT_GRAPH_EXTRACTION_VERSION = "product-graph-1";
+export const PRODUCT_GRAPH_EXTRACTION_VERSION = "product-graph-2";
 
 type Metadata = Record<string, unknown>;
 
@@ -206,18 +206,24 @@ export function extractProductGraph(input: ProductGraphInput): ProductGraph {
   const headingByLine: Array<{ line: number; entity: ProductGraphEntity }> = [];
   const lines = source.text.split(/\r?\n/);
   let fence = false;
-  const headingStack: string[] = [];
+  const headingStack: Array<ProductGraphEntity | undefined> = [];
   lines.forEach((line, lineNumber) => {
     if (/^\s*(```|~~~)/.test(line)) { fence = !fence; return; }
     if (fence) return;
     const match = line.match(/^\s*(#{1,6})\s+(.+?)\s*#*\s*$/);
     if (!match) return;
     const depth = match[1].length;
-    const heading = clean(match[2]); headingStack.splice(depth - 1); headingStack[depth - 1] = heading;
-    const path = headingStack.filter(Boolean).join(" / ");
+    const heading = clean(match[2]);
+    let parent = document;
+    for (let index = Math.min(depth - 2, headingStack.length - 1); index >= 0; index -= 1) {
+      if (headingStack[index]) { parent = headingStack[index]!; break; }
+    }
+    headingStack.splice(depth - 1);
+    const path = [...headingStack.filter(Boolean).map(item => item!.name), heading].join(" / ");
     const target = addEntity(`heading:${keyPart(path)}`, heading, "heading", `${source.sourceLocator}#${anchor(heading)}`, Math.max(0.7, source.confidence));
+    headingStack[depth - 1] = target;
     headingByLine.push({ line: lineNumber, entity: target });
-    addRelation(document, target, "contains", target.sourceLocator, target.confidence);
+    addRelation(parent, target, "contains", target.sourceLocator, target.confidence);
   });
   const currentHeading = (lineNumber: number): ProductGraphEntity => {
     let result = document;

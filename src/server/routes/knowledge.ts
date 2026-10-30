@@ -38,7 +38,7 @@ import { CandidateInsightReviewService } from "../../knowledge/candidate-review.
 import { ConfirmedMemoryService, CONFIRMED_MEMORY_TYPES } from "../../knowledge/confirmed-memory.js";
 import { enqueueCandidateInsight, getCandidateInsightJob } from "../../knowledge/candidate-worker.js";
 import { WikiService, WIKI_PAGE_STATUSES } from "../../knowledge/wiki.js";
-import { buildWikiDirectoryPath } from "../../knowledge/wiki-directory.js";
+import { buildWikiDirectoryPaths } from "../../knowledge/wiki-directory.js";
 import { WeKnoraError } from "../../knowledge/weknora.js";
 import { WeKnoraIngestor } from "../../knowledge/weknora-ingest.js";
 import { ContextPackService } from "../../knowledge/context-pack.js";
@@ -1652,15 +1652,17 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     if (!projectId && environment) return reply.status(400).send({ error: "environment requires projectId" });
     const status = typeof query.status === "string" && WIKI_PAGE_STATUSES.includes(query.status as never) ? query.status as never : undefined;
     try {
-      const result = new WikiService(getKnowledgeStore()).list({
+      const store = getKnowledgeStore();
+      const result = new WikiService(store).list({
         actorId: request.user.id, isAdmin: request.user.isAdmin, projectId, environment, status,
         productVersion: queryValue(query, "productVersion"), topicId: queryValue(query, "topicId"), topicGroupId: queryValue(query, "topicGroupId"),
         solution: queryValue(query, "solution"), module: queryValue(query, "module"), search: queryValue(query, "search"),
         limit: parseBoundedInt(query.limit, 200, 1, 200), offset: parseBoundedInt(query.offset, 0, 0, 1_000_000),
       });
-      const items = result.items.map((item) => ({
+      const directoryPaths = buildWikiDirectoryPaths(store, result.items.map((item) => ({ title: item.title, sourceRefs: item.sourceRefs, solution: item.solution, module: item.module })));
+      const items = result.items.map((item, index) => ({
         ...item,
-        directoryPath: buildWikiDirectoryPath(getKnowledgeStore(), { title: item.title, sourceRefs: item.sourceRefs, solution: item.solution, module: item.module }),
+        directoryPath: directoryPaths[index],
       }));
       const grouped = new Map<string, Map<string, Array<(typeof items)[number]>>>();
       for (const item of items) {

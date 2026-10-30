@@ -38,6 +38,9 @@ const RELATION_PRIORITY = new Map([
   ["impacts", 7],
   ["used_by", 8],
 ]);
+const MAX_RELATION_PATH_DEPTH = 6;
+const GRAPH_QUERY_BATCH_SIZE = 400;
+
 
 function text(value: unknown): string {
   return value == null ? "" : String(value).trim();
@@ -104,7 +107,7 @@ function relationPath(sourceId: string, entities: GraphEntity[], relations: Grap
       const priority = (RELATION_PRIORITY.get(left.relation.relationType) ?? 99) - (RELATION_PRIORITY.get(right.relation.relationType) ?? 99);
       if (priority !== 0) return priority;
       const confidence = (right.relation.confidence + right.target.confidence) - (left.relation.confidence + left.target.confidence);
-      return confidence || left.target.name.localeCompare(right.target.name);
+      return confidence || left.target.name.localeCompare(right.target.name) || left.relation.id.localeCompare(right.relation.id);
     });
   const result = [label(fallback.solution), label(fallback.module)].filter((value): value is string => Boolean(value));
   if (!document) return result;
@@ -120,7 +123,7 @@ function relationPath(sourceId: string, entities: GraphEntity[], relations: Grap
 
   const visited = new Set<string>([document.id]);
   let current = document.id;
-  for (let depth = 0; depth < 2; depth += 1) {
+  for (let depth = 0; depth < MAX_RELATION_PATH_DEPTH; depth += 1) {
     const next = edges(current).find(({ relation, target }) => !METADATA_RELATIONS.has(relation.relationType) && !IGNORED_ENTITY_KINDS.has(target.kind) && !visited.has(target.id) && Boolean(label(target.name)));
     if (!next) break;
     visited.add(next.target.id);
@@ -134,26 +137,46 @@ function relationPath(sourceId: string, entities: GraphEntity[], relations: Grap
  * Build the persisted/displayed directory from the Product graph. The first
  * folders come from document -> solution/module relations; the next folders
  * follow bounded entity edges (for example document -> heading -> concept).
+ * Traversal is capped so malformed projections cannot produce unbounded paths.
  * Shared prefixes across product versions keep one Wiki page in one stable
  * location even when a version has an extra relationship.
  */
-export function buildWikiDirectoryPath(store: KnowledgeStore, input: WikiDirectoryPathInput): string {
+function fallbackDirectoryPath(input: WikiDirectoryPathInput): string {
+  const title = label(input.title) ?? "Untitled topic";
+  const fallback = [label(input.solution), label(input.module)].filter((value): value is string => Boolean(value));
+  return [...fallback, title].join("/");
+}
+
+function directoryPathFromGraph(input: WikiDirectoryPathInput, graph: { entities: GraphEntity[]; relations: GraphRelation[]; metadata: Map<string, { solution?: string; module?: string }> }): string {
   const title = label(input.title) ?? "Untitled topic";
   const sourceRefs = [...new Set((input.sourceRefs ?? []).map(text).filter(Boolean))];
   const fallback = [label(input.solution), label(input.module)].filter((value): value is string => Boolean(value));
   if (!sourceRefs.length) return [...fallback, title].join("/");
+  const paths = sourceRefs.map((sourceId) => relationPath(sourceId, graph.entities, graph.relations, {
+    solution: graph.metadata.get(sourceId)?.solution ?? input.solution,
+    module: graph.metadata.get(sourceId)?.module ?? input.module,
+  }));
+  const prefix = commonPrefix(paths);
+  return [...(prefix.length ? prefix : fallback), title].join("/");
+}
 
+export function buildWikiDirectoryPaths(store: KnowledgeStore, inputs: WikiDirectoryPathInput[]): string[] {
+  if (!inputs.length) return [];
+  const sourceRefs = [...new Set(inputs.flatMap((input) => (input.sourceRefs ?? []).map(text).filter(Boolean)))];
   try {
-    const graph = graphRows(store, sourceRefs);
-    const paths = sourceRefs.map((sourceId) => relationPath(sourceId, graph.entities, graph.relations, {
-      solution: graph.metadata.get(sourceId)?.solution ?? input.solution,
-      module: graph.metadata.get(sourceId)?.module ?? input.module,
-    }));
-    const prefix = commonPrefix(paths);
-    return [...(prefix.length ? prefix : fallback), title].join("/");
+    const graph = { entities: [] as GraphEntity[], relations: [] as GraphRelation[], metadata: new Map<string, { solution?: string; module?: string }>() };
+    for (let offset = 0; offset < sourceRefs.length; offset += GRAPH_QUERY_BATCH_SIZE) {
+      const partial = graphRows(store, sourceRefs.slice(offset, offset + GRAPH_QUERY_BATCH_SIZE));
+      graph.entities.push(...partial.entities);
+      graph.relations.push(...partial.relations);
+      partial.metadata.forEach((value, key) => graph.metadata.set(key, value));
+    }
+    return inputs.map((input) => directoryPathFromGraph(input, graph));
   } catch {
-    // Older databases may not have the graph projection yet; directory
-    // rendering remains usable from the existing page metadata.
-    return [...fallback, title].join("/");
+    return inputs.map(fallbackDirectoryPath);
   }
+}
+
+export function buildWikiDirectoryPath(store: KnowledgeStore, input: WikiDirectoryPathInput): string {
+  return buildWikiDirectoryPaths(store, [input])[0] ?? fallbackDirectoryPath(input);
 }

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { createKnowledgeStore } from "../src/knowledge/store.ts";
 import { WikiService } from "../src/knowledge/wiki.ts";
 import { WikiGenerationService } from "../src/knowledge/wiki-generation.ts";
-import { buildWikiDirectoryPath } from "../src/knowledge/wiki-directory.ts";
+import { buildWikiDirectoryPath, buildWikiDirectoryPaths } from "../src/knowledge/wiki-directory.ts";
 import { extractProductGraph, persistProductGraph } from "../src/knowledge/product-graph.ts";
 import type { ManagedProviderHandle } from "../src/knowledge/provider-registry.ts";
 
@@ -27,8 +27,7 @@ test("Wiki generation groups versions, validates citations and persists one page
     for (const [id, version] of [["doc-211", "21.1"], ["doc-213", "21.3"]] as const) {
       persistProductGraph(store, extractProductGraph({
         documentId: id,
-        title: "Localization Deployment Kit",
-        body: "# Installation\n\nDepends on: Deployment Agent",
+        body: "# Installation\n## Configure\n### Agent\n\nDepends on: Deployment Agent",
         productVersion: version,
         solution: "Localization",
         module: "Deployment",
@@ -46,8 +45,10 @@ test("Wiki generation groups versions, validates citations and persists one page
     assert.equal(page.title, "Localization Deployment Kit");
     assert.deepEqual(page.supportedVersions, ["21.1", "21.3"]);
     assert.deepEqual(page.sections?.map(section => section.kind), ["common", "version", "difference"]);
-    assert.equal(page.directoryPath, "Localization/Deployment/Installation/Deployment Agent/Localization Deployment Kit");
-    assert.equal(buildWikiDirectoryPath(store, { title: page.title, sourceRefs: page.sourceRefs, solution: page.solution, module: page.module }), page.directoryPath);
+    assert.equal(page.directoryPath, "Localization/Deployment/Installation/Configure/Agent/Deployment Agent/Localization Deployment Kit");
+    const directoryInput = { title: page.title, sourceRefs: page.sourceRefs, solution: page.solution, module: page.module };
+    assert.equal(buildWikiDirectoryPath(store, directoryInput), page.directoryPath);
+    assert.deepEqual(buildWikiDirectoryPaths(store, [directoryInput, directoryInput]), [page.directoryPath, page.directoryPath]);
   } finally {
     store.close();
     rmSync(root, { recursive: true, force: true });

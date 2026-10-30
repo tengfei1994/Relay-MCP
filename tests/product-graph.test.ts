@@ -38,6 +38,28 @@ test("Product graph extraction is deterministic and binds headings, links, metad
   }
 });
 
+test("Product graph attaches nested headings to the nearest heading ancestor", () => {
+  const graph = extractProductGraph({
+    documentId: "doc-nested",
+    title: "Nested guide",
+    body: "# Setup\n## Connection\n#### TLS\n# Recovery\n## Retry",
+    sourceLocator: "docs/nested.md",
+  });
+  const headings = new Map(graph.entities.filter(entity => entity.kind === "heading").map(entity => [entity.name, entity]));
+  const contains = (from: string, to: string) => graph.relations.some(relation =>
+    relation.relationType === "contains" &&
+    relation.fromEntityId === headings.get(from)?.id &&
+    relation.toEntityId === headings.get(to)?.id);
+  const document = graph.entities.find(entity => entity.kind === "document");
+  assert.ok(document);
+  assert.ok(graph.relations.some(relation => relation.relationType === "contains" && relation.fromEntityId === document.id && relation.toEntityId === headings.get("Setup")?.id));
+  assert.ok(graph.relations.some(relation => relation.relationType === "contains" && relation.fromEntityId === document.id && relation.toEntityId === headings.get("Recovery")?.id));
+  assert.equal(contains("Setup", "Connection"), true);
+  assert.equal(contains("Connection", "TLS"), true);
+  assert.equal(contains("Recovery", "Retry"), true);
+  assert.equal(contains("Setup", "TLS"), false);
+});
+
 test("Product graph persistence is idempotent and does not write SampleManager relations", () => withStore((store) => {
   seedDocument(store, "doc-a", "project-a");
   const graph = extractProductGraph({ documentId: "doc-a", title: "Guide", body: "# Setup\n\nRequires: Authentication", sourceLocator: "docs/a.md", sourceSha256: "sha-a", productVersion: "21.3", projectId: "project-a" });

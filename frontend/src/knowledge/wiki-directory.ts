@@ -72,18 +72,23 @@ function collectPages(node: WikiDirectoryNode): WikiDirectoryPage[] {
 }
 
 /**
- * Graph paths are useful evidence, but a heading/concept that occurs once is
- * not a useful navigation category. Keep the stable solution/module levels and
- * promote singleton graph branches to their nearest shared parent.
+ * A singleton graph branch is not useful as an extra folder, but dropping it
+ * hides the relation that put the page there. Promote the page to the nearest
+ * shared folder and keep the full promoted path as a compact context label.
  */
 function summarizeSingletonBranches(node: WikiDirectoryNode, depth: number): void {
   const keptChildren: WikiDirectoryNode[] = [];
   for (const child of node.children) {
+    summarizeSingletonBranches(child, depth + 1);
     if (depth >= 1 && child.count === 1) {
-      node.pages.push(...collectPages(child));
+      const contextPrefix = child.path.slice(node.path.length).join(" / ");
+      node.pages.push(...collectPages(child).map((page) => {
+        const previous = displayText(page.directoryContext);
+        const directoryContext = [contextPrefix, previous].filter(Boolean).join(" / ");
+        return directoryContext ? { ...page, directoryContext } : page;
+      }));
       continue;
     }
-    summarizeSingletonBranches(child, depth + 1);
     keptChildren.push(child);
   }
   node.children = keptChildren;

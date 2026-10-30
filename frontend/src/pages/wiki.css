@@ -18,39 +18,54 @@
   background: rgba(255, 255, 255, .025);
 }
 
+.wiki-route-shell {
+  width: 100%;
+  padding: 16px 24px 32px;
+}
+
 .wiki-directory-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 22px 18px 16px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--line);
 }
 
-.wiki-directory-kicker,
+.wiki-directory-meta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  color: rgb(var(--muted));
+  font-size: 12px;
+}
+
+.wiki-directory-meta > span + span::before {
+  margin-right: 8px;
+  color: rgb(var(--muted));
+  content: "·";
+}
+
+.wiki-directory-count {
+  color: rgb(var(--fg));
+  font-weight: 600;
+}
+
+.wiki-directory-hint {
+  color: rgb(var(--mint));
+  font: 500 10px/1.4 var(--font-mono);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
 .wiki-reader-kicker {
   margin: 0;
   color: rgb(var(--mint));
   font: 500 11px/1.4 var(--font-mono);
   letter-spacing: .04em;
   text-transform: uppercase;
-}
-
-.wiki-directory-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 5px;
-  color: rgb(var(--fg));
-  font: 600 20px/1.2 var(--font-display);
-  letter-spacing: -.02em;
-}
-
-.wiki-directory-summary {
-  margin-top: 6px;
-  color: rgb(var(--muted));
-  font-size: 12px;
-  line-height: 1.5;
 }
 
 .wiki-directory-actions {
@@ -156,6 +171,27 @@
   white-space: nowrap;
 }
 
+.wiki-tree-page-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.wiki-tree-page-copy .wiki-tree-label {
+  flex: none;
+}
+
+.wiki-tree-context {
+  max-width: 100%;
+  overflow: hidden;
+  flex-shrink: 1;
+  color: rgb(var(--iris));
+  font: 400 10px/1.3 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .wiki-tree-count,
 .wiki-tree-status {
   flex-shrink: 0;
@@ -205,10 +241,11 @@
 .wiki-reader-empty {
   display: grid;
   min-height: 680px;
-  place-items: center;
-  padding: 48px;
+  align-items: start;
+  justify-items: start;
+  padding: 56px 48px;
   color: rgb(var(--muted));
-  text-align: center;
+  text-align: left;
 }
 
 .wiki-reader-empty-inner {
@@ -219,7 +256,7 @@
   display: grid;
   width: 48px;
   height: 48px;
-  margin: 0 auto 16px;
+  margin: 0 0 16px;
   place-items: center;
   border: 1px solid rgba(110, 231, 200, .25);
   border-radius: 14px;
@@ -241,11 +278,26 @@
 
 .wiki-detail-card {
   min-height: 680px;
-  padding: 28px 34px 40px;
+  padding: 24px clamp(24px, 3vw, 48px) 48px;
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+}
+
+.wiki-article-column {
+  max-width: 920px;
+}
+
+.wiki-reader-aside {
+  min-width: 0;
+}
+
+.wiki-edit-panel {
+  padding: 16px;
+  border: 1px solid rgba(110, 231, 200, .22);
+  border-radius: 12px;
+  background: rgba(110, 231, 200, .045);
 }
 
 .wiki-detail-path {
@@ -298,14 +350,18 @@
     border-top: 1px solid var(--line);
   }
 
-  .wiki-detail-card,
-  .wiki-reader-empty {
-    min-height: 0;
-  }
+.wiki-detail-card,
+.wiki-reader-empty {
+  min-height: 0;
+}
 
-  .wiki-detail-card {
-    padding: 24px 20px 34px;
-  }
+.wiki-detail-card {
+  padding: 24px 20px 34px;
+}
+
+.wiki-article-column {
+  max-width: none;
+}
 
   .wiki-mobile-back {
     display: inline-flex;
@@ -314,8 +370,12 @@
 }
 
 @media (max-width: 560px) {
+  .wiki-route-shell {
+    padding: 10px 10px 20px;
+  }
+
   .wiki-directory-header {
-    padding: 18px 14px 14px;
+    padding: 12px 10px;
   }
 
   .wiki-directory-controls {

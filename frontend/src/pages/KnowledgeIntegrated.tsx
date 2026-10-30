@@ -1,7 +1,7 @@
 import { LazyKnowledgeMarkup as KnowledgeMarkup } from "../components/LazyKnowledgeMarkup";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { BookOpen, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, FileText, Folder, GitCompare, History, KeyRound, Network, RefreshCw, ServerCog, ShieldAlert, Workflow } from "lucide-react";
+import { BookOpen, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, FileText, Folder, GitCompare, History, KeyRound, Network, Pencil, RefreshCw, ServerCog, ShieldAlert, Workflow } from "lucide-react";
 import { api } from "../api/client";
 import { useAuth } from "../App";
 import { Badge, cardClass, formatDate, inputClass, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
@@ -362,11 +362,15 @@ function wikiSections(page: JsonRecord) {
 }
 
 function WikiSectionSources({ citations, scope }: { citations: JsonRecord[]; scope: KnowledgeScope }) {
-  if (!citations.length) return <p className="mt-2 text-xs text-sun">No source citation is attached to this section.</p>;
+  const uniqueCitations = [...new Map(citations.map((citation) => {
+    const key = [text(citation.documentId), text(citation.externalDocumentId), text(citation.sourceLocator), text(citation.title), text(citation.productVersion)].join("\u0000");
+    return [key, citation] as const;
+  })).values()];
+  if (!uniqueCitations.length) return <p className="mt-2 text-xs text-sun">No source citation is attached to this section.</p>;
   return <ul className="mt-3 grid gap-2 sm:grid-cols-2">
-    {citations.map((citation, index) => {
+    {uniqueCitations.map((citation, index) => {
       const id = text(citation.documentId);
-      return <li key={`${id}-${index}`} className="border-l-2 border-iris/60 pl-3 text-xs text-subtle">
+      return <li key={`${id}-${text(citation.sourceLocator)}-${index}`} className="border-l-2 border-iris/60 pl-3 text-xs text-subtle">
         {id ? <Link className="font-medium text-iris underline underline-offset-2" to={withKnowledgeScope(`/knowledge/product-docs?document=${encodeURIComponent(id)}`, scope)}>{text(citation.title, "Open source document")}</Link> : <span className="font-medium text-fg">{text(citation.title, "Source document")}</span>}
         <p className="mt-1">{citation.productVersion ? `Version ${text(citation.productVersion)}` : "Version unspecified"}{citation.sourceLocator ? ` · ${text(citation.sourceLocator)}` : ""}</p>
         {Array.isArray(citation.chunkIds) && citation.chunkIds.length > 0 && <p className="mt-1 text-muted">{citation.chunkIds.length} source chunk{citation.chunkIds.length === 1 ? "" : "s"}</p>}
@@ -419,7 +423,7 @@ function isWikiPageSelected(page: WikiDirectoryPage, selectedId?: string): boole
 function WikiDirectoryNodeView({ node, depth, collapsed, selectedId, onToggle, onOpen }: { node: WikiDirectoryNode; depth: number; collapsed: Set<string>; selectedId?: string; onToggle: (key: string) => void; onOpen: (page: WikiDirectoryPage) => void }) {
   const isCollapsed = collapsed.has(node.key);
   return <div>
-    <button type="button" aria-expanded={!isCollapsed} onClick={() => onToggle(node.key)} className="wiki-tree-folder focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint" style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: 12 }}>
+    <button type="button" aria-label={`${node.path.join(" / ")} · ${node.count} topic${node.count === 1 ? "" : "s"}`} aria-expanded={!isCollapsed} onClick={() => onToggle(node.key)} className="wiki-tree-folder focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint" style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: 12 }} title={node.path.join(" / ")}>
       {isCollapsed ? <ChevronRight size={15} className="shrink-0 text-muted" /> : <ChevronDown size={15} className="shrink-0 text-muted" />}
       <Folder size={15} className="shrink-0 text-iris" />
       <span className="wiki-tree-label">{node.label}</span>
@@ -429,9 +433,10 @@ function WikiDirectoryNodeView({ node, depth, collapsed, selectedId, onToggle, o
       {node.children.map((child) => <WikiDirectoryNodeView key={child.key} node={child} depth={depth + 1} collapsed={collapsed} selectedId={selectedId} onToggle={onToggle} onOpen={onOpen} />)}
       {node.pages.map((page) => {
         const selected = isWikiPageSelected(page, selectedId);
-        return <button type="button" key={wikiPageId(page)} aria-current={selected ? "page" : undefined} onClick={() => onOpen(page)} className={`wiki-tree-page focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint ${selected ? "wiki-tree-page-selected" : ""}`} style={{ paddingLeft: `${28 + (depth + 1) * 16}px`, paddingRight: 12 }}>
-          <FileText size={14} className="shrink-0 text-mint/80" />
-          <span className="wiki-tree-label">{wikiPageLabel(page)}</span>
+        const context = text(page.directoryContext);
+        return <button type="button" key={wikiPageId(page)} aria-current={selected ? "page" : undefined} onClick={() => onOpen(page)} className={`wiki-tree-page focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint ${selected ? "wiki-tree-page-selected" : ""}`} style={{ paddingLeft: `${28 + (depth + 1) * 16}px`, paddingRight: 12 }} title={context ? `${wikiPageLabel(page)} · ${context}` : wikiPageLabel(page)}>
+          <FileText size={14} className="shrink-0 self-start text-mint/80" />
+          <span className="wiki-tree-page-copy"><span className="wiki-tree-label">{wikiPageLabel(page)}</span>{context && <span className="wiki-tree-context">{context}</span>}</span>
           <span className="wiki-tree-status">{text(page.status, "draft")}</span>
         </button>;
       })}
@@ -445,9 +450,10 @@ function WikiDirectoryTreeView({ items, collapsed, selectedId, onToggle, onOpen 
     {tree.nodes.map((node) => <WikiDirectoryNodeView key={node.key} node={node} depth={0} collapsed={collapsed} selectedId={selectedId} onToggle={onToggle} onOpen={onOpen} />)}
     {tree.pages.map((page) => {
       const selected = isWikiPageSelected(page, selectedId);
-      return <button type="button" key={wikiPageId(page)} aria-current={selected ? "page" : undefined} onClick={() => onOpen(page)} className={`wiki-tree-page focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint ${selected ? "wiki-tree-page-selected" : ""}`} style={{ paddingLeft: 12, paddingRight: 12 }}>
-        <FileText size={14} className="shrink-0 text-mint/80" />
-        <span className="wiki-tree-label">{wikiPageLabel(page)}</span>
+      const context = text(page.directoryContext);
+      return <button type="button" key={wikiPageId(page)} aria-current={selected ? "page" : undefined} onClick={() => onOpen(page)} className={`wiki-tree-page focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint ${selected ? "wiki-tree-page-selected" : ""}`} style={{ paddingLeft: 12, paddingRight: 12 }} title={context ? `${wikiPageLabel(page)} · ${context}` : wikiPageLabel(page)}>
+        <FileText size={14} className="shrink-0 self-start text-mint/80" />
+        <span className="wiki-tree-page-copy"><span className="wiki-tree-label">{wikiPageLabel(page)}</span>{context && <span className="wiki-tree-context">{context}</span>}</span>
         <span className="wiki-tree-status">{text(page.status, "draft")}</span>
       </button>;
     })}
@@ -457,11 +463,14 @@ function WikiDirectoryTreeView({ items, collapsed, selectedId, onToggle, onOpen 
 
 function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; scope: KnowledgeScope; isAdmin: boolean; onRefresh: (updated: JsonRecord) => Promise<void> }) {
   const sections = wikiSections(page);
+  const pageCitations = records(page.citations);
+  const hasSectionCitations = sections.some((section) => section.citations.length > 0);
   const directoryLabels = wikiDirectoryLabels(page);
   const versions = [...new Set([...strings(page.supportedVersions), ...sections.filter((section) => section.kind === "version" && section.productVersion).map((section) => section.productVersion)])];
   const [version, setVersion] = useState("");
   const [view, setView] = useState<"all" | "common" | "differences">("all");
   const [editBody, setEditBody] = useState({ title: text(page.title), body: text(page.body) });
+  const [editOpen, setEditOpen] = useState(false);
   const [revisions, setRevisions] = useState<JsonRecord[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
@@ -477,6 +486,7 @@ function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; sco
     let active = true;
     setVersion("");
     setEditBody({ title: text(page.title), body: text(page.body) });
+    setEditOpen(false);
     setDiff("");
     setError("");
     setSelectedRevision(currentRevision || null);
@@ -510,9 +520,9 @@ function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; sco
     });
     return () => { active = false; };
   }, [historyOpen, selectedRevision, revisionDiffMode, currentRevision, page.id, scope.projectId, scope.environment]);
-  const run = async (task: () => Promise<JsonRecord>, ok: string) => {
+  const run = async (task: () => Promise<JsonRecord>, ok: string): Promise<boolean> => {
     setError(""); setNotice("");
-    try { await onRefresh(await task()); setNotice(ok); } catch (err) { setError(errText(err, "Wiki operation failed")); }
+    try { await onRefresh(await task()); setNotice(ok); return true; } catch (err) { setError(errText(err, "Wiki operation failed")); return false; }
   };
   const visible = sections.filter((section) => {
     if (view === "common") return section.kind === "common";
@@ -544,6 +554,7 @@ function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; sco
         </div>}
       </div>
       <div className="flex flex-wrap items-center gap-2">
+        {isAdmin && page.status !== "deprecated" && <button className={btnGhost} aria-expanded={editOpen} aria-controls="wiki-edit-panel" onClick={() => setEditOpen(true)}><Pencil size={13} /> Edit</button>}
         <button className={btnGhost} onClick={openHistory}><History size={13} /> Page history</button>
         <StatusBadge value={text(page.status, "draft")} />
       </div>
@@ -555,7 +566,7 @@ function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; sco
       {versions.length > 0 && <label className="ml-auto flex items-center gap-2 text-xs text-muted"><span>Product version</span><select className={inputClass} value={selectedVersion} onChange={(event) => setVersion(event.target.value)}><option value="">All versions</option>{versions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>}
     </div>
     <div className="mt-4 grid gap-6 lg:grid-cols-[minmax(0,1fr)_13rem]">
-      <div className="min-w-0">
+      <div className="wiki-article-column min-w-0">
         {visible.length > 0 ? <div className="space-y-8">{visible.map((section, index) => {
           const sectionHeadings = markdownHeadings(section.body);
           return <article key={text(section.id, `${section.kind}-${index}`)} id={`wiki-section-${text(section.id, `${section.kind}-${index}`)}`} className="scroll-mt-6">
@@ -567,25 +578,30 @@ function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; sco
         })}</div> : <div className="rounded-md border border-white/10 p-4 text-sm text-muted">No sections are available for this view. Showing the rendered page body instead.</div>}
         {visible.length === 0 && <div className="mt-4 rounded-md border border-white/10 bg-black/20 p-4"><KnowledgeMarkup source={text(page.body)} wikiScope={scope} wikiPageKey={text(page.pageKey)} /></div>}
       </div>
-      <aside className="lg:sticky lg:top-5 lg:self-start" aria-label="On this page">
+      <aside className="wiki-reader-aside lg:sticky lg:top-5 lg:self-start" aria-label="On this page">
         <p className="text-xs font-medium text-muted">On this page</p>
         {headings.length > 0 ? <nav className="mt-2 space-y-1 border-l border-white/10 pl-3">{headings.map((heading, index) => <a key={`${heading.id}-${index}`} href={`#knowledge-content-${heading.id}`} className="block text-xs text-subtle hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint" style={{ paddingLeft: `${Math.max(0, heading.level - 1) * 8}px` }}>{heading.title}</a>)}</nav> : <p className="mt-2 text-xs text-muted">No headings in this view.</p>}
       </aside>
     </div>
-    <div className="mt-6 border-t border-white/10 pt-4">
+    {!hasSectionCitations && pageCitations.length > 0 && <div className="mt-6 border-t border-white/10 pt-4">
       <h3 className="text-sm font-medium text-fg">Page sources</h3>
-      <WikiSectionSources citations={records(page.citations)} scope={knowledgeItemScope(page, scope)} />
-    </div>
+      <WikiSectionSources citations={pageCitations} scope={knowledgeItemScope(page, scope)} />
+    </div>}
     {notice && <p className="mt-4 rounded-md border border-mint/40 bg-mint/10 p-3 text-sm text-mint">{notice}</p>}
     <Err message={error} />
-    {isAdmin && page.status !== "deprecated" && <div className="mt-5 space-y-3 border-t border-white/10 pt-4">
-      <p className="text-xs font-medium text-muted">Review and edit</p>
-      <input className={`${inputClass} w-full`} value={editBody.title} onChange={(event) => setEditBody({ ...editBody, title: event.target.value })} placeholder="Title" />
-      <textarea className="min-h-28 w-full rounded-md border border-white/10 bg-[var(--field)] px-3 py-2 text-sm text-fg outline-none focus:border-mint" value={editBody.body} onChange={(event) => setEditBody({ ...editBody, body: event.target.value })} placeholder="Body" />
-      <div className="flex flex-wrap items-center gap-2">
-        <ReasonAction label="Save edit" onRun={async (reason) => run(async () => asRecord((await api.knowledgeWikiEdit(text(page.id), { title: editBody.title, body: editBody.body, reason }, knowledgeItemScope(page, scope))).page), "Wiki page saved.")} />
-        {page.status !== "published" && <ReasonAction label="Publish" onRun={async (reason) => run(async () => asRecord((await api.knowledgeWikiPublish(text(page.id), reason, knowledgeItemScope(page, scope))).page), "Wiki page published.")} />}
-        {page.status === "published" && <ReasonAction label="Deprecate" tone="danger" onRun={async (reason) => run(async () => asRecord((await api.knowledgeWikiDeprecate(text(page.id), reason, knowledgeItemScope(page, scope))).page), "Wiki page deprecated.")} />}
+    {editOpen && isAdmin && page.status !== "deprecated" && <div id="wiki-edit-panel" className="wiki-edit-panel mt-5" aria-label="Edit Wiki page">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div><h3 className="text-sm font-medium text-fg">Edit Wiki page</h3><p className="mt-1 text-xs text-muted">Changes require an audited reason. The reader remains unchanged until you save.</p></div>
+        <button className={btnGhost} onClick={() => setEditOpen(false)}>Cancel</button>
+      </div>
+      <div className="mt-4 space-y-3">
+        <input aria-label="Wiki page title" className={`${inputClass} w-full`} value={editBody.title} onChange={(event) => setEditBody({ ...editBody, title: event.target.value })} placeholder="Title" />
+        <textarea aria-label="Wiki page body" className="min-h-28 w-full rounded-md border border-white/10 bg-[var(--field)] px-3 py-2 text-sm text-fg outline-none focus:border-mint" value={editBody.body} onChange={(event) => setEditBody({ ...editBody, body: event.target.value })} placeholder="Body" />
+        <div className="flex flex-wrap items-center gap-2">
+          <ReasonAction label="Save edit" onRun={async (reason) => { if (await run(async () => asRecord((await api.knowledgeWikiEdit(text(page.id), { title: editBody.title, body: editBody.body, reason }, knowledgeItemScope(page, scope))).page), "Wiki page saved.")) setEditOpen(false); }} />
+          {page.status !== "published" && <ReasonAction label="Publish" onRun={async (reason) => { await run(async () => asRecord((await api.knowledgeWikiPublish(text(page.id), reason, knowledgeItemScope(page, scope))).page), "Wiki page published."); }} />}
+          {page.status === "published" && <ReasonAction label="Deprecate" tone="danger" onRun={async (reason) => { await run(async () => asRecord((await api.knowledgeWikiDeprecate(text(page.id), reason, knowledgeItemScope(page, scope))).page), "Wiki page deprecated."); }} />}
+        </div>
       </div>
     </div>}
     <Drawer open={historyOpen} onClose={() => setHistoryOpen(false)} title={`Page history · ${text(page.title, text(page.pageKey, "Wiki page"))}`} description="Each edit appends a revision. Rollback creates a new revision; it never rewrites history.">
@@ -621,7 +637,7 @@ function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; sco
                   : diff ? <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap rounded-md border border-white/10 bg-black/20 p-3 font-mono text-xs leading-5 text-fg">{diff}</pre>
                     : <p className="rounded-md border border-white/10 bg-black/10 p-3 text-sm text-muted">No content changes are available for this comparison.</p>}
           </div>
-          {isAdmin && selectedRevision !== null && selectedRevision < currentRevision && page.status !== "deprecated" && <div className="mt-5 border-t border-white/10 pt-4"><ReasonAction label={`Rollback to r${selectedRevision}`} tone="danger" onRun={async (reason) => run(async () => { const updated = asRecord((await api.knowledgeWikiRollback(text(page.id), selectedRevision, reason, knowledgeItemScope(page, scope))).page); setHistoryOpen(false); return updated; }, `Wiki page rolled back to r${selectedRevision}.`)} /></div>}
+          {isAdmin && selectedRevision !== null && selectedRevision < currentRevision && page.status !== "deprecated" && <div className="mt-5 border-t border-white/10 pt-4"><ReasonAction label={`Rollback to r${selectedRevision}`} tone="danger" onRun={async (reason) => { await run(async () => { const updated = asRecord((await api.knowledgeWikiRollback(text(page.id), selectedRevision, reason, knowledgeItemScope(page, scope))).page); setHistoryOpen(false); return updated; }, `Wiki page rolled back to r${selectedRevision}.`); }} /></div>}
         </section>
       </div>
     </Drawer>
@@ -648,6 +664,7 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   const [params, setParams] = useSearchParams();
   const selectedPage = params.get("wikiPage");
   const selectedKey = params.get("wikiKey");
+  const [searchInput, setSearchInput] = useState("");
   const [filters, setFilters] = useState({ search: "", status: "", version: "" });
   const [result, setResult] = useState<JsonRecord[]>();
   const [directoryTotal, setDirectoryTotal] = useState(0);
@@ -692,13 +709,17 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
       setResult((current) => mergeWikiRows(append ? [...(current ?? []), ...rows] : rows));
       setDirectoryTotal(Number.isFinite(total) ? total : rows.length);
       setDirectoryOffset(offset + rows.length);
-      if (!append) api.knowledgeWikiGeneration(scope).then((value) => setGeneration(asRecord(value))).catch(() => { /* directory remains usable when progress is unavailable */ });
+      if (!append && !filters.search.trim()) api.knowledgeWikiGeneration(scope).then((value) => setGeneration(asRecord(value))).catch(() => { /* directory remains usable when progress is unavailable */ });
     } catch (err) {
       if (id === requestId.current) setError(errText(err, "Unable to load Wiki directory"));
     } finally {
       if (id === requestId.current) setDirectoryBusy(false);
     }
   };
+  useEffect(() => {
+    const timer = window.setTimeout(() => setFilters((current) => current.search === searchInput ? current : { ...current, search: searchInput }), 260);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
   useEffect(() => { void loadDirectoryPage(false); }, [scope.projectId, scope.environment, filters.search, filters.status, filters.version]);
   useEffect(() => {
     let cancelled = false;
@@ -745,10 +766,10 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   return <div className="wiki-workspace">
     <section className="wiki-directory-panel" aria-label="Wiki directory">
       <header className="wiki-directory-header">
-        <div>
-          <p className="wiki-directory-kicker">Knowledge base</p>
-          <h2 className="wiki-directory-title"><BookOpen size={18} aria-hidden="true" /> Wiki</h2>
-          <p className="wiki-directory-summary"><strong>{result?.length ?? 0}</strong> topic groups{directoryTotal > (result?.length ?? 0) ? ` · ${directoryTotal} directory entries` : ""} · graph paths summarized into shared folders</p>
+        <div className="wiki-directory-meta">
+          <span className="wiki-directory-count">{result?.length ?? 0} topics</span>
+          {directoryTotal > (result?.length ?? 0) && <span>{directoryTotal} directory entries</span>}
+          <span className="wiki-directory-hint">Graph paths</span>
         </div>
         <div className="wiki-directory-actions">
           <button aria-label="Refresh Wiki directory" title="Refresh Wiki directory" className={btnGhost} disabled={directoryBusy} onClick={() => void loadDirectoryPage(false)}><RefreshCw size={13} className={directoryBusy ? "animate-spin" : ""} /></button>
@@ -757,7 +778,7 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
         </div>
       </header>
       <div className="wiki-directory-controls">
-        <input aria-label="Search Wiki" className={`${inputClass} wiki-directory-search`} placeholder="Search Wiki pages…" value={filters.search} onChange={(event) => setFilters({ ...filters, search: event.target.value })} />
+        <input aria-label="Search Wiki" aria-busy={directoryBusy} className={`${inputClass} wiki-directory-search`} placeholder="Search Wiki pages…" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} />
         <div className="wiki-directory-filter-row">
           <select aria-label="Filter by status" className={inputClass} value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}><option value="">All statuses</option>{WIKI_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}</select>
           <select aria-label="Filter by version" className={inputClass} value={filters.version} onChange={(event) => setFilters({ ...filters, version: event.target.value })}><option value="">All versions</option>{[...new Set((result ?? []).flatMap((item) => [...strings(item.supportedVersions), text(item.productVersion)].filter(Boolean)))].map((version) => <option key={version} value={version}>{version}</option>)}</select>

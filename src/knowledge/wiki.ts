@@ -4,7 +4,7 @@ import { assertReviewer } from "./domain.js";
 import { scanCandidateContent } from "./candidate-insight.js";
 import type { KnowledgeStore } from "./store.js";
 import { canonicalWikiRow, isCanonicalWikiRow } from "./wiki-identity.js";
-
+import { buildWikiDirectoryPath } from "./wiki-directory.js";
 export const WIKI_SECTION_KINDS = ["common", "version", "difference"] as const;
 export type WikiSectionKind = (typeof WIKI_SECTION_KINDS)[number];
 export interface WikiCitation {
@@ -181,8 +181,14 @@ function summaryFromRow(row: Record<string, unknown>): WikiPageSummary {
 }
 
 function hydratePage(store: KnowledgeStore, page: WikiPage): WikiPage {
+  if (page.sourceRefs.length > 0) {
+    try {
+      page.directoryPath = buildWikiDirectoryPath(store, { title: page.title, sourceRefs: page.sourceRefs, solution: page.solution, module: page.module });
+    } catch {
+      // Keep the persisted path when older graph projections are unavailable.
+    }
+  }
   const sectionRows = store.db.prepare("SELECT * FROM knowledge_wiki_sections WHERE page_id=? ORDER BY sort_order,id").all(page.id) as Array<Record<string, unknown>>;
-  if (!sectionRows.length) { page.citations = []; return page; }
   const citationRows = store.db.prepare(`SELECT c.section_id,c.document_id,c.external_document_id,c.chunk_id,c.product_version,c.quote_hash,
     d.title,d.source_locator,d.source_sha256,p.version,p.source_path,p.engine_external_document_id
     FROM knowledge_wiki_section_citations c
@@ -303,8 +309,12 @@ export class WikiService {
     assertReviewer(Boolean(acl));
   }
 
+  private hasColumn(columnName: string): boolean {
+    return (this.store.db.prepare("PRAGMA table_info(knowledge_wiki_pages)").all() as Array<{ name?: unknown }>).some(column => column.name === columnName);
+  }
+
   private hasEnvironmentColumn(): boolean {
-    return (this.store.db.prepare("PRAGMA table_info(knowledge_wiki_pages)").all() as Array<{ name?: unknown }>).some(column => column.name === "environment");
+    return this.hasColumn("environment");
   }
 
   private assertNoSecrets(content: Record<string, unknown>): void {
@@ -347,20 +357,44 @@ export class WikiService {
       )`);
     }
     const predicate = where.join("\n AND ");
-    const rows = this.store.db.prepare(`SELECT p.rowid AS __wiki_rowid,p.*,
+    const optionalColumn = (column: string): string => this.hasColumn(column) ? `p.${column}` : `NULL AS ${column}`;
+    const summaryColumns = [
+      "p.id", "p.page_key", "p.title", "p.status", "p.project_id", optionalColumn("environment"),
+      "p.product_version", "p.topic_id", optionalColumn("topic_group_id"), "p.solution", "p.module",
+      "p.source_refs_json", optionalColumn("supported_versions_json"), optionalColumn("generation_status"),
+      optionalColumn("generation_fingerprint"), optionalColumn("directory_path"), optionalColumn("external_slug"),
+      "p.current_revision", "p.created_by", "p.created_at", "p.updated_at", "p.published_at", "p.deprecated_at",
+    ].join(",");
+    // Keep body out of the summary candidate scan. A body predicate, when
+    // requested, runs as one bounded SQL candidate query after canonical rows
+    // and metadata filters have been selected.
+    const rows = this.store.db.prepare(`SELECT p.rowid AS __wiki_rowid,${summaryColumns},
       (SELECT COUNT(*) FROM knowledge_wiki_sections s WHERE s.page_id=p.id) AS __section_count,
       (SELECT COUNT(DISTINCT c.document_id) FROM knowledge_wiki_section_citations c JOIN knowledge_wiki_sections s ON s.id=c.section_id WHERE s.page_id=p.id) AS __source_count
       FROM knowledge_wiki_pages p WHERE ${predicate} ORDER BY p.updated_at DESC, p.id`).all(params) as Array<Record<string, unknown>>;
     let canonical = rows.filter(row => isCanonicalWikiRow(rows, row));
     if (input.status) canonical = canonical.filter(row => row.status === input.status);
-    if (input.productVersion) canonical = canonical.filter(row => row.product_version === input.productVersion || parseStrings(row.supported_versions_json).includes(input.productVersion!) || this.store.db.prepare("SELECT 1 FROM knowledge_wiki_sections WHERE page_id=? AND product_version=?").get(row.id, input.productVersion));
+    if (input.productVersion) {
+      const candidateIds = JSON.stringify(canonical.map(row => String(row.id)));
+      const sectionIds = new Set((this.store.db.prepare(`SELECT DISTINCT s.page_id
+        FROM knowledge_wiki_sections s
+        WHERE s.product_version=? AND s.page_id IN (SELECT value FROM json_each(?))`).all(input.productVersion, candidateIds) as Array<{ page_id: unknown }>).map(row => String(row.page_id)));
+      canonical = canonical.filter(row => row.product_version === input.productVersion || parseStrings(row.supported_versions_json).includes(input.productVersion!) || sectionIds.has(String(row.id)));
+    }
     if (input.topicId) canonical = canonical.filter(row => row.topic_id === input.topicId || row.topic_group_id === input.topicId);
     if (input.topicGroupId) canonical = canonical.filter(row => row.topic_group_id === input.topicGroupId);
     if (input.solution) canonical = canonical.filter(row => row.solution === input.solution);
     if (input.module) canonical = canonical.filter(row => row.module === input.module);
-    if (input.search?.trim()) {
-      const term = input.search.trim().toLocaleLowerCase();
-      canonical = canonical.filter(row => `${String(row.title)}\n${String(row.body)}`.toLocaleLowerCase().includes(term));
+    const term = input.search?.trim();
+    if (term) {
+      const escaped = term.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+      const pattern = `%${escaped}%`;
+      const matchingIds = new Set((this.store.db.prepare(`SELECT p.id
+        FROM knowledge_wiki_pages p
+        WHERE p.id IN (SELECT value FROM json_each(?))
+          AND (LOWER(p.title) LIKE ? ESCAPE '\\' OR LOWER(p.body) LIKE ? ESCAPE '\\')`)
+        .all(JSON.stringify(canonical.map(row => String(row.id))), pattern.toLocaleLowerCase(), pattern.toLocaleLowerCase()) as Array<{ id: unknown }>).map(row => String(row.id)));
+      canonical = canonical.filter(row => matchingIds.has(String(row.id)));
     }
     return { items: canonical.slice(offset, offset + limit).map(summaryFromRow), total: canonical.length, limit, offset };
   }

@@ -24,7 +24,7 @@ test("Wiki directory does not render an artificial Unassigned folder", () => {
   assert.deepEqual(tree.nodes.map((node) => node.label), ["General"]);
 });
 
-test("Wiki directory summarizes singleton graph branches under stable categories", () => {
+test("Wiki directory summarizes singleton graph branches with visible path context", () => {
   const tree = buildWikiDirectoryTree([
     { id: "a", title: "Alpha", directoryPath: "Product/Operations/Installation/Alpha" },
     { id: "b", title: "Beta", directoryPath: "Product/Operations/Installation/Beta" },
@@ -37,4 +37,5 @@ test("Wiki directory summarizes singleton graph branches under stable categories
   assert.deepEqual(product.children[0].children.map((node) => node.label), ["Installation"]);
   assert.deepEqual(product.children[0].children[0].pages.map((page) => page.title), ["Alpha", "Beta"]);
   assert.deepEqual(product.children[0].pages.map((page) => page.title), ["Gamma"]);
+  assert.equal(product.children[0].pages[0].directoryContext, "Deployment / Agent");
 });

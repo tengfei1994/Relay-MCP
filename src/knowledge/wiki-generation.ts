@@ -3,6 +3,7 @@ import { createManagedProviderRegistry } from "./provider-setup.js";
 import type { ManagedProviderHandle } from "./provider-registry.js";
 import type { KnowledgeStore } from "./store.js";
 import { WikiService, type WikiCitation, type WikiGenerationInput, type WikiSectionKind } from "./wiki.js";
+import { buildWikiDirectoryPath } from "./wiki-directory.js";
 
 type Row = Record<string, unknown>;
 type TopicSource = {
@@ -152,7 +153,8 @@ export class WikiGenerationService {
   async generate(input: { topicGroupId: string; projectId?: string; environment?: string }): Promise<WikiGenerationResult> {
     const sources = loadSources(this.store, input);
     if (!sources.length) throw new Error("Wiki topic has no approved Product Document sources");
-    const fingerprint = hash(sources.map(source => ({ id: source.id, version: source.version, sha256: source.sourceSha256, body: source.body, chunks: source.chunks.map(chunk => [chunk.id, chunk.content]) })));
+    const generationDirectoryPath = buildWikiDirectoryPath(this.store, { title: sources[0].title, sourceRefs: sources.map(source => source.id), solution: sources.find(source => source.solution)?.solution, module: sources.find(source => source.module)?.module });
+    const fingerprint = hash({ sources: sources.map(source => ({ id: source.id, version: source.version, sha256: source.sourceSha256, body: source.body, chunks: source.chunks.map(chunk => [chunk.id, chunk.content]) })), directoryPath: generationDirectoryPath });
     this.markState(input.topicGroupId, input.projectId, input.environment, "running", fingerprint);
     try {
       const provider = this.provider();
@@ -198,11 +200,12 @@ export class WikiGenerationService {
       const render = sections.map(section => `## ${section.title}\n\n${section.body}`).join("\n\n");
       const pageBody = `# ${title}\n\n${render}`.trim();
       const sourceRefs = [...new Set(sections.flatMap(section => section.citations.map(citation => citation.documentId)))];
+      const directoryPath = buildWikiDirectoryPath(this.store, { title, sourceRefs, solution: sources.find(source => source.solution)?.solution, module: sources.find(source => source.module)?.module });
       const page = new WikiService(this.store, this.clock).upsertGenerated({
         topicGroupId: input.topicGroupId, pageKey: `topic/${slug(title)}-${hash(input.topicGroupId).slice(0, 8)}`, title, body: pageBody,
         projectId: input.projectId, environment: input.environment, solution: sources.find(source => source.solution)?.solution, module: sources.find(source => source.module)?.module,
         supportedVersions: versions, sourceRefs, sections, fingerprint,
-        directoryPath: [sources.find(source => source.solution)?.solution, sources.find(source => source.module)?.module, title].filter(Boolean).join("/") || title,
+        directoryPath,
       });
       this.markState(input.topicGroupId, input.projectId, input.environment, "succeeded", fingerprint, undefined, page.id);
       return { topicGroupId: input.topicGroupId, pageId: page.id, title, supportedVersions: versions, sectionCount: sections.length, sourceCount: sourceRefs.length, fingerprint };

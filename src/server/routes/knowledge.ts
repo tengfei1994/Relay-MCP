@@ -38,6 +38,7 @@ import { CandidateInsightReviewService } from "../../knowledge/candidate-review.
 import { ConfirmedMemoryService, CONFIRMED_MEMORY_TYPES } from "../../knowledge/confirmed-memory.js";
 import { enqueueCandidateInsight, getCandidateInsightJob } from "../../knowledge/candidate-worker.js";
 import { WikiService, WIKI_PAGE_STATUSES } from "../../knowledge/wiki.js";
+import { buildWikiDirectoryPath } from "../../knowledge/wiki-directory.js";
 import { WeKnoraError } from "../../knowledge/weknora.js";
 import { WeKnoraIngestor } from "../../knowledge/weknora-ingest.js";
 import { ContextPackService } from "../../knowledge/context-pack.js";
@@ -1657,8 +1658,12 @@ export async function knowledgeRoutes(app: FastifyInstance) {
         solution: queryValue(query, "solution"), module: queryValue(query, "module"), search: queryValue(query, "search"),
         limit: parseBoundedInt(query.limit, 200, 1, 200), offset: parseBoundedInt(query.offset, 0, 0, 1_000_000),
       });
-      const grouped = new Map<string, Map<string, typeof result.items>>();
-      for (const item of result.items) {
+      const items = result.items.map((item) => ({
+        ...item,
+        directoryPath: buildWikiDirectoryPath(getKnowledgeStore(), { title: item.title, sourceRefs: item.sourceRefs, solution: item.solution, module: item.module }),
+      }));
+      const grouped = new Map<string, Map<string, Array<(typeof items)[number]>>>();
+      for (const item of items) {
         const solution = item.solution ?? "Unassigned", module = item.module ?? "General";
         if (!grouped.has(solution)) grouped.set(solution, new Map());
         const modules = grouped.get(solution)!;
@@ -1667,6 +1672,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       }
       return reply.send({
         ...result,
+        items,
         directory: [...grouped.entries()].map(([solution, modules]) => ({
           solution,
           modules: [...modules.entries()].map(([module, topics]) => ({ module, topics })),

@@ -1,13 +1,14 @@
 import { LazyKnowledgeMarkup as KnowledgeMarkup } from "../components/LazyKnowledgeMarkup";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { BookOpen, CheckCircle2, ChevronLeft, ChevronRight, FileText, KeyRound, RefreshCw, ServerCog, ShieldAlert, Workflow } from "lucide-react";
+import { BookOpen, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, FileText, Folder, GitCompare, History, KeyRound, RefreshCw, ServerCog, ShieldAlert, Workflow } from "lucide-react";
 import { api } from "../api/client";
 import { useAuth } from "../App";
 import { Badge, cardClass, formatDate, inputClass, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
-import { ConfirmDialog, PageHeader } from "../components/ui";
+import { ConfirmDialog, Drawer, PageHeader } from "../components/ui";
 import { ProviderSetupForm, type ProviderSetupDefaults } from "../components/ProviderSetupForm";
 import { knowledgeItemScope, withKnowledgeScope, type KnowledgeScope } from "../knowledge/integrated-search";
+import { buildWikiDirectoryTree, type WikiDirectoryNode } from "../knowledge/wiki-directory";
 const btn = "ui-button ui-button-primary ui-button-sm";
 const btnGhost = "ui-button ui-button-ghost ui-button-sm";
 const btnDanger = "ui-button ui-button-danger ui-button-sm";
@@ -374,26 +375,117 @@ function WikiSectionSources({ citations, scope }: { citations: JsonRecord[]; sco
   </ul>;
 }
 
+function wikiPageLabel(page: JsonRecord): string {
+  return text(page.title, text(page.pageKey, text(page.id, "Untitled topic")));
+}
+
+function mergeWikiRows(rows: JsonRecord[]): JsonRecord[] {
+  const grouped = new Map<string, JsonRecord>();
+  rows.forEach((item) => {
+    const key = text(item.topicGroupId, text(item.pageKey, item.id));
+    const current = grouped.get(key);
+    if (!current) {
+      grouped.set(key, { ...item, supportedVersions: strings(item.supportedVersions) });
+      return;
+    }
+    const versions = [...new Set([...strings(current.supportedVersions), ...strings(item.supportedVersions), text(item.productVersion)])].filter(Boolean);
+    grouped.set(key, {
+      ...current,
+      supportedVersions: versions,
+      sectionCount: Number(current.sectionCount ?? 0) + Number(item.sectionCount ?? 0),
+      sourceCount: Number(current.sourceCount ?? 0) + Number(item.sourceCount ?? 0),
+    });
+  });
+  return [...grouped.values()];
+}
+
+function WikiDirectoryNodeView({ node, depth, collapsed, onToggle, onOpen }: { node: WikiDirectoryNode; depth: number; collapsed: Set<string>; onToggle: (key: string) => void; onOpen: (page: JsonRecord) => void }) {
+  const isCollapsed = collapsed.has(node.key);
+  return <div>
+    <button type="button" aria-expanded={!isCollapsed} onClick={() => onToggle(node.key)} className="flex w-full items-center gap-2 rounded-md py-2 text-left text-sm text-fg hover:bg-white/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint" style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: 12 }}>
+      {isCollapsed ? <ChevronRight size={15} className="shrink-0 text-muted" /> : <ChevronDown size={15} className="shrink-0 text-muted" />}
+      <Folder size={15} className="shrink-0 text-iris" />
+      <span className="min-w-0 flex-1 truncate">{node.label}</span>
+      <span className="font-mono text-[11px] text-muted">{node.count}</span>
+    </button>
+    {!isCollapsed && <div>
+      {node.children.map((child) => <WikiDirectoryNodeView key={child.key} node={child} depth={depth + 1} collapsed={collapsed} onToggle={onToggle} onOpen={onOpen} />)}
+      {node.pages.map((page) => <button type="button" key={text(page.id, text(page.pageKey, wikiPageLabel(page)))} onClick={() => onOpen(page)} className="flex w-full items-center gap-2 rounded-md py-2 text-left text-sm text-subtle hover:bg-white/[0.04] hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint" style={{ paddingLeft: `${28 + (depth + 1) * 16}px`, paddingRight: 12 }}>
+        <FileText size={14} className="shrink-0 text-mint/80" />
+        <span className="min-w-0 flex-1 truncate">{wikiPageLabel(page)}</span>
+        <span className="shrink-0 text-[11px] text-muted">{text(page.status, "draft")}</span>
+      </button>)}
+    </div>}
+  </div>;
+}
+
+function WikiDirectoryTreeView({ items, collapsed, onToggle, onOpen }: { items: JsonRecord[]; collapsed: Set<string>; onToggle: (key: string) => void; onOpen: (page: JsonRecord) => void }) {
+  const tree = buildWikiDirectoryTree(items);
+  return <div className="divide-y divide-white/[0.06] rounded-field border border-white/10 bg-black/10">
+    {tree.nodes.map((node) => <WikiDirectoryNodeView key={node.key} node={node} depth={0} collapsed={collapsed} onToggle={onToggle} onOpen={onOpen} />)}
+    {tree.pages.map((page) => <button type="button" key={text(page.id, text(page.pageKey, wikiPageLabel(page)))} onClick={() => onOpen(page)} className="flex w-full items-center gap-2 rounded-md py-2 text-left text-sm text-subtle hover:bg-white/[0.04] hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint" style={{ paddingLeft: 12, paddingRight: 12 }}>
+      <FileText size={14} className="shrink-0 text-mint/80" />
+      <span className="min-w-0 flex-1 truncate">{wikiPageLabel(page)}</span>
+      <span className="shrink-0 text-[11px] text-muted">{text(page.status, "draft")}</span>
+    </button>)}
+    {tree.nodes.length === 0 && tree.pages.length === 0 && <p className="p-4 text-sm text-muted">No directory entries match these filters.</p>}
+  </div>;
+}
+
 function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; scope: KnowledgeScope; isAdmin: boolean; onRefresh: (updated: JsonRecord) => Promise<void> }) {
   const sections = wikiSections(page);
   const versions = [...new Set([...strings(page.supportedVersions), ...sections.filter((section) => section.kind === "version" && section.productVersion).map((section) => section.productVersion)])];
   const [version, setVersion] = useState("");
   const [view, setView] = useState<"all" | "common" | "differences">("all");
   const [editBody, setEditBody] = useState({ title: text(page.title), body: text(page.body) });
-  const [rollbackRev, setRollbackRev] = useState("");
   const [revisions, setRevisions] = useState<JsonRecord[]>([]);
-  const [diffRange, setDiffRange] = useState({ from: "", to: "" });
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
+  const [revisionDiffMode, setRevisionDiffMode] = useState<"incremental" | "cumulative" | "snapshot">("incremental");
   const [diff, setDiff] = useState("");
+  const [diffLoading, setDiffLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const selectedVersion = version;
+  const pageRevision = Number(page.currentRevision);
+  const currentRevision = Number.isFinite(pageRevision) && pageRevision > 0 ? pageRevision : Math.max(0, ...revisions.map((revision) => Number(revision.revision) || 0));
   useEffect(() => {
+    let active = true;
     setVersion("");
     setEditBody({ title: text(page.title), body: text(page.body) });
     setDiff("");
     setError("");
-    api.knowledgeWikiRevisions(text(page.id), scope).then((result) => setRevisions(records(result.revisions))).catch((err) => setError(errText(err, "Unable to load revision history")));
-  }, [page.id, scope.projectId, scope.environment]);
+    setSelectedRevision(currentRevision || null);
+    api.knowledgeWikiRevisions(text(page.id), scope).then((result) => {
+      if (active) setRevisions(records(result.revisions));
+    }).catch((err) => { if (active) setError(errText(err, "Unable to load revision history")); });
+    return () => { active = false; };
+  }, [page.id, page.currentRevision, scope.projectId, scope.environment]);
+  useEffect(() => {
+    let active = true;
+    const selected = selectedRevision ?? currentRevision;
+    if (!historyOpen || revisionDiffMode === "snapshot" || selected < 1 || currentRevision < 1) {
+      setDiff("");
+      setDiffLoading(false);
+      return () => { active = false; };
+    }
+    const fromRevision = revisionDiffMode === "cumulative" ? selected : selected - 1;
+    const toRevision = revisionDiffMode === "cumulative" ? currentRevision : selected;
+    if (fromRevision < 1 || toRevision <= fromRevision) {
+      setDiff("");
+      setDiffLoading(false);
+      return () => { active = false; };
+    }
+    setDiffLoading(true);
+    api.knowledgeWikiDiff(text(page.id), fromRevision, toRevision, scope).then((result) => {
+      if (active) setDiff(text(result.diff));
+    }).catch((err) => {
+      if (active) setError(errText(err, "Unable to compute revision diff"));
+    }).finally(() => {
+      if (active) setDiffLoading(false);
+    });
+    return () => { active = false; };
+  }, [historyOpen, selectedRevision, revisionDiffMode, currentRevision, page.id, scope.projectId, scope.environment]);
   const run = async (task: () => Promise<JsonRecord>, ok: string) => {
     setError(""); setNotice("");
     try { await onRefresh(await task()); setNotice(ok); } catch (err) { setError(errText(err, "Wiki operation failed")); }
@@ -404,20 +496,35 @@ function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; sco
     return section.kind === "common" || section.kind === "difference" || section.kind === "version" && (!selectedVersion || section.productVersion === selectedVersion);
   });
   const headings = visible.length > 0 ? visible.flatMap((section) => markdownHeadings(section.body)) : markdownHeadings(text(page.body));
+  const revisionRows = [...revisions];
+  if (currentRevision > 0 && !revisionRows.some((revision) => Number(revision.revision) === currentRevision)) {
+    revisionRows.push({ id: `current-${text(page.id)}`, revision: currentRevision, title: page.title, body: page.body, changeReason: "Current page", createdAt: page.updatedAt });
+  }
+  revisionRows.sort((left, right) => Number(right.revision) - Number(left.revision));
+  const selectedRevisionRow = revisionRows.find((revision) => Number(revision.revision) === selectedRevision);
+  const selectedRevisionBody = selectedRevision === currentRevision ? text(page.body) : text(selectedRevisionRow?.body);
+  const openHistory = () => {
+    setSelectedRevision(currentRevision || Number(revisionRows[0]?.revision) || null);
+    setRevisionDiffMode("incremental");
+    setHistoryOpen(true);
+  };
   return <section className={`${cardClass} overflow-hidden`} aria-labelledby="wiki-detail-title">
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div className="min-w-0">
         <p className="text-xs font-medium text-iris">{text(page.solution, "Knowledge")} / {text(page.module, "General")}</p>
         <h2 id="wiki-detail-title" className="mt-1 text-xl font-semibold text-fg">{text(page.title, text(page.pageKey, "Wiki page"))}</h2>
-        <p className="mt-1 text-xs text-muted">{text(page.pageKey)} · revision {text(page.currentRevision, "—")} · {text(page.generationStatus, text(page.status, "unknown"))}</p>
+        <p className="mt-1 text-xs text-muted">{text(page.pageKey)} · page revision r{currentRevision || "—"} · {text(page.generationStatus, text(page.status, "unknown"))}</p>
       </div>
-      <StatusBadge value={text(page.status, "draft")} />
+      <div className="flex flex-wrap items-center gap-2">
+        <button className={btnGhost} onClick={openHistory}><History size={13} /> Page history</button>
+        <StatusBadge value={text(page.status, "draft")} />
+      </div>
     </div>
     <div className="mt-4 flex flex-wrap items-center gap-2 border-b border-white/10 pb-3">
       <button className={view === "all" ? btn : btnGhost} onClick={() => setView("all")}>All sections</button>
       <button className={view === "common" ? btn : btnGhost} onClick={() => setView("common")}>Common</button>
       <button className={view === "differences" ? btn : btnGhost} onClick={() => setView("differences")}>Differences</button>
-      {versions.length > 0 && <label className="ml-auto flex items-center gap-2 text-xs text-muted"><span>Version</span><select className={inputClass} value={selectedVersion} onChange={(event) => setVersion(event.target.value)}><option value="">All versions</option>{versions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>}
+      {versions.length > 0 && <label className="ml-auto flex items-center gap-2 text-xs text-muted"><span>Product version</span><select className={inputClass} value={selectedVersion} onChange={(event) => setVersion(event.target.value)}><option value="">All versions</option>{versions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>}
     </div>
     <div className="mt-4 grid gap-6 lg:grid-cols-[minmax(0,1fr)_13rem]">
       <div className="min-w-0">
@@ -451,20 +558,45 @@ function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; sco
         <ReasonAction label="Save edit" onRun={async (reason) => run(async () => asRecord((await api.knowledgeWikiEdit(text(page.id), { title: editBody.title, body: editBody.body, reason }, knowledgeItemScope(page, scope))).page), "Wiki page saved.")} />
         {page.status !== "published" && <ReasonAction label="Publish" onRun={async (reason) => run(async () => asRecord((await api.knowledgeWikiPublish(text(page.id), reason, knowledgeItemScope(page, scope))).page), "Wiki page published.")} />}
         {page.status === "published" && <ReasonAction label="Deprecate" tone="danger" onRun={async (reason) => run(async () => asRecord((await api.knowledgeWikiDeprecate(text(page.id), reason, knowledgeItemScope(page, scope))).page), "Wiki page deprecated.")} />}
-        <input className={`${inputClass} w-24`} placeholder="Rev #" value={rollbackRev} onChange={(event) => setRollbackRev(event.target.value)} />
-        <ReasonAction label="Rollback" tone="danger" onRun={async (reason) => run(async () => { const revision = Number(rollbackRev); if (!Number.isInteger(revision) || revision < 1) throw new Error("Enter a valid revision number"); return asRecord((await api.knowledgeWikiRollback(text(page.id), revision, reason, knowledgeItemScope(page, scope))).page); }, "Wiki page rolled back.")} />
       </div>
     </div>}
-    <details className="mt-5 border-t border-white/10 pt-4">
-      <summary className="cursor-pointer text-xs font-medium text-muted">Revision history and diff</summary>
-      <ul className="mt-3 space-y-1.5">{revisions.map((revision) => <li key={revision.id} className="text-xs text-subtle"><Badge tone="purple">r{revision.revision}</Badge> <span className="ml-1 text-muted">{formatDate(revision.createdAt)} — {revision.changeReason}</span></li>)}</ul>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <input className={`${inputClass} w-24`} value={diffRange.from} onChange={(event) => setDiffRange({ ...diffRange, from: event.target.value })} placeholder="From" />
-        <input className={`${inputClass} w-24`} value={diffRange.to} onChange={(event) => setDiffRange({ ...diffRange, to: event.target.value })} placeholder="To" />
-        <button className={btnGhost} onClick={async () => { try { setDiff(text((await api.knowledgeWikiDiff(text(page.id), Number(diffRange.from), Number(diffRange.to), scope)).diff)); } catch (err) { setError(errText(err, "Unable to compute diff")); } }}>Diff revisions</button>
+    <Drawer open={historyOpen} onClose={() => setHistoryOpen(false)} title={`Page history · ${text(page.title, text(page.pageKey, "Wiki page"))}`} description="Each edit appends a revision. Rollback creates a new revision; it never rewrites history.">
+      <div className="grid gap-5 lg:grid-cols-[14rem_minmax(0,1fr)]">
+        <aside className="min-w-0">
+          <p className="text-xs font-medium text-muted">Revisions</p>
+          <div className="mt-2 space-y-1">
+            {revisionRows.map((revision) => {
+              const number = Number(revision.revision);
+              const current = number === currentRevision;
+              return <button type="button" key={text(revision.id, `revision-${number}`)} onClick={() => { setSelectedRevision(number); setRevisionDiffMode("incremental"); }} className={`w-full rounded-md border p-2.5 text-left ${selectedRevision === number ? "border-mint/60 bg-mint/10" : "border-white/10 hover:border-white/20"}`}>
+                <div className="flex items-center justify-between gap-2"><span className="font-mono text-xs text-fg">r{number}</span>{current && <Badge tone="mint">Current</Badge>}</div>
+                <p className="mt-1 truncate text-[11px] text-muted">{text(revision.changeReason, current ? "Current page" : "Revision")}</p>
+                <p className="mt-1 text-[11px] text-subtle">{formatDate(revision.createdAt)}</p>
+              </button>;
+            })}
+            {revisionRows.length === 0 && <p className="text-xs text-muted">No revision records are available.</p>}
+          </div>
+        </aside>
+        <section className="min-w-0">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/10 pb-3">
+            <div><p className="font-mono text-xs text-iris">r{selectedRevision ?? "—"}{selectedRevision === currentRevision ? " · current" : ""}</p><p className="mt-1 text-xs text-muted">{text(selectedRevisionRow?.changeReason, "Select a revision to inspect")}</p></div>
+            <div className="flex flex-wrap gap-1.5">
+              <button className={revisionDiffMode === "incremental" ? btn : btnGhost} onClick={() => setRevisionDiffMode("incremental")}><GitCompare size={12} /> Change</button>
+              <button className={revisionDiffMode === "cumulative" ? btn : btnGhost} onClick={() => setRevisionDiffMode("cumulative")}>Compare to current</button>
+              <button className={revisionDiffMode === "snapshot" ? btn : btnGhost} onClick={() => setRevisionDiffMode("snapshot")}>Snapshot</button>
+            </div>
+          </div>
+          <div className="mt-4">
+            {revisionDiffMode === "snapshot" ? <div className="rounded-md border border-white/10 p-3"><KnowledgeMarkup source={selectedRevisionBody} wikiScope={scope} wikiPageKey={text(page.pageKey)} /></div>
+              : diffLoading ? <p className="text-sm text-muted">Loading revision diff…</p>
+                : selectedRevision === 1 ? <p className="rounded-md border border-white/10 bg-black/10 p-3 text-sm text-muted">This is the initial revision; there is no earlier snapshot to compare.</p>
+                  : diff ? <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap rounded-md border border-white/10 bg-black/20 p-3 font-mono text-xs leading-5 text-fg">{diff}</pre>
+                    : <p className="rounded-md border border-white/10 bg-black/10 p-3 text-sm text-muted">No content changes are available for this comparison.</p>}
+          </div>
+          {isAdmin && selectedRevision !== null && selectedRevision < currentRevision && page.status !== "deprecated" && <div className="mt-5 border-t border-white/10 pt-4"><ReasonAction label={`Rollback to r${selectedRevision}`} tone="danger" onRun={async (reason) => run(async () => { const updated = asRecord((await api.knowledgeWikiRollback(text(page.id), selectedRevision, reason, knowledgeItemScope(page, scope))).page); setHistoryOpen(false); return updated; }, `Wiki page rolled back to r${selectedRevision}.`)} /></div>}
+        </section>
       </div>
-      {diff && <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-white/10 bg-black/20 p-3 text-xs text-fg">{diff}</pre>}
-    </details>
+    </Drawer>
   </section>;
 }
 
@@ -488,6 +620,10 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   const selectedKey = params.get("wikiKey");
   const [filters, setFilters] = useState({ search: "", status: "", version: "" });
   const [result, setResult] = useState<JsonRecord[]>();
+  const [directoryTotal, setDirectoryTotal] = useState(0);
+  const [directoryOffset, setDirectoryOffset] = useState(0);
+  const [directoryBusy, setDirectoryBusy] = useState(false);
+  const [collapsedDirectoryPaths, setCollapsedDirectoryPaths] = useState<Set<string>>(new Set());
   const [page, setPage] = useState<JsonRecord>();
   const [generation, setGeneration] = useState<JsonRecord>();
   const [error, setError] = useState("");
@@ -497,41 +633,43 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   const [sourceRefs, setSourceRefs] = useState<string[]>([]);
   const [create, setCreate] = useState({ pageKey: "", title: "", body: "", productVersion: "", reason: "" });
   const requestId = useRef(0);
-  const load = async () => {
+  const loadDirectoryPage = async (append = false) => {
     const id = ++requestId.current;
+    const offset = append ? directoryOffset : 0;
     setError("");
-    const paramsForList = { ...scope, search: filters.search.trim() || undefined, status: filters.status || undefined, limit: 100, offset: 0 };
+    setDirectoryBusy(true);
+    if (!append) {
+      setResult(undefined);
+      setDirectoryOffset(0);
+      setCollapsedDirectoryPaths(new Set());
+    }
+    const paramsForList = { ...scope, search: filters.search.trim() || undefined, status: filters.status || undefined, productVersion: filters.version || undefined, limit: 200, offset };
     try {
       let rows: JsonRecord[] = [];
+      let total = 0;
       try {
-        rows = directoryItems(await api.knowledgeWikiDirectory(paramsForList));
+        const directoryResponse = await api.knowledgeWikiDirectory(paramsForList);
+        const directoryRecord = asRecord(directoryResponse);
+        rows = directoryItems(directoryResponse);
+        total = Number(directoryRecord.total ?? rows.length);
       } catch {
         const fallback = await api.knowledgeWikiPages(paramsForList);
         const fallbackRecord = asRecord(fallback);
         rows = records(fallbackRecord.items ?? fallbackRecord.pages);
+        total = Number(fallbackRecord.total ?? rows.length);
       }
       if (id !== requestId.current) return;
-      const grouped = new Map<string, JsonRecord>();
-      rows.forEach((item) => {
-        const key = text(item.topicGroupId, text(item.pageKey, item.id));
-        const current = grouped.get(key);
-        if (!current) grouped.set(key, { ...item, supportedVersions: strings(item.supportedVersions) });
-        else {
-          const versions = [...new Set([...strings(current.supportedVersions), ...strings(item.supportedVersions), text(item.productVersion)])].filter(Boolean);
-          grouped.set(key, { ...current, supportedVersions: versions, sectionCount: Number(current.sectionCount ?? 0) + Number(item.sectionCount ?? 0) });
-        }
-      });
-      const filtered = [...grouped.values()].filter((item) => {
-        const versions = [...strings(item.supportedVersions), text(item.productVersion)].filter(Boolean);
-        return !filters.version || versions.includes(filters.version);
-      });
-      setResult(filtered);
-      api.knowledgeWikiGeneration(scope).then((value) => setGeneration(asRecord(value))).catch(() => { /* directory remains usable when progress is unavailable */ });
+      setResult((current) => mergeWikiRows(append ? [...(current ?? []), ...rows] : rows));
+      setDirectoryTotal(Number.isFinite(total) ? total : rows.length);
+      setDirectoryOffset(offset + rows.length);
+      if (!append) api.knowledgeWikiGeneration(scope).then((value) => setGeneration(asRecord(value))).catch(() => { /* directory remains usable when progress is unavailable */ });
     } catch (err) {
       if (id === requestId.current) setError(errText(err, "Unable to load Wiki directory"));
+    } finally {
+      if (id === requestId.current) setDirectoryBusy(false);
     }
   };
-  useEffect(() => { void load(); }, [scope.projectId, scope.environment, filters.search, filters.status, filters.version]);
+  useEffect(() => { void loadDirectoryPage(false); }, [scope.projectId, scope.environment, filters.search, filters.status, filters.version]);
   useEffect(() => {
     let cancelled = false;
     if (!selectedPage && !selectedKey) { setPage(undefined); return; }
@@ -559,19 +697,16 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
     try {
       const response = asRecord(await api.knowledgeWikiGenerationStart({ ...scope, retryFailed: true }));
       setNotice(`Queued ${Number(response.queued ?? 0)} of ${Number(response.total ?? 0)} Wiki topics.`);
-      await load();
+      await loadDirectoryPage(false);
     } catch (err) {
       setError(errText(err, "Unable to start Wiki generation"));
     }
   };
-  const grouped = new Map<string, Map<string, JsonRecord[]>>();
-  (result ?? []).forEach((item) => {
-    const solution = text(item.solution, "Unassigned");
-    const module = text(item.module, "General");
-    if (!grouped.has(solution)) grouped.set(solution, new Map());
-    const modules = grouped.get(solution)!;
-    if (!modules.has(module)) modules.set(module, []);
-    modules.get(module)!.push(item);
+  const toggleDirectoryPath = (key: string) => setCollapsedDirectoryPaths((current) => {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
   });
   const generationStates = records(generation?.states);
   const activeGeneration = generationStates.filter((state) => ["queued", "running"].includes(text(state.status))).length;
@@ -579,33 +714,35 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   return <div className="space-y-4">
     <section className={cardClass}>
       <div className="flex flex-wrap items-end gap-3">
-        <div><h2 className="text-lg font-semibold text-fg">Wiki directory</h2><p className="mt-1 text-xs text-muted">One page per topic, organized by solution and module.</p></div>
+        <div><h2 className="text-lg font-semibold text-fg">Wiki directory</h2><p className="mt-1 text-xs text-muted">Generated topic paths stay navigable as folders; open a page to inspect product versions and history.</p></div>
         <input aria-label="Search Wiki" className={`${inputClass} ml-auto w-64`} placeholder="Search topics…" value={filters.search} onChange={(event) => setFilters({ ...filters, search: event.target.value })} />
         <select aria-label="Filter by status" className={inputClass} value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}><option value="">All statuses</option>{WIKI_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}</select>
         <select aria-label="Filter by version" className={inputClass} value={filters.version} onChange={(event) => setFilters({ ...filters, version: event.target.value })}><option value="">All versions</option>{[...new Set((result ?? []).flatMap((item) => [...strings(item.supportedVersions), text(item.productVersion)].filter(Boolean)))].map((version) => <option key={version} value={version}>{version}</option>)}</select>
-        <button className={btnGhost} onClick={() => void load()}><RefreshCw size={13} /> Refresh</button>
+        <button className={btnGhost} disabled={directoryBusy} onClick={() => void loadDirectoryPage(false)}><RefreshCw size={13} className={directoryBusy ? "animate-spin" : ""} /> Refresh</button>
         {isAdmin && <button className={btnGhost} onClick={() => void startGeneration()}><Workflow size={13} /> Generate all</button>}
         {isAdmin && <button className={btn} onClick={() => setShowCreate(!showCreate)}>New page</button>}
       </div>
       {generation && (activeGeneration > 0 || failedGeneration > 0) && <div className="mt-3 flex flex-wrap items-center gap-2 rounded-field border border-white/10 bg-black/20 px-3 py-2 text-xs text-subtle">
         <Workflow size={13} className={activeGeneration > 0 ? "text-iris" : "text-coral"} />
         {activeGeneration > 0 ? `${activeGeneration} Wiki topic generation job${activeGeneration === 1 ? "" : "s"} in progress.` : `${failedGeneration} Wiki topic generation${failedGeneration === 1 ? "" : "s"} failed.`}
-        <button className={`${btnGhost} ml-auto`} onClick={() => void load()}>Refresh progress</button>
+        <button className={`${btnGhost} ml-auto`} disabled={directoryBusy} onClick={() => void loadDirectoryPage(false)}>Refresh progress</button>
       </div>}
       {showCreate && isAdmin && <div className="mt-4 space-y-3 border-t border-white/10 pt-4">
         <div className="grid gap-2 sm:grid-cols-3"><input className={inputClass} placeholder="pageKey (stable identity)" value={create.pageKey} onChange={(event) => setCreate({ ...create, pageKey: event.target.value })} /><input className={inputClass} placeholder="Title" value={create.title} onChange={(event) => setCreate({ ...create, title: event.target.value })} /><input className={inputClass} placeholder="Product version (optional)" value={create.productVersion} onChange={(event) => setCreate({ ...create, productVersion: event.target.value })} /></div>
         <label className="block space-y-1 text-xs text-subtle"><span>Published source documents</span><select multiple size={4} className={`${inputClass} h-auto w-full`} value={sourceRefs} onChange={(event) => setSourceRefs(Array.from(event.target.selectedOptions, (option) => option.value))}>{sources.map((source) => <option key={source.id} value={text(source.id)}>{text(source.title)}{source.productVersion ? ` — v${source.productVersion}` : ""}</option>)}</select></label>
         <textarea className="min-h-24 w-full rounded-md border border-white/10 bg-[var(--field)] px-3 py-2 text-sm text-fg outline-none focus:border-mint" placeholder="Page body" value={create.body} onChange={(event) => setCreate({ ...create, body: event.target.value })} />
-        <div className="flex flex-wrap items-center gap-2"><input className={inputClass} placeholder="Audit reason (required)" value={create.reason} onChange={(event) => setCreate({ ...create, reason: event.target.value })} /><button className={btn} disabled={!sourceRefs.length || !create.pageKey.trim() || !create.title.trim() || !create.body.trim() || !create.reason.trim()} onClick={async () => { try { const data = await api.knowledgeWikiCreate({ ...scope, sourceRefs, pageKey: create.pageKey.trim(), title: create.title.trim(), body: create.body, productVersion: create.productVersion.trim() || undefined, reason: create.reason.trim() }); setNotice("Wiki page created."); setShowCreate(false); setCreate({ pageKey: "", title: "", body: "", productVersion: "", reason: "" }); setSourceRefs([]); await load(); openPage(asRecord(data.page)); } catch (err) { setError(errText(err, "Unable to create Wiki page")); } }}>Create</button></div>
+        <div className="flex flex-wrap items-center gap-2"><input className={inputClass} placeholder="Audit reason (required)" value={create.reason} onChange={(event) => setCreate({ ...create, reason: event.target.value })} /><button className={btn} disabled={!sourceRefs.length || !create.pageKey.trim() || !create.title.trim() || !create.body.trim() || !create.reason.trim()} onClick={async () => { try { const data = await api.knowledgeWikiCreate({ ...scope, sourceRefs, pageKey: create.pageKey.trim(), title: create.title.trim(), body: create.body, productVersion: create.productVersion.trim() || undefined, reason: create.reason.trim() }); setNotice("Wiki page created."); setShowCreate(false); setCreate({ pageKey: "", title: "", body: "", productVersion: "", reason: "" }); setSourceRefs([]); await loadDirectoryPage(false); openPage(asRecord(data.page)); } catch (err) { setError(errText(err, "Unable to create Wiki page")); } }}>Create</button></div>
       </div>}
-      {error && !result && <StatePanel state="error" message={error} onRetry={() => void load()} />}
+      {error && !result && <StatePanel state="error" message={error} onRetry={() => void loadDirectoryPage(false)} />}
       {error && result && <Err message={error} />}
       {notice && <p className="mt-3 rounded-md border border-mint/40 bg-mint/10 p-3 text-sm text-mint">{notice}</p>}
-      {!result ? <StatePanel state="loading" message="Loading Wiki directory…" /> : result.length === 0 ? <p className="mt-4 text-sm text-muted">No Wiki topics match these filters.</p> : <div className="mt-5 space-y-6">
-        {[...grouped.entries()].map(([solution, modules]) => <section key={solution}><h3 className="border-b border-white/10 pb-2 text-xs font-semibold text-iris">{solution}</h3><div className="mt-2 space-y-4">{[...modules.entries()].map(([module, items]) => <div key={module}><h4 className="text-sm font-medium text-fg">{module}</h4><div className="mt-1 divide-y divide-white/10">{items.map((item) => <button key={text(item.id, text(item.pageKey))} onClick={() => openPage(item)} className="flex w-full items-center justify-between gap-3 py-3 text-left hover:bg-white/[0.03] focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint"><div className="min-w-0"><p className="truncate text-sm text-fg">{text(item.title, text(item.pageKey, "Untitled topic"))}</p><p className="mt-1 text-xs text-muted">{text(item.directoryPath, text(item.pageKey))} · {strings(item.supportedVersions).length ? strings(item.supportedVersions).join(", ") : "Common"} · {text(item.sectionCount, "—")} sections · {text(item.sourceCount, "—")} sources</p></div><StatusBadge value={text(item.status, "draft")} /></button>)}</div></div>)}</div></section>)}
+      {!result ? <StatePanel state="loading" message="Loading Wiki directory…" /> : result.length === 0 ? <p className="mt-4 text-sm text-muted">No Wiki topics match these filters.</p> : <div className="mt-5 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted"><span>Showing {result.length} topic groups{directoryTotal > 0 ? ` from ${directoryTotal} directory entries` : ""}.</span>{directoryOffset < directoryTotal && <span>More topics are available below.</span>}</div>
+        <WikiDirectoryTreeView items={result} collapsed={collapsedDirectoryPaths} onToggle={toggleDirectoryPath} onOpen={openPage} />
+        {directoryOffset < directoryTotal && <div className="flex justify-center pt-2"><button className={btnGhost} disabled={directoryBusy} onClick={() => void loadDirectoryPage(true)}>{directoryBusy ? "Loading topics…" : `Load more topics (${Math.max(0, directoryTotal - directoryOffset)} remaining)`}</button></div>}
       </div>}
     </section>
-    {page && <><button className={`${btnGhost} self-start`} onClick={closePage}>← Back to directory</button><WikiDetail page={page} scope={scope} isAdmin={isAdmin} onRefresh={async (updated) => { setPage(updated); await load(); }} /></>}
+    {page && <><button className={`${btnGhost} self-start`} onClick={closePage}>← Back to directory</button><WikiDetail page={page} scope={scope} isAdmin={isAdmin} onRefresh={async (updated) => { setPage(updated); await loadDirectoryPage(false); }} /></>}
   </div>;
 }
 function GatesPane() {

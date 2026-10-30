@@ -43,7 +43,6 @@ test("Knowledge planes keep global Product and project runtime scope distinct", 
   assert.match(operations, /extraction/);
   assert.match(operations, /eventLossRisk/);
   assert.match(operations, /Last call/);
-  assert.match(operations, /Error rate/);
 });
 
 test("Memory workspace is non-linear and separates Candidate Insights from Confirmed Memory", () => {

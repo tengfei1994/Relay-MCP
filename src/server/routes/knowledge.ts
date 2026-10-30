@@ -1,6 +1,6 @@
 import { completeVerifiedEngineReindex } from "../../knowledge/engine-reindex.js";
 import { assertProductScope, searchProductBackend, getProductBackend, listEngineProductBackend, diffProductBackend, searchEngineProductReferences, productCatalogVisibility } from "../../knowledge/product-backend.js";
-import { managedControlPlane, activeWikiService } from "../../knowledge/engine-service.js";
+import { managedControlPlane, activeWikiService, getEngineManager } from "../../knowledge/engine-service.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
@@ -1573,6 +1573,17 @@ export async function knowledgeRoutes(app: FastifyInstance) {
   });
   app.post("/api/knowledge/providers/managed/:id/rotate", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); const body = z.object({ secretRef: z.string().min(1).max(500) }).safeParse(request.body ?? {}); if (!body.success) return reply.status(400).send({ error: "Invalid provider secret reference" }); try { return reply.send({ provider: managedProviderRegistry().rotateSecret(String((request.params as { id: string }).id), body.data.secretRef, request.user.id) }); } catch (error) { return sendError(reply, error, 400); } });
   app.post("/api/knowledge/providers/managed/:id/disable", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); try { return reply.send({ provider: managedProviderRegistry().disable(String((request.params as { id: string }).id), request.user.id) }); } catch (error) { return sendError(reply, error, 404); } });
+  app.delete("/api/knowledge/providers/managed/:id", { onRequest: [app.authenticate] }, async (request, reply) => {
+    if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" });
+    const store = getKnowledgeStore();
+    try {
+      const protectedProviderIds = new Set(getEngineManager(store).bindings().map((binding) => binding.providerId));
+      return reply.send(await new ProviderSetupService(store).remove(String((request.params as { id: string }).id), request.user.id, protectedProviderIds));
+    } catch (error) {
+      const status = error instanceof Error && /bound to the active|active reindex job/i.test(error.message) ? 409 : 404;
+      return sendError(reply, error, status);
+    }
+  });
   app.post("/api/knowledge/providers/managed/reindex/:jobId/complete", { onRequest: [app.authenticate] }, async (request, reply) => { if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator access is required" }); try { return reply.send({ job: completeVerifiedEngineReindex(getKnowledgeStore(), String((request.params as { jobId: string }).jobId), request.user.id) }); } catch (error) { return sendError(reply, error, 404); } });
 
   app.get("/api/knowledge/candidate-insights", { onRequest: [app.authenticate] }, async (request, reply) => {

@@ -157,6 +157,13 @@ test("provider setup discovers models, tests before saving and persists only enc
       await app.inject({ method: "POST", url: base + "/embed/test", payload: {} });
       assert.equal(calls.length, count);
     });
+    await t.test("administrators can delete a managed provider and its encrypted credential", async () => {
+      const deleted = await app.inject({ method: "DELETE", url: base + "/embed" });
+      assert.equal(deleted.statusCode, 200, deleted.body);
+      assert.deepEqual(deleted.json(), { id: "embed", deleted: true });
+      assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_provider_configs WHERE id=?").get("embed").n, 0);
+      assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_provider_secrets").get().n, 0);
+    });
   } finally {
     await app.close();
     store.close();

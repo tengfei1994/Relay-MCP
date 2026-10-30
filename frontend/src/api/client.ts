@@ -166,6 +166,7 @@ export const api = {
   knowledgeManagedProviderTest: (id: string) => request<{ report: unknown }>("POST", `/knowledge/providers/managed/${encodeURIComponent(id)}/test`, {}),
   knowledgeManagedProviderRotate: (id: string, secretRef: string) => request<{ provider: unknown }>("POST", `/knowledge/providers/managed/${encodeURIComponent(id)}/rotate`, { secretRef }),
   knowledgeManagedProviderDisable: (id: string) => request<{ provider: unknown }>("POST", `/knowledge/providers/managed/${encodeURIComponent(id)}/disable`, {}),
+  knowledgeManagedProviderDelete: (id: string) => request<{ id: string; deleted: boolean }>("DELETE", `/knowledge/providers/managed/${encodeURIComponent(id)}`),
   knowledgeManagedProviderReindexComplete: (jobId: string) => request<{ job: unknown }>("POST", `/knowledge/providers/managed/reindex/${encodeURIComponent(jobId)}/complete`, {}),
   knowledgeCandidateInsights: (projectId?: string | number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); if (projectId !== undefined && projectId !== "") query.set("projectId", String(projectId)); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ insights: unknown[] }>("GET", `/knowledge/candidate-insights?${query.toString()}`); },
   knowledgeCandidateInsight: (id: string) => request<{ insight: unknown }>("GET", `/knowledge/candidate-insights/${encodeURIComponent(id)}`),

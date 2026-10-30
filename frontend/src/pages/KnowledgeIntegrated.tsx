@@ -127,7 +127,7 @@ function ProvidersPane({ isAdmin }: { isAdmin: boolean }) {
   const [probe, setProbe] = useState<Record<string, JsonRecord>>({});
   const [rotateId, setRotateId] = useState("");
   const [rotateRef, setRotateRef] = useState("");
-  const [confirmAction, setConfirmAction] = useState<{ id: string; kind: "clear" | "disable" }>();
+  const [confirmAction, setConfirmAction] = useState<{ id: string; kind: "clear" | "disable" | "delete" }>();
   const load = () => {
     setError("");
     if (isAdmin) api.knowledgeEngine().then((value) => { setEngine(asRecord(value)); setEngineError(""); }).catch((err) => setEngineError(errText(err, "Unable to load engine status")));
@@ -174,6 +174,7 @@ function ProvidersPane({ isAdmin }: { isAdmin: boolean }) {
             <button className={btnGhost} onClick={() => { setRotateId(rotateId === provider.id ? "" : provider.id); setRotateRef(""); }}><KeyRound size={12} /> Replace token</button>
             <button className={btnDanger} disabled={!provider.tokenConfigured || rotating} onClick={() => setConfirmAction({ id: provider.id, kind: "clear" })}>Clear token</button>
             <button className={btnDanger} disabled={provider.status === "disabled"} onClick={() => setConfirmAction({ id: provider.id, kind: "disable" })}>Disable</button>
+            <button className={btnDanger} disabled={provider.status === "disabled"} onClick={() => setConfirmAction({ id: provider.id, kind: "delete" })}>Delete provider</button>
           </div>}
           {rotateId === provider.id && <div className="mt-2 flex flex-wrap items-center gap-2">
             <label className="space-y-1 text-sm text-fg"><span className="block">Replacement token</span><input type="password" autoComplete="new-password" disabled={rotating} className={`${inputClass} w-72`} value={rotateRef} onChange={(event) => setRotateRef(event.target.value)} /></label>
@@ -205,16 +206,22 @@ function ProvidersPane({ isAdmin }: { isAdmin: boolean }) {
     <ConfirmDialog
       open={Boolean(confirmAction)}
       onClose={() => setConfirmAction(undefined)}
-      title={confirmAction?.kind === "clear" ? "Clear provider token" : "Disable provider"}
-      description="This action is recorded in the audit log."
-      confirmLabel={confirmAction?.kind === "clear" ? "Clear token" : "Disable provider"}
+      title={confirmAction?.kind === "clear" ? "Clear provider token" : confirmAction?.kind === "delete" ? "Delete provider" : "Disable provider"}
+      description={confirmAction?.kind === "delete" ? "This removes the provider configuration and encrypted token. Active engine bindings cannot be deleted." : "This action is recorded in the audit log."}
+      confirmLabel={confirmAction?.kind === "clear" ? "Clear token" : confirmAction?.kind === "delete" ? "Delete provider" : "Disable provider"}
       tone="danger"
       requireReason
       onConfirm={async () => {
         if (!confirmAction) return;
         const action = confirmAction;
         setConfirmAction(undefined);
-        await run(() => action.kind === "clear" ? api.knowledgeProviderToken(action.id, null) : api.knowledgeManagedProviderDisable(action.id), action.kind === "clear" ? "Token cleared; provider disabled." : "Provider disabled.");
+        const task = action.kind === "clear"
+          ? () => api.knowledgeProviderToken(action.id, null)
+          : action.kind === "delete"
+            ? () => api.knowledgeManagedProviderDelete(action.id)
+            : () => api.knowledgeManagedProviderDisable(action.id);
+        const message = action.kind === "clear" ? "Token cleared; provider disabled." : action.kind === "delete" ? "Provider deleted." : "Provider disabled.";
+        await run(task, message);
       }}
     />
   </div>;

@@ -112,4 +112,20 @@ export class ProviderSetupService {
       return { provider: this.registry.get(id)! };
     })();
   }
+  async remove(id: string, actorId: number, protectedProviderIds: ReadonlySet<string> = new Set()) {
+    if (protectedProviderIds.has(id)) throw new Error("Provider is bound to the active Knowledge engine; switch the engine first");
+    const provider = this.registry.get(id);
+    if (!provider) throw new Error("Provider not found");
+    const activeReindex = this.store.db.prepare("SELECT 1 FROM knowledge_provider_reindex_jobs WHERE provider_id=? AND status IN ('pending','running') LIMIT 1").get(id);
+    if (activeReindex) throw new Error("Provider has an active reindex job; complete or stop it first");
+    return this.store.db.transaction(() => {
+      const oldRef = this.reference(id);
+      const deleted = this.store.db.prepare("DELETE FROM knowledge_provider_configs WHERE id=?").run(id);
+      if (!deleted.changes) throw new Error("Provider not found");
+      this.store.db.prepare("DELETE FROM knowledge_provider_reindex_jobs WHERE provider_id=?").run(id);
+      this.credentials.remove(oldRef);
+      this.store.audit({ actorId, action: "knowledge.provider.delete", entityType: "provider", entityId: id });
+      return { id, deleted: true };
+    })();
+  }
 }

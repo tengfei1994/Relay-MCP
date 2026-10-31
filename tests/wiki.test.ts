@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { createKnowledgeStore, type KnowledgeStore } from "../src/knowledge/store.ts";
 import { WIKI_MIGRATION } from "../src/knowledge/migrations/037-wiki.ts";
 import { WikiService } from "../src/knowledge/wiki.ts";
-
+import { canonicalWikiRows } from "../src/knowledge/wiki-identity.ts";
 interface Fixture {
   store: KnowledgeStore;
   wiki: WikiService;
@@ -26,6 +26,15 @@ function withFixture(fn: (fixture: Fixture) => void): Promise<void> {
     await fn({ store, wiki: new WikiService(store, clock) });
   })()).finally(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
 }
+
+test("Canonical Wiki selection is linear and preserves canonical row order", () => {
+  const rows = [
+    { id: "draft", project_id: "p1", environment: null, topic_group_id: "topic", status: "draft", created_at: "2026-10-23T00:00:00.000Z", __wiki_rowid: 1 },
+    { id: "published", project_id: "p1", environment: null, topic_group_id: "topic", status: "published", created_at: "2026-10-24T00:00:00.000Z", __wiki_rowid: 2 },
+    { id: "other", project_id: "p1", environment: null, topic_group_id: "other", status: "draft", created_at: "2026-10-23T00:00:00.000Z", __wiki_rowid: 3 },
+  ];
+  assert.deepEqual(canonicalWikiRows(rows).map((row) => row.id), ["published", "other"]);
+});
 
 function createPage(wiki: WikiService, overrides: Record<string, unknown> = {}) {
   return wiki.create({

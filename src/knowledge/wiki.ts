@@ -3,7 +3,7 @@ import { createTwoFilesPatch } from "diff";
 import { assertReviewer } from "./domain.js";
 import { scanCandidateContent } from "./candidate-insight.js";
 import type { KnowledgeStore } from "./store.js";
-import { canonicalWikiRow, isCanonicalWikiRow } from "./wiki-identity.js";
+import { canonicalWikiRow, canonicalWikiRows } from "./wiki-identity.js";
 import { buildWikiDirectoryPath, buildWikiDirectoryPaths } from "./wiki-directory.js";
 export const WIKI_SECTION_KINDS = ["common", "version", "difference"] as const;
 export type WikiSectionKind = (typeof WIKI_SECTION_KINDS)[number];
@@ -372,7 +372,7 @@ export class WikiService {
       (SELECT COUNT(*) FROM knowledge_wiki_sections s WHERE s.page_id=p.id) AS __section_count,
       (SELECT COUNT(DISTINCT c.document_id) FROM knowledge_wiki_section_citations c JOIN knowledge_wiki_sections s ON s.id=c.section_id WHERE s.page_id=p.id) AS __source_count
       FROM knowledge_wiki_pages p WHERE ${predicate} ORDER BY p.updated_at DESC, p.id`).all(params) as Array<Record<string, unknown>>;
-    let canonical = rows.filter(row => isCanonicalWikiRow(rows, row));
+    let canonical = canonicalWikiRows(rows);
     if (input.status) canonical = canonical.filter(row => row.status === input.status);
     if (input.productVersion) {
       const candidateIds = JSON.stringify(canonical.map(row => String(row.id)));

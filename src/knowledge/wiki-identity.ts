@@ -84,6 +84,21 @@ export function canonicalWikiRow(rows: WikiIdentityRow[], row: WikiIdentityRow):
   return rows.filter(candidate => wikiCanonicalKey(candidate) === wikiCanonicalKey(row))
     .reduce((best, candidate) => before(candidate, best) ? candidate : best, row);
 }
+/**
+ * Select canonical rows in one pass while preserving the source order.
+ * List/search endpoints call this over the complete ACL-visible set; avoid
+ * recalculating each row's identity against every other row.
+ */
+export function canonicalWikiRows(rows: WikiIdentityRow[]): WikiIdentityRow[] {
+  const keyed = rows.map((row) => [row, wikiCanonicalKey(row)] as const);
+  const bestByKey = new Map<string, WikiIdentityRow>();
+  for (const [row, key] of keyed) {
+    const best = bestByKey.get(key);
+    if (!best || before(row, best)) bestByKey.set(key, row);
+  }
+  return keyed.filter(([row, key]) => bestByKey.get(key) === row).map(([row]) => row);
+}
+
 
 export function isCanonicalWikiRow(rows: WikiIdentityRow[], row: WikiIdentityRow): boolean {
   return String(canonicalWikiRow(rows, row).id) === String(row.id);

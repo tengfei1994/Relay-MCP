@@ -4,7 +4,7 @@ import { assertReviewer } from "./domain.js";
 import { scanCandidateContent } from "./candidate-insight.js";
 import type { KnowledgeStore } from "./store.js";
 import { canonicalWikiRow, isCanonicalWikiRow } from "./wiki-identity.js";
-import { buildWikiDirectoryPath } from "./wiki-directory.js";
+import { buildWikiDirectoryPath, buildWikiDirectoryPaths } from "./wiki-directory.js";
 export const WIKI_SECTION_KINDS = ["common", "version", "difference"] as const;
 export type WikiSectionKind = (typeof WIKI_SECTION_KINDS)[number];
 export interface WikiCitation {
@@ -396,7 +396,9 @@ export class WikiService {
         .all(JSON.stringify(canonical.map(row => String(row.id))), pattern.toLocaleLowerCase(), pattern.toLocaleLowerCase()) as Array<{ id: unknown }>).map(row => String(row.id)));
       canonical = canonical.filter(row => matchingIds.has(String(row.id)));
     }
-    return { items: canonical.slice(offset, offset + limit).map(summaryFromRow), total: canonical.length, limit, offset };
+    const selected = canonical.slice(offset, offset + limit).map(summaryFromRow);
+    const directoryPaths = buildWikiDirectoryPaths(this.store, selected.map((item) => ({ title: item.title, sourceRefs: item.sourceRefs, solution: item.solution, module: item.module })));
+    return { items: selected.map((item, index) => ({ ...item, directoryPath: directoryPaths[index] })), total: canonical.length, limit, offset };
   }
 
   get(input: { actorId: number; isAdmin?: boolean; id: string; projectId?: string; environment?: string }): WikiPage {

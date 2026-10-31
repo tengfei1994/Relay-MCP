@@ -50,6 +50,7 @@ test("Wiki generation groups versions, validates citations and persists one page
     const directoryInput = { title: page.title, sourceRefs: page.sourceRefs, solution: page.solution, module: page.module };
     assert.equal(buildWikiDirectoryPath(store, directoryInput), page.directoryPath);
     assert.deepEqual(buildWikiDirectoryPaths(store, [directoryInput, directoryInput]), [page.directoryPath, page.directoryPath]);
+    assert.equal(new WikiService(store).list({ actorId: 7, isAdmin: true }).items[0]?.directoryPath, page.directoryPath);
   } finally {
     store.close();
     rmSync(root, { recursive: true, force: true });

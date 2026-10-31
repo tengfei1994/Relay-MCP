@@ -39,3 +39,26 @@ test("Wiki directory summarizes singleton graph branches with visible path conte
   assert.deepEqual(product.children[0].pages.map((page) => page.title), ["Gamma"]);
   assert.equal(product.children[0].pages[0].directoryContext, "Deployment / Agent");
 });
+
+test("Wiki directory merges shared PascalCase API families under their base topic", () => {
+  const pages = [
+    { id: "cert", title: "Cert Overview", directoryPath: "Cert/Cert Overview" },
+    { id: "cert-job", title: "CertJob", directoryPath: "CertJob/CertJob" },
+    { id: "cert-sample", title: "CertSample", directoryPath: "CertSample/CertSample" },
+    { id: "cert-section-data", title: "CertSectionData Class", directoryPath: "CertSectionData Class/CertSectionData Class" },
+    { id: "cert-section-result", title: "CertSectionResult", directoryPath: "CertSectionResult/CertSectionResult" },
+    { id: "cert-template", title: "CertTemplate", directoryPath: "CertTemplate/CertTemplate" },
+  ];
+  const tree = buildWikiDirectoryTree(pages);
+  assert.deepEqual(tree.nodes.map((node) => node.label), ["Cert"]);
+  assert.deepEqual(tree.nodes[0].pages.map((page) => page.title), [
+    "Cert Overview",
+    "CertJob",
+    "CertSample",
+    "CertSectionData Class",
+    "CertSectionResult",
+    "CertTemplate",
+  ]);
+  assert.equal(tree.nodes[0].count, pages.length);
+  assert.equal(tree.nodes[0].pages.find((page) => page.title === "CertJob")?.directoryContext, "CertJob");
+});

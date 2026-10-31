@@ -7,6 +7,7 @@ export interface WikiDirectoryNode {
   children: WikiDirectoryNode[];
   pages: WikiDirectoryPage[];
   count: number;
+  semanticFamily?: boolean;
 }
 
 export interface WikiDirectoryTree {
@@ -56,6 +57,69 @@ function compareLabels(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+function semanticFamilyLabel(label: string): string | undefined {
+  const match = label.trim().match(/^[A-Z]+(?=[A-Z][a-z]|$)|^[A-Z][a-z]+/);
+  const family = match?.[0]?.trim();
+  return family && family.length >= 3 ? family : undefined;
+}
+
+function rebaseNode(node: WikiDirectoryNode, path: string[]): void {
+  node.path = path;
+  node.key = path.join("/");
+  node.children.forEach((child) => rebaseNode(child, [...path, child.label]));
+}
+
+/**
+ * API class labels such as Cert, CertJob and CertSectionResult are sibling
+ * concepts even when the graph projection did not materialize a shared
+ * namespace entity. Keep the base family as the visible topic and retain the
+ * original class in directoryContext after singleton promotion.
+ */
+function mergeSemanticFamilies(nodes: WikiDirectoryNode[]): void {
+  const byFamily = new Map<string, WikiDirectoryNode[]>();
+  for (const node of nodes) {
+    const family = semanticFamilyLabel(node.label);
+    if (!family) continue;
+    const members = byFamily.get(family.toLocaleLowerCase()) ?? [];
+    members.push(node);
+    byFamily.set(family.toLocaleLowerCase(), members);
+  }
+  const consumed = new Set<WikiDirectoryNode>();
+  const merged: WikiDirectoryNode[] = [];
+  for (const node of nodes) {
+    if (consumed.has(node)) continue;
+    const family = semanticFamilyLabel(node.label);
+    const members = family ? byFamily.get(family.toLocaleLowerCase()) ?? [] : [];
+    const base = members.find((candidate) => normalized(candidate.label) === normalized(family ?? ""));
+    if (!family || members.length < 2 || !base) {
+      merged.push(node);
+      continue;
+    }
+    const familyNode = base ?? {
+      key: [...node.path.slice(0, -1), family].join("/"),
+      label: family,
+      path: [...node.path.slice(0, -1), family],
+      children: [],
+      pages: [],
+      count: 0,
+      semanticFamily: true,
+    };
+    familyNode.semanticFamily = true;
+    for (const member of members) {
+      consumed.add(member);
+      if (member === familyNode) continue;
+      rebaseNode(member, [...familyNode.path, member.label]);
+      familyNode.children.push(member);
+    }
+    merged.push(familyNode);
+  }
+  nodes.splice(0, nodes.length, ...merged);
+  nodes.forEach((node) => {
+    if (!node.semanticFamily) mergeSemanticFamilies(node.children);
+  });
+}
+
+
 function sortNode(node: WikiDirectoryNode): void {
   node.children.sort((left, right) => compareLabels(left.label, right.label));
   node.pages.sort((left, right) => compareLabels(pageTitle(left), pageTitle(right)));
@@ -80,7 +144,7 @@ function summarizeSingletonBranches(node: WikiDirectoryNode, depth: number): voi
   const keptChildren: WikiDirectoryNode[] = [];
   for (const child of node.children) {
     summarizeSingletonBranches(child, depth + 1);
-    if (depth >= 1 && child.count === 1) {
+    if ((depth >= 1 || node.semanticFamily) && child.count === 1) {
       const contextPrefix = child.path.slice(node.path.length).join(" / ");
       node.pages.push(...collectPages(child).map((page) => {
         const previous = displayText(page.directoryContext);
@@ -122,6 +186,7 @@ export function buildWikiDirectoryTree(items: WikiDirectoryPage[]): WikiDirector
     current?.pages.push(page);
   }
 
+  mergeSemanticFamilies(roots);
   roots.sort((left, right) => compareLabels(left.label, right.label));
   roots.forEach(sortNode);
   roots.forEach(countNode);

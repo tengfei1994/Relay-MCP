@@ -7,6 +7,7 @@ import { createKnowledgeStore } from "../src/knowledge/store.ts";
 import { WikiService } from "../src/knowledge/wiki.ts";
 import { WikiGenerationService } from "../src/knowledge/wiki-generation.ts";
 import { buildWikiDirectoryPath, buildWikiDirectoryPaths } from "../src/knowledge/wiki-directory.ts";
+import { buildWikiDirectoryTree } from "../frontend/src/knowledge/wiki-directory.ts";
 import { extractProductGraph, persistProductGraph } from "../src/knowledge/product-graph.ts";
 import type { ManagedProviderHandle } from "../src/knowledge/provider-registry.ts";
 
@@ -49,6 +50,48 @@ test("Wiki generation groups versions, validates citations and persists one page
     const directoryInput = { title: page.title, sourceRefs: page.sourceRefs, solution: page.solution, module: page.module };
     assert.equal(buildWikiDirectoryPath(store, directoryInput), page.directoryPath);
     assert.deepEqual(buildWikiDirectoryPaths(store, [directoryInput, directoryInput]), [page.directoryPath, page.directoryPath]);
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Wiki directory shares qualified API namespaces across distinct property pages", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-wiki-api-directory-"));
+  const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });
+  const now = new Date().toISOString();
+  const documents = [
+    ["api-instrument", "ChromeleonInstrument Property", "help:Thermo.SampleManager.ObjectModel~Thermo.SampleManager.ObjectModel.ChromeleonLinkObjectModel~ChromeleonMappingEntity~ChromeleonInstrument", "Thermo.SampleManager.ObjectModel.ChromeleonLinkObjectModel.ChromeleonMappingEntity.ChromeleonInstrument"],
+    ["api-mapping", "ChromeleonMapping Property", "help:Thermo.SampleManager.ObjectModel~Thermo.SampleManager.ObjectModel.ChromeleonLinkObjectModel~ChromeleonMappingProperty~ChromeleonMapping", "Thermo.SampleManager.ObjectModel.ChromeleonLinkObjectModel.ChromeleonMappingProperty.ChromeleonMapping"],
+    ["api-sequence", "ChromeleonSequence Property", "help:Thermo.SampleManager.ObjectModel~Thermo.SampleManager.ObjectModel.ChromeleonLinkObjectModel~ChromeleonSequenceLog~ChromeleonSequence", "Thermo.SampleManager.ObjectModel.ChromeleonLinkObjectModel.ChromeleonSequenceLog.ChromeleonSequence"],
+  ] as const;
+  try {
+    for (const [id, title, family, identifier] of documents) {
+      store.upsertDocument({ id, kind: "product_document", title, body: `# ${title}`, lifecycle: "approved", module: "samplemanager", locator: `fixture://${id}`, sha256: `${id}-sha`, createdAt: now, updatedAt: now });
+      store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,topic_group_id,normalized_content_sha256,parser_version,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, family, "reference", "en", "official", `${id}.html`, `${id}-sha`, "21.3", `topic-${id}`, `${id}-normalized`, "fixture-v1", now, now);
+      persistProductGraph(store, extractProductGraph({
+        documentId: id,
+        title,
+        body: `# ${title}`,
+        metadata: { stableIdentifiers: { MicrosoftHelpF1: identifier } },
+        module: "samplemanager",
+        sourceLocator: `fixture://${id}`,
+        sourceSha256: `${id}-sha`,
+      }));
+    }
+    const pages = documents.map(([id, title]) => ({ id, title, sourceRefs: [id], module: "samplemanager" }));
+    const paths = buildWikiDirectoryPaths(store, pages);
+    assert.deepEqual(paths, [
+      "samplemanager/ChromeleonLinkObjectModel/ChromeleonMappingEntity/ChromeleonInstrument/ChromeleonInstrument Property",
+      "samplemanager/ChromeleonLinkObjectModel/ChromeleonMappingProperty/ChromeleonMapping/ChromeleonMapping Property",
+      "samplemanager/ChromeleonLinkObjectModel/ChromeleonSequenceLog/ChromeleonSequence/ChromeleonSequence Property",
+    ]);
+    const tree = buildWikiDirectoryTree(pages.map((page, index) => ({ ...page, directoryPath: paths[index] })));
+    const namespace = tree.nodes[0]?.children[0];
+    assert.equal(tree.nodes[0]?.label, "samplemanager");
+    assert.equal(namespace?.label, "ChromeleonLinkObjectModel");
+    assert.deepEqual(namespace?.pages.map((page) => page.title), ["ChromeleonInstrument Property", "ChromeleonMapping Property", "ChromeleonSequence Property"]);
   } finally {
     store.close();
     rmSync(root, { recursive: true, force: true });

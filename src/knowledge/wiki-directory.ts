@@ -64,6 +64,32 @@ function boundedConfidence(value: unknown): number {
 function placeholders(values: string[]): string {
   return values.map(() => "?").join(",");
 }
+function qualifiedIdentifierPath(name: string): string[] {
+  const parts = name.replace(/~/g, ".").split(".").map((part) => part.trim()).filter(Boolean);
+  let objectModelIndex = -1;
+  for (let index = 0; index < parts.length; index += 1) {
+    if (normalized(parts[index]) === "objectmodel") objectModelIndex = index;
+  }
+  if (objectModelIndex < 0) return [];
+  const path = parts.slice(objectModelIndex + 1).map(label).filter((value): value is string => Boolean(value));
+  return path.length >= 2 ? path : [];
+}
+
+function apiIdentifierPath(sourceId: string, entities: GraphEntity[]): string[] {
+  const candidates = entities
+    .filter((entity) => entity.documentId === sourceId && entity.kind === "identifier")
+    .map((entity) => qualifiedIdentifierPath(entity.name))
+    .filter((path) => path.length > 0);
+  candidates.sort((left, right) => right.length - left.length || left.join("/").localeCompare(right.join("/")));
+  return candidates[0] ?? [];
+}
+
+function graphMetadataPath(sourceId: string, graph: { metadata: Map<string, { solution?: string; module?: string }> }, input: WikiDirectoryPathInput): string[] {
+  const metadata = graph.metadata.get(sourceId);
+  return [label(metadata?.solution) ?? label(input.solution), label(metadata?.module) ?? label(input.module)]
+    .filter((value): value is string => Boolean(value));
+}
+
 
 function graphRows(store: KnowledgeStore, sourceRefs: string[]): { entities: GraphEntity[]; relations: GraphRelation[]; metadata: Map<string, { solution?: string; module?: string }> } {
   const marks = placeholders(sourceRefs);
@@ -134,12 +160,11 @@ function relationPath(sourceId: string, entities: GraphEntity[], relations: Grap
 }
 
 /**
- * Build the persisted/displayed directory from the Product graph. The first
- * folders come from document -> solution/module relations; the next folders
- * follow bounded entity edges (for example document -> heading -> concept).
- * Traversal is capped so malformed projections cannot produce unbounded paths.
- * Shared prefixes across product versions keep one Wiki page in one stable
- * location even when a version has an extra relationship.
+ * Build the persisted/displayed directory from the Product graph. Qualified
+ * API identifiers provide shared namespace/class/member parents across source
+ * documents; document-local relation edges remain the fallback for prose and
+ * non-API content. Traversal is capped so malformed projections cannot produce
+ * unbounded paths.
  */
 function fallbackDirectoryPath(input: WikiDirectoryPathInput): string {
   const title = label(input.title) ?? "Untitled topic";
@@ -152,10 +177,15 @@ function directoryPathFromGraph(input: WikiDirectoryPathInput, graph: { entities
   const sourceRefs = [...new Set((input.sourceRefs ?? []).map(text).filter(Boolean))];
   const fallback = [label(input.solution), label(input.module)].filter((value): value is string => Boolean(value));
   if (!sourceRefs.length) return [...fallback, title].join("/");
-  const paths = sourceRefs.map((sourceId) => relationPath(sourceId, graph.entities, graph.relations, {
-    solution: graph.metadata.get(sourceId)?.solution ?? input.solution,
-    module: graph.metadata.get(sourceId)?.module ?? input.module,
-  }));
+  const paths = sourceRefs.map((sourceId) => {
+    const metadataPath = graphMetadataPath(sourceId, graph, input);
+    const apiPath = apiIdentifierPath(sourceId, graph.entities);
+    if (apiPath.length) return [...metadataPath, ...apiPath];
+    return relationPath(sourceId, graph.entities, graph.relations, {
+      solution: graph.metadata.get(sourceId)?.solution ?? input.solution,
+      module: graph.metadata.get(sourceId)?.module ?? input.module,
+    });
+  });
   const prefix = commonPrefix(paths);
   return [...(prefix.length ? prefix : fallback), title].join("/");
 }

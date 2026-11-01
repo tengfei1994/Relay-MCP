@@ -36,6 +36,19 @@ test("top-level Server and Project pages use the shared adaptive page frame", ()
   assert.match(projects, /app-workspace-panel/);
 });
 
+test("Project workspace exposes file preview, rename, and delete controls", () => {
+  const client = readFileSync(join(root, "api", "client.ts"), "utf8");
+  const projects = readFileSync(join(root, "pages", "Projects.tsx"), "utf8");
+  assert.match(client, /previewFile/);
+  assert.match(client, /renameFile/);
+  assert.match(client, /deleteFile/);
+  assert.match(projects, /Preview/);
+  assert.match(projects, /Rename/);
+  assert.match(projects, /Delete/);
+  assert.match(projects, /File preview/);
+  assert.match(projects, /Delete \$\{deleteFileTarget/);
+});
+
 test("Knowledge planes keep global Product and project runtime scope distinct", () => {
   const product = readFileSync(join(root, "pages", "KnowledgeProduct.tsx"), "utf8");
   const project = readFileSync(join(root, "pages", "KnowledgeProject.tsx"), "utf8");

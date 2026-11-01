@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react";
-import { Plus, Folder, Trash2, ChevronRight, File, Server as ServerIcon, Link2, Unlink, Settings, Pencil } from "lucide-react";
+import { Plus, Folder, Trash2, ChevronRight, File, Eye, Server as ServerIcon, Link2, Unlink, Settings, Pencil } from "lucide-react";
 import { api } from "../api/client";
 import { Button, ConfirmDialog, Field, Input, Select } from "../components/ui";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
 
 type Project = { id: number; name: string; description?: string };
-type FileEntry = { name: string; type?: string; size?: number };
+type FileEntry = { name: string; type?: string; size?: number; modifiedAt?: string };
+type FilePreview = { path: string; name?: string; content: string; size: number; modifiedAt: string; truncated: boolean };
 type ProjectServer = {
   id: number;
   serverId: number;
@@ -48,7 +49,7 @@ function projectFrom(value: unknown): Project | null {
 function fileFrom(value: unknown): FileEntry | null {
   if (typeof value !== "object" || value === null || !("name" in value) || typeof value.name !== "string") return null;
   const record = value as Record<string, unknown>;
-  return { name: value.name, type: optionalString(record.type), size: optionalNumber(record.size) };
+  return { name: value.name, type: optionalString(record.type), size: optionalNumber(record.size), modifiedAt: optionalString(record.modifiedAt) };
 }
 
 function projectServerFrom(value: unknown): ProjectServer | null {
@@ -128,6 +129,14 @@ export default function ProjectsPage() {
   const [newName, setNewName] = useState("");
   const [newDesc, setNewDesc] = useState("");
   const [error, setError] = useState("");
+  const [workspaceError, setWorkspaceError] = useState("");
+  const [previewPath, setPreviewPath] = useState("");
+  const [previewData, setPreviewData] = useState<FilePreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<{ path: string; name: string } | null>(null);
+  const [renameName, setRenameName] = useState("");
+  const [fileBusy, setFileBusy] = useState(false);
+  const [deleteFileTarget, setDeleteFileTarget] = useState<{ path: string; name: string; type?: string } | null>(null);
 
   // Server association
   const [showServers, setShowServers] = useState(false);
@@ -143,12 +152,18 @@ export default function ProjectsPage() {
     api.listServers().then((r) => setAllServers(serversFrom(r)));
   }, []);
 
+  const pathFor = (name: string) => currentPath ? `${currentPath}/${name}` : name;
+  const refreshFiles = async (projectId: number, path: string) => {
+    const r = await api.listFiles(projectId, path);
+    setFiles(filesFrom(r));
+  };
+
   const openProject = async (project: Project) => {
     setSelected(project);
     setCurrentPath("");
     setShowServers(false);
-    const r = await api.listFiles(project.id, "");
-    setFiles(filesFrom(r));
+    setWorkspaceError("");
+    try { await refreshFiles(project.id, ""); } catch (err: unknown) { setWorkspaceError(err instanceof Error ? err.message : "Unable to load project files"); }
   };
 
   const openDir = async (name: string) => {
@@ -156,8 +171,7 @@ export default function ProjectsPage() {
     const projectId = selected.id;
     const newPath = currentPath ? `${currentPath}/${name}` : name;
     setCurrentPath(newPath);
-    const r = await api.listFiles(projectId, newPath);
-    setFiles(filesFrom(r));
+    try { await refreshFiles(projectId, newPath); } catch (err: unknown) { setWorkspaceError(err instanceof Error ? err.message : "Unable to open directory"); }
   };
 
   const goUp = async () => {
@@ -167,8 +181,7 @@ export default function ProjectsPage() {
     parts.pop();
     const newPath = parts.join("/");
     setCurrentPath(newPath);
-    const r = await api.listFiles(projectId, newPath);
-    setFiles(filesFrom(r));
+    try { await refreshFiles(projectId, newPath); } catch (err: unknown) { setWorkspaceError(err instanceof Error ? err.message : "Unable to open directory"); }
   };
 
   const openBreadcrumb = async (parts: string[], index: number) => {
@@ -177,8 +190,31 @@ export default function ProjectsPage() {
     const newPath = parts.slice(0, index + 1).join("/");
     if (newPath === currentPath) return;
     setCurrentPath(newPath);
-    const r = await api.listFiles(projectId, newPath);
-    setFiles(filesFrom(r));
+    try { await refreshFiles(projectId, newPath); } catch (err: unknown) { setWorkspaceError(err instanceof Error ? err.message : "Unable to open directory"); }
+  };
+
+  const openPreview = async (path: string) => {
+    if (!selected) return;
+    setPreviewPath(path); setPreviewData(null); setPreviewLoading(true); setWorkspaceError("");
+    try { setPreviewData(await api.previewFile(selected.id, path)); }
+    catch (err: unknown) { setPreviewPath(""); setWorkspaceError(err instanceof Error ? err.message : "Unable to preview file"); }
+    finally { setPreviewLoading(false); }
+  };
+
+  const submitRename = async () => {
+    if (!selected || !renameTarget || !renameName.trim()) return;
+    setFileBusy(true); setWorkspaceError("");
+    try { await api.renameFile(selected.id, renameTarget.path, renameName.trim()); setRenameTarget(null); await refreshFiles(selected.id, currentPath); }
+    catch (err: unknown) { setWorkspaceError(err instanceof Error ? err.message : "Unable to rename item"); }
+    finally { setFileBusy(false); }
+  };
+
+  const confirmDeleteFile = async () => {
+    if (!selected || !deleteFileTarget) return;
+    setFileBusy(true); setWorkspaceError("");
+    try { await api.deleteFile(selected.id, deleteFileTarget.path); setDeleteFileTarget(null); await refreshFiles(selected.id, currentPath); }
+    catch (err: unknown) { setWorkspaceError(err instanceof Error ? err.message : "Unable to delete item"); }
+    finally { setFileBusy(false); }
   };
 
   const createProject = async (e: React.FormEvent) => {
@@ -292,6 +328,7 @@ export default function ProjectsPage() {
 
   return (
     <AppPageFrame variant="wide" className="app-page-frame-workspace">
+      {workspaceError && <p className="mb-3 rounded-[10px] border border-coral/40 bg-coral/10 px-4 py-3 text-sm text-coral" role="alert">{workspaceError}</p>}
       <div className="app-workspace-panel flex min-h-0 flex-1">
       <aside className="app-project-sidebar flex flex-col border-r border-line">
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
@@ -486,14 +523,19 @@ export default function ProjectsPage() {
               {files.map((f) => (
                 <div
                   key={f.name}
-                  onClick={() => f.type === "directory" && openDir(f.name)}
-                  className={`flex items-center gap-2 rounded px-3 py-1.5 text-sm transition-colors ${
+                  onClick={() => f.type === "directory" ? void openDir(f.name) : void openPreview(pathFor(f.name))}
+                  className={`group flex items-center gap-2 rounded px-3 py-1.5 text-sm transition-colors ${
                     f.type === "directory" ? "cursor-pointer text-fg hover:bg-white/5" : "cursor-default text-muted"
                   }`}
                 >
                   {f.type === "directory" ? <Folder size={14} className="shrink-0 text-mint" /> : <File size={14} className="shrink-0" />}
-                  <span>{f.name}</span>
-                  {f.type === "file" && <span className="ml-auto text-xs text-muted">{f.size ? `${(f.size / 1024).toFixed(1)}KB` : ""}</span>}
+                  <span className="min-w-0 flex-1 truncate" title={f.name}>{f.name}</span>
+                  {f.type === "file" && <span className="shrink-0 text-xs text-muted">{f.size ? `${(f.size / 1024).toFixed(1)}KB` : ""}</span>}
+                  <span className="flex shrink-0 items-center gap-1">
+                    {f.type === "file" && <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:bg-white/10 hover:text-mint" onClick={(event) => { event.stopPropagation(); void openPreview(pathFor(f.name)); }} title={`Preview ${f.name}`} aria-label={`Preview ${f.name}`}><Eye size={14} /></button>}
+                    <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:bg-white/10 hover:text-mint" onClick={(event) => { event.stopPropagation(); setRenameTarget({ path: pathFor(f.name), name: f.name }); setRenameName(f.name); }} title={`Rename ${f.name}`} aria-label={`Rename ${f.name}`}><Pencil size={14} /></button>
+                    <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:bg-coral/10 hover:text-coral" onClick={(event) => { event.stopPropagation(); setDeleteFileTarget({ path: pathFor(f.name), name: f.name, type: f.type }); }} title={`Delete ${f.name}`} aria-label={`Delete ${f.name}`}><Trash2 size={14} /></button>
+                  </span>
                 </div>
               ))}
               {files.length === 0 && <p className="px-3 text-xs text-muted">Empty directory</p>}
@@ -517,6 +559,35 @@ export default function ProjectsPage() {
         confirmLabel="Unlink server"
         tone="danger"
         onConfirm={confirmUnlinkServer}
+      />
+      <Dialog
+        open={Boolean(previewPath)}
+        onClose={() => { if (!previewLoading) { setPreviewPath(""); setPreviewData(null); } }}
+        title={previewData?.name ?? previewPath.split("/").pop() ?? "File preview"}
+        description={previewData ? `${previewData.size.toLocaleString()} bytes · modified ${new Date(previewData.modifiedAt).toLocaleString()}` : "Loading file content…"}
+        wide
+        busy={previewLoading}
+        footer={<Button variant="ghost" disabled={previewLoading} onClick={() => { setPreviewPath(""); setPreviewData(null); }}>Close</Button>}
+      >
+        {previewLoading ? <p className="text-sm text-muted">Loading file content…</p> : previewData && <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[.09] bg-black/20 p-4 font-mono text-xs leading-5 text-fg">{previewData.content || "(empty file)"}</pre>}
+      </Dialog>
+      <Dialog
+        open={Boolean(renameTarget)}
+        onClose={() => { if (!fileBusy) setRenameTarget(null); }}
+        title={`Rename ${renameTarget?.name ?? "item"}`}
+        busy={fileBusy}
+        footer={<><Button type="button" variant="ghost" disabled={fileBusy} onClick={() => setRenameTarget(null)}>Cancel</Button><Button type="submit" form="rename-file-form" loading={fileBusy}>Save name</Button></>}
+      >
+        <form id="rename-file-form" onSubmit={(event) => { event.preventDefault(); void submitRename(); }} className="space-y-3"><Field label="New name" required><Input autoFocus value={renameName} onChange={(event) => setRenameName(event.target.value)} required /></Field></form>
+      </Dialog>
+      <ConfirmDialog
+        open={Boolean(deleteFileTarget)}
+        onClose={() => { if (!fileBusy) setDeleteFileTarget(null); }}
+        title={`Delete ${deleteFileTarget?.type === "directory" ? "folder" : "file"}?`}
+        description={deleteFileTarget?.type === "directory" ? `Delete ${deleteFileTarget.name} and everything inside it?` : `Delete ${deleteFileTarget?.name ?? "this file"}?`}
+        confirmLabel="Delete"
+        tone="danger"
+        onConfirm={confirmDeleteFile}
       />
       </div>
       </div>

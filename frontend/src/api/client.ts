@@ -60,6 +60,14 @@ export const api = {
     request<{ path: string; entries: unknown[] }>(
       "GET", `/projects/${id}/files?path=${encodeURIComponent(path)}`
     ),
+  previewFile: (id: number, path: string) =>
+    request<{ path: string; name?: string; content: string; size: number; modifiedAt: string; truncated: boolean }>(
+      "GET", `/projects/${id}/files/content?path=${encodeURIComponent(path)}`
+    ),
+  renameFile: (id: number, path: string, name: string) =>
+    request<{ ok: boolean; path: string; name: string }>("PATCH", `/projects/${id}/files`, { path, name }),
+  deleteFile: (id: number, path: string) =>
+    request<{ ok: boolean; path: string }>("DELETE", `/projects/${id}/files?path=${encodeURIComponent(path)}`),
 
   // Knowledge governance plane
   memorySearch: (params: { projectId?: number | string; q: string; limit?: number; sampleManagerVersion?: string; solution?: string; module?: string; environment?: string; scopeType?: string; scopeKey?: string; kinds?: string; includeDeprecated?: boolean }) => {

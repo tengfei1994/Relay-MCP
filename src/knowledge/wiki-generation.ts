@@ -4,6 +4,7 @@ import type { ManagedProviderHandle } from "./provider-registry.js";
 import type { KnowledgeStore } from "./store.js";
 import { WikiService, type WikiCitation, type WikiGenerationInput, type WikiSectionKind } from "./wiki.js";
 import { buildWikiDirectoryPath } from "./wiki-directory.js";
+import { refreshWikiDirectoryAssignments } from "./wiki-directory-assignments.js";
 
 type Row = Record<string, unknown>;
 type TopicSource = {
@@ -207,6 +208,7 @@ export class WikiGenerationService {
         supportedVersions: versions, sourceRefs, sections, fingerprint,
         directoryPath,
       });
+      refreshWikiDirectoryAssignments(this.store, { projectId: input.projectId, environment: input.environment, topicGroupIds: [input.topicGroupId] });
       this.markState(input.topicGroupId, input.projectId, input.environment, "succeeded", fingerprint, undefined, page.id);
       return { topicGroupId: input.topicGroupId, pageId: page.id, title, supportedVersions: versions, sectionCount: sections.length, sourceCount: sourceRefs.length, fingerprint };
     } catch (error) {
@@ -226,4 +228,59 @@ export function listWikiTopicGroups(store: KnowledgeStore, input: { projectId?: 
     FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id LEFT JOIN knowledge_product_document_bindings b ON b.document_id=d.id
     WHERE ${conditions.join(" AND ")} GROUP BY topic_group_id ORDER BY solution,module,title`).all(...params) as Row[];
   return rows.map(row => ({ topicGroupId: String(row.topic_group_id), title: String(row.title ?? row.topic_group_id), solution: text(row.solution), module: text(row.module), supportedVersions: String(row.versions ?? "").split(",").map(value => value.trim()).filter(Boolean).sort(), sourceCount: Number(row.source_count ?? 0) }));
+}
+
+export type WikiTopicGenerationStatus = "not_started" | "queued" | "running" | "paused" | "succeeded" | "failed";
+
+export interface WikiTopicGenerationRecord {
+  topicGroupId: string;
+  title: string;
+  solution?: string;
+  module?: string;
+  supportedVersions: string[];
+  sourceCount: number;
+  generationStatus: WikiTopicGenerationStatus;
+  generatedPageId?: string;
+  jobId?: string;
+  triggerKind?: "manual" | "automatic";
+  attemptCount: number;
+  sourceFingerprint?: string;
+  lastError?: string;
+  updatedAt?: string;
+}
+
+/**
+ * Return the durable marker for every canonical topic. Active jobs take
+ * precedence over the last completed state, so the UI can explain that a
+ * topic is queued/running/paused before the worker reaches it.
+ */
+export function listWikiTopicGenerationStatuses(store: KnowledgeStore, input: { projectId?: string; environment?: string } = {}): WikiTopicGenerationRecord[] {
+  const groups = listWikiTopicGroups(store, input);
+  const scopeProject = input.projectId ?? "", scopeEnvironment = input.environment ?? "";
+  const states = new Map((store.db.prepare("SELECT topic_group_id,status,generated_page_id,attempt_count,source_fingerprint,last_error,updated_at FROM knowledge_wiki_generation_state WHERE project_id=? AND environment=?").all(scopeProject, scopeEnvironment) as Row[]).map(row => [String(row.topic_group_id), row] as const));
+  const active = new Map<string, { jobId: string; status: "queued" | "running" | "paused"; triggerKind?: "manual" | "automatic"; updatedAt?: string }>();
+  const jobs = store.db.prepare("SELECT id,status,control_state,trigger_kind,payload_json,updated_at FROM knowledge_ingest_jobs WHERE kind='wiki_generation' AND status IN ('queued','running') ORDER BY updated_at DESC").all() as Row[];
+  for (const row of jobs) {
+    const payload = object(parseJson(String(row.payload_json ?? "")));
+    if (String(payload.projectId ?? "") !== scopeProject || String(payload.environment ?? "") !== scopeEnvironment) continue;
+    const status = row.control_state === "paused" ? "paused" : String(row.status) === "running" ? "running" : "queued";
+    const triggerKind = row.trigger_kind === "manual" || row.trigger_kind === "automatic" ? row.trigger_kind : undefined;
+    const topicGroupIds = Array.isArray(payload.topicGroupIds) ? payload.topicGroupIds.map(value => String(value)).filter(Boolean) : [];
+    for (const topicGroupId of topicGroupIds) if (!active.has(topicGroupId)) active.set(topicGroupId, { jobId: String(row.id), status, ...(triggerKind ? { triggerKind } : {}), ...(row.updated_at ? { updatedAt: String(row.updated_at) } : {}) });
+  }
+  return groups.map(group => {
+    const state = states.get(group.topicGroupId), current = active.get(group.topicGroupId);
+    const generationStatus = current?.status ?? (state?.status === "queued" || state?.status === "running" || state?.status === "succeeded" || state?.status === "failed" ? state.status : "not_started");
+    return {
+      ...group,
+      generationStatus,
+      ...(state?.generated_page_id ? { generatedPageId: String(state.generated_page_id) } : {}),
+      ...(current?.jobId ? { jobId: current.jobId } : {}),
+      ...(current?.triggerKind ? { triggerKind: current.triggerKind } : {}),
+      attemptCount: Number(state?.attempt_count ?? 0),
+      ...(state?.source_fingerprint ? { sourceFingerprint: String(state.source_fingerprint) } : {}),
+      ...(state?.last_error ? { lastError: String(state.last_error) } : {}),
+      ...(current?.updatedAt ?? state?.updated_at ? { updatedAt: String(current?.updatedAt ?? state?.updated_at) } : {}),
+    };
+  });
 }

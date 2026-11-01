@@ -5,6 +5,7 @@ import { scanCandidateContent } from "./candidate-insight.js";
 import type { KnowledgeStore } from "./store.js";
 import { canonicalWikiRow, canonicalWikiRows } from "./wiki-identity.js";
 import { buildWikiDirectoryPath, buildWikiDirectoryPaths } from "./wiki-directory.js";
+import { assignmentsByPage, refreshWikiDirectoryAssignments } from "./wiki-directory-assignments.js";
 export const WIKI_SECTION_KINDS = ["common", "version", "difference"] as const;
 export type WikiSectionKind = (typeof WIKI_SECTION_KINDS)[number];
 export interface WikiCitation {
@@ -72,6 +73,7 @@ export interface WikiPage {
   generationStatus?: string;
   generationFingerprint?: string;
   directoryPath?: string;
+  directoryContext?: string;
   sectionCount?: number;
   sourceCount?: number;
   currentRevision: number;
@@ -181,7 +183,11 @@ function summaryFromRow(row: Record<string, unknown>): WikiPageSummary {
 }
 
 function hydratePage(store: KnowledgeStore, page: WikiPage): WikiPage {
-  if (page.sourceRefs.length > 0) {
+  const assignment = assignmentsByPage(store, { projectId: page.projectId, environment: page.environment }).get(page.id);
+  if (assignment) {
+    page.directoryPath = assignment.displayPath.join("/");
+    if (assignment.directoryContext) page.directoryContext = assignment.directoryContext;
+  } else if (page.sourceRefs.length > 0) {
     try {
       page.directoryPath = buildWikiDirectoryPath(store, { title: page.title, sourceRefs: page.sourceRefs, solution: page.solution, module: page.module });
     } catch {
@@ -397,8 +403,23 @@ export class WikiService {
       canonical = canonical.filter(row => matchingIds.has(String(row.id)));
     }
     const selected = canonical.slice(offset, offset + limit).map(summaryFromRow);
+    const persisted = (() => {
+      try { return assignmentsByPage(this.store, { projectId, environment }); } catch { return new Map(); }
+    })();
     const directoryPaths = buildWikiDirectoryPaths(this.store, selected.map((item) => ({ title: item.title, sourceRefs: item.sourceRefs, solution: item.solution, module: item.module })));
-    return { items: selected.map((item, index) => ({ ...item, directoryPath: directoryPaths[index] })), total: canonical.length, limit, offset };
+    return {
+      items: selected.map((item, index) => {
+        const assignment = persisted.get(String(item.id));
+        return {
+          ...item,
+          directoryPath: assignment?.displayPath.join("/") ?? directoryPaths[index],
+          ...(assignment?.directoryContext ? { directoryContext: assignment.directoryContext } : {}),
+        };
+      }),
+      total: canonical.length,
+      limit,
+      offset,
+    };
   }
 
   get(input: { actorId: number; isAdmin?: boolean; id: string; projectId?: string; environment?: string }): WikiPage {
@@ -487,6 +508,7 @@ export class WikiService {
       this.store.audit({ actorId: input.actorId, projectId, action: "wiki.create", entityType: "wiki_page", entityId: id, details: { pageKey, title: title.slice(0, 500), reason, revision: 1, sourceRefCount: sourceRefs.length } });
     })();
     const saved = this.loadRow(id);
+    refreshWikiDirectoryAssignments(this.store, { projectId, environment, topicGroupIds: [String(input.topicGroupId ?? input.topicId ?? "")] });
     return hydratePage(this.store, pageFromRow(saved, this.duplicateOf(saved)));
   }
 

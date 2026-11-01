@@ -86,5 +86,6 @@ export const pageTabNavigation = {
     { label: "Capture", path: "/knowledge/operations/capture", end: true, matches: (pathname: string) => matchesPath(pathname, "/knowledge/operations/capture") },
     { label: "Ingest", path: "/knowledge/operations/ingest", end: true, matches: (pathname: string) => matchesPath(pathname, "/knowledge/operations/ingest") },
     { label: "Index and providers", path: "/knowledge/operations/index", end: true, matches: (pathname: string) => matchesPath(pathname, "/knowledge/operations/index") },
+    { label: "Wiki generation", path: "/knowledge/operations/wiki-generation", end: true, adminOnly: true, matches: (pathname: string) => matchesPath(pathname, "/knowledge/operations/wiki-generation") },
   ],
 } as const;

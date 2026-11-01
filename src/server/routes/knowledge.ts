@@ -15,8 +15,11 @@ import { analyzeRelationImpact, queryRelations } from "../../knowledge/relations
 import { searchKnowledge } from "../../knowledge/retriever.js";
 import { correctProductMetadata, updateProductDocumentLifecycle } from "../../knowledge/knowledge-products.js";
 import { ingestArtifactSet, ingestProjectSnapshot } from "../../knowledge/artifact-ingest.js";
-import { enqueueArtifactImport, enqueueProductImport, enqueueProductMigration, enqueueWikiGeneration, MigrationQueueBusyError } from "../../knowledge/ingest-worker.js";
-import { listWikiTopicGroups } from "../../knowledge/wiki-generation.js";
+import { enqueueArtifactImport, enqueueProductImport, enqueueProductMigration, enqueueWikiGenerationDetailed, MigrationQueueBusyError } from "../../knowledge/ingest-worker.js";
+import { controlWikiGenerationJob, WikiGenerationControlError } from "../../knowledge/ingest-controls.js";
+import { normalizeWikiGenerationJob } from "../../knowledge/ingest-dispatch.js";
+import { listWikiTopicGenerationStatuses } from "../../knowledge/wiki-generation.js";
+import { ensureWikiDirectoryAssignments } from "../../knowledge/wiki-directory-assignments.js";
 import { compareSourceBaselines, type SourceManifest } from "../../knowledge/source-baseline.js";
 import { compareSourceUpgradeWithSymbols } from "../../knowledge/source-symbol.js";
 import { classifyRelayEvent } from "../../knowledge/event-classifier.js";
@@ -1652,6 +1655,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     const status = typeof query.status === "string" && WIKI_PAGE_STATUSES.includes(query.status as never) ? query.status as never : undefined;
     try {
       const store = getKnowledgeStore();
+      const directoryState = ensureWikiDirectoryAssignments(store, { projectId, environment });
       const result = new WikiService(store).list({
         actorId: request.user.id, isAdmin: request.user.isAdmin, projectId, environment, status,
         productVersion: queryValue(query, "productVersion"), topicId: queryValue(query, "topicId"), topicGroupId: queryValue(query, "topicGroupId"),
@@ -1670,6 +1674,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       return reply.send({
         ...result,
         items,
+        directoryVersion: directoryState.taxonomyVersion,
         directory: [...grouped.entries()].map(([solution, modules]) => ({
           solution,
           modules: [...modules.entries()].map(([module, topics]) => ({ module, topics })),
@@ -1684,20 +1689,67 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     const store = getKnowledgeStore();
     if (projectId && !request.user.isAdmin && !store.canRead(request.user.id, projectId)) return reply.status(403).send({ error: "Project access denied" });
     const scopeProject = projectId ?? "", scopeEnvironment = environment ?? "";
-    const states = store.db.prepare("SELECT * FROM knowledge_wiki_generation_state WHERE project_id=? AND environment=? ORDER BY updated_at DESC LIMIT ?").all(scopeProject, scopeEnvironment, parseBoundedInt(query.limit, 100, 1, 200));
-    const jobs = store.db.prepare("SELECT id,status,result_json,error,created_at,updated_at,finished_at FROM knowledge_ingest_jobs WHERE kind='wiki_generation' ORDER BY updated_at DESC LIMIT ?").all(parseBoundedInt(query.limit, 100, 1, 200));
-    return reply.send({ states, jobs });
+    const jobLimit = parseBoundedInt(query.limit, 20, 1, 100), jobOffset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
+    const topicLimit = parseBoundedInt(query.topicLimit, 25, 1, 100), topicOffset = parseBoundedInt(query.topicOffset, 0, 0, 1_000_000);
+    const topicRecords = listWikiTopicGenerationStatuses(store, { projectId, environment });
+    const topicStatuses = topicRecords.slice(topicOffset, topicOffset + topicLimit);
+    const jobScope = "kind='wiki_generation' AND COALESCE(json_extract(payload_json,'$.projectId'),'')=? AND COALESCE(json_extract(payload_json,'$.environment'),'')=?";
+    const jobTotal = Number((store.db.prepare(`SELECT COUNT(*) AS count FROM knowledge_ingest_jobs WHERE ${jobScope}`).get(scopeProject, scopeEnvironment) as { count?: number } | undefined)?.count ?? 0);
+    const jobs = (store.db.prepare(`SELECT * FROM knowledge_ingest_jobs WHERE ${jobScope} ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(scopeProject, scopeEnvironment, jobLimit, jobOffset) as KnowledgeRow[]).map((row) => normalizeWikiGenerationJob(row));
+    const states = topicRecords.map((topic) => ({
+      topic_group_id: topic.topicGroupId,
+      status: topic.generationStatus,
+      generated_page_id: topic.generatedPageId ?? null,
+      attempt_count: topic.attemptCount,
+      source_fingerprint: topic.sourceFingerprint ?? null,
+      last_error: topic.lastError ?? null,
+      updated_at: topic.updatedAt ?? null,
+      job_id: topic.jobId ?? null,
+      trigger_kind: topic.triggerKind ?? null,
+    }));
+    const summary = topicRecords.reduce((result, topic) => {
+      result.total += 1;
+      if (topic.generationStatus === "succeeded") result.generated += 1;
+      else if (topic.generationStatus === "failed") result.failed += 1;
+      else if (topic.generationStatus === "queued" || topic.generationStatus === "running") result.inProgress += 1;
+      else if (topic.generationStatus === "paused") result.paused += 1;
+      else result.notStarted += 1;
+      return result;
+    }, { total: 0, generated: 0, failed: 0, inProgress: 0, paused: 0, notStarted: 0 });
+    return reply.send({ states, jobs, jobsPage: { limit: jobLimit, offset: jobOffset, total: jobTotal }, topics: topicStatuses, topicsPage: { limit: topicLimit, offset: topicOffset, total: topicRecords.length }, summary });
+  });
+  app.post("/api/knowledge/ingest-jobs/:id/control", { onRequest: [app.authenticate] }, async (request, reply) => {
+    if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator permission is required" });
+    const body = z.object({ action: z.enum(["pause", "resume"]) }).safeParse(request.body ?? {});
+    if (!body.success) return reply.status(400).send({ error: "A pause or resume action is required" });
+    const id = String((request.params as { id: string }).id);
+    try {
+      const job = controlWikiGenerationJob(getKnowledgeStore(), id, body.data.action, request.user.id);
+      return reply.send({ job });
+    } catch (error) {
+      if (error instanceof WikiGenerationControlError) {
+        const status = error.code === "not_found" ? 404 : error.code === "terminal" || error.code === "conflict" || error.code === "unsupported_kind" ? 409 : 400;
+        return reply.status(status).send({ error: error.message, code: error.code });
+      }
+      return sendError(reply, error, 400);
+    }
   });
   app.post("/api/knowledge/wiki/generation", { onRequest: [app.authenticate] }, async (request, reply) => {
     if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator permission required" });
     const body = z.object({ projectId: z.string().trim().min(1).optional(), environment: z.string().trim().min(1).optional(), retryFailed: z.boolean().optional() }).safeParse(request.body ?? {});
     if (!body.success) return reply.status(400).send({ error: "Invalid Wiki generation request" });
     if (body.data.environment && !body.data.projectId) return reply.status(400).send({ error: "environment requires projectId" });
-    const store = getKnowledgeStore(), groups = listWikiTopicGroups(store, body.data);
-    const states = new Map((store.db.prepare("SELECT topic_group_id,status FROM knowledge_wiki_generation_state WHERE project_id=? AND environment=?").all(body.data.projectId ?? "", body.data.environment ?? "") as Array<{ topic_group_id: string; status: string }>).map(row => [row.topic_group_id, row.status]));
-    const topicGroupIds = groups.map(group => group.topicGroupId).filter(topicGroupId => !states.has(topicGroupId) || (body.data.retryFailed === true && states.get(topicGroupId) === "failed"));
-    const job = enqueueWikiGeneration(store, { topicGroupIds, projectId: body.data.projectId, environment: body.data.environment, triggerId: `manual-${randomUUID()}` });
-    return reply.status(job ? 202 : 200).send({ job, queued: topicGroupIds.length, total: groups.length });
+    const store = getKnowledgeStore(), topics = listWikiTopicGenerationStatuses(store, body.data);
+    const retryFailed = body.data.retryFailed === true;
+    const eligible = topics.filter(topic => topic.generationStatus === "not_started" || (retryFailed && topic.generationStatus === "failed"));
+    const result = enqueueWikiGenerationDetailed(store, { topicGroupIds: eligible.map(topic => topic.topicGroupId), projectId: body.data.projectId, environment: body.data.environment, triggerId: `manual-${randomUUID()}`, triggerKind: "manual" });
+    const inProgress = topics.filter(topic => topic.generationStatus === "queued" || topic.generationStatus === "running" || topic.generationStatus === "paused").length;
+    const generated = topics.filter(topic => topic.generationStatus === "succeeded").length;
+    const skipped = Math.max(0, topics.length - result.queuedTopicGroupIds.length);
+    if (!result.queuedTopicGroupIds.length && inProgress > 0) {
+      return reply.status(409).send({ error: "Wiki generation is already in progress for the selected topics. Refresh the job to monitor it.", code: "generation_in_progress", job: result.job, queued: 0, total: topics.length, skipped, generated, inProgress });
+    }
+    return reply.status(result.job ? 202 : 200).send({ job: result.job, queued: result.queuedTopicGroupIds.length, total: topics.length, skipped, generated, inProgress });
   });
 
   app.post("/api/knowledge/wiki", { onRequest: [app.authenticate] }, async (request, reply) => {

@@ -30,7 +30,13 @@ function assertMigrationBinding(expected: MigrationRuntimeBinding | undefined): 
   if (expected && JSON.stringify(expected) !== JSON.stringify(migrationRuntimeBinding())) throw new MigrationRuntimeBindingChangedError();
 }
 
-export interface IngestJob { id: string; kind: string; status: string; result?: unknown; error?: string; }
+export interface IngestJob { id: string; kind: string; status: string; result?: unknown; error?: string; controlState?: string; triggerKind?: string; processed?: number; total?: number; percent?: number; generated?: number; failures?: number; updatedAt?: string; startedAt?: string; finishedAt?: string; }
+export interface WikiGenerationEnqueueResult {
+  job?: IngestJob;
+  queuedTopicGroupIds: string[];
+  skippedTopicGroupIds: string[];
+  coveredByJobId?: string;
+}
 export class MigrationQueueBusyError extends Error {
   readonly code = "migration_queue_busy";
   readonly statusCode = 503;
@@ -85,36 +91,122 @@ export function enqueueProductImport(store: KnowledgeStore, options: ProductDocu
   return { id, kind: "product_documents", status: "queued" };
 }
 
-export function enqueueWikiGeneration(store: KnowledgeStore, input: { topicGroupIds?: string[]; projectId?: string; environment?: string; triggerId?: string }): IngestJob | undefined {
-  const topicGroupIds = [...new Set(input.topicGroupIds ?? listWikiTopicGroups(store, input).map(group => group.topicGroupId).filter(Boolean))].sort();
-  if (!topicGroupIds.length) return undefined;
+function parseJobJson(value: unknown): Record<string, unknown> {
+  if (typeof value !== "string" || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch { return {}; }
+}
+
+function wikiJobFromRow(row: Record<string, unknown>, fallbackTriggerKind = "automatic"): IngestJob {
+  const result = parseJobJson(row.result_json);
+  return {
+    id: String(row.id), kind: "wiki_generation", status: String(row.status ?? "unknown"),
+    ...(Object.keys(result).length ? { result } : {}),
+    ...(row.error ? { error: String(row.error) } : {}),
+    triggerKind: String(row.trigger_kind ?? fallbackTriggerKind),
+    controlState: String(row.control_state ?? "active"),
+    ...(row.updated_at ? { updatedAt: String(row.updated_at) } : {}),
+    ...(row.started_at ? { startedAt: String(row.started_at) } : {}),
+    ...(row.finished_at ? { finishedAt: String(row.finished_at) } : {}),
+  };
+}
+
+function wikiJobScopeMatches(payload: Record<string, unknown>, input: { projectId?: string; environment?: string }): boolean {
+  return String(payload.projectId ?? "") === String(input.projectId ?? "") && String(payload.environment ?? "") === String(input.environment ?? "");
+}
+
+/**
+ * Queue Wiki topics with a durable overlap check. The immediate transaction
+ * closes the race where two manual clicks happen before the first worker has
+ * written topic-level generation state.
+ */
+export function enqueueWikiGenerationDetailed(store: KnowledgeStore, input: { topicGroupIds?: string[]; projectId?: string; environment?: string; triggerId?: string; triggerKind?: "manual" | "automatic" }): WikiGenerationEnqueueResult {
+  const requested = [...new Set(input.topicGroupIds ?? listWikiTopicGroups(store, input).map(group => group.topicGroupId).filter(Boolean))].sort();
+  if (!requested.length) return { queuedTopicGroupIds: [], skippedTopicGroupIds: [] };
   const triggerId = input.triggerId ?? randomUUID();
-  const id = `wiki-generation-${createHash("sha256").update(JSON.stringify({ topicGroupIds, projectId: input.projectId ?? "", environment: input.environment ?? "", triggerId })).digest("hex")}`;
-  const now = new Date().toISOString();
-  const existing = store.db.prepare("SELECT * FROM knowledge_ingest_jobs WHERE id=?").get(id) as Record<string, unknown> | undefined;
-  if (existing) return { id, kind: "wiki_generation", status: String(existing.status), ...(existing.result_json ? { result: JSON.parse(String(existing.result_json)) } : {}), ...(existing.error ? { error: String(existing.error) } : {}) };
-  const payload = { topicGroupIds, projectId: input.projectId, environment: input.environment, triggerId, cursor: 0 };
-  store.db.prepare("INSERT INTO knowledge_ingest_jobs(id,kind,payload_json,status,available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").run(id, "wiki_generation", JSON.stringify(payload), "queued", now, now, now);
-  scheduleIngestJobs(store);
-  return { id, kind: "wiki_generation", status: "queued" };
+  const triggerKind = input.triggerKind ?? (triggerId.startsWith("manual-") ? "manual" : "automatic");
+  const result = store.db.transaction(() => {
+    const activeRows = store.db.prepare("SELECT * FROM knowledge_ingest_jobs WHERE kind='wiki_generation' AND status IN ('queued','running') ORDER BY updated_at DESC").all() as Array<Record<string, unknown>>;
+    const coveredBy = new Map<string, string>();
+    for (const row of activeRows) {
+      const payload = parseJobJson(row.payload_json);
+      if (!wikiJobScopeMatches(payload, input)) continue;
+      const ids = Array.isArray(payload.topicGroupIds) ? payload.topicGroupIds.map(value => String(value)).filter(Boolean) : [];
+      for (const topicGroupId of ids) if (!coveredBy.has(topicGroupId)) coveredBy.set(topicGroupId, String(row.id));
+    }
+    const pending = requested.filter(topicGroupId => !coveredBy.has(topicGroupId));
+    const skipped = requested.filter(topicGroupId => coveredBy.has(topicGroupId));
+    if (!pending.length) {
+      const coveredByJobId = skipped.length ? coveredBy.get(skipped[0]) : undefined;
+      const row = coveredByJobId ? store.db.prepare("SELECT * FROM knowledge_ingest_jobs WHERE id=?").get(coveredByJobId) as Record<string, unknown> | undefined : undefined;
+      return { job: row ? wikiJobFromRow(row, triggerKind) : undefined, queuedTopicGroupIds: [], skippedTopicGroupIds: skipped, ...(coveredByJobId ? { coveredByJobId } : {}) };
+    }
+    const id = `wiki-generation-${createHash("sha256").update(JSON.stringify({ topicGroupIds: pending, projectId: input.projectId ?? "", environment: input.environment ?? "", triggerId })).digest("hex")}`;
+    const now = new Date().toISOString();
+    const existing = store.db.prepare("SELECT * FROM knowledge_ingest_jobs WHERE id=?").get(id) as Record<string, unknown> | undefined;
+    if (existing) {
+      return {
+        job: wikiJobFromRow(existing, triggerKind),
+        queuedTopicGroupIds: ["queued", "running"].includes(String(existing.status)) ? pending : [],
+        skippedTopicGroupIds: requested.filter(topicGroupId => !pending.includes(topicGroupId)),
+      };
+    }
+    const payload = { topicGroupIds: pending, projectId: input.projectId, environment: input.environment, triggerId, cursor: 0 };
+    store.db.prepare("INSERT INTO knowledge_ingest_jobs(id,kind,payload_json,status,trigger_kind,control_state,available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)").run(id, "wiki_generation", JSON.stringify(payload), "queued", triggerKind, "active", now, now, now);
+    return { job: { id, kind: "wiki_generation", status: "queued", triggerKind, controlState: "active" }, queuedTopicGroupIds: pending, skippedTopicGroupIds: skipped };
+  }).immediate();
+  if (result.job?.status === "queued" && result.queuedTopicGroupIds.length) scheduleIngestJobs(store);
+  return result;
+}
+
+export function enqueueWikiGeneration(store: KnowledgeStore, input: { topicGroupIds?: string[]; projectId?: string; environment?: string; triggerId?: string; triggerKind?: "manual" | "automatic" }): IngestJob | undefined {
+  return enqueueWikiGenerationDetailed(store, input).job;
 }
 
 export function ensureWikiGeneration(store: KnowledgeStore, input: { projectId?: string; environment?: string; retryFailed?: boolean } = {}): IngestJob | undefined {
   const groups = listWikiTopicGroups(store, input).map(group => group.topicGroupId);
   const retryFailed = input.retryFailed === true;
+  const scopeProjectId = input.projectId ?? "";
+  const scopeEnvironment = input.environment ?? "";
   const states = new Map(groups.map(topicGroupId => {
     const row = store.db.prepare("SELECT status,updated_at FROM knowledge_wiki_generation_state WHERE project_id=? AND environment=? AND topic_group_id=?").get(input.projectId ?? "", input.environment ?? "", topicGroupId) as { status?: string; updated_at?: string } | undefined;
     return [topicGroupId, row] as const;
   }));
-  const pending = groups.filter(topicGroupId => {
+  const statePending = groups.filter(topicGroupId => {
     const row = states.get(topicGroupId);
     return !row || (retryFailed && row.status === "failed");
   });
+  // A restart must respect a paused durable job. Without this check the
+  // bootstrap retry would enqueue a second automatic job for the same topic
+  // groups, making a manual pause appear ineffective after a Web reload.
+  const coveredByDurableJob = new Set<string>();
+  let existingJob: Record<string, unknown> | undefined;
+  const durableJobs = store.db.prepare("SELECT * FROM knowledge_ingest_jobs WHERE kind='wiki_generation' AND status IN ('queued','running') ORDER BY updated_at DESC").all() as Array<Record<string, unknown>>;
+  for (const row of durableJobs) {
+    let payload: Record<string, unknown>;
+    try { payload = JSON.parse(String(row.payload_json ?? "{}")) as Record<string, unknown>; } catch { continue; }
+    if (String(payload.projectId ?? "") !== scopeProjectId || String(payload.environment ?? "") !== scopeEnvironment) continue;
+    const topicGroupIds = Array.isArray(payload.topicGroupIds) ? payload.topicGroupIds.map(value => String(value)).filter(Boolean) : [];
+    if (!topicGroupIds.length) continue;
+    topicGroupIds.forEach(topicGroupId => coveredByDurableJob.add(topicGroupId));
+    existingJob ??= row;
+  }
+  const pending = statePending.filter(topicGroupId => !coveredByDurableJob.has(topicGroupId));
+  if (!pending.length && existingJob) {
+    return {
+      id: String(existingJob.id), kind: "wiki_generation", status: String(existingJob.status),
+      triggerKind: String(existingJob.trigger_kind ?? "automatic"), controlState: String(existingJob.control_state ?? "active"),
+      ...(existingJob.result_json ? { result: JSON.parse(String(existingJob.result_json)) } : {}),
+      ...(existingJob.error ? { error: String(existingJob.error) } : {}),
+    };
+  }
   const retryFingerprint = pending.map(topicGroupId => {
     const row = states.get(topicGroupId);
     return [topicGroupId, row?.status ?? "missing", row?.updated_at ?? ""];
   });
-  return enqueueWikiGeneration(store, { topicGroupIds: pending, projectId: input.projectId, environment: input.environment, triggerId: retryFailed ? `bootstrap-retry-${createHash("sha256").update(JSON.stringify(retryFingerprint)).digest("hex").slice(0, 16)}` : "bootstrap" });
+  return enqueueWikiGeneration(store, { topicGroupIds: pending, projectId: input.projectId, environment: input.environment, triggerId: retryFailed ? `bootstrap-retry-${createHash("sha256").update(JSON.stringify(retryFingerprint)).digest("hex").slice(0, 16)}` : "bootstrap", triggerKind: "automatic" });
 }
 export function enqueueArtifactImport(store: KnowledgeStore, options: { source: string; kind?: string; name: string; version?: string; solution?: string; storageUri?: string }): IngestJob {
   const id = randomUUID(); const now = new Date().toISOString(); store.db.prepare("INSERT INTO knowledge_ingest_jobs(id,kind,payload_json,status,available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").run(id, "artifact_set", JSON.stringify(options), "queued", now, now, now); scheduleIngestJobs(store); return { id, kind: "artifact_set", status: "queued" };
@@ -186,6 +278,13 @@ export async function executeIngestJob(store: KnowledgeStore, id: string, execut
     if (row.kind === "wiki_generation") {
       const payload = JSON.parse(String(row.payload_json)) as { topicGroupIds: string[]; projectId?: string; environment?: string; cursor?: number };
       const cursor = Math.max(0, Number(payload.cursor ?? 0)), batch = payload.topicGroupIds.slice(cursor, cursor + 5);
+      const control = store.db.prepare("SELECT control_state,result_json FROM knowledge_ingest_jobs WHERE id=? AND status='running' AND owner_token=?").get(id, ownerToken) as { control_state?: string; result_json?: string } | undefined;
+      if (!control) return ingestJobSnapshot(store, id);
+      if (control.control_state === "paused" || control.control_state === "pause_requested") {
+        const now = new Date().toISOString();
+        store.db.prepare("UPDATE knowledge_ingest_jobs SET status='queued',control_state='paused',paused_at=COALESCE(paused_at,?),available_at=?,finished_at=NULL,owner_token=NULL,owner_pid=NULL,updated_at=? WHERE id=? AND status='running' AND owner_token=?").run(now, now, now, id, ownerToken);
+        return ingestJobSnapshot(store, id);
+      }
       const generated: unknown[] = [], failures: Array<{ topicGroupId: string; error: string }> = [];
       for (const topicGroupId of batch) {
         assertOwner();
@@ -196,7 +295,17 @@ export async function executeIngestJob(store: KnowledgeStore, id: string, execut
         }
       }
       assertOwner();
-      const nextCursor = cursor + batch.length, summary = { processed: nextCursor, total: payload.topicGroupIds.length, generated, failures };
+      const nextCursor = cursor + batch.length;
+      const previousResult = control.result_json ? JSON.parse(control.result_json) as { generatedTotal?: unknown; failureTotal?: unknown; generated?: unknown; failures?: unknown } : {};
+      const generatedTotal = (Number(previousResult.generatedTotal ?? (Array.isArray(previousResult.generated) ? previousResult.generated.length : 0)) || 0) + generated.length;
+      const failureTotal = (Number(previousResult.failureTotal ?? (Array.isArray(previousResult.failures) ? previousResult.failures.length : 0)) || 0) + failures.length;
+      const summary = { processed: nextCursor, total: payload.topicGroupIds.length, generated, failures, generatedTotal, failureTotal };
+      const afterBatch = store.db.prepare("SELECT control_state FROM knowledge_ingest_jobs WHERE id=? AND status='running' AND owner_token=?").get(id, ownerToken) as { control_state?: string } | undefined;
+      if (afterBatch?.control_state === "pause_requested" || afterBatch?.control_state === "paused") {
+        const pausedAt = new Date().toISOString(), nextPayload = { ...payload, cursor: nextCursor };
+        store.db.prepare("UPDATE knowledge_ingest_jobs SET status='queued',control_state='paused',payload_json=?,result_json=?,error=NULL,finished_at=NULL,available_at=?,paused_at=?,owner_token=NULL,owner_pid=NULL,updated_at=? WHERE id=? AND status='running' AND owner_token=?").run(JSON.stringify(nextPayload), JSON.stringify(summary), pausedAt, pausedAt, pausedAt, id, ownerToken);
+        return ingestJobSnapshot(store, id);
+      }
       if (nextCursor < payload.topicGroupIds.length) {
         const nextPayload = { ...payload, cursor: nextCursor };
         store.db.prepare("UPDATE knowledge_ingest_jobs SET status='queued',payload_json=?,result_json=?,error=NULL,finished_at=NULL,available_at=?,updated_at=? WHERE id=? AND status='running' AND owner_token=?").run(JSON.stringify(nextPayload), JSON.stringify(summary), new Date().toISOString(), new Date().toISOString(), id, ownerToken);
@@ -215,7 +324,7 @@ export async function executeIngestJob(store: KnowledgeStore, id: string, execut
           FROM knowledge_product_documents p LEFT JOIN knowledge_product_document_bindings b ON b.document_id=p.id
           WHERE p.id IN (${documentIds.map(() => "?").join(",")})`).all(...documentIds) as Array<{ topic_group_id?: string }>).map(row => row.topic_group_id).filter((value): value is string => Boolean(value))
         : [];
-      enqueueWikiGeneration(store, { topicGroupIds: groups, triggerId: (result as ProductDocumentImportReport).runId });
+      enqueueWikiGeneration(store, { topicGroupIds: groups, triggerId: (result as ProductDocumentImportReport).runId, triggerKind: "automatic" });
     }
     const resultStatus = kind.kind === "artifact_set" ? "succeeded" : (result as ProductDocumentImportReport).status;
     // Item detail already lives in the import tables. Do not return tens of

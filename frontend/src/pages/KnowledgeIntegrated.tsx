@@ -1,12 +1,13 @@
 import { LazyKnowledgeMarkup as KnowledgeMarkup } from "../components/LazyKnowledgeMarkup";
 import { useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import { BookOpen, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, FileText, Folder, GitCompare, History, KeyRound, Network, Pencil, RefreshCw, ServerCog, ShieldAlert, Workflow } from "lucide-react";
+import { Link, Navigate, useSearchParams } from "react-router-dom";
+import { CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, FileText, Folder, GitCompare, History, KeyRound, Network, Pencil, RefreshCw, ServerCog, ShieldAlert, Workflow } from "lucide-react";
 import { api } from "../api/client";
 import { useAuth } from "../App";
 import { Badge, cardClass, formatDate, inputClass, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
 import { ConfirmDialog, Drawer, PageHeader } from "../components/ui";
 import { ProviderSetupForm, type ProviderSetupDefaults } from "../components/ProviderSetupForm";
+import { StandardPage } from "../components/knowledge/KnowledgeFrame";
 import { knowledgeItemScope, withKnowledgeScope, type KnowledgeScope } from "../knowledge/integrated-search";
 import { buildWikiDirectoryTree, type WikiDirectoryNode, type WikiDirectoryPage } from "../knowledge/wiki-directory";
 import "./wiki.css";
@@ -672,7 +673,6 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   const [directoryBusy, setDirectoryBusy] = useState(false);
   const [collapsedDirectoryPaths, setCollapsedDirectoryPaths] = useState<Set<string>>(new Set());
   const [page, setPage] = useState<JsonRecord>();
-  const [generation, setGeneration] = useState<JsonRecord>();
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -697,7 +697,8 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
       try {
         const directoryResponse = await api.knowledgeWikiDirectory(paramsForList);
         const directoryRecord = asRecord(directoryResponse);
-        rows = directoryItems(directoryResponse);
+        rows = records(directoryRecord.items);
+        if (!rows.length) rows = directoryItems(directoryResponse);
         total = Number(directoryRecord.total ?? rows.length);
       } catch {
         const fallback = await api.knowledgeWikiPages(paramsForList);
@@ -709,7 +710,6 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
       setResult((current) => mergeWikiRows(append ? [...(current ?? []), ...rows] : rows));
       setDirectoryTotal(Number.isFinite(total) ? total : rows.length);
       setDirectoryOffset(offset + rows.length);
-      if (!append && !filters.search.trim()) api.knowledgeWikiGeneration(scope).then((value) => setGeneration(asRecord(value))).catch(() => { /* directory remains usable when progress is unavailable */ });
     } catch (err) {
       if (id === requestId.current) setError(errText(err, "Unable to load Wiki directory"));
     } finally {
@@ -743,37 +743,23 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   }, [showCreate, scope.projectId, scope.environment]);
   const openPage = (item: WikiDirectoryPage) => setParams((current) => { const next = new URLSearchParams(current); const id = text(item.id); const key = text(item.pageKey); if (id) { next.set("wikiPage", id); next.delete("wikiKey"); } else if (key) { next.set("wikiKey", key); next.delete("wikiPage"); } return next; });
   const closePage = () => setParams((current) => { const next = new URLSearchParams(current); next.delete("wikiPage"); next.delete("wikiKey"); return next; });
-  const startGeneration = async () => {
-    setError("");
-    setNotice("");
-    try {
-      const response = asRecord(await api.knowledgeWikiGenerationStart({ ...scope, retryFailed: true }));
-      setNotice(`Queued ${Number(response.queued ?? 0)} of ${Number(response.total ?? 0)} Wiki topics.`);
-      await loadDirectoryPage(false);
-    } catch (err) {
-      setError(errText(err, "Unable to start Wiki generation"));
-    }
-  };
   const toggleDirectoryPath = (key: string) => setCollapsedDirectoryPaths((current) => {
     const next = new Set(current);
     if (next.has(key)) next.delete(key);
     else next.add(key);
     return next;
   });
-  const generationStates = records(generation?.states);
-  const activeGeneration = generationStates.filter((state) => ["queued", "running"].includes(text(state.status))).length;
-  const failedGeneration = generationStates.filter((state) => text(state.status) === "failed").length;
   return <div className="wiki-workspace">
     <section className="wiki-directory-panel" aria-label="Wiki directory">
       <header className="wiki-directory-header">
         <div className="wiki-directory-meta">
           <span className="wiki-directory-count">{result?.length ?? 0} topics</span>
           {directoryTotal > (result?.length ?? 0) && <span>{directoryTotal} directory entries</span>}
-          <span className="wiki-directory-hint">Graph paths</span>
+          <span className="wiki-directory-hint" title="Topic families are persisted across imports; Other topics is a flat fallback.">Display index</span>
         </div>
         <div className="wiki-directory-actions">
           <button aria-label="Refresh Wiki directory" title="Refresh Wiki directory" className={btnGhost} disabled={directoryBusy} onClick={() => void loadDirectoryPage(false)}><RefreshCw size={13} className={directoryBusy ? "animate-spin" : ""} /></button>
-          {isAdmin && <button aria-label="Generate all Wiki topics" title="Generate all Wiki topics" className={btnGhost} onClick={() => void startGeneration()}><Workflow size={13} /></button>}
+          {isAdmin && <Link aria-label="Open Wiki generation operations" title="Open Wiki generation operations" className={btnGhost} to={withKnowledgeScope("/knowledge/operations/wiki-generation", scope)}><Workflow size={13} /> Generation</Link>}
           {isAdmin && <button className={btn} onClick={() => setShowCreate(!showCreate)}>New page</button>}
         </div>
       </header>
@@ -784,11 +770,8 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
           <select aria-label="Filter by version" className={inputClass} value={filters.version} onChange={(event) => setFilters({ ...filters, version: event.target.value })}><option value="">All versions</option>{[...new Set((result ?? []).flatMap((item) => [...strings(item.supportedVersions), text(item.productVersion)].filter(Boolean)))].map((version) => <option key={version} value={version}>{version}</option>)}</select>
         </div>
         <div className="wiki-directory-status"><FileText size={12} aria-hidden="true" /><span><strong>{result?.length ?? 0}</strong> visible topics{directoryOffset < directoryTotal ? ` · ${Math.max(0, directoryTotal - directoryOffset)} more available` : ""}</span></div>
+        <p className="wiki-directory-legend">Topic families are stable display groups. Other topics keeps pages without a shared family in one flat list.</p>
       </div>
-      {generation && (activeGeneration > 0 || failedGeneration > 0) && <div className="wiki-directory-progress">
-        <div className="flex items-center gap-2"><Workflow size={13} className={activeGeneration > 0 ? "text-iris" : "text-coral"} /><span>{activeGeneration > 0 ? `${activeGeneration} topic generation job${activeGeneration === 1 ? "" : "s"} in progress.` : `${failedGeneration} topic generation${failedGeneration === 1 ? "" : "s"} failed.`}</span></div>
-        <button className={`${btnGhost} mt-2`} disabled={directoryBusy} onClick={() => void loadDirectoryPage(false)}>Refresh progress</button>
-      </div>}
       {showCreate && isAdmin && <div className="wiki-directory-create">
         <div className="grid gap-2 sm:grid-cols-3"><input className={inputClass} placeholder="pageKey (stable identity)" value={create.pageKey} onChange={(event) => setCreate({ ...create, pageKey: event.target.value })} /><input className={inputClass} placeholder="Title" value={create.title} onChange={(event) => setCreate({ ...create, title: event.target.value })} /><input className={inputClass} placeholder="Product version (optional)" value={create.productVersion} onChange={(event) => setCreate({ ...create, productVersion: event.target.value })} /></div>
         <label className="block space-y-1 text-xs text-subtle"><span>Published source documents</span><select multiple size={4} className={`${inputClass} h-auto w-full`} value={sourceRefs} onChange={(event) => setSourceRefs(Array.from(event.target.selectedOptions, (option) => option.value))}>{sources.map((source) => <option key={source.id} value={text(source.id)}>{text(source.title)}{source.productVersion ? ` — v${source.productVersion}` : ""}</option>)}</select></label>
@@ -848,29 +831,30 @@ function GatesPane() {
 }
 
 const TABS = [
-  ["sessions", "Sessions", Workflow],
   ["providers", "Providers", ServerCog],
-  ["candidates", "Candidates", FileText],
-  ["wiki", "Wiki", BookOpen],
   ["gates", "Release gates", CheckCircle2],
 ] as const;
+const legacyTabRedirects: Record<string, string> = {
+  sessions: "/knowledge/sessions",
+  candidates: "/knowledge/candidate-insights",
+  wiki: "/knowledge/wiki",
+};
 
 export default function KnowledgeIntegrated() {
   const { user } = useAuth();
   const isAdmin = Boolean(user?.isAdmin);
   const [params, setParams] = useSearchParams();
   const requestedTab = params.get("tab");
-  const tab = TABS.some(([key]) => key === requestedTab) ? requestedTab! : "sessions";
+  const legacyRoute = requestedTab ? legacyTabRedirects[requestedTab] : undefined;
+  if (legacyRoute) return <Navigate to={legacyRoute} replace />;
+  const tab = TABS.some(([key]) => key === requestedTab) ? requestedTab! : "providers";
   const setTab = (value: string) => setParams((current) => { const next = new URLSearchParams(current); next.set("tab", value); return next; });
-  return <div className="mx-auto max-w-[1280px] px-5 py-8 sm:px-8">
+  return <StandardPage>
     <PageHeader title="Control plane" description="Sessions, providers, review and publication for Relay knowledge." />
     <nav className="mb-5 flex flex-wrap gap-2" aria-label="Control plane sections">
       {TABS.map(([key, label, Icon]) => <button key={key} onClick={() => setTab(key)} className={`inline-flex items-center gap-1.5 rounded-ctl px-3 py-2 text-sm ${tab === key ? "bg-mint text-ink" : "border border-white/10 text-muted hover:border-white/20"}`}><Icon size={14} /> {label}</button>)}
     </nav>
-    {tab === "sessions" && <SessionsPane />}
     {tab === "providers" && <ProvidersPane isAdmin={isAdmin} />}
-    {tab === "candidates" && <CandidatesPane isAdmin={isAdmin} />}
-    {tab === "wiki" && <WikiPane isAdmin={isAdmin} />}
     {tab === "gates" && <GatesPane />}
-  </div>;
+  </StandardPage>;
 }

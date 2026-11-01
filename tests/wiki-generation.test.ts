@@ -7,6 +7,7 @@ import { createKnowledgeStore } from "../src/knowledge/store.ts";
 import { WikiService } from "../src/knowledge/wiki.ts";
 import { WikiGenerationService } from "../src/knowledge/wiki-generation.ts";
 import { buildWikiDirectoryPath, buildWikiDirectoryPaths } from "../src/knowledge/wiki-directory.ts";
+import { classifyWikiDirectory } from "../src/knowledge/wiki-directory-assignments.ts";
 import { buildWikiDirectoryTree } from "../frontend/src/knowledge/wiki-directory.ts";
 import { extractProductGraph, persistProductGraph } from "../src/knowledge/product-graph.ts";
 import type { ManagedProviderHandle } from "../src/knowledge/provider-registry.ts";
@@ -46,10 +47,11 @@ test("Wiki generation groups versions, validates citations and persists one page
     assert.equal(page.title, "Localization Deployment Kit");
     assert.deepEqual(page.supportedVersions, ["21.1", "21.3"]);
     assert.deepEqual(page.sections?.map(section => section.kind), ["common", "version", "difference"]);
-    assert.equal(page.directoryPath, "Localization/Deployment/Installation/Configure/Agent/Deployment Agent/Localization Deployment Kit");
+    assert.equal(page.directoryPath, "Localization/Other topics");
     const directoryInput = { title: page.title, sourceRefs: page.sourceRefs, solution: page.solution, module: page.module };
-    assert.equal(buildWikiDirectoryPath(store, directoryInput), page.directoryPath);
-    assert.deepEqual(buildWikiDirectoryPaths(store, [directoryInput, directoryInput]), [page.directoryPath, page.directoryPath]);
+    const rawDirectoryPath = "Localization/Deployment/Installation/Configure/Agent/Deployment Agent/Localization Deployment Kit";
+    assert.equal(buildWikiDirectoryPath(store, directoryInput), rawDirectoryPath);
+    assert.deepEqual(buildWikiDirectoryPaths(store, [directoryInput, directoryInput]), [rawDirectoryPath, rawDirectoryPath]);
     assert.equal(new WikiService(store).list({ actorId: 7, isAdmin: true }).items[0]?.directoryPath, page.directoryPath);
   } finally {
     store.close();
@@ -88,9 +90,11 @@ test("Wiki directory shares qualified API namespaces across distinct property pa
       "samplemanager/ChromeleonLinkObjectModel/ChromeleonMappingProperty/ChromeleonMapping/ChromeleonMapping Property",
       "samplemanager/ChromeleonLinkObjectModel/ChromeleonSequenceLog/ChromeleonSequence/ChromeleonSequence Property",
     ]);
-    const tree = buildWikiDirectoryTree(pages.map((page, index) => ({ ...page, directoryPath: paths[index] })));
-    const namespace = tree.nodes[0]?.children[0];
+    const classified = classifyWikiDirectory(pages.map((page, index) => ({ identityKey: `page:${page.id}`, pageId: page.id, title: page.title, rawPath: paths[index], module: page.module })));
+    const tree = buildWikiDirectoryTree(pages.map((page, index) => ({ ...page, directoryPath: classified.get(`page:${page.id}`)?.displayPath.join("/") })));
+    const namespace = tree.nodes[0]?.children[0]?.children[0];
     assert.equal(tree.nodes[0]?.label, "samplemanager");
+    assert.equal(tree.nodes[0]?.children[0]?.label, "Topic families");
     assert.equal(namespace?.label, "ChromeleonLinkObjectModel");
     assert.deepEqual(namespace?.pages.map((page) => page.title), ["ChromeleonInstrument Property", "ChromeleonMapping Property", "ChromeleonSequence Property"]);
   } finally {

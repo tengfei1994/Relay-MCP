@@ -3,6 +3,7 @@ import { Search } from "lucide-react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { PageTabs } from "../components/shell/PageTabs";
+import { StandardPage } from "../components/knowledge/KnowledgeFrame";
 import { Badge, DataTable, Drawer, EmptyState, ErrorState, Input, PageHeader, Select, StatusPill } from "../components/ui";
 
 type MemoryTab = "sessions" | "evidence" | "observations" | "candidate-insights" | "confirmed-memory";
@@ -149,7 +150,7 @@ export default function KnowledgeMemory() {
   ];
 
   return (
-    <div className="mx-auto max-w-[1280px] px-5 py-8 sm:px-8">
+    <StandardPage>
       <PageHeader title="Memory" description="Sessions, evidence and the insights built from them." tabs={<PageTabs section="memory" />} />
       <div className="mb-6 flex flex-wrap items-end gap-3">
         <label className="relative min-w-[280px] flex-1">
@@ -163,6 +164,6 @@ export default function KnowledgeMemory() {
       {error && <ErrorState className="mb-4" message={error} onRetry={() => setReloadCount((count) => count + 1)} />}
       {loading ? <div className="ui-glass p-6 text-sm text-muted" role="status">Loading {title.toLowerCase()}…</div> : !visibleRows.length ? <EmptyState title={`No ${title.toLowerCase()} records`} description="Try another filter or capture more knowledge." /> : <DataTable columns={columns} rows={visibleRows} rowKey={(row) => text(row.id)} selectedRowKey={selectedId ?? undefined} onRowClick={(row) => open(text(row.id))} />}
       {selected && <RecordDrawer row={selected} tab={tab} onClose={close} />}
-    </div>
+    </StandardPage>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Search, RefreshCw } from "lucide-react";
 import { api } from "../api/client";
 import { PageHeader, Drawer, ConfirmDialog, Button, StatusPill } from "../components/ui";
+import { StandardPage } from "../components/knowledge/KnowledgeFrame";
 
 type SourceItem = Record<string, unknown>;
 type PageInfo = { limit: number; offset: number; total: number };
@@ -94,7 +95,7 @@ export default function KnowledgeSource() {
     try { const result = await api.knowledgeSourceBaselineFiles(baselineId, filePage.limit, offset) as SourceResponse; setFiles(result.files ?? []); setFilePage(result.page); } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to load source files"); }
   };
 
-  return <div className="mx-auto max-w-[1280px] px-5 py-8 sm:px-8">
+  return <StandardPage>
     <PageHeader title="Solutions" description="Solution artifacts and their sources." actions={<Button onClick={() => void load()} variant="ghost"><RefreshCw size={15} /> Refresh</Button>} />
     {error && <p role="alert" className="mb-4 rounded-panel border border-coral/40 bg-coral/10 p-3 text-sm text-coral">{error}</p>}
     <div className="mb-4 flex flex-wrap gap-2" aria-label="Solution sections">
@@ -113,7 +114,7 @@ export default function KnowledgeSource() {
       {drawer === "files" && <div><SelectField label="Baseline" value={baselineId} onChange={(value) => { setBaselineId(value); setFiles([]); }} options={baselines} /><Button className="mt-3" variant="ghost" onClick={() => void loadFiles(0)}>Load files</Button><div className="mt-3 space-y-2">{files.map((file) => <div key={text(file.id)} className="rounded-field border border-white/10 p-3 text-xs"><p className="break-all">{text(file.path)}</p><p className="mt-1 break-all text-muted">Evidence {text(file.id)}; SHA-256 {text(file.sha256)}</p></div>)}{!files.length && <p className="py-4 text-sm text-muted">Choose a baseline and load its source files.</p>}</div><div className="mt-3 flex items-center gap-2 text-xs"><Button variant="ghost" disabled={filePage.offset === 0} onClick={() => void loadFiles(Math.max(0, filePage.offset - filePage.limit))}>Previous</Button><span className="text-muted">{filePage.total ? `${filePage.offset + 1} to ${Math.min(filePage.offset + filePage.limit, filePage.total)}` : "0"}</span><Button variant="ghost" disabled={filePage.offset + filePage.limit >= filePage.total} onClick={() => void loadFiles(filePage.offset + filePage.limit)}>Next</Button></div></div>}
     </Drawer>
     <ConfirmDialog open={confirmPublish} onClose={() => setConfirmPublish(false)} title="Publish baseline" description="This action is recorded in the audit log." confirmLabel="Publish baseline" tone="primary" requireReason onConfirm={async () => { setConfirmPublish(false); await publish(); }} />
-  </div>;
+  </StandardPage>;
 }
 
 function SelectField({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: SourceItem[] }) { return <label className="block space-y-1 text-sm text-muted"><span>{label}</span><select className="field w-full" value={value} onChange={(event) => onChange(event.target.value)}><option value="">Select {label.toLowerCase()}</option>{options.map((item) => <option key={text(item.id)} value={text(item.id)}>{text(item.name) || `${text(item.solution)} ${text(item.version)}`}</option>)}</select></label>; }

@@ -46,6 +46,8 @@ import { PRODUCT_GRAPH_MIGRATION } from "./migrations/049-product-graph.js";
 import { PRODUCT_GRAPH_QUERY_INDEXES_MIGRATION } from "./migrations/050-product-graph-query-indexes.js";
 import { KNOWLEDGE_ENTITY_EVIDENCE_INDEX_MIGRATION } from "./migrations/051-knowledge-entity-evidence-index.js";
 import { UNIFIED_PRODUCT_WIKI_MIGRATION } from "./migrations/052-unified-product-wiki.js";
+import { WIKI_GENERATION_CONTROLS_MIGRATION } from "./migrations/053-wiki-generation-controls.js";
+import { WIKI_DIRECTORY_ASSIGNMENTS_MIGRATION } from "./migrations/054-wiki-directory-assignments.js";
 import { PROVIDER_SECRETS_MIGRATION } from "./migrations/039-provider-secrets.js";
 import { WEKNORA_DOCUMENT_MIGRATION } from "./migrations/031-weknora-documents.js";
 import { WORK_SESSION_MIGRATION } from "./migrations/029-work-sessions.js";
@@ -124,6 +126,8 @@ const KNOWLEDGE_MIGRATIONS: Array<{ version: string; sql: string; requiresForeig
   PRODUCT_GRAPH_QUERY_INDEXES_MIGRATION,
   KNOWLEDGE_ENTITY_EVIDENCE_INDEX_MIGRATION,
   UNIFIED_PRODUCT_WIKI_MIGRATION,
+  WIKI_GENERATION_CONTROLS_MIGRATION,
+  WIKI_DIRECTORY_ASSIGNMENTS_MIGRATION,
 ];
 
 const KNOWLEDGE_BUSY_TIMEOUT_MS = parseBoundedNumber(

@@ -12,6 +12,7 @@ test("Knowledge information architecture exposes every #37 route", () => {
     "knowledge", "knowledge/wiki", "knowledge/product-docs", "knowledge/product-docs/imports", "knowledge/product-docs/versions", "knowledge/product-docs/search",
     "knowledge/evidence", "knowledge/candidates", "knowledge/cases", "knowledge/patterns", "knowledge/playbooks",
     "knowledge/operations/capture", "knowledge/operations/ingest", "knowledge/operations/index",
+    "knowledge/operations/wiki-generation",
   ];
   for (const route of requiredRoutes) assert.match(app, new RegExp(`path=\\"${route.replaceAll("/", "\\/")}\\"`));
   assert.match(navigation, /Product docs/);
@@ -62,3 +63,33 @@ test("Memory workspace is non-linear and separates Candidate Insights from Confi
   assert.doesNotMatch(overview, /to="\/knowledge\/candidates"/);
   assert.doesNotMatch(primitives, /Evidence.*→.*Observation.*→.*Candidate.*→.*Case.*→.*Pattern.*→.*Playbook/);
 });
+
+test("Wiki generation UI exposes normalized progress and job-scoped pause/resume controls", () => {
+  const client = readFileSync(join(root, "api", "client.ts"), "utf8");
+  const wiki = readFileSync(join(root, "pages", "KnowledgeIntegrated.tsx"), "utf8");
+  const generation = readFileSync(join(root, "pages", "KnowledgeWikiGeneration.tsx"), "utf8");
+  assert.match(client, /knowledgeWikiGenerationControl/);
+  assert.match(generation, /setTimeout/);
+  assert.match(generation, /processed/);
+  assert.match(generation, /percent/);
+  assert.match(generation, /triggerKind/);
+  assert.match(generation, /Pause/);
+  assert.match(generation, /Resume/);
+  assert.match(generation, /controlState/);
+  assert.match(generation, /jobsPage/);
+  assert.match(generation, /topicsPage/);
+  assert.match(generation, /Topic generation markers/);
+  assert.match(generation, /generationStatus/);
+  assert.match(generation, /Previous/);
+  assert.match(generation, /Next/);
+  assert.match(generation, /PageTabs section="operations"/);
+  assert.doesNotMatch(wiki, /knowledgeWikiGeneration\(/);
+  assert.doesNotMatch(wiki, /pausedGeneration/);
+  assert.match(wiki, /Topic families/);
+  assert.match(wiki, /Other topics/);
+  assert.match(navigationText(), /label: "Wiki generation"[\s\S]*adminOnly: true/);
+});
+
+function navigationText(): string {
+  return readFileSync(join(root, "components", "shell", "navigation.ts"), "utf8");
+}

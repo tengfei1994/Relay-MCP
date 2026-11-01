@@ -6,6 +6,7 @@ import { useProjectScope } from "../context/ProjectScope";
 import { Badge, cardClass, confidenceLabel, formatDate, inputClass, jsonValue, LifecyclePipeline, ScopeBanner, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
 import { PageHeader, Drawer } from "../components/ui";
 import { CandidateReviewDetail } from "../components/CandidateReviewDetail";
+import { StandardPage } from "../components/knowledge/KnowledgeFrame";
 
 type Section = "evidence" | "observations" | "candidates" | "cases" | "patterns" | "playbooks";
 type JsonRecord = Record<string, unknown>;
@@ -208,7 +209,7 @@ export default function KnowledgeProject() {
     return `/knowledge/${targetSection}${query ? `?${query}` : ""}`;
   };
   const description = section === "evidence" ? "Immutable source artifacts with ACL-controlled preview and traceability." : section === "observations" ? "Runtime facts and warnings that have not yet become a confirmed problem." : "Project records remain readable here. Use the Memory workspace for durable knowledge.";
-  return <div className="mx-auto max-w-[1280px] px-5 py-8 sm:px-8">
+  return <StandardPage>
     <PageHeader title={title} description={description} />
     <EnvironmentPicker environment={environment} setEnvironment={selectEnvironment} />
     {scopeError && <p className="mb-4 rounded-field border border-coral/40 bg-coral/10 p-3 text-sm text-coral">{scopeError}</p>}
@@ -219,5 +220,5 @@ export default function KnowledgeProject() {
     <Drawer open={Boolean(selected && projectId)} onClose={() => navigate(listPath(section))} title={title}>
       {selected && projectId && (section === "evidence" ? <EvidenceDetail id={selected} onBack={() => navigate(listPath("evidence"))} /> : section === "observations" ? <ObservationDetail id={selected} onBack={() => navigate(listPath("observations"))} /> : <KnowledgeDetail id={selected} projectId={projectId} kind={detailKind} onBack={() => navigate(listPath(section))} onReview={review} />)}
     </Drawer>
-  </div>;
+  </StandardPage>;
 }

@@ -13,6 +13,7 @@ export function SubNav() {
             <NavLink
               key={item.path}
               to={item.path}
+              end={item.path === "/knowledge"}
               className="shell-subnav-link"
               aria-current={active ? "page" : undefined}
             >

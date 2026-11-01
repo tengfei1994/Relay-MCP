@@ -7,6 +7,51 @@ import { setPriority } from "node:os";
 import type { KnowledgeStore } from "./store.js";
 import type { IngestJob } from "./ingest-worker.js";
 
+export interface WikiGenerationJobSummary extends IngestJob {
+  controlState: "active" | "pause_requested" | "paused";
+  triggerKind: "manual" | "automatic";
+  processed: number;
+  total: number;
+  percent: number;
+  generated: number;
+  failures: number;
+  updatedAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+function parseJson(value: unknown): Record<string, unknown> {
+  if (typeof value !== "string" || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch { return {}; }
+}
+
+function countResult(value: unknown): number {
+  return Array.isArray(value) ? value.length : Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+}
+
+export function normalizeWikiGenerationJob(row: Record<string, unknown>): WikiGenerationJobSummary {
+  const payload = parseJson(row.payload_json), result = parseJson(row.result_json);
+  const total = Math.max(0, Number(result.total ?? (Array.isArray(payload.topicGroupIds) ? payload.topicGroupIds.length : 0)) || 0);
+  const processed = Math.min(total || Number.MAX_SAFE_INTEGER, Math.max(0, Number(result.processed ?? payload.cursor ?? 0) || 0));
+  const percent = total > 0 ? Math.max(0, Math.min(100, Math.round((processed / total) * 100))) : 0;
+  const triggerId = String(payload.triggerId ?? "");
+  const triggerKind = row.trigger_kind === "manual" || row.trigger_kind === "automatic" ? row.trigger_kind : triggerId.startsWith("manual-") ? "manual" : "automatic";
+  const controlState = row.control_state === "pause_requested" || row.control_state === "paused" ? row.control_state : "active";
+  return {
+    id: String(row.id), kind: "wiki_generation", status: String(row.status ?? "unknown"),
+    ...(row.error ? { error: String(row.error) } : {}),
+    ...(Object.keys(result).length ? { result } : {}),
+    controlState, triggerKind, processed, total, percent,
+    generated: countResult(result.generatedTotal ?? result.generated), failures: countResult(result.failureTotal ?? result.failures),
+    ...(row.updated_at ? { updatedAt: String(row.updated_at) } : {}),
+    ...(row.started_at ? { startedAt: String(row.started_at) } : {}),
+    ...(row.finished_at ? { finishedAt: String(row.finished_at) } : {}),
+  };
+}
+
 const active = new Map<string, Promise<number>>();
 const running = new Map<string, Promise<IngestJob>>();
 const children = new Set<ChildProcess>();
@@ -21,7 +66,7 @@ function armNextWake(store: KnowledgeStore): void {
   const key = store.db.name;
   clearWake(key);
   if (stopping || !store.db.open) return;
-  const next = store.db.prepare("SELECT MIN(available_at) AS available_at FROM knowledge_ingest_jobs WHERE status='queued'").get() as { available_at?: string | null };
+  const next = store.db.prepare("SELECT MIN(available_at) AS available_at FROM knowledge_ingest_jobs WHERE status='queued' AND (control_state IS NULL OR control_state='active')").get() as { available_at?: string | null };
   if (!next.available_at) return;
   const at = Date.parse(next.available_at);
   if (!Number.isFinite(at)) return;
@@ -46,13 +91,14 @@ export async function stopIngestJobs(): Promise<void> {
 }
 export function claimIngestJob(store: KnowledgeStore, id: string, token: string): boolean {
   const now = new Date().toISOString();
-  return Boolean(store.db.prepare("UPDATE knowledge_ingest_jobs SET status='running',attempts=attempts+1,started_at=?,updated_at=?,owner_token=?,owner_pid=? WHERE id=? AND status='queued' AND available_at<=?").run(now, now, token, process.pid, id, now).changes);
+  return Boolean(store.db.prepare("UPDATE knowledge_ingest_jobs SET status='running',attempts=attempts+1,started_at=?,updated_at=?,owner_token=?,owner_pid=? WHERE id=? AND status='queued' AND available_at<=? AND (control_state IS NULL OR control_state='active')").run(now, now, token, process.pid, id, now).changes);
 }
 export function ingestJobSnapshot(store: KnowledgeStore, id: string): IngestJob {
   if (!store.db.open) return { id, kind: "unknown", status: "unknown", error: "Knowledge store closed; query persisted job status after reopening" };
-  const row = store.db.prepare("SELECT id,kind,status,error,result_json FROM knowledge_ingest_jobs WHERE id=?").get(id) as IngestJob & { result_json?: string } | undefined;
+  const row = store.db.prepare("SELECT * FROM knowledge_ingest_jobs WHERE id=?").get(id) as (IngestJob & Record<string, unknown>) | undefined;
   if (!row) throw new Error("Ingest job not found");
-  return { id: row.id, kind: row.kind, status: row.status, ...(row.error ? { error: row.error } : {}), ...(row.result_json ? { result: JSON.parse(row.result_json) } : {}) };
+  if (row.kind === "wiki_generation") return normalizeWikiGenerationJob(row);
+  return { id: row.id, kind: row.kind, status: row.status, ...(row.error ? { error: String(row.error) } : {}), ...(row.result_json ? { result: JSON.parse(String(row.result_json)) } : {}) };
 }
 function fail(store: KnowledgeStore, id: string, error: string, token: string | null): boolean {
   return store.db.transaction(() => {
@@ -137,7 +183,7 @@ export function runPendingIngestJobs(store: KnowledgeStore, limit = 100): Promis
   const work = (async () => {
     let count = 0;
     while (!stopping && store.db.open && count < limit) {
-      const row = store.db.prepare("SELECT id FROM knowledge_ingest_jobs WHERE status='queued' AND available_at<=? ORDER BY created_at LIMIT 1").get(new Date().toISOString()) as { id: string } | undefined;
+      const row = store.db.prepare("SELECT id FROM knowledge_ingest_jobs WHERE status='queued' AND available_at<=? AND (control_state IS NULL OR control_state='active') ORDER BY created_at LIMIT 1").get(new Date().toISOString()) as { id: string } | undefined;
       if (!row) break;
       await runIngestJob(store, row.id); count++;
     }

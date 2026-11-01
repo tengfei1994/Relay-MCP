@@ -184,6 +184,7 @@ export const api = {
   knowledgeWikiPages: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ items: unknown[]; total: number; limit: number; offset: number }>("GET", `/knowledge/wiki?${query.toString()}`); },
   knowledgeWikiGeneration: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<unknown>("GET", `/knowledge/wiki/generation?${query.toString()}`); },
   knowledgeWikiGenerationStart: (body: Record<string, unknown>) => request<unknown>("POST", "/knowledge/wiki/generation", body),
+  knowledgeWikiGenerationControl: (id: string, action: "pause" | "resume") => request<{ job: unknown }>("POST", `/knowledge/ingest-jobs/${encodeURIComponent(id)}/control`, { action }),
   knowledgeWikiCreate: (body: Record<string, unknown>) => request<{ page: unknown }>("POST", "/knowledge/wiki", body),
   knowledgeWikiPage: (id: string, scope: KnowledgeScope = {}) => request<{ page: unknown }>("GET", withKnowledgeScope(`/knowledge/wiki/${encodeURIComponent(id)}`, scope)),
   knowledgeWikiResolve: (pageKey: string, scope: KnowledgeScope) => request<{ page: unknown }>("GET", withKnowledgeScope(`/knowledge/wiki/resolve?pageKey=${encodeURIComponent(pageKey)}`, scope)),

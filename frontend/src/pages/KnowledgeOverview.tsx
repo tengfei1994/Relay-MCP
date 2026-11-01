@@ -10,6 +10,7 @@ import AttentionList from "../components/knowledge/AttentionList";
 import IndexPlate from "../components/knowledge/IndexPlate";
 import IngestRunList, { type IngestRun } from "../components/knowledge/IngestRunList";
 import PlaneCard from "../components/knowledge/PlaneCard";
+import { StandardPage } from "../components/knowledge/KnowledgeFrame";
 
 import "../components/knowledge/overview.css";
 
@@ -197,11 +198,11 @@ export default function KnowledgeOverview() {
   const isAdmin = user?.isAdmin === true;
 
   if (error && !snapshot) {
-    return <div className="page overview-page"><ErrorState message={error} description="Check the Knowledge service and retry the overview." onRetry={() => void load()} /></div>;
+    return <StandardPage className="overview-page"><ErrorState message={error} description="Check the Knowledge service and retry the overview." onRetry={() => void load()} /></StandardPage>;
   }
 
   return (
-    <div className="page overview-page">
+    <StandardPage className="overview-page">
       <section className="overview-hero">
         <IndexPlate wells={plate.wells} batchSize={plate.batchSize} loading={!snapshot} animationKey={animationKey} />
         <div className="overview-intro">
@@ -238,6 +239,6 @@ export default function KnowledgeOverview() {
         <IngestRunList runs={snapshot?.runs ?? []} loading={!snapshot} isAdmin={isAdmin} />
         {projectName && <p className="default-project">Default project: <span>{projectName}</span></p>}
       </section>
-    </div>
+    </StandardPage>
   );
 }

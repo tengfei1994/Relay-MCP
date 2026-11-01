@@ -12,6 +12,7 @@ import ToolsPage from "./pages/Tools";
 import KnowledgeProduct from "./pages/KnowledgeProduct";
 import KnowledgeProject from "./pages/KnowledgeProject";
 import KnowledgeOperations from "./pages/KnowledgeOperations";
+import KnowledgeWikiGeneration from "./pages/KnowledgeWikiGeneration";
 import KnowledgeSource from "./pages/KnowledgeSource";
 import KnowledgeIntegrated from "./pages/KnowledgeIntegrated";
 import KnowledgeWiki from "./pages/KnowledgeWiki";
@@ -108,6 +109,7 @@ export default function App() {
           <Route path="knowledge/operations/capture" element={<KnowledgeOperations />} />
           <Route path="knowledge/operations/ingest" element={<KnowledgeOperations />} />
           <Route path="knowledge/operations/index" element={<KnowledgeOperations />} />
+          <Route path="knowledge/operations/wiki-generation" element={<KnowledgeWikiGeneration />} />
           <Route path="tokens" element={<TokensPage />} />
           <Route path="users" element={user?.isAdmin ? <UsersPage /> : <Navigate to="/projects" replace />} />
         </Route>

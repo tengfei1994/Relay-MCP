@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Plus, Folder, Trash2, ChevronRight, File, Eye, Server as ServerIcon, Link2, Unlink, Settings, Pencil } from "lucide-react";
 import { api } from "../api/client";
-import { Button, ConfirmDialog, Field, Input, Select } from "../components/ui";
+import { Button, ConfirmDialog, Dialog, Field, Input, Select } from "../components/ui";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
 
 type Project = { id: number; name: string; description?: string };

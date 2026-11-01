@@ -45,6 +45,7 @@ test("Project workspace exposes file preview, rename, and delete controls", () =
   assert.match(projects, /Preview/);
   assert.match(projects, /Rename/);
   assert.match(projects, /Delete/);
+  assert.match(projects, /\{ Button, ConfirmDialog, Dialog, Field, Input, Select \}/);
   assert.match(projects, /File preview/);
   assert.match(projects, /Delete \$\{deleteFileTarget/);
 });

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Plus, Server as ServerIcon, CheckCircle, XCircle, Clock, Copy, Trash2, Key, Pencil, Terminal } from "lucide-react";
 import { api } from "../api/client";
 import { Button, ConfirmDialog, Dialog, Field, Input, Select } from "../components/ui";
+import { AppPageFrame } from "../components/shell/AppPageFrame";
 
 type ServerStatus = "connected" | "failed" | "pending" | string;
 type Server = {
@@ -219,9 +220,9 @@ export default function ServersPage() {
 
 
   return (
-    <div className="page max-w-3xl">
-      <div className="mb-8 flex items-center justify-between">
-        <div>
+    <AppPageFrame>
+      <div className="mb-8 flex flex-wrap items-start justify-between gap-5">
+        <div className="min-w-0">
           <h1 className="font-display text-[30px] font-semibold tracking-[-0.02em] text-fg">Servers</h1>
           <p className="mt-2 max-w-[60ch] text-sm text-muted">Manage remote hosts and relay agents.</p>
         </div>
@@ -233,19 +234,19 @@ export default function ServersPage() {
 
       <div className="space-y-3">
         {servers.map((s) => (
-          <div key={s.id} className="glass flex items-center justify-between rounded-panel px-5 py-4">
-            <div className="flex items-center gap-3">
+          <div key={s.id} className="glass flex flex-wrap items-center justify-between gap-4 rounded-panel px-5 py-4">
+            <div className="flex min-w-0 items-center gap-3">
               <ServerIcon size={16} className="text-muted" />
-              <div>
+              <div className="min-w-0">
                 <p className="text-sm font-medium text-fg">{s.name}</p>
-                <p className="text-xs text-muted">
+                <p className="truncate text-xs text-muted" title={(s.connectionMode ?? "ssh") === "agent" ? `agent: ${s.agentId ?? "-"}` : `${s.sshUser}@${s.host}:${s.port}`}>
                   {(s.connectionMode ?? "ssh") === "agent"
                     ? `agent: ${s.agentId ?? "-"}`
                     : `${s.sshUser}@${s.host}:${s.port}`}
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center justify-end gap-3">
               <div className="flex items-center gap-1 text-xs text-muted">
                 {STATUS_ICON[s.status] ?? STATUS_ICON.pending}
                 {s.status}
@@ -489,6 +490,6 @@ export default function ServersPage() {
         tone="danger"
         onConfirm={confirmDeleteServer}
       />
-    </div>
+    </AppPageFrame>
   );
 }

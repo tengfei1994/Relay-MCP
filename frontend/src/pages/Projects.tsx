@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Plus, Folder, Trash2, ChevronRight, File, Server as ServerIcon, Link2, Unlink, Settings, Pencil } from "lucide-react";
 import { api } from "../api/client";
 import { Button, ConfirmDialog, Field, Input, Select } from "../components/ui";
+import { AppPageFrame } from "../components/shell/AppPageFrame";
 
 type Project = { id: number; name: string; description?: string };
 type FileEntry = { name: string; type?: string; size?: number };
@@ -290,8 +291,9 @@ export default function ProjectsPage() {
 
 
   return (
-    <div className="flex min-h-full">
-      <aside className="flex w-64 flex-col border-r border-line">
+    <AppPageFrame variant="wide" className="app-page-frame-workspace">
+      <div className="app-workspace-panel flex min-h-0 flex-1">
+      <aside className="app-project-sidebar flex flex-col border-r border-line">
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
           <h2 className="font-display text-lg font-semibold text-fg">Projects</h2>
           <button type="button" onClick={() => setShowCreate(true)} className="text-muted transition-colors hover:text-mint" aria-label="Create project">
@@ -517,6 +519,7 @@ export default function ProjectsPage() {
         onConfirm={confirmUnlinkServer}
       />
       </div>
-    </div>
+      </div>
+    </AppPageFrame>
   );
 }

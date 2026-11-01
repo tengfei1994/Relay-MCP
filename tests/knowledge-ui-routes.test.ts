@@ -21,6 +21,21 @@ test("Knowledge information architecture exposes every #37 route", () => {
   assert.match(navigation, /adminOnly/);
 });
 
+test("top-level Server and Project pages use the shared adaptive page frame", () => {
+  const frame = readFileSync(join(root, "components", "shell", "AppPageFrame.tsx"), "utf8");
+  const shell = readFileSync(join(root, "components", "shell", "shell.css"), "utf8");
+  const servers = readFileSync(join(root, "pages", "Servers.tsx"), "utf8");
+  const projects = readFileSync(join(root, "pages", "Projects.tsx"), "utf8");
+  assert.match(frame, /app-page-frame/);
+  assert.match(shell, /app-page-frame-standard/);
+  assert.match(shell, /app-page-frame-wide/);
+  assert.match(shell, /app-project-sidebar/);
+  assert.match(servers, /<AppPageFrame>/);
+  assert.doesNotMatch(servers, /className="page max-w-3xl"/);
+  assert.match(projects, /<AppPageFrame variant="wide"/);
+  assert.match(projects, /app-workspace-panel/);
+});
+
 test("Knowledge planes keep global Product and project runtime scope distinct", () => {
   const product = readFileSync(join(root, "pages", "KnowledgeProduct.tsx"), "utf8");
   const project = readFileSync(join(root, "pages", "KnowledgeProject.tsx"), "utf8");

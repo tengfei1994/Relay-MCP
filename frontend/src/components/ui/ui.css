@@ -85,10 +85,34 @@ textarea.ui-control { height: auto; min-height: 96px; padding-top: 9px; padding-
 .ui-overlay { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: rgba(3,10,12,.72); backdrop-filter: blur(4px); animation: ui-fade-in .16s ease both; }
 .ui-dialog { width: min(520px, calc(100vw - 32px)); max-height: min(760px, calc(100vh - 32px)); overflow: auto; padding: 26px; animation: ui-dialog-in .16s ease both; }
 .ui-dialog-wide { width: min(640px, calc(100vw - 32px)); }
+.ui-dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.ui-dialog-header-copy { min-width: 0; }
+.ui-dialog-close { flex: 0 0 auto; margin: -8px -8px 0 0; }
 .ui-dialog-title { margin: 0; color: var(--ui-fg); font: 600 22px/1.25 var(--font-display, sans-serif); text-wrap: balance; }
 .ui-dialog-description { margin: 8px 0 0; color: var(--ui-muted); font-size: 14px; }
 .ui-dialog-body { margin-top: 20px; }
 .ui-dialog-footer { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; }
+.ui-file-preview-dialog { display: flex; width: min(960px, calc(100vw - 40px)); height: min(84vh, 860px); max-height: calc(100vh - 24px); flex-direction: column; overflow: hidden; padding: 0; }
+.ui-file-preview-dialog .ui-dialog-header { flex: 0 0 auto; padding: 22px 26px 18px; border-bottom: 1px solid var(--ui-line); }
+.ui-file-preview-dialog .ui-dialog-body { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow: hidden; margin-top: 0; padding: 20px 26px 26px; }
+.ui-file-preview-dialog .ui-dialog-footer { flex: 0 0 auto; margin-top: 0; border-top: 1px solid var(--ui-line); padding: 14px 26px 20px; }
+.ui-file-preview-stack { display: flex; min-width: 0; min-height: 0; flex: 1 1 auto; flex-direction: column; gap: 12px; }
+.ui-file-preview-toolbar { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; color: var(--ui-muted); font-size: 12.5px; }
+.ui-file-preview-type { display: inline-flex; align-items: center; gap: 8px; color: var(--ui-fg); font-weight: 500; }
+.ui-file-preview-code { min-width: 0; min-height: 0; flex: 1 1 auto; overflow: auto; margin: 0; border: 1px solid var(--ui-line); border-radius: 12px; background: rgba(3,10,12,.72); padding: 18px; color: var(--ui-fg); font: 400 13px/1.7 var(--font-mono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ui-file-preview-image-stage { display: grid; min-width: 0; min-height: 0; flex: 1 1 auto; place-items: center; overflow: auto; border: 1px solid var(--ui-line); border-radius: 12px; background: #071115; }
+.ui-file-preview-image-stage img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+.ui-file-preview-state { display: grid; min-height: 240px; place-items: center; align-content: center; gap: 12px; color: var(--ui-muted); text-align: center; }
+.ui-file-preview-state p { margin: 0; }
+.ui-file-preview-state-error { color: var(--ui-coral); }
+.ui-file-preview-state-error span { max-width: 54ch; color: var(--ui-muted); font-size: 13px; }
+.ui-archive-list { min-width: 0; min-height: 0; flex: 1 1 auto; overflow: auto; border: 1px solid var(--ui-line); border-radius: 12px; background: rgba(3,10,12,.42); }
+.ui-archive-entry { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--ui-line); padding: 10px 14px; color: var(--ui-fg); font-size: 13px; }
+.ui-archive-entry:first-child { border-top: 0; }
+.ui-archive-entry-name { display: flex; min-width: 0; align-items: center; gap: 9px; }
+.ui-archive-entry-name span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-archive-entry-size { flex: 0 0 auto; color: var(--ui-muted); font-size: 12px; }
+.ui-file-preview-empty { margin: 0; padding: 32px; color: var(--ui-muted); text-align: center; }
 .ui-dialog-error { margin: 16px 0 0; color: var(--ui-coral); font-size: 13px; }
 .ui-drawer-overlay { position: fixed; inset: 0; z-index: 70; background: rgba(3,10,12,.55); animation: ui-fade-in .24s ease both; }
 .ui-drawer { position: fixed; inset: 0 0 0 auto; z-index: 71; display: flex; width: min(760px, 100vw); flex-direction: column; border-left: 1px solid var(--ui-line); background: #0a1c21; animation: ui-drawer-in .24s cubic-bezier(.2,.8,.2,1) both; }

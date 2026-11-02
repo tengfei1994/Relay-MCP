@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Plus, Folder, Trash2, ChevronRight, File, Eye, Server as ServerIcon, Link2, Unlink, Settings, Pencil } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Archive, ChevronRight, Eye, File, FileImage, FileText, Folder, Plus, Server as ServerIcon, Link2, Unlink, Settings, Pencil, Trash2 } from "lucide-react";
 import { api } from "../api/client";
 import { Button, ConfirmDialog, Dialog, Field, Input, Select } from "../components/ui";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
@@ -7,6 +7,10 @@ import { AppPageFrame } from "../components/shell/AppPageFrame";
 type Project = { id: number; name: string; description?: string };
 type FileEntry = { name: string; type?: string; size?: number; modifiedAt?: string };
 type FilePreview = { path: string; name?: string; content: string; size: number; modifiedAt: string; truncated: boolean };
+type PreviewKind = "text" | "image" | "archive";
+type PreviewMeta = { size?: number; modifiedAt?: string };
+type ArchiveEntry = { path: string; size: number; type: "file" | "directory" };
+type ArchivePreview = { path: string; name?: string; size: number; modifiedAt: string; entries: ArchiveEntry[] };
 type ProjectServer = {
   id: number;
   serverId: number;
@@ -119,6 +123,50 @@ function instancesFrom(value: unknown): Instance[] {
   return typeof value === "object" && value !== null && "instances" in value && Array.isArray(value.instances) ? value.instances.map(instanceFrom).filter(present) : [];
 }
 
+const IMAGE_EXTENSIONS: Record<string, true> = { png: true, jpg: true, jpeg: true, gif: true, webp: true, svg: true, bmp: true, ico: true, avif: true };
+
+function fileExtension(path: string): string {
+  const name = path.split(/[\\/]/).pop() ?? path;
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+function previewKindFor(path: string): PreviewKind {
+  const extension = fileExtension(path);
+  if (IMAGE_EXTENSIONS[extension]) return "image";
+  if (extension === "zip") return "archive";
+  return "text";
+}
+
+function formatBytes(value?: number): string {
+  if (value === undefined) return "";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatDate(value?: string): string {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
+}
+
+function previewKindLabel(kind: PreviewKind): string {
+  return kind === "image" ? "Image" : kind === "archive" ? "ZIP archive" : "Text document";
+}
+
+function previewIcon(kind: PreviewKind) {
+  return kind === "image" ? <FileImage size={14} aria-hidden="true" /> : kind === "archive" ? <Archive size={14} aria-hidden="true" /> : <FileText size={14} aria-hidden="true" />;
+}
+
+function filePreviewDetails(size?: number, modifiedAt?: string): string {
+  return [
+    size === undefined ? "" : `${size.toLocaleString()} bytes`,
+    formatDate(modifiedAt) ? `modified ${formatDate(modifiedAt)}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
@@ -132,6 +180,11 @@ export default function ProjectsPage() {
   const [workspaceError, setWorkspaceError] = useState("");
   const [previewPath, setPreviewPath] = useState("");
   const [previewData, setPreviewData] = useState<FilePreview | null>(null);
+  const [previewKind, setPreviewKind] = useState<PreviewKind>("text");
+  const [previewMeta, setPreviewMeta] = useState<PreviewMeta>({});
+  const [previewImageUrl, setPreviewImageUrl] = useState("");
+  const [archiveData, setArchiveData] = useState<ArchivePreview | null>(null);
+  const [previewError, setPreviewError] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [renameTarget, setRenameTarget] = useState<{ path: string; name: string } | null>(null);
   const [renameName, setRenameName] = useState("");
@@ -146,6 +199,11 @@ export default function ProjectsPage() {
   const [linkForm, setLinkForm] = useState({ serverId: "", limsInstanceId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
   const [editingLinkId, setEditingLinkId] = useState<number | null>(null);
   const [linkError, setLinkError] = useState("");
+  const previewRequest = useRef(0);
+
+  useEffect(() => () => {
+    if (previewImageUrl) URL.revokeObjectURL(previewImageUrl);
+  }, [previewImageUrl]);
 
   useEffect(() => {
     api.listProjects().then((r) => setProjects(projectsFrom(r)));
@@ -158,7 +216,19 @@ export default function ProjectsPage() {
     setFiles(filesFrom(r));
   };
 
+  const closePreview = () => {
+    previewRequest.current += 1;
+    setPreviewPath("");
+    setPreviewData(null);
+    setArchiveData(null);
+    setPreviewImageUrl("");
+    setPreviewError("");
+    setPreviewMeta({});
+    setPreviewLoading(false);
+  };
+
   const openProject = async (project: Project) => {
+    closePreview();
     setSelected(project);
     setCurrentPath("");
     setShowServers(false);
@@ -193,12 +263,40 @@ export default function ProjectsPage() {
     try { await refreshFiles(projectId, newPath); } catch (err: unknown) { setWorkspaceError(err instanceof Error ? err.message : "Unable to open directory"); }
   };
 
-  const openPreview = async (path: string) => {
+  const openPreview = async (path: string, entry?: FileEntry) => {
     if (!selected) return;
-    setPreviewPath(path); setPreviewData(null); setPreviewLoading(true); setWorkspaceError("");
-    try { setPreviewData(await api.previewFile(selected.id, path)); }
-    catch (err: unknown) { setPreviewPath(""); setWorkspaceError(err instanceof Error ? err.message : "Unable to preview file"); }
-    finally { setPreviewLoading(false); }
+    const kind = previewKindFor(path);
+    const requestId = ++previewRequest.current;
+    setPreviewPath(path);
+    setPreviewData(null);
+    setArchiveData(null);
+    setPreviewImageUrl("");
+    setPreviewError("");
+    setPreviewKind(kind);
+    setPreviewMeta({ size: entry?.size, modifiedAt: entry?.modifiedAt });
+    setPreviewLoading(true);
+    setWorkspaceError("");
+    try {
+      if (kind === "image") {
+        const blob = await api.previewImage(selected.id, path);
+        const url = URL.createObjectURL(blob);
+        if (requestId !== previewRequest.current) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        setPreviewImageUrl(url);
+      } else if (kind === "archive") {
+        const archive = await api.previewArchive(selected.id, path);
+        if (requestId === previewRequest.current) setArchiveData(archive);
+      } else {
+        const text = await api.previewFile(selected.id, path);
+        if (requestId === previewRequest.current) setPreviewData(text);
+      }
+    } catch (err: unknown) {
+      if (requestId === previewRequest.current) setPreviewError(err instanceof Error ? err.message : "Unable to preview file");
+    } finally {
+      if (requestId === previewRequest.current) setPreviewLoading(false);
+    }
   };
 
   const submitRename = async () => {
@@ -521,20 +619,23 @@ export default function ProjectsPage() {
                 </button>
               )}
               {files.map((f) => (
-                <div
-                  key={f.name}
-                  onClick={() => f.type === "directory" ? void openDir(f.name) : void openPreview(pathFor(f.name))}
-                  className={`group flex items-center gap-2 rounded px-3 py-1.5 text-sm transition-colors ${
-                    f.type === "directory" ? "cursor-pointer text-fg hover:bg-white/5" : "cursor-default text-muted"
-                  }`}
-                >
-                  {f.type === "directory" ? <Folder size={14} className="shrink-0 text-mint" /> : <File size={14} className="shrink-0" />}
-                  <span className="min-w-0 flex-1 truncate" title={f.name}>{f.name}</span>
-                  {f.type === "file" && <span className="shrink-0 text-xs text-muted">{f.size ? `${(f.size / 1024).toFixed(1)}KB` : ""}</span>}
+                <div key={f.name} className="group flex items-center gap-2 rounded px-1 py-0.5 text-sm">
+                  <button
+                    type="button"
+                    onClick={() => f.type === "directory" ? void openDir(f.name) : void openPreview(pathFor(f.name), f)}
+                    className={`flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1.5 text-left transition-colors ${
+                      f.type === "directory" ? "text-fg hover:bg-white/5" : "text-muted hover:bg-white/5 hover:text-fg"
+                    }`}
+                    aria-label={`${f.type === "directory" ? "Open folder" : "Preview"} ${f.name}`}
+                  >
+                    {f.type === "directory" ? <Folder size={14} className="shrink-0 text-mint" /> : <File size={14} className="shrink-0" />}
+                    <span className="min-w-0 flex-1 truncate" title={f.name}>{f.name}</span>
+                    {f.type === "file" && <span className="shrink-0 text-xs text-muted">{formatBytes(f.size)}</span>}
+                  </button>
                   <span className="flex shrink-0 items-center gap-1">
-                    {f.type === "file" && <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:bg-white/10 hover:text-mint" onClick={(event) => { event.stopPropagation(); void openPreview(pathFor(f.name)); }} title={`Preview ${f.name}`} aria-label={`Preview ${f.name}`}><Eye size={14} /></button>}
-                    <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:bg-white/10 hover:text-mint" onClick={(event) => { event.stopPropagation(); setRenameTarget({ path: pathFor(f.name), name: f.name }); setRenameName(f.name); }} title={`Rename ${f.name}`} aria-label={`Rename ${f.name}`}><Pencil size={14} /></button>
-                    <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:bg-coral/10 hover:text-coral" onClick={(event) => { event.stopPropagation(); setDeleteFileTarget({ path: pathFor(f.name), name: f.name, type: f.type }); }} title={`Delete ${f.name}`} aria-label={`Delete ${f.name}`}><Trash2 size={14} /></button>
+                    {f.type === "file" && <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:bg-white/10 hover:text-mint" onClick={() => void openPreview(pathFor(f.name), f)} title={`Preview ${f.name}`} aria-label={`Preview ${f.name}`}><Eye size={14} /></button>}
+                    <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:bg-white/10 hover:text-mint" onClick={() => { setRenameTarget({ path: pathFor(f.name), name: f.name }); setRenameName(f.name); }} title={`Rename ${f.name}`} aria-label={`Rename ${f.name}`}><Pencil size={14} /></button>
+                    <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:bg-coral/10 hover:text-coral" onClick={() => { setDeleteFileTarget({ path: pathFor(f.name), name: f.name, type: f.type }); }} title={`Delete ${f.name}`} aria-label={`Delete ${f.name}`}><Trash2 size={14} /></button>
                   </span>
                 </div>
               ))}
@@ -562,14 +663,70 @@ export default function ProjectsPage() {
       />
       <Dialog
         open={Boolean(previewPath)}
-        onClose={() => { if (!previewLoading) { setPreviewPath(""); setPreviewData(null); } }}
-        title={previewData?.name ?? previewPath.split("/").pop() ?? "File preview"}
-        description={previewData ? `${previewData.size.toLocaleString()} bytes · modified ${new Date(previewData.modifiedAt).toLocaleString()}` : "Loading file content…"}
+        onClose={closePreview}
+        title={previewData?.name ?? archiveData?.name ?? previewPath.split(/[\\/]/).pop() ?? "File preview"}
+        description={
+          previewLoading
+            ? `Loading ${previewKindLabel(previewKind).toLowerCase()}…`
+            : previewError
+              ? "Preview unavailable"
+              : filePreviewDetails(
+                previewData?.size ?? archiveData?.size ?? previewMeta.size,
+                previewData?.modifiedAt ?? archiveData?.modifiedAt ?? previewMeta.modifiedAt,
+              ) || `${previewKindLabel(previewKind)} preview`
+        }
         wide
         busy={previewLoading}
-        footer={<Button variant="ghost" disabled={previewLoading} onClick={() => { setPreviewPath(""); setPreviewData(null); }}>Close</Button>}
+        className="ui-file-preview-dialog"
+        footer={<Button variant="ghost" disabled={previewLoading} onClick={closePreview}>Close</Button>}
       >
-        {previewLoading ? <p className="text-sm text-muted">Loading file content…</p> : previewData && <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[.09] bg-black/20 p-4 font-mono text-xs leading-5 text-fg">{previewData.content || "(empty file)"}</pre>}
+        {previewLoading ? (
+          <div className="ui-file-preview-state" role="status">
+            <span className="ui-spinner" aria-hidden="true" />
+            <p>Opening a safe, read-only preview…</p>
+          </div>
+        ) : previewError ? (
+          <div className="ui-file-preview-state ui-file-preview-state-error" role="alert">
+            <p>We could not render this item.</p>
+            <span>{previewError}</span>
+          </div>
+        ) : previewKind === "image" && previewImageUrl ? (
+          <div className="ui-file-preview-stack">
+            <div className="ui-file-preview-toolbar">
+              <span className="ui-file-preview-type">{previewIcon(previewKind)}{previewKindLabel(previewKind)}</span>
+              <span>Fit to window</span>
+            </div>
+            <div className="ui-file-preview-image-stage">
+              <img src={previewImageUrl} alt={`Preview of ${previewData?.name ?? previewPath.split(/[\\/]/).pop() ?? "image"}`} onError={() => setPreviewError("The image format could not be rendered by this browser.")} />
+            </div>
+          </div>
+        ) : previewKind === "archive" && archiveData ? (
+          <div className="ui-file-preview-stack">
+            <div className="ui-file-preview-toolbar">
+              <span className="ui-file-preview-type">{previewIcon(previewKind)}{previewKindLabel(previewKind)}</span>
+              <span>{archiveData.entries.length.toLocaleString()} entries</span>
+            </div>
+            <div className="ui-archive-list" role="list">
+              {archiveData.entries.length === 0 ? <p className="ui-file-preview-empty">This ZIP archive is empty.</p> : archiveData.entries.map((entry) => (
+                <div key={`${entry.path}-${entry.type}`} className="ui-archive-entry" role="listitem">
+                  <span className="ui-archive-entry-name">
+                    {entry.type === "directory" ? <Folder size={14} className="shrink-0 text-mint" aria-hidden="true" /> : <File size={14} className="shrink-0 text-muted" aria-hidden="true" />}
+                    <span title={entry.path}>{entry.path}</span>
+                  </span>
+                  <span className="ui-archive-entry-size">{entry.type === "directory" ? "Folder" : formatBytes(entry.size)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : previewData ? (
+          <div className="ui-file-preview-stack">
+            <div className="ui-file-preview-toolbar">
+              <span className="ui-file-preview-type">{previewIcon(previewKind)}{previewKindLabel(previewKind)}</span>
+              {previewData.truncated && <span>Preview truncated</span>}
+            </div>
+            <pre className="ui-file-preview-code">{previewData.content || "(empty file)"}</pre>
+          </div>
+        ) : null}
       </Dialog>
       <Dialog
         open={Boolean(renameTarget)}

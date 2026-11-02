@@ -188,7 +188,8 @@ function useFocusTrap(open: boolean, containerRef: RefObject<HTMLElement>, onClo
     if (!open) return;
     previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const container = containerRef.current;
-    const focusTarget = container ? focusableElements(container)[0] ?? container : null;
+    const existingFocus = document.activeElement instanceof HTMLElement && container?.contains(document.activeElement) ? document.activeElement : null;
+    const focusTarget = existingFocus ?? (container ? focusableElements(container)[0] ?? container : null);
     const frame = requestAnimationFrame(() => focusTarget?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { event.preventDefault(); onClose(); return; }
@@ -210,7 +211,7 @@ export function Dialog({ open, onClose, title, description, children, footer, wi
   const close = useCallback(() => { if (!busy) onClose(); }, [busy, onClose]);
   useFocusTrap(open, ref, close);
   if (!open || typeof document === 'undefined') return null;
-  return createPortal(<div className="ui-overlay" onMouseDown={event => { if (closeOnOverlay && event.target === event.currentTarget) close(); }}><div ref={ref} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} className={`ui-glass ui-dialog ${wide ? 'ui-dialog-wide' : ''} ${className}`.trim()} {...props}><h2 id={titleId} className="ui-dialog-title">{title}</h2>{description ? <p className="ui-dialog-description">{description}</p> : null}{children ? <div className="ui-dialog-body">{children}</div> : null}{footer ? <div className="ui-dialog-footer">{footer}</div> : null}</div></div>, document.body);
+  return createPortal(<div className="ui-overlay" onMouseDown={event => { if (closeOnOverlay && event.target === event.currentTarget) close(); }}><div ref={ref} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} className={`ui-glass ui-dialog ${wide ? 'ui-dialog-wide' : ''} ${className}`.trim()} {...props}><div className="ui-dialog-header"><div className="ui-dialog-header-copy"><h2 id={titleId} className="ui-dialog-title">{title}</h2>{description ? <p className="ui-dialog-description">{description}</p> : null}</div><IconButton aria-label="Close" className="ui-dialog-close" disabled={busy} onClick={close}><X size={18} aria-hidden="true" /></IconButton></div>{children ? <div className="ui-dialog-body">{children}</div> : null}{footer ? <div className="ui-dialog-footer">{footer}</div> : null}</div></div>, document.body);
 }
 
 export interface ConfirmDialogProps { open: boolean; onClose: () => void; title: ReactNode; description: ReactNode; confirmLabel: string; tone?: 'primary' | 'danger'; requireReason?: boolean; onConfirm: (reason?: string) => void | Promise<void>; }

@@ -33,6 +33,16 @@ async function request<T>(
   return res.json();
 }
 
+async function requestBlob(path: string): Promise<Blob> {
+  const token = getToken();
+  const res = await fetch(`${BASE}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error ?? "Request failed");
+  }
+  return res.blob();
+}
+
 export const api = {
   health: () => request<{ ok: boolean; version: string; commit: string; buildTime: string; process: string; ts: string }>("GET", "/health"),
   // Auth
@@ -64,6 +74,8 @@ export const api = {
     request<{ path: string; name?: string; content: string; size: number; modifiedAt: string; truncated: boolean }>(
       "GET", `/projects/${id}/files/content?path=${encodeURIComponent(path)}`
     ),
+  previewImage: (id: number, path: string) => requestBlob(`/projects/${id}/files/raw?path=${encodeURIComponent(path)}`),
+  previewArchive: (id: number, path: string) => request<{ path: string; name?: string; size: number; modifiedAt: string; entries: Array<{ path: string; size: number; type: "file" | "directory" }> }>("GET", `/projects/${id}/files/archive?path=${encodeURIComponent(path)}`),
   renameFile: (id: number, path: string, name: string) =>
     request<{ ok: boolean; path: string; name: string }>("PATCH", `/projects/${id}/files`, { path, name }),
   deleteFile: (id: number, path: string) =>

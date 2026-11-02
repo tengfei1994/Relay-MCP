@@ -499,6 +499,8 @@ npm run generate:mcp-baseline
 
 Web UI 使用顶部主导航与 Knowledge 二级导航；项目级页面通过顶部项目范围选择器共享持久化的 `knowledge.projectId`。记录详情、Provider 配置与审核操作使用可键盘操作的 Drawer/Dialog。设计令牌与实现约束见 [前端重设计规格](docs/frontend-redesign-spec.md)，视觉参考见 [Knowledge Overview 参考页](docs/design/knowledge-overview-reference.html)。字体通过 `frontend` 的本地 `@fontsource` 依赖加载，不依赖 Google Fonts。
 
+Project workspace 文件预览保持在授权 API 内：文本以受限代码面板显示，图片通过 Blob URL 显示，ZIP 只读列出条目。预览不会执行文件内容；ZIP 预览受条目数、压缩大小和展开大小限制。
+
 ```bash
 npm --prefix frontend run build
 cd frontend && npx tsc --noEmit --jsx react-jsx --module ESNext --moduleResolution bundler --target ES2022 --strict --skipLibCheck src/main.tsx

@@ -3,6 +3,7 @@ import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { projects } from "../db/schema.js";
 import { z } from "zod";
+import { unzipSync } from "fflate";
 import { mkdirSync, existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from "fs";
 import { join } from "path";
 import "dotenv/config";
@@ -10,6 +11,10 @@ import { resolveWorkspacePath } from "../../shared/workspace-path.js";
 
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT ?? "/workspace";
 const MAX_FILE_PREVIEW_BYTES = 1_000_000;
+const MAX_BINARY_PREVIEW_BYTES = 16 * 1024 * 1024;
+const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES = 5_000;
+const MAX_ARCHIVE_UNCOMPRESSED_BYTES = 128 * 1024 * 1024;
 
 const CreateProjectSchema = z.object({
   name: z.string().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/),
@@ -22,6 +27,41 @@ function projectForUser(id: number, userId: number) {
     .from(projects)
     .where(and(eq(projects.id, id), eq(projects.userId, userId)))
     .get();
+}
+
+function mimeTypeForPath(path: string): string {
+  const extension = path.split(".").pop()?.toLowerCase();
+  return ({
+    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", bmp: "image/bmp", ico: "image/x-icon", avif: "image/avif",
+  } as Record<string, string>)[extension ?? ""] ?? "application/octet-stream";
+}
+
+function zipEntries(filePath: string): Array<{ path: string; size: number; type: "file" | "directory" }> {
+  const archive = readFileSync(filePath);
+  if (archive.byteLength > MAX_ARCHIVE_BYTES) throw new Error(`Archive preview is limited to ${MAX_ARCHIVE_BYTES} bytes`);
+  let entryCount = 0;
+  let declaredBytes = 0;
+  const files = unzipSync(archive, {
+    filter: (entry) => {
+      entryCount += 1;
+      if (entryCount > MAX_ARCHIVE_ENTRIES) throw new Error(`Archive contains more than ${MAX_ARCHIVE_ENTRIES} entries`);
+      if (entry.originalSize !== undefined) {
+        declaredBytes += entry.originalSize;
+        if (declaredBytes > MAX_ARCHIVE_UNCOMPRESSED_BYTES) throw new Error(`Archive expands beyond the ${MAX_ARCHIVE_UNCOMPRESSED_BYTES} byte preview limit`);
+      }
+      return true;
+    },
+  });
+  const names = Object.keys(files);
+  if (names.length > MAX_ARCHIVE_ENTRIES) throw new Error(`Archive contains more than ${MAX_ARCHIVE_ENTRIES} entries`);
+  let totalBytes = 0;
+  const entries = names.map((path) => {
+    const bytes = files[path];
+    totalBytes += bytes.byteLength;
+    return { path, size: bytes.byteLength, type: path.endsWith("/") ? "directory" as const : "file" as const };
+  });
+  if (totalBytes > MAX_ARCHIVE_UNCOMPRESSED_BYTES) throw new Error(`Archive expands beyond the ${MAX_ARCHIVE_UNCOMPRESSED_BYTES} byte preview limit`);
+  return entries.sort((left, right) => left.path.localeCompare(right.path));
 }
 
 export async function projectRoutes(app: FastifyInstance) {
@@ -173,6 +213,44 @@ export async function projectRoutes(app: FastifyInstance) {
       const bytes = readFileSync(filePath);
       if (bytes.includes(0)) return reply.status(415).send({ error: "Binary files cannot be previewed as text", size: info.size });
       return reply.send({ path: query.data.path, name: query.data.path.split(/[\\/]/).pop(), content: bytes.toString("utf8"), size: info.size, modifiedAt: info.mtime.toISOString(), truncated: false });
+    }
+  );
+
+  app.get(
+    "/api/projects/:id/files/raw",
+    { onRequest: [app.authenticate] },
+    async (req, reply) => {
+      const projectId = Number((req.params as { id: string }).id);
+      const query = z.object({ path: z.string().min(1) }).safeParse(req.query);
+      if (!query.success) return reply.status(400).send({ error: "A file path is required" });
+      const project = projectForUser(projectId, req.user.id);
+      if (!project) return reply.status(404).send({ error: "Project not found" });
+      let filePath: string;
+      try { filePath = resolveWorkspacePath(project.workspacePath, query.data.path, { mustExist: true }); }
+      catch (error) { return reply.status(400).send({ error: error instanceof Error ? error.message : String(error) }); }
+      const info = statSync(filePath);
+      if (info.isDirectory()) return reply.status(400).send({ error: "Directories cannot be previewed" });
+      if (info.size > MAX_BINARY_PREVIEW_BYTES) return reply.status(413).send({ error: `Binary preview is limited to ${MAX_BINARY_PREVIEW_BYTES} bytes`, size: info.size });
+      return reply.header("Cache-Control", "no-store").type(mimeTypeForPath(query.data.path)).send(readFileSync(filePath));
+    }
+  );
+
+  app.get(
+    "/api/projects/:id/files/archive",
+    { onRequest: [app.authenticate] },
+    async (req, reply) => {
+      const projectId = Number((req.params as { id: string }).id);
+      const query = z.object({ path: z.string().min(1) }).safeParse(req.query);
+      if (!query.success) return reply.status(400).send({ error: "An archive path is required" });
+      const project = projectForUser(projectId, req.user.id);
+      if (!project) return reply.status(404).send({ error: "Project not found" });
+      let archivePath: string;
+      try { archivePath = resolveWorkspacePath(project.workspacePath, query.data.path, { mustExist: true }); }
+      catch (error) { return reply.status(400).send({ error: error instanceof Error ? error.message : String(error) }); }
+      const info = statSync(archivePath);
+      if (info.isDirectory()) return reply.status(400).send({ error: "Directories cannot be previewed as archives" });
+      try { return reply.send({ path: query.data.path, name: query.data.path.split(/[\\/]/).pop(), size: info.size, modifiedAt: info.mtime.toISOString(), entries: zipEntries(archivePath) }); }
+      catch (error) { return reply.status(415).send({ error: error instanceof Error ? error.message : "Unable to read ZIP archive" }); }
     }
   );
 

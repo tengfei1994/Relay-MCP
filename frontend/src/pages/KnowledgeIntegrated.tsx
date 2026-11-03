@@ -10,6 +10,7 @@ import { ProviderSetupForm, type ProviderSetupDefaults } from "../components/Pro
 import { StandardPage } from "../components/knowledge/KnowledgeFrame";
 import { knowledgeItemScope, withKnowledgeScope, type KnowledgeScope } from "../knowledge/integrated-search";
 import { buildWikiDirectoryTree, type WikiDirectoryNode, type WikiDirectoryPage } from "../knowledge/wiki-directory";
+import { mergeWikiPageSources, type WikiPageSource } from "../knowledge/wiki-citations";
 import "./wiki.css";
 const btn = "ui-button ui-button-primary ui-button-sm";
 const btnGhost = "ui-button ui-button-ghost ui-button-sm";
@@ -362,19 +363,16 @@ function wikiSections(page: JsonRecord) {
   }));
 }
 
-function WikiSectionSources({ citations, scope }: { citations: JsonRecord[]; scope: KnowledgeScope }) {
-  const uniqueCitations = [...new Map(citations.map((citation) => {
-    const key = [text(citation.documentId), text(citation.externalDocumentId), text(citation.sourceLocator), text(citation.title), text(citation.productVersion)].join("\u0000");
-    return [key, citation] as const;
-  })).values()];
-  if (!uniqueCitations.length) return <p className="mt-2 text-xs text-sun">No source citation is attached to this section.</p>;
+function WikiPageSources({ sources, scope }: { sources: WikiPageSource[]; scope: KnowledgeScope }) {
+  if (!sources.length) return <p className="mt-2 text-xs text-sun">No source citation is attached to this page.</p>;
   return <ul className="mt-3 grid gap-2 sm:grid-cols-2">
-    {uniqueCitations.map((citation, index) => {
+    {sources.map(({ citation, sectionTitles }, index) => {
       const id = text(citation.documentId);
-      return <li key={`${id}-${text(citation.sourceLocator)}-${index}`} className="border-l-2 border-iris/60 pl-3 text-xs text-subtle">
+      return <li key={`${id}-${text(citation.externalDocumentId)}-${index}`} className="border-l-2 border-iris/60 pl-3 text-xs text-subtle">
         {id ? <Link className="font-medium text-iris underline underline-offset-2" to={withKnowledgeScope(`/knowledge/product-docs?document=${encodeURIComponent(id)}`, scope)}>{text(citation.title, "Open source document")}</Link> : <span className="font-medium text-fg">{text(citation.title, "Source document")}</span>}
         <p className="mt-1">{citation.productVersion ? `Version ${text(citation.productVersion)}` : "Version unspecified"}{citation.sourceLocator ? ` · ${text(citation.sourceLocator)}` : ""}</p>
         {Array.isArray(citation.chunkIds) && citation.chunkIds.length > 0 && <p className="mt-1 text-muted">{citation.chunkIds.length} source chunk{citation.chunkIds.length === 1 ? "" : "s"}</p>}
+        {sectionTitles.length > 0 && <p className="mt-1 text-muted">Used in: {sectionTitles.join(" · ")}</p>}
       </li>;
     })}
   </ul>;
@@ -465,7 +463,7 @@ function WikiDirectoryTreeView({ items, collapsed, selectedId, onToggle, onOpen 
 function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; scope: KnowledgeScope; isAdmin: boolean; onRefresh: (updated: JsonRecord) => Promise<void> }) {
   const sections = wikiSections(page);
   const pageCitations = records(page.citations);
-  const hasSectionCitations = sections.some((section) => section.citations.length > 0);
+  const pageSources = mergeWikiPageSources(sections, pageCitations);
   const directoryLabels = wikiDirectoryLabels(page);
   const versions = [...new Set([...strings(page.supportedVersions), ...sections.filter((section) => section.kind === "version" && section.productVersion).map((section) => section.productVersion)])];
   const [version, setVersion] = useState("");
@@ -573,7 +571,6 @@ function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; sco
           return <article key={text(section.id, `${section.kind}-${index}`)} id={`wiki-section-${text(section.id, `${section.kind}-${index}`)}`} className="scroll-mt-6">
             <div className="flex flex-wrap items-center gap-2"><h3 className="text-base font-semibold text-fg">{section.title}</h3>{section.kind === "version" && <Badge tone="blue">{section.productVersion}</Badge>}{section.kind === "difference" && <Badge tone="amber">Difference</Badge>}</div>
             <div className="mt-2"><KnowledgeMarkup source={section.body} wikiScope={scope} wikiPageKey={text(page.pageKey)} /></div>
-            <WikiSectionSources citations={section.citations} scope={knowledgeItemScope(page, scope)} />
             {sectionHeadings.length > 0 && <div className="sr-only">{sectionHeadings.length} headings</div>}
           </article>;
         })}</div> : <div className="rounded-md border border-white/10 p-4 text-sm text-muted">No sections are available for this view. Showing the rendered page body instead.</div>}
@@ -584,9 +581,9 @@ function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; sco
         {headings.length > 0 ? <nav className="mt-2 space-y-1 border-l border-white/10 pl-3">{headings.map((heading, index) => <a key={`${heading.id}-${index}`} href={`#knowledge-content-${heading.id}`} className="block text-xs text-subtle hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint" style={{ paddingLeft: `${Math.max(0, heading.level - 1) * 8}px` }}>{heading.title}</a>)}</nav> : <p className="mt-2 text-xs text-muted">No headings in this view.</p>}
       </aside>
     </div>
-    {!hasSectionCitations && pageCitations.length > 0 && <div className="mt-6 border-t border-white/10 pt-4">
+    {pageSources.length > 0 && <div className="mt-6 border-t border-white/10 pt-4">
       <h3 className="text-sm font-medium text-fg">Page sources</h3>
-      <WikiSectionSources citations={pageCitations} scope={knowledgeItemScope(page, scope)} />
+      <WikiPageSources sources={pageSources} scope={knowledgeItemScope(page, scope)} />
     </div>}
     {notice && <p className="mt-4 rounded-md border border-mint/40 bg-mint/10 p-3 text-sm text-mint">{notice}</p>}
     <Err message={error} />

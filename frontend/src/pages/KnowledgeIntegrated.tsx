@@ -8,6 +8,7 @@ import { Badge, cardClass, formatDate, inputClass, StatePanel, StatusBadge } fro
 import { ConfirmDialog, Drawer, PageHeader } from "../components/ui";
 import { ProviderSetupForm, type ProviderSetupDefaults } from "../components/ProviderSetupForm";
 import { StandardPage } from "../components/knowledge/KnowledgeFrame";
+import { knowledgeItemScope, withKnowledgeScope, type KnowledgeScope } from "../knowledge/integrated-search";
 import { type WikiDirectoryPage } from "../knowledge/wiki-directory";
 import { mergeWikiPageSources, type WikiPageSource } from "../knowledge/wiki-citations";
 import "./wiki.css";

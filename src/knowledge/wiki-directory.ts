@@ -88,6 +88,14 @@ function sourceHierarchyPrefix(sourcePath: string | undefined, solution?: string
     if (/\.expanded-[^/]+$/i.test(parts[index])) expandedIndex = index;
   }
   const inner = (expandedIndex >= 0 ? parts.slice(expandedIndex + 1) : parts).slice(0, -1);
+  const legacyIndex = inner.findIndex((part) => normalized(part).replace(/[_-]+/g, " ") === "ds html5");
+  if (legacyIndex >= 0) {
+    const archive = expandedIndex >= 0 ? parts[expandedIndex] : "";
+    const archiveBase = archive.replace(/\.expanded-[^/]+$/i, "").replace(/\.(?:zip|chm)$/i, "");
+    const archiveProduct = archiveBase.replace(/\s+(?:(?:developer|dev|user|admin)\s+)?documentation$/i, "").trim();
+    const product = label(archiveProduct) ?? label(solution);
+    return product ? [product, ...inner.slice(legacyIndex).map(humanizeSegment)] : undefined;
+  }
   const docsIndex = inner.findIndex((part) => /^(.*?)(dev|developer|user|admin)(?:docs?|documentation)$/i.test(part));
   if (docsIndex < 0) return undefined;
   const docsMatch = inner[docsIndex].match(/^(.*?)(dev|developer|user|admin)(?:docs?|documentation)$/i);
@@ -105,7 +113,6 @@ function sourceHierarchyPrefix(sourcePath: string | undefined, solution?: string
   }
   return result;
 }
-
 /**
  * Source-derived paths are intentionally recognizable by the assignment
  * classifier. Graph/API paths keep the legacy topic-family projection.
@@ -113,7 +120,8 @@ function sourceHierarchyPrefix(sourcePath: string | undefined, solution?: string
 export function isSourceHierarchyPath(path: string | undefined): boolean {
   const parts = splitPath(path);
   const area = normalized(parts[1] ?? "");
-  return parts.length >= 3 && (area === "dev" || area === "user" || area === "admin");
+  const normalizedArea = area.replace(/[_-]+/g, " ");
+  return parts.length >= 3 && (normalizedArea === "dev" || normalizedArea === "user" || normalizedArea === "admin" || normalizedArea === "ds html5");
 }
 
 function propertyOwner(title: string): string | undefined {

@@ -151,3 +151,22 @@ test("Wiki directory preserves the Product Document source hierarchy for Form De
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("Wiki directory preserves the legacy DS_HTML5 Content hierarchy", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-wiki-ds-html5-directory-"));
+  const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });
+  const now = new Date().toISOString();
+  const sourcePath = "21.3 Docs/SampleManager Documentation.zip.expanded-test/DS_HTML5/Content/SM/Batch/Add-Attachment.htm";
+  try {
+    store.upsertDocument({ id: "legacy-ds", kind: "product_document", title: "Adding Attachments to a Batch", body: "# Adding Attachments to a Batch", lifecycle: "approved", solution: "samplemanager", module: "samplemanager", locator: `product-doc:${sourcePath}`, sha256: "legacy-ds-sha", createdAt: now, updatedAt: now });
+    store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,topic_group_id,normalized_content_sha256,parser_version,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run("legacy-ds", "legacy-ds", "guide", "en", "official", sourcePath, "legacy-ds-sha", "21.3", "topic-legacy-ds", "legacy-ds-normalized", "fixture-v1", now, now);
+    const [path] = buildWikiDirectoryPaths(store, [{ title: "Adding Attachments to a Batch", sourceRefs: ["legacy-ds"], solution: "samplemanager", module: "samplemanager" }]);
+    assert.equal(path, "SampleManager/DS HTML5/Content/SM/Batch/Adding Attachments to a Batch");
+    const classified = classifyWikiDirectory([{ identityKey: "page:legacy-ds", pageId: "legacy-ds", title: "Adding Attachments to a Batch", rawPath: path, module: "samplemanager" }]);
+    assert.deepEqual(classified.get("page:legacy-ds")?.displayPath, ["SampleManager", "DS HTML5", "Content", "SM", "Batch"]);
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true });
+  }
+});

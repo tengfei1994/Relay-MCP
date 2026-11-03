@@ -111,7 +111,7 @@ test("Wiki directory preserves the Product Document source hierarchy for Form De
   const documents = [
     ["aqc-overview", "AQCChart overview", `${sourcePrefix}/topic-overview.html`, undefined],
     ["aqc-parameters", "AqcChartParameters Property", `${sourcePrefix}/topic26648.html`, "Thermo.SampleManager.ObjectModel.AQCChart.AqcChartParameters"],
-    ["aqc-pool", "AQCChartPool.HideFromPlot Property", `${sourcePrefix}/topic26762.html`, "Thermo.SampleManager.ObjectModel.AQCChart.AQCChartPool"],
+    ["aqc-pool", "AQCChartPool.HideFromPlot Property", `${sourcePrefix}/topic26762.html`, "Thermo.SampleManager.ObjectModel.AQCChart.AQCChartPool.HideFromPlot"],
   ] as const;
   try {
     for (const [id, title, sourcePath, identifier] of documents) {

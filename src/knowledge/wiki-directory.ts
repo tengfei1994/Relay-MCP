@@ -140,6 +140,8 @@ function semanticPathForTitle(title: string, path: string[]): string[] {
   }
   const owner = propertyOwner(title);
   if (!owner) return result;
+  const ownerIndex = result.findIndex((part) => normalized(part) === normalized(owner));
+  if (ownerIndex >= 0) return [...result.slice(0, ownerIndex + 1), "Properties"];
   const parent = inferredComponentParent(owner);
   if (parent && !result.some((part) => normalized(part) === normalized(parent))) result.unshift(parent);
   if (!result.some((part) => normalized(part) === normalized(owner))) result.push(owner);

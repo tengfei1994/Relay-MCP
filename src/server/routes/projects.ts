@@ -36,6 +36,11 @@ function mimeTypeForPath(path: string): string {
   } as Record<string, string>)[extension ?? ""] ?? "application/octet-stream";
 }
 
+
+function isPermissionError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (((error as { code?: unknown }).code) === "EACCES" || ((error as { code?: unknown }).code) === "EPERM");
+}
+
 function zipEntries(filePath: string): Array<{ path: string; size: number; type: "file" | "directory" }> {
   const archive = readFileSync(filePath);
   if (archive.byteLength > MAX_ARCHIVE_BYTES) throw new Error(`Archive preview is limited to ${MAX_ARCHIVE_BYTES} bytes`);
@@ -228,10 +233,15 @@ export async function projectRoutes(app: FastifyInstance) {
       let filePath: string;
       try { filePath = resolveWorkspacePath(project.workspacePath, query.data.path, { mustExist: true }); }
       catch (error) { return reply.status(400).send({ error: error instanceof Error ? error.message : String(error) }); }
-      const info = statSync(filePath);
-      if (info.isDirectory()) return reply.status(400).send({ error: "Directories cannot be previewed" });
-      if (info.size > MAX_BINARY_PREVIEW_BYTES) return reply.status(413).send({ error: `Binary preview is limited to ${MAX_BINARY_PREVIEW_BYTES} bytes`, size: info.size });
-      return reply.header("Cache-Control", "no-store").type(mimeTypeForPath(query.data.path)).send(readFileSync(filePath));
+      try {
+        const info = statSync(filePath);
+        if (info.isDirectory()) return reply.status(400).send({ error: "Directories cannot be previewed" });
+        if (info.size > MAX_BINARY_PREVIEW_BYTES) return reply.status(413).send({ error: `Binary preview is limited to ${MAX_BINARY_PREVIEW_BYTES} bytes`, size: info.size });
+        const bytes = readFileSync(filePath);
+        return reply.header("Cache-Control", "no-store").type(mimeTypeForPath(query.data.path)).send(bytes);
+      } catch (error) {
+        return reply.status(isPermissionError(error) ? 403 : 500).send({ error: "Unable to read file" });
+      }
     }
   );
 
@@ -247,10 +257,13 @@ export async function projectRoutes(app: FastifyInstance) {
       let archivePath: string;
       try { archivePath = resolveWorkspacePath(project.workspacePath, query.data.path, { mustExist: true }); }
       catch (error) { return reply.status(400).send({ error: error instanceof Error ? error.message : String(error) }); }
-      const info = statSync(archivePath);
-      if (info.isDirectory()) return reply.status(400).send({ error: "Directories cannot be previewed as archives" });
-      try { return reply.send({ path: query.data.path, name: query.data.path.split(/[\\/]/).pop(), size: info.size, modifiedAt: info.mtime.toISOString(), entries: zipEntries(archivePath) }); }
-      catch (error) { return reply.status(415).send({ error: error instanceof Error ? error.message : "Unable to read ZIP archive" }); }
+      try {
+        const info = statSync(archivePath);
+        if (info.isDirectory()) return reply.status(400).send({ error: "Directories cannot be previewed as archives" });
+        return reply.send({ path: query.data.path, name: query.data.path.split(/[\\\\/]/).pop(), size: info.size, modifiedAt: info.mtime.toISOString(), entries: zipEntries(archivePath) });
+      } catch (error) {
+        return reply.status(isPermissionError(error) ? 403 : 415).send({ error: isPermissionError(error) ? "Unable to read archive" : "Unable to read ZIP archive" });
+      }
     }
   );
 

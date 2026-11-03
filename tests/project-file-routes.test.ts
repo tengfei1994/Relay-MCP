@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { zipSync } from "fflate";
 import test from "node:test";
@@ -69,6 +69,26 @@ test("Project file operations preview, rename, delete, and enforce workspace own
     assert.equal(traversal.statusCode, 400);
     const denied = await app.inject({ method: "GET", url: "/api/projects/1/files", headers: { "x-other": "1" } });
     assert.equal(denied.statusCode, 404);
+
+    chmodSync(join(workspace, "preview.ico"), 0o000);
+    try {
+      const unreadableRaw = await app.inject({ method: "GET", url: "/api/projects/1/files/raw?path=preview.ico" });
+      assert.equal(unreadableRaw.statusCode, 403);
+      assert.equal(unreadableRaw.json().error, "Unable to read file");
+      assert.equal(unreadableRaw.body.includes(workspace), false);
+    } finally {
+      chmodSync(join(workspace, "preview.ico"), 0o644);
+    }
+
+    chmodSync(join(workspace, "bundle.zip"), 0o000);
+    try {
+      const unreadableArchive = await app.inject({ method: "GET", url: "/api/projects/1/files/archive?path=bundle.zip" });
+      assert.equal(unreadableArchive.statusCode, 403);
+      assert.equal(unreadableArchive.json().error, "Unable to read archive");
+      assert.equal(unreadableArchive.body.includes(workspace), false);
+    } finally {
+      chmodSync(join(workspace, "bundle.zip"), 0o644);
+    }
   } finally {
     await app.close();
     (db as any).session.client.close();

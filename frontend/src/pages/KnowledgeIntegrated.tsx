@@ -378,6 +378,9 @@ function WikiPageSources({ sources, scope }: { sources: WikiPageSource[]; scope:
   </ul>;
 }
 
+function wikiPageLabel(page: WikiDirectoryPage): string {
+  return text(page.title, text(page.pageKey, text(page.id, "Untitled topic")));
+}
 type WikiNavigationNode = {
   key: string;
   path: string[];

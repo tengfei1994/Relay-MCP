@@ -34,13 +34,13 @@ Add `/knowledge/operations/wiki-generation` as a fourth Operations tab. Move the
 
 ### 2. Durable directory assignment
 
-Add `knowledge_wiki_directory_assignments`, keyed by scope and a stable page identity (`topic_group_id` when present, otherwise the canonical page ID). Store the display classification, source path snapshot, classification source, and taxonomy version. The source-derived `directory_path` remains unchanged for traceability.
+Add `knowledge_wiki_directory_assignments`, keyed by scope and a stable page identity (`topic_group_id` when present, otherwise the canonical page ID). Store the display classification, normalized source path snapshot, classification source, and taxonomy version. The source-derived `directory_path` remains available for traceability.
 
 The assignment is derived from the complete canonical Wiki set for a scope, never from an actor-specific ACL-visible page window. Repeated topic families become visible folders. A family with only one page is promoted to its nearest shared parent and its original family/path is retained as `directory_context`. Pages without a meaningful family go to a flat `Other topics` node; no A–Z child buckets are created. A family crossing the aggregation threshold is reclassified only through an explicit affected-family refresh with a new taxonomy version; ordinary reads do not move pages.
 
 ### 3. Import and regeneration behavior
 
-When a Product Document import completes, the existing topic group is used as the directory identity. The affected topic group receives an assignment refresh and an automatic Wiki generation job. Existing assignments for other topics remain unchanged. A new taxonomy version or explicit rule change can trigger an intentional full backfill later. Directory assignment is a display projection; the source-derived `directory_path` remains the traceable raw path.
+When a Product Document import completes, the existing topic group is used as the directory identity. The affected topic group receives an assignment refresh and an automatic Wiki generation job. Existing assignments for other topics remain unchanged unless a taxonomy version or explicit rule change requires a bounded backfill. Directory assignment is a display projection; the normalized source-derived `directory_path` remains the traceable raw path.
 
 ### 4. API/UI contract
 

@@ -25,6 +25,14 @@ interface GraphRelation {
   confidence: number;
 }
 
+interface GraphMetadata {
+  solution?: string;
+  module?: string;
+  sourcePath?: string;
+}
+
+
+
 const METADATA_RELATIONS = new Set(["has_product", "has_product_version", "has_solution", "has_module"]);
 const IGNORED_ENTITY_KINDS = new Set(["document", "product", "product_version", "solution", "module", "identifier"]);
 const RELATION_PRIORITY = new Map([
@@ -60,6 +68,85 @@ function boundedConfidence(value: unknown): number {
   const result = Number(value);
   return Number.isFinite(result) ? result : 0;
 }
+function splitPath(value: unknown): string[] {
+  return text(value).split(/[\\/]+/).map((part) => part.trim()).filter(Boolean);
+}
+
+function humanizeSegment(value: string): string {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sourceHierarchyPrefix(sourcePath: string | undefined, solution?: string): string[] | undefined {
+  const parts = splitPath(sourcePath);
+  if (parts.length < 2) return undefined;
+  let expandedIndex = -1;
+  for (let index = 0; index < parts.length; index += 1) {
+    if (/\.expanded-[^/]+$/i.test(parts[index])) expandedIndex = index;
+  }
+  const inner = (expandedIndex >= 0 ? parts.slice(expandedIndex + 1) : parts).slice(0, -1);
+  const docsIndex = inner.findIndex((part) => /^(.*?)(dev|developer|user|admin)(?:docs?|documentation)$/i.test(part));
+  if (docsIndex < 0) return undefined;
+  const docsMatch = inner[docsIndex].match(/^(.*?)(dev|developer|user|admin)(?:docs?|documentation)$/i);
+  if (!docsMatch) return undefined;
+  const product = text(docsMatch[1]) || label(solution);
+  if (!product) return undefined;
+  const area = normalized(docsMatch[2]) === "user" ? "User" : normalized(docsMatch[2]) === "admin" ? "Admin" : "Dev";
+  const result = [product, area];
+  for (const folder of inner.slice(docsIndex + 1)) {
+    if (normalized(folder) === "content") continue;
+    let value = folder;
+    if (value.slice(0, product.length).toLocaleLowerCase() === product.toLocaleLowerCase()) value = value.slice(product.length);
+    if (!value) continue;
+    result.push(humanizeSegment(value));
+  }
+  return result;
+}
+
+/**
+ * Source-derived paths are intentionally recognizable by the assignment
+ * classifier. Graph/API paths keep the legacy topic-family projection.
+ */
+export function isSourceHierarchyPath(path: string | undefined): boolean {
+  const parts = splitPath(path);
+  const area = normalized(parts[1] ?? "");
+  return parts.length >= 3 && (area === "dev" || area === "user" || area === "admin");
+}
+
+function propertyOwner(title: string): string | undefined {
+  if (!/\bproperty\b/i.test(title)) return undefined;
+  const parenthesized = title.match(/\(([^()]+)\)\s*$/)?.[1]?.trim();
+  if (parenthesized) return label(parenthesized);
+  const beforeProperty = title.replace(/\s+property\b.*$/i, "").trim();
+  return label(beforeProperty.split(".")[0]);
+}
+
+function inferredComponentParent(owner: string): string | undefined {
+  for (const suffix of ["parameters", "parameter", "pool", "collection", "options", "settings"]) {
+    if (normalized(owner).endsWith(suffix) && owner.length > suffix.length) return owner.slice(0, -suffix.length);
+  }
+  return undefined;
+}
+
+function semanticPathForTitle(title: string, path: string[]): string[] {
+  const result = [...path];
+  const overviewOwner = label(title.match(/^(.+?)\s+overview\b/i)?.[1]);
+  if (overviewOwner) {
+    const existingIndex = result.findIndex((part) => normalized(part) === normalized(overviewOwner));
+    return existingIndex >= 0 ? result.slice(0, existingIndex + 1) : [overviewOwner];
+  }
+  const owner = propertyOwner(title);
+  if (!owner) return result;
+  const parent = inferredComponentParent(owner);
+  if (parent && !result.some((part) => normalized(part) === normalized(parent))) result.unshift(parent);
+  if (!result.some((part) => normalized(part) === normalized(owner))) result.push(owner);
+  if (!result.some((part) => normalized(part) === "properties")) result.push("Properties");
+  return result;
+}
+
 
 function placeholders(values: string[]): string {
   return values.map(() => "?").join(",");
@@ -84,14 +171,13 @@ function apiIdentifierPath(sourceId: string, entities: GraphEntity[]): string[] 
   return candidates[0] ?? [];
 }
 
-function graphMetadataPath(sourceId: string, graph: { metadata: Map<string, { solution?: string; module?: string }> }, input: WikiDirectoryPathInput): string[] {
+function graphMetadataPath(sourceId: string, graph: { metadata: Map<string, GraphMetadata> }, input: WikiDirectoryPathInput): string[] {
   const metadata = graph.metadata.get(sourceId);
   return [label(metadata?.solution) ?? label(input.solution), label(metadata?.module) ?? label(input.module)]
     .filter((value): value is string => Boolean(value));
 }
 
-
-function graphRows(store: KnowledgeStore, sourceRefs: string[]): { entities: GraphEntity[]; relations: GraphRelation[]; metadata: Map<string, { solution?: string; module?: string }> } {
+function graphRows(store: KnowledgeStore, sourceRefs: string[]): { entities: GraphEntity[]; relations: GraphRelation[]; metadata: Map<string, GraphMetadata> } {
   const marks = placeholders(sourceRefs);
   const entities = (store.db.prepare(`SELECT id,name,kind,document_id,confidence FROM knowledge_product_graph_entities WHERE document_id IN (${marks})`).all(...sourceRefs) as Row[])
     .map((row) => ({ id: text(row.id), name: text(row.name), kind: text(row.kind), documentId: text(row.document_id), confidence: boundedConfidence(row.confidence) }))
@@ -99,9 +185,18 @@ function graphRows(store: KnowledgeStore, sourceRefs: string[]): { entities: Gra
   const relations = (store.db.prepare(`SELECT id,from_entity_id,to_entity_id,relation_type,confidence FROM knowledge_product_graph_relations WHERE document_id IN (${marks})`).all(...sourceRefs) as Row[])
     .map((row) => ({ id: text(row.id), fromEntityId: text(row.from_entity_id), toEntityId: text(row.to_entity_id), relationType: text(row.relation_type), confidence: boundedConfidence(row.confidence) }))
     .filter((row) => row.id && row.fromEntityId && row.toEntityId && row.relationType);
-  const metadata = new Map<string, { solution?: string; module?: string }>();
-  const sourceRows = store.db.prepare(`SELECT id,solution,module FROM knowledge_documents WHERE id IN (${marks})`).all(...sourceRefs) as Row[];
-  for (const row of sourceRows) metadata.set(text(row.id), { solution: label(row.solution), module: label(row.module) });
+  const metadata = new Map<string, GraphMetadata>();
+  const sourceRows = store.db.prepare(`SELECT d.id,d.solution,d.module,p.source_path
+    FROM knowledge_documents d
+    LEFT JOIN knowledge_product_documents p ON p.id=d.id
+    WHERE d.id IN (${marks})`).all(...sourceRefs) as Row[];
+  for (const row of sourceRows) {
+    metadata.set(text(row.id), {
+      solution: label(row.solution),
+      module: label(row.module),
+      sourcePath: text(row.source_path) || undefined,
+    });
+  }
   return { entities, relations, metadata };
 }
 
@@ -171,12 +266,33 @@ function fallbackDirectoryPath(input: WikiDirectoryPathInput): string {
   const fallback = [label(input.solution), label(input.module)].filter((value): value is string => Boolean(value));
   return [...fallback, title].join("/");
 }
+function semanticPathForSource(sourceId: string, title: string, graph: { entities: GraphEntity[]; relations: GraphRelation[]; metadata: Map<string, GraphMetadata> }, input: WikiDirectoryPathInput): string[] {
+  const metadataPath = graphMetadataPath(sourceId, graph, input);
+  const apiPath = apiIdentifierPath(sourceId, graph.entities);
+  const path = apiPath.length
+    ? apiPath
+    : relationPath(sourceId, graph.entities, graph.relations, {
+      solution: graph.metadata.get(sourceId)?.solution ?? input.solution,
+      module: graph.metadata.get(sourceId)?.module ?? input.module,
+    }).slice(metadataPath.length);
+  return semanticPathForTitle(title, path);
+}
 
-function directoryPathFromGraph(input: WikiDirectoryPathInput, graph: { entities: GraphEntity[]; relations: GraphRelation[]; metadata: Map<string, { solution?: string; module?: string }> }): string {
+
+function directoryPathFromGraph(input: WikiDirectoryPathInput, graph: { entities: GraphEntity[]; relations: GraphRelation[]; metadata: Map<string, GraphMetadata> }): string {
   const title = label(input.title) ?? "Untitled topic";
   const sourceRefs = [...new Set((input.sourceRefs ?? []).map(text).filter(Boolean))];
   const fallback = [label(input.solution), label(input.module)].filter((value): value is string => Boolean(value));
   if (!sourceRefs.length) return [...fallback, title].join("/");
+  const sourceBases = sourceRefs.map((sourceId) => {
+    const metadata = graph.metadata.get(sourceId);
+    const sourcePrefix = sourceHierarchyPrefix(metadata?.sourcePath, metadata?.solution ?? input.solution);
+    return sourcePrefix ? [...sourcePrefix, ...semanticPathForSource(sourceId, title, graph, input)] : undefined;
+  });
+  if (sourceBases.every((path): path is string[] => Boolean(path))) {
+    const prefix = commonPrefix(sourceBases);
+    return [...(prefix.length ? prefix : fallback), title].join("/");
+  }
   const paths = sourceRefs.map((sourceId) => {
     const metadataPath = graphMetadataPath(sourceId, graph, input);
     const apiPath = apiIdentifierPath(sourceId, graph.entities);
@@ -194,7 +310,7 @@ export function buildWikiDirectoryPaths(store: KnowledgeStore, inputs: WikiDirec
   if (!inputs.length) return [];
   const sourceRefs = [...new Set(inputs.flatMap((input) => (input.sourceRefs ?? []).map(text).filter(Boolean)))];
   try {
-    const graph = { entities: [] as GraphEntity[], relations: [] as GraphRelation[], metadata: new Map<string, { solution?: string; module?: string }>() };
+    const graph = { entities: [] as GraphEntity[], relations: [] as GraphRelation[], metadata: new Map<string, GraphMetadata>() };
     for (let offset = 0; offset < sourceRefs.length; offset += GRAPH_QUERY_BATCH_SIZE) {
       const partial = graphRows(store, sourceRefs.slice(offset, offset + GRAPH_QUERY_BATCH_SIZE));
       graph.entities.push(...partial.entities);

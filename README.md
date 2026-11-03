@@ -268,6 +268,8 @@ Knowledge Plane 是 Relay 内独立的知识层（独立 `knowledge.db`），把
 | **Engine projection** | 保存外部文档 ID、Chunk、解析/验证/失败状态、模型 provenance 和索引状态 |
 | **Wiki** | 组织跨版本的 Common、Version、Difference 章节，保存逐章节来源引用；一个 `topic_group_id` 对应一个 Wiki 页面 |
 
+Wiki 的目录是面向阅读的导航投影，不替代 Product Document/Chunk 检索。对可识别的厂商文档层级，目录会保留规范化的来源路径（例如 `SampleManager / Dev / Form Designer`），并在其下按 API 对象和 `Properties` 组织原子参考页；未识别的来源继续使用稳定的 Topic family 分类。
+
 同一主题的多个版本合并为一个 Wiki 页面：
 
 ```text

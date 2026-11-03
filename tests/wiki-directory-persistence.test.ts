@@ -29,6 +29,30 @@ test("directory classification uses topic families and has no alphabet buckets",
   assert.ok(![...result.values()].some((item) => item.displayPath.some((segment) => /^[A-Z]$|^0–9$|^#$/.test(segment))));
 });
 
+test("directory backfill replaces legacy raw paths with the normalized source hierarchy", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-wiki-source-directory-persist-"));
+  const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });
+  const now = new Date().toISOString();
+  const sourcePath = "21.3 Docs/SampleManager Developer Documentation.zip.expanded-test/SampleManagerDevDocs/Content/SampleManagerFormDesigner/topic26648.html";
+  try {
+    store.upsertDocument({ id: "aqc-document", kind: "product_document", title: "AqcChartParameters Property", body: "# AqcChartParameters Property", lifecycle: "approved", solution: "samplemanager", module: "samplemanager", locator: `product-doc:${sourcePath}`, sha256: "aqc-sha", createdAt: now, updatedAt: now });
+    store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,topic_group_id,normalized_content_sha256,parser_version,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run("aqc-document", "aqc-document", "reference", "en", "official", sourcePath, "aqc-sha", "21.3", "topic-aqc", "aqc-normalized", "fixture-v1", now, now);
+    store.db.prepare(`INSERT INTO knowledge_wiki_pages
+      (id,page_key,title,body,status,project_id,environment,product_version,topic_id,topic_group_id,solution,module,source_refs_json,supported_versions_json,generation_status,generation_fingerprint,directory_path,current_revision,created_by,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      "aqc-page", "topic/aqc", "AqcChartParameters Property", "body", "published", null, null, "21.3", "topic-aqc", "topic-aqc", "samplemanager", "samplemanager", "[\"aqc-document\"]", "[\"21.3\"]", "succeeded", "fp-aqc", "samplemanager/Topic families/AQCChart/AqcChartParameters Property", 1, 0, now, now,
+    );
+    backfillWikiDirectoryAssignments(store, {});
+    const assignment = listWikiDirectoryAssignments(store, {}).find((item) => item.pageId === "aqc-page");
+    assert.deepEqual(assignment?.displayPath, ["SampleManager", "Dev", "Form Designer", "AqcChart", "AqcChartParameters", "Properties"]);
+    assert.equal(assignment?.taxonomyVersion, 2);
+  } finally {
+    store.close();
+    cleanup(root);
+  }
+});
+
 test("same topic group keeps its persisted assignment when a new version is added", () => {
   const root = mkdtempSync(join(tmpdir(), "relay-wiki-directory-persist-"));
   const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });

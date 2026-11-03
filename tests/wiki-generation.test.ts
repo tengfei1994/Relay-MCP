@@ -102,3 +102,52 @@ test("Wiki directory shares qualified API namespaces across distinct property pa
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("Wiki directory preserves the Product Document source hierarchy for Form Designer topics", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-wiki-source-directory-"));
+  const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });
+  const now = new Date().toISOString();
+  const sourcePrefix = "21.3 Docs/SampleManager Developer Documentation.zip.expanded-test/SampleManagerDevDocs/Content/SampleManagerFormDesigner";
+  const documents = [
+    ["aqc-overview", "AQCChart overview", `${sourcePrefix}/topic-overview.html`, undefined],
+    ["aqc-parameters", "AqcChartParameters Property", `${sourcePrefix}/topic26648.html`, "Thermo.SampleManager.ObjectModel.AQCChart.AqcChartParameters"],
+    ["aqc-pool", "AQCChartPool.HideFromPlot Property", `${sourcePrefix}/topic26762.html`, "Thermo.SampleManager.ObjectModel.AQCChart.AQCChartPool"],
+  ] as const;
+  try {
+    for (const [id, title, sourcePath, identifier] of documents) {
+      store.upsertDocument({ id, kind: "product_document", title, body: `# ${title}`, lifecycle: "approved", solution: "samplemanager", module: "samplemanager", locator: `product-doc:${sourcePath}`, sha256: `${id}-sha`, createdAt: now, updatedAt: now });
+      store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,topic_group_id,normalized_content_sha256,parser_version,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, id, "reference", "en", "official", sourcePath, `${id}-sha`, "21.3", `topic-${id}`, `${id}-normalized`, "fixture-v1", now, now);
+      persistProductGraph(store, extractProductGraph({
+        documentId: id,
+        title,
+        body: `# ${title}`,
+        metadata: identifier ? { stableIdentifiers: { MicrosoftHelpF1: identifier } } : undefined,
+        solution: "samplemanager",
+        module: "samplemanager",
+        sourceLocator: `product-doc:${sourcePath}`,
+        sourceSha256: `${id}-sha`,
+      }));
+    }
+    const pages = documents.map(([id, title]) => ({ id, title, sourceRefs: [id], module: "samplemanager" }));
+    const paths = buildWikiDirectoryPaths(store, pages);
+    assert.deepEqual(paths, [
+      "SampleManager/Dev/Form Designer/AQCChart/AQCChart overview",
+      "SampleManager/Dev/Form Designer/AQCChart/AqcChartParameters/Properties/AqcChartParameters Property",
+      "SampleManager/Dev/Form Designer/AQCChart/AQCChartPool/Properties/AQCChartPool.HideFromPlot Property",
+    ]);
+    const classified = classifyWikiDirectory(pages.map((page, index) => ({ identityKey: `page:${page.id}`, pageId: page.id, title: page.title, rawPath: paths[index], module: page.module })));
+    assert.deepEqual(classified.get("page:aqc-overview")?.displayPath, ["SampleManager", "Dev", "Form Designer", "AQCChart"]);
+    assert.deepEqual(classified.get("page:aqc-parameters")?.displayPath, ["SampleManager", "Dev", "Form Designer", "AQCChart", "AqcChartParameters", "Properties"]);
+    assert.deepEqual(classified.get("page:aqc-pool")?.displayPath, ["SampleManager", "Dev", "Form Designer", "AQCChart", "AQCChartPool", "Properties"]);
+    const tree = buildWikiDirectoryTree(pages.map((page, index) => ({ ...page, directoryPath: classified.get(`page:${page.id}`)?.displayPath.join("/") })));
+    const formDesigner = tree.nodes[0]?.children[0]?.children[0];
+    assert.equal(tree.nodes[0]?.label, "SampleManager");
+    assert.equal(formDesigner?.label, "Form Designer");
+    assert.equal(formDesigner?.children[0]?.label, "AQCChart");
+    assert.deepEqual(formDesigner?.children[0]?.pages.map((page) => page.title), ["AQCChart overview"]);
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

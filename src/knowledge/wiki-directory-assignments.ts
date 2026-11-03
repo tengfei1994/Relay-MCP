@@ -1,8 +1,8 @@
 import type { KnowledgeStore } from "./store.js";
 import { canonicalWikiRows } from "./wiki-identity.js";
-import { buildWikiDirectoryPaths } from "./wiki-directory.js";
+import { isSourceHierarchyPath, buildWikiDirectoryPaths } from "./wiki-directory.js";
 
-export const WIKI_DIRECTORY_TAXONOMY_VERSION = 1;
+export const WIKI_DIRECTORY_TAXONOMY_VERSION = 2;
 export const TOPIC_FAMILY_LABEL = "Topic families";
 export const OTHER_TOPICS_LABEL = "Other topics";
 
@@ -110,7 +110,7 @@ function loadCanonicalRows(store: KnowledgeStore, scope: WikiDirectoryScope): Ro
   return canonicalWikiRows(rows);
 }
 
-function candidatesFromRows(store: KnowledgeStore, rows: Row[]): WikiDirectoryCandidate[] {
+function candidatesFromRows(store: KnowledgeStore, rows: Row[], rebuildSourcePaths = false): WikiDirectoryCandidate[] {
   const base = rows.map((row) => ({
     pageId: String(row.id),
     topicGroupId: text(row.topic_group_id),
@@ -121,14 +121,17 @@ function candidatesFromRows(store: KnowledgeStore, rows: Row[]): WikiDirectoryCa
     rawPath: text(row.directory_path),
   }));
   const missing = base.map((item, index) => item.rawPath ? undefined : index).filter((index): index is number => index !== undefined);
-  if (missing.length) {
-    const paths = buildWikiDirectoryPaths(store, missing.map((index) => ({
+  const rebuild = rebuildSourcePaths
+    ? base.map((item, index) => item.sourceRefs.length ? index : undefined).filter((index): index is number => index !== undefined)
+    : missing;
+  if (rebuild.length) {
+    const paths = buildWikiDirectoryPaths(store, rebuild.map((index) => ({
       title: base[index].title,
       sourceRefs: base[index].sourceRefs,
       solution: base[index].solution,
       module: base[index].module,
     })));
-    missing.forEach((index, pathIndex) => { base[index].rawPath = paths[pathIndex]; });
+    rebuild.forEach((index, pathIndex) => { base[index].rawPath = paths[pathIndex]; });
   }
   return base.map((item) => ({
     identityKey: identityFor(item.pageId, item.topicGroupId),
@@ -155,22 +158,25 @@ export function classifyWikiDirectory(candidates: WikiDirectoryCandidate[], taxo
   const prepared = candidates.map((candidate) => {
     const sourcePath = splitPath(candidate.rawPath);
     const base = withoutTitle(sourcePath, candidate.title);
+    const sourceHierarchy = isSourceHierarchyPath(sourcePath.join("/"));
     const root = cleanLabel(base[0]) ?? OTHER_TOPICS_LABEL;
     const family = cleanLabel(base[1]);
     const familyKey = family ? `${normalized(root)}\u0000${normalized(family)}` : undefined;
     if (familyKey) familyCounts.set(familyKey, (familyCounts.get(familyKey) ?? 0) + 1);
-    return { candidate, sourcePath, base, root, family, familyKey };
+    return { candidate, sourcePath, base, sourceHierarchy, root, family, familyKey };
   });
   const assignments = new Map<string, WikiDirectoryAssignment>();
   for (const item of prepared) {
     const grouped = Boolean(item.familyKey && (familyCounts.get(item.familyKey!) ?? 0) >= 2);
-    const displayPath = item.root === OTHER_TOPICS_LABEL
-      ? [OTHER_TOPICS_LABEL]
-      : grouped
-        ? [item.root, TOPIC_FAMILY_LABEL, item.family!]
-        : [item.root, OTHER_TOPICS_LABEL];
+    const displayPath = item.sourceHierarchy
+      ? (item.base.length ? item.base : [item.root])
+      : item.root === OTHER_TOPICS_LABEL
+        ? [OTHER_TOPICS_LABEL]
+        : grouped
+          ? [item.root, TOPIC_FAMILY_LABEL, item.family!]
+          : [item.root, OTHER_TOPICS_LABEL];
     const contextStart = grouped ? 2 : 1;
-    const directoryContext = item.base.slice(contextStart).join(" / ") || undefined;
+    const directoryContext = item.sourceHierarchy ? undefined : item.base.slice(contextStart).join(" / ") || undefined;
     assignments.set(item.candidate.identityKey, {
       scopeProjectId: "",
       scopeEnvironment: "",
@@ -180,7 +186,7 @@ export function classifyWikiDirectory(candidates: WikiDirectoryCandidate[], taxo
       displayPath,
       directoryContext,
       rawPath: item.sourcePath.join("/"),
-      classificationSource: grouped ? "topic_family" : "other_topics",
+      classificationSource: item.sourceHierarchy ? "source_hierarchy" : grouped ? "topic_family" : "other_topics",
       taxonomyVersion,
     });
   }
@@ -238,7 +244,7 @@ export function listWikiDirectoryAssignments(store: KnowledgeStore, scope: WikiD
 
 export function backfillWikiDirectoryAssignments(store: KnowledgeStore, scope: WikiDirectoryScope = {}): WikiDirectoryRefreshResult {
   const rows = loadCanonicalRows(store, scope);
-  const candidates = candidatesFromRows(store, rows);
+  const candidates = candidatesFromRows(store, rows, true);
   const assignments = classifyWikiDirectory(candidates);
   const key = scopeKey(scope);
   assignments.forEach((assignment) => { assignment.scopeProjectId = key.projectId; assignment.scopeEnvironment = key.environment; });
@@ -249,16 +255,24 @@ export function backfillWikiDirectoryAssignments(store: KnowledgeStore, scope: W
 export function ensureWikiDirectoryAssignments(store: KnowledgeStore, scope: WikiDirectoryScope = {}): WikiDirectoryRefreshResult {
   const rows = loadCanonicalRows(store, scope);
   const expected = new Set(candidatesFromRows(store, rows).map((candidate) => candidate.identityKey));
-  const current = new Set(listWikiDirectoryAssignments(store, scope).map((assignment) => assignment.identityKey));
-  const missing = [...expected].some((identity) => !current.has(identity));
-  if (!missing) return { total: expected.size, written: 0, taxonomyVersion: WIKI_DIRECTORY_TAXONOMY_VERSION };
+  const current = listWikiDirectoryAssignments(store, scope);
+  const missing = [...expected].some((identity) => !current.some((assignment) => assignment.identityKey === identity));
+  const stale = current.some((assignment) => assignment.taxonomyVersion !== WIKI_DIRECTORY_TAXONOMY_VERSION);
+  if (!missing && !stale) return { total: expected.size, written: 0, taxonomyVersion: WIKI_DIRECTORY_TAXONOMY_VERSION };
   return backfillWikiDirectoryAssignments(store, scope);
 }
 
 export function refreshWikiDirectoryAssignments(store: KnowledgeStore, input: WikiDirectoryScope & { topicGroupIds?: string[] } = {}): WikiDirectoryRefreshResult {
   const rows = loadCanonicalRows(store, input);
-  const candidates = candidatesFromRows(store, rows);
+  const taxonomyStale = listWikiDirectoryAssignments(store, input).some((assignment) => assignment.taxonomyVersion !== WIKI_DIRECTORY_TAXONOMY_VERSION);
+  const candidates = candidatesFromRows(store, rows, taxonomyStale);
   const assignments = classifyWikiDirectory(candidates);
+  if (taxonomyStale) {
+    const key = scopeKey(input);
+    assignments.forEach((assignment) => { assignment.scopeProjectId = key.projectId; assignment.scopeEnvironment = key.environment; });
+    const written = persistAssignments(store, input, assignments.values());
+    return { total: assignments.size, written, taxonomyVersion: WIKI_DIRECTORY_TAXONOMY_VERSION };
+  }
   const requested = new Set((input.topicGroupIds ?? []).map((value) => value.trim()).filter(Boolean));
   if (!requested.size) {
     const key = scopeKey(input);

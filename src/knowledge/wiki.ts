@@ -121,6 +121,42 @@ export interface WikiPageListResult {
   limit: number;
   offset: number;
 }
+export interface WikiNavigationQuery extends WikiPageListQuery {
+  path?: string;
+}
+
+export interface WikiNavigationNode {
+  key: string;
+  path: string[];
+  label: string;
+  count: number;
+  pageCount: number;
+  hasChildren: boolean;
+}
+
+export interface WikiNavigationResult {
+  path: string[];
+  nodes: WikiNavigationNode[];
+  pages: WikiPageSummary[];
+  total: number;
+  descendantTotal: number;
+  versions: string[];
+  limit: number;
+  offset: number;
+  search: boolean;
+}
+
+function directorySegments(value: unknown): string[] {
+  return String(value ?? "").split(/[\\/]+/).map((part) => part.trim()).filter(Boolean);
+}
+
+function sameDirectoryPath(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((part, index) => part.toLocaleLowerCase() === right[index]?.toLocaleLowerCase());
+}
+
+function isDirectoryDescendant(path: string[], parent: string[]): boolean {
+  return path.length > parent.length && parent.every((part, index) => path[index]?.toLocaleLowerCase() === part.toLocaleLowerCase());
+}
 
 function pageFromRow(row: Record<string, unknown>, duplicateOf?: string): WikiPage {
   const page: WikiPage = {
@@ -421,6 +457,154 @@ export class WikiService {
       offset,
     };
   }
+
+  /**
+   * Return one level of the source-backed Wiki outline. The assignment table
+   * is already canonical and scope-specific, so navigation does not enumerate
+   * page bodies, citations, or duplicate provider rows.
+   */
+  listNavigation(input: WikiNavigationQuery): WikiNavigationResult {
+    const limit = Math.max(1, Math.min(100, Math.trunc(input.limit ?? 50)));
+    const offset = Math.max(0, Math.trunc(input.offset ?? 0));
+    const projectId = optionalText(input.projectId, 200);
+    const environment = optionalText(input.environment, 200);
+    if (projectId) this.assertReader(input.actorId, projectId, "published", input.isAdmin, environment);
+    const parentPath = directorySegments(input.path);
+    const parent = parentPath.join("/");
+    const escapedParent = parent.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+    const environmentSql = this.hasEnvironmentColumn() ? "p.environment" : "NULL";
+    const where: string[] = [
+      "p.id NOT LIKE 'engine-wiki:%'",
+      "a.scope_project_id=@scopeProject",
+      "a.scope_environment=@scopeEnvironment",
+      "(a.display_path=@directoryPath OR a.display_path LIKE @directoryPrefix ESCAPE '\\')",
+    ];
+    const params: Record<string, unknown> = {
+      actorId: input.actorId,
+      isAdmin: input.isAdmin ? 1 : 0,
+      projectId: projectId ?? null,
+      environment: environment ?? null,
+      scopeProject: projectId ?? "",
+      scopeEnvironment: environment ?? "",
+      directoryPath: parent,
+      directoryPrefix: parent ? `${escapedParent}/%` : "%",
+    };
+    if (projectId) {
+      where.push(`(
+        (p.project_id IS NULL AND ${environmentSql} IS NULL AND
+          (p.status = 'published' OR @isAdmin = 1 OR EXISTS (
+            SELECT 1 FROM knowledge_acl a2 WHERE a2.user_id = @actorId AND a2.can_read = 1
+          )))
+        OR
+        (p.project_id = @projectId AND
+          ((@environment IS NULL AND ${environmentSql} IS NULL) OR ${environmentSql} = @environment) AND
+          EXISTS (
+            SELECT 1 FROM knowledge_acl a2 WHERE a2.project_id = @projectId AND a2.user_id = @actorId AND a2.can_read = 1
+          ))
+      )`);
+    } else {
+      where.push(`(
+        p.project_id IS NULL AND ${environmentSql} IS NULL AND
+        (p.status = 'published' OR @isAdmin = 1 OR EXISTS (
+          SELECT 1 FROM knowledge_acl a2 WHERE a2.user_id = @actorId AND a2.can_read = 1
+        ))
+      )`);
+    }
+    if (input.status) {
+      where.push("p.status=@status");
+      params.status = input.status;
+    }
+    if (input.productVersion) {
+      where.push(`(
+        p.product_version=@productVersion
+        OR EXISTS (SELECT 1 FROM json_each(COALESCE(p.supported_versions_json,'[]')) WHERE value=@productVersion)
+        OR EXISTS (SELECT 1 FROM knowledge_wiki_sections sv WHERE sv.page_id=p.id AND sv.product_version=@productVersion)
+      )`);
+      params.productVersion = input.productVersion;
+    }
+    if (input.topicId) {
+      where.push("(p.topic_id=@topicId OR p.topic_group_id=@topicId)");
+      params.topicId = input.topicId;
+    }
+    if (input.topicGroupId) {
+      where.push("p.topic_group_id=@topicGroupId");
+      params.topicGroupId = input.topicGroupId;
+    }
+    if (input.solution) {
+      where.push("p.solution=@solution");
+      params.solution = input.solution;
+    }
+    if (input.module) {
+      where.push("p.module=@module");
+      params.module = input.module;
+    }
+    const term = input.search?.trim();
+    if (term) {
+      const escaped = term.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+      where.push("(LOWER(p.title) LIKE @search ESCAPE '\\' OR LOWER(p.body) LIKE @search ESCAPE '\\')");
+      params.search = `%${escaped.toLocaleLowerCase()}%`;
+    }
+    const summaryColumns = [
+      "p.id", "p.page_key", "p.title", "p.status", "p.project_id", environmentSql + " AS environment",
+      "p.product_version", "p.topic_id", "p.topic_group_id", "p.solution", "p.module",
+      "p.source_refs_json", "p.supported_versions_json", "p.generation_status", "p.generation_fingerprint",
+      "p.current_revision", "p.created_by", "p.created_at", "p.updated_at", "p.published_at", "p.deprecated_at",
+      "a.display_path AS directory_path", "a.directory_context",
+    ].join(",");
+    const rows = this.store.db.prepare(`SELECT ${summaryColumns}
+      FROM knowledge_wiki_directory_assignments a
+      JOIN knowledge_wiki_pages p ON p.id=a.page_id
+      WHERE ${where.join("\n AND ")}
+      ORDER BY a.display_path,p.title,p.id`).all(params) as Array<Record<string, unknown>>;
+    const uniqueRows = [...new Map(rows.map((row) => [String(row.id), row])).values()];
+    const versions = [...new Set(uniqueRows.flatMap((row) => [
+      String(row.product_version ?? "").trim(),
+      ...parseStrings(row.supported_versions_json),
+    ].filter(Boolean)))].sort();
+    const nodes = new Map<string, WikiNavigationNode>();
+    const pageRows: Array<Record<string, unknown>> = [];
+    for (const row of uniqueRows) {
+      const path = directorySegments(row.directory_path);
+      if (sameDirectoryPath(path, parentPath)) {
+        pageRows.push(row);
+        continue;
+      }
+      if (!isDirectoryDescendant(path, parentPath)) continue;
+      const childPath = path.slice(0, parentPath.length + 1);
+      const key = childPath.join("/");
+      const current = nodes.get(key) ?? {
+        key,
+        path: childPath,
+        label: childPath[childPath.length - 1] ?? "Topic",
+        count: 0,
+        pageCount: 0,
+        hasChildren: false,
+      };
+      current.count += 1;
+      if (path.length === childPath.length) current.pageCount += 1;
+      else current.hasChildren = true;
+      nodes.set(key, current);
+    }
+    const uniquePages = pageRows
+      .sort((left, right) => String(left.title ?? "").localeCompare(String(right.title ?? "")) || String(left.id).localeCompare(String(right.id)));
+    const selected = uniquePages.slice(offset, offset + limit).map((row) => {
+      const page = summaryFromRow(row);
+      if (row.directory_context) page.directoryContext = String(row.directory_context);
+      return page;
+    });
+    return {
+      path: parentPath,
+      nodes: [...nodes.values()].sort((left, right) => left.label.localeCompare(right.label) || left.key.localeCompare(right.key)),
+      pages: selected,
+      total: uniquePages.length,
+      descendantTotal: uniqueRows.length,
+      versions,
+      limit,
+      offset,
+      search: Boolean(term),
+    };
+  }
+
 
   get(input: { actorId: number; isAdmin?: boolean; id: string; projectId?: string; environment?: string }): WikiPage {
     const row = this.loadRow(input.id);

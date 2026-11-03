@@ -504,3 +504,117 @@
     transition: none;
   }
 }
+
+.wiki-outline-topic-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  min-height: 36px;
+  border-bottom: 1px solid rgba(255, 255, 255, .055);
+}
+
+.wiki-outline-topic-row:hover {
+  background: rgba(255, 255, 255, .055);
+}
+
+.wiki-outline-toggle,
+.wiki-outline-toggle-spacer {
+  display: grid;
+  width: 22px;
+  height: 24px;
+  flex: 0 0 22px;
+  place-items: center;
+  color: rgb(var(--muted));
+}
+
+.wiki-outline-topic-link {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+  color: rgb(var(--fg));
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: left;
+}
+
+.wiki-outline-topic-link:hover {
+  color: rgb(var(--mint));
+}
+
+.wiki-outline-loading,
+.wiki-outline-error {
+  padding-top: 8px;
+  padding-right: 12px;
+  padding-bottom: 8px;
+  color: rgb(var(--muted));
+  font-size: 11px;
+}
+
+.wiki-outline-error {
+  color: rgb(var(--coral));
+}
+
+.wiki-topic-landing {
+  min-height: 680px;
+  padding: 56px 48px;
+  color: rgb(var(--fg));
+}
+
+.wiki-topic-landing h2 {
+  margin-top: 6px;
+  font-size: clamp(26px, 3vw, 42px);
+  font-weight: 600;
+  letter-spacing: -.035em;
+}
+
+.wiki-topic-landing-grid {
+  display: grid;
+  max-width: 720px;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.wiki-topic-landing-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 14px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .025);
+  color: rgb(var(--fg));
+  text-align: left;
+}
+
+.wiki-topic-landing-item:hover {
+  border-color: rgba(110, 231, 200, .4);
+  background: rgba(110, 231, 200, .07);
+}
+
+.wiki-topic-landing-item span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.wiki-topic-landing-item small {
+  color: rgb(var(--muted));
+  font-size: 11px;
+}
+
+.wiki-topic-landing-pages {
+  max-width: 720px;
+}
+
+.wiki-topic-landing-pages h3 {
+  margin-bottom: 8px;
+  color: rgb(var(--muted));
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+}

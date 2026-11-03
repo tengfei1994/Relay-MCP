@@ -129,6 +129,17 @@ test("Wiki directory preserves the Product Document source hierarchy for Form De
         sourceSha256: `${id}-sha`,
       }));
     }
+    const wiki = new WikiService(store);
+    for (const [id, title] of documents) wiki.create({ actorId: 7, isAdmin: true, pageKey: `topic/${id}`, title, body: `# ${title}`, solution: "samplemanager", module: "samplemanager", sourceRefs: [id], reason: "Navigation fixture" });
+    const formDesignerNavigation = wiki.listNavigation({ actorId: 7, isAdmin: true, path: "SampleManager/Dev/Form Designer" });
+    const aqcTopic = formDesignerNavigation.nodes.find((node) => node.label === "AQCChart");
+    assert.equal(aqcTopic?.count, 3);
+    assert.equal(aqcTopic?.pageCount, 1);
+    assert.equal(aqcTopic?.hasChildren, true);
+    const aqcNavigation = wiki.listNavigation({ actorId: 7, isAdmin: true, path: "SampleManager/Dev/Form Designer/AQCChart" });
+    assert.deepEqual(aqcNavigation.pages.map((page) => page.title), ["AQCChart overview"]);
+    assert.deepEqual(aqcNavigation.nodes.map((node) => node.label), ["AqcChartParameters", "AQCChartPool"]);
+
     const pages = documents.map(([id, title]) => ({ id, title, sourceRefs: [id], module: "samplemanager" }));
     const paths = buildWikiDirectoryPaths(store, pages);
     assert.deepEqual(paths, [

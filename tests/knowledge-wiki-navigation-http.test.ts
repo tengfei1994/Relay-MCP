@@ -18,8 +18,10 @@ test('Wiki key resolution and ID deep links enforce exact current project/enviro
  runMigrations();const store=getKnowledgeStore();
  store.grantAcl('p1',7,true);store.grantAcl('p2',7,true);
  const page=new WikiService(store).create({actorId:7,pageKey:'concept/safe',projectId:'p1',title:'Private target',body:'Private target body',reason:'fixture'});
- const app=Fastify();app.decorate('authenticate',async(req:any)=>{req.user={id:req.headers['x-other']?8:7,isAdmin:false};});await app.register(knowledgeRoutes);
- try {
+  const app=Fastify();app.decorate('authenticate',async(req:any)=>{req.user={id:req.headers['x-other']?8:7,isAdmin:false};});await app.register(knowledgeRoutes);
+  try {
+  const outline=await app.inject({url:"/api/knowledge/wiki/navigation?projectId=p1"});
+  assert.equal(outline.statusCode,200,outline.body);assert.ok(Array.isArray(outline.json().nodes));assert.equal(outline.json().descendantTotal,1);
   const query=new URLSearchParams({pageKey:page.pageKey,projectId:'p1'});
   const ok=await app.inject({url:`/api/knowledge/wiki/resolve?${query}`});
   assert.equal(ok.statusCode,200,ok.body);assert.equal(ok.json().page.id,page.id);

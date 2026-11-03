@@ -19,7 +19,7 @@ import { enqueueArtifactImport, enqueueProductImport, enqueueProductMigration, e
 import { controlWikiGenerationJob, WikiGenerationControlError } from "../../knowledge/ingest-controls.js";
 import { normalizeWikiGenerationJob } from "../../knowledge/ingest-dispatch.js";
 import { listWikiTopicGenerationStatuses } from "../../knowledge/wiki-generation.js";
-import { ensureWikiDirectoryAssignments } from "../../knowledge/wiki-directory-assignments.js";
+import { ensureWikiDirectoryAssignments, WIKI_DIRECTORY_TAXONOMY_VERSION } from "../../knowledge/wiki-directory-assignments.js";
 import { compareSourceBaselines, type SourceManifest } from "../../knowledge/source-baseline.js";
 import { compareSourceUpgradeWithSymbols } from "../../knowledge/source-symbol.js";
 import { classifyRelayEvent } from "../../knowledge/event-classifier.js";
@@ -1648,6 +1648,24 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     } catch (error) { return sendError(reply, error, 403); }
   });
 
+  app.get("/api/knowledge/wiki/navigation", { onRequest: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    const projectId = queryValue(query, "projectId"), environment = queryValue(query, "environment");
+    if (!projectId && environment) return reply.status(400).send({ error: "environment requires projectId" });
+    const status = typeof query.status === "string" && WIKI_PAGE_STATUSES.includes(query.status as never) ? query.status as never : undefined;
+    try {
+      const store = getKnowledgeStore();
+      const assignmentExists = store.db.prepare("SELECT 1 FROM knowledge_wiki_directory_assignments WHERE scope_project_id=? AND scope_environment=? LIMIT 1").get(projectId ?? "", environment ?? "");
+      if (!assignmentExists) ensureWikiDirectoryAssignments(store, { projectId, environment });
+      return reply.send(new WikiService(store).listNavigation({
+        actorId: request.user.id, isAdmin: request.user.isAdmin, projectId, environment, path: queryValue(query, "path"),
+        status, productVersion: queryValue(query, "productVersion"), topicId: queryValue(query, "topicId"), topicGroupId: queryValue(query, "topicGroupId"),
+        solution: queryValue(query, "solution"), module: queryValue(query, "module"), search: queryValue(query, "search"),
+        limit: parseBoundedInt(query.limit, 50, 1, 100), offset: parseBoundedInt(query.offset, 0, 0, 1_000_000),
+      }));
+    } catch (error) { return sendError(reply, error, 403); }
+  });
+
   app.get("/api/knowledge/wiki/directory", { onRequest: [app.authenticate] }, async (request, reply) => {
     const query = request.query as Record<string, unknown>;
     const projectId = queryValue(query, "projectId"), environment = queryValue(query, "environment");
@@ -1655,30 +1673,19 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     const status = typeof query.status === "string" && WIKI_PAGE_STATUSES.includes(query.status as never) ? query.status as never : undefined;
     try {
       const store = getKnowledgeStore();
-      const directoryState = ensureWikiDirectoryAssignments(store, { projectId, environment });
-      const result = new WikiService(store).list({
-        actorId: request.user.id, isAdmin: request.user.isAdmin, projectId, environment, status,
-        productVersion: queryValue(query, "productVersion"), topicId: queryValue(query, "topicId"), topicGroupId: queryValue(query, "topicGroupId"),
+      const assignmentExists = store.db.prepare("SELECT 1 FROM knowledge_wiki_directory_assignments WHERE scope_project_id=? AND scope_environment=? LIMIT 1").get(projectId ?? "", environment ?? "");
+      if (!assignmentExists) ensureWikiDirectoryAssignments(store, { projectId, environment });
+      const navigation = new WikiService(store).listNavigation({
+        actorId: request.user.id, isAdmin: request.user.isAdmin, projectId, environment, path: queryValue(query, "path"),
+        status, productVersion: queryValue(query, "productVersion"), topicId: queryValue(query, "topicId"), topicGroupId: queryValue(query, "topicGroupId"),
         solution: queryValue(query, "solution"), module: queryValue(query, "module"), search: queryValue(query, "search"),
-        limit: parseBoundedInt(query.limit, 200, 1, 200), offset: parseBoundedInt(query.offset, 0, 0, 1_000_000),
+        limit: parseBoundedInt(query.limit, 50, 1, 100), offset: parseBoundedInt(query.offset, 0, 0, 1_000_000),
       });
-      const items = result.items;
-      const grouped = new Map<string, Map<string, Array<(typeof items)[number]>>>();
-      for (const item of items) {
-        const solution = item.solution ?? "Unassigned", module = item.module ?? "General";
-        if (!grouped.has(solution)) grouped.set(solution, new Map());
-        const modules = grouped.get(solution)!;
-        if (!modules.has(module)) modules.set(module, []);
-        modules.get(module)!.push(item);
-      }
       return reply.send({
-        ...result,
-        items,
-        directoryVersion: directoryState.taxonomyVersion,
-        directory: [...grouped.entries()].map(([solution, modules]) => ({
-          solution,
-          modules: [...modules.entries()].map(([module, topics]) => ({ module, topics })),
-        })),
+        ...navigation,
+        items: navigation.pages,
+        directoryVersion: WIKI_DIRECTORY_TAXONOMY_VERSION,
+        directory: navigation.nodes,
       });
     } catch (error) { return sendError(reply, error, 403); }
   });

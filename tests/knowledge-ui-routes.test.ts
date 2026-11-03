@@ -114,8 +114,8 @@ test("Wiki generation UI exposes normalized progress and job-scoped pause/resume
   assert.match(generation, /PageTabs section="operations"/);
   assert.doesNotMatch(wiki, /knowledgeWikiGeneration\(/);
   assert.doesNotMatch(wiki, /pausedGeneration/);
-  assert.match(wiki, /Topic families/);
-  assert.match(wiki, /Other topics/);
+  assert.match(wiki, /Documentation outline/);
+  assert.match(wiki, /knowledgeWikiNavigation/);
   assert.match(navigationText(), /label: "Wiki generation"[\s\S]*adminOnly: true/);
 });
 

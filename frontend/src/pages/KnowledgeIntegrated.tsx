@@ -1,15 +1,14 @@
 import { LazyKnowledgeMarkup as KnowledgeMarkup } from "../components/LazyKnowledgeMarkup";
 import { useEffect, useRef, useState } from "react";
 import { Link, Navigate, useSearchParams } from "react-router-dom";
-import { CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, FileText, Folder, GitCompare, History, KeyRound, Network, Pencil, RefreshCw, ServerCog, ShieldAlert, Workflow } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, FileText, GitCompare, History, KeyRound, Network, Pencil, RefreshCw, ServerCog, ShieldAlert, Workflow, BookOpen } from "lucide-react";
 import { api } from "../api/client";
 import { useAuth } from "../App";
 import { Badge, cardClass, formatDate, inputClass, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
 import { ConfirmDialog, Drawer, PageHeader } from "../components/ui";
 import { ProviderSetupForm, type ProviderSetupDefaults } from "../components/ProviderSetupForm";
 import { StandardPage } from "../components/knowledge/KnowledgeFrame";
-import { knowledgeItemScope, withKnowledgeScope, type KnowledgeScope } from "../knowledge/integrated-search";
-import { buildWikiDirectoryTree, type WikiDirectoryNode, type WikiDirectoryPage } from "../knowledge/wiki-directory";
+import { type WikiDirectoryPage } from "../knowledge/wiki-directory";
 import { mergeWikiPageSources, type WikiPageSource } from "../knowledge/wiki-citations";
 import "./wiki.css";
 const btn = "ui-button ui-button-primary ui-button-sm";
@@ -378,8 +377,83 @@ function WikiPageSources({ sources, scope }: { sources: WikiPageSource[]; scope:
   </ul>;
 }
 
-function wikiPageLabel(page: WikiDirectoryPage): string {
-  return text(page.title, text(page.pageKey, text(page.id, "Untitled topic")));
+type WikiNavigationNode = {
+  key: string;
+  path: string[];
+  label: string;
+  count: number;
+  pageCount: number;
+  hasChildren: boolean;
+};
+
+type WikiNavigationLevel = {
+  path: string[];
+  nodes: WikiNavigationNode[];
+  pages: JsonRecord[];
+  total: number;
+  descendantTotal: number;
+  versions: string[];
+  limit: number;
+  offset: number;
+  loading?: boolean;
+  error?: string;
+};
+
+function WikiOutlinePage({ page, depth, selectedId, onOpen }: { page: WikiDirectoryPage; depth: number; selectedId?: string; onOpen: (page: WikiDirectoryPage) => void }) {
+  const selected = isWikiPageSelected(page, selectedId);
+  const context = text(page.directoryContext, text(page.directoryPath));
+  return <button type="button" key={wikiPageId(page)} aria-current={selected ? "page" : undefined} onClick={() => onOpen(page)} className={`wiki-tree-page focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint ${selected ? "wiki-tree-page-selected" : ""}`} style={{ paddingLeft: `${28 + depth * 16}px`, paddingRight: 12 }} title={context ? `${wikiPageLabel(page)} · ${context}` : wikiPageLabel(page)}>
+    <FileText size={14} className="shrink-0 self-start text-mint/80" />
+    <span className="wiki-tree-page-copy"><span className="wiki-tree-label">{wikiPageLabel(page)}</span>{context && <span className="wiki-tree-context">{context}</span>}</span>
+    <span className="wiki-tree-status">{text(page.status, "draft")}</span>
+  </button>;
+}
+
+function WikiOutlineBranch({ node, depth, levels, expanded, selectedId, onToggle, onOpenPage, onOpenTopic }: { node: WikiNavigationNode; depth: number; levels: Map<string, WikiNavigationLevel>; expanded: Set<string>; selectedId?: string; onToggle: (path: string) => void; onOpenPage: (page: WikiDirectoryPage) => void; onOpenTopic: (path: string) => void }) {
+  const path = node.key;
+  const level = levels.get(path);
+  const isExpanded = expanded.has(path);
+  const expandable = node.hasChildren || node.pageCount > 0;
+  return <div className="wiki-outline-topic">
+    <div className="wiki-outline-topic-row" style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: 12 }}>
+      {expandable ? <button type="button" aria-label={`${isExpanded ? "Collapse" : "Expand"} ${node.label}`} aria-expanded={isExpanded} onClick={() => onToggle(path)} className="wiki-outline-toggle focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint">{isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button> : <span className="wiki-outline-toggle-spacer" />}
+      <button type="button" onClick={() => onOpenTopic(path)} className="wiki-outline-topic-link focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint" title={node.path.join(" / ")}>
+        <BookOpen size={14} className="shrink-0 text-iris" />
+        <span className="wiki-tree-label">{node.label}</span>
+        <span className="wiki-tree-count">{node.count}</span>
+      </button>
+    </div>
+    {isExpanded && <div>
+      {!level && <p className="wiki-outline-loading" style={{ paddingLeft: `${44 + depth * 16}px` }}>Loading topics…</p>}
+      {level?.error && <p className="wiki-outline-error" style={{ paddingLeft: `${44 + depth * 16}px` }}>{level.error}</p>}
+      {level?.nodes.map((child) => <WikiOutlineBranch key={child.key} node={child} depth={depth + 1} levels={levels} expanded={expanded} selectedId={selectedId} onToggle={onToggle} onOpenPage={onOpenPage} onOpenTopic={onOpenTopic} />)}
+      {level?.pages.map((page) => <WikiOutlinePage key={wikiPageId(page)} page={page} depth={depth + 1} selectedId={selectedId} onOpen={onOpenPage} />)}
+      {level?.loading && <p className="wiki-outline-loading" style={{ paddingLeft: `${44 + depth * 16}px` }}>Loading topics…</p>}
+    </div>}
+  </div>;
+}
+
+function WikiOutline({ level, levels, expanded, selectedId, onToggle, onOpenPage, onOpenTopic }: { level?: WikiNavigationLevel; levels: Map<string, WikiNavigationLevel>; expanded: Set<string>; selectedId?: string; onToggle: (path: string) => void; onOpenPage: (page: WikiDirectoryPage) => void; onOpenTopic: (path: string) => void }) {
+  if (!level) return <p className="wiki-directory-empty">Loading documentation outline…</p>;
+  if (level.error) return <p className="wiki-directory-empty text-coral">{level.error}</p>;
+  if (level.search) return <div className="wiki-directory-tree">{level.pages.map((page) => <WikiOutlinePage key={wikiPageId(page)} page={page} depth={0} selectedId={selectedId} onOpen={onOpenPage} />)}</div>;
+  return <div className="wiki-directory-tree">
+    {level.nodes.map((node) => <WikiOutlineBranch key={node.key} node={node} depth={0} levels={levels} expanded={expanded} selectedId={selectedId} onToggle={onToggle} onOpenPage={onOpenPage} onOpenTopic={onOpenTopic} />)}
+    {level.pages.map((page) => <WikiOutlinePage key={wikiPageId(page)} page={page} depth={0} selectedId={selectedId} onOpen={onOpenPage} />)}
+    {!level.nodes.length && !level.pages.length && <p className="wiki-directory-empty">No topics match these filters.</p>}
+  </div>;
+}
+
+function WikiTopicLanding({ path, level, onOpenPage, onOpenTopic }: { path: string; level?: WikiNavigationLevel; onOpenPage: (page: WikiDirectoryPage) => void; onOpenTopic: (path: string) => void }) {
+  const label = path.split("/").filter(Boolean).at(-1) ?? "Wiki topics";
+  return <section className="wiki-topic-landing" aria-labelledby="wiki-topic-landing-title">
+    <p className="wiki-reader-kicker">Topic outline</p>
+    <h2 id="wiki-topic-landing-title">{label}</h2>
+    <p className="mt-2 max-w-2xl text-sm text-muted">This is a navigational topic grouping, not a file-system folder. Select an article below or continue into a related topic.</p>
+    {level?.loading && <p className="mt-6 text-sm text-muted">Loading topic contents…</p>}
+    {level?.nodes.length ? <div className="wiki-topic-landing-grid mt-6">{level.nodes.map((node) => <button key={node.key} type="button" onClick={() => onOpenTopic(node.key)} className="wiki-topic-landing-item focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint"><BookOpen size={15} className="text-iris" /><span><strong>{node.label}</strong><small>{node.count} topic{node.count === 1 ? "" : "s"}</small></span><ChevronRight size={14} className="ml-auto text-muted" /></button>)}</div> : null}
+    {level?.pages.length ? <div className="wiki-topic-landing-pages mt-6"><h3>Articles</h3>{level.pages.map((page) => <WikiOutlinePage key={wikiPageId(page)} page={page} depth={0} onOpen={onOpenPage} />)}</div> : null}
+  </section>;
 }
 
 function wikiDirectoryLabels(page: WikiDirectoryPage): string[] {
@@ -391,25 +465,6 @@ function wikiDirectoryLabels(page: WikiDirectoryPage): string[] {
   return [text(page.solution), text(page.module)].filter((label) => label && label.toLocaleLowerCase() !== "unassigned");
 }
 
-function mergeWikiRows(rows: JsonRecord[]): JsonRecord[] {
-  const grouped = new Map<string, JsonRecord>();
-  rows.forEach((item) => {
-    const key = text(item.topicGroupId, text(item.pageKey, item.id));
-    const current = grouped.get(key);
-    if (!current) {
-      grouped.set(key, { ...item, supportedVersions: strings(item.supportedVersions) });
-      return;
-    }
-    const versions = [...new Set([...strings(current.supportedVersions), ...strings(item.supportedVersions), text(item.productVersion)])].filter(Boolean);
-    grouped.set(key, {
-      ...current,
-      supportedVersions: versions,
-      sectionCount: Number(current.sectionCount ?? 0) + Number(item.sectionCount ?? 0),
-      sourceCount: Number(current.sourceCount ?? 0) + Number(item.sourceCount ?? 0),
-    });
-  });
-  return [...grouped.values()];
-}
 
 function wikiPageId(page: WikiDirectoryPage): string {
   return text(page.id, text(page.pageKey, wikiPageLabel(page)));
@@ -419,46 +474,7 @@ function isWikiPageSelected(page: WikiDirectoryPage, selectedId?: string): boole
   return Boolean(selectedId) && (wikiPageId(page) === selectedId || text(page.pageKey) === selectedId);
 }
 
-function WikiDirectoryNodeView({ node, depth, collapsed, selectedId, onToggle, onOpen }: { node: WikiDirectoryNode; depth: number; collapsed: Set<string>; selectedId?: string; onToggle: (key: string) => void; onOpen: (page: WikiDirectoryPage) => void }) {
-  const isCollapsed = collapsed.has(node.key);
-  return <div>
-    <button type="button" aria-label={`${node.path.join(" / ")} · ${node.count} topic${node.count === 1 ? "" : "s"}`} aria-expanded={!isCollapsed} onClick={() => onToggle(node.key)} className="wiki-tree-folder focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint" style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: 12 }} title={node.path.join(" / ")}>
-      {isCollapsed ? <ChevronRight size={15} className="shrink-0 text-muted" /> : <ChevronDown size={15} className="shrink-0 text-muted" />}
-      <Folder size={15} className="shrink-0 text-iris" />
-      <span className="wiki-tree-label">{node.label}</span>
-      <span className="wiki-tree-count">{node.count}</span>
-    </button>
-    {!isCollapsed && <div>
-      {node.children.map((child) => <WikiDirectoryNodeView key={child.key} node={child} depth={depth + 1} collapsed={collapsed} selectedId={selectedId} onToggle={onToggle} onOpen={onOpen} />)}
-      {node.pages.map((page) => {
-        const selected = isWikiPageSelected(page, selectedId);
-        const context = text(page.directoryContext);
-        return <button type="button" key={wikiPageId(page)} aria-current={selected ? "page" : undefined} onClick={() => onOpen(page)} className={`wiki-tree-page focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint ${selected ? "wiki-tree-page-selected" : ""}`} style={{ paddingLeft: `${28 + (depth + 1) * 16}px`, paddingRight: 12 }} title={context ? `${wikiPageLabel(page)} · ${context}` : wikiPageLabel(page)}>
-          <FileText size={14} className="shrink-0 self-start text-mint/80" />
-          <span className="wiki-tree-page-copy"><span className="wiki-tree-label">{wikiPageLabel(page)}</span>{context && <span className="wiki-tree-context">{context}</span>}</span>
-          <span className="wiki-tree-status">{text(page.status, "draft")}</span>
-        </button>;
-      })}
-    </div>}
-  </div>;
-}
 
-function WikiDirectoryTreeView({ items, collapsed, selectedId, onToggle, onOpen }: { items: JsonRecord[]; collapsed: Set<string>; selectedId?: string; onToggle: (key: string) => void; onOpen: (page: WikiDirectoryPage) => void }) {
-  const tree = buildWikiDirectoryTree(items);
-  return <div className="wiki-directory-tree">
-    {tree.nodes.map((node) => <WikiDirectoryNodeView key={node.key} node={node} depth={0} collapsed={collapsed} selectedId={selectedId} onToggle={onToggle} onOpen={onOpen} />)}
-    {tree.pages.map((page) => {
-      const selected = isWikiPageSelected(page, selectedId);
-      const context = text(page.directoryContext);
-      return <button type="button" key={wikiPageId(page)} aria-current={selected ? "page" : undefined} onClick={() => onOpen(page)} className={`wiki-tree-page focus-visible:outline focus-visible:outline-2 focus-visible:outline-mint ${selected ? "wiki-tree-page-selected" : ""}`} style={{ paddingLeft: 12, paddingRight: 12 }} title={context ? `${wikiPageLabel(page)} · ${context}` : wikiPageLabel(page)}>
-        <FileText size={14} className="shrink-0 self-start text-mint/80" />
-        <span className="wiki-tree-page-copy"><span className="wiki-tree-label">{wikiPageLabel(page)}</span>{context && <span className="wiki-tree-context">{context}</span>}</span>
-        <span className="wiki-tree-status">{text(page.status, "draft")}</span>
-      </button>;
-    })}
-    {tree.nodes.length === 0 && tree.pages.length === 0 && <p className="wiki-directory-empty">No directory entries match these filters.</p>}
-  </div>;
-}
 
 function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; scope: KnowledgeScope; isAdmin: boolean; onRefresh: (updated: JsonRecord) => Promise<void> }) {
   const sections = wikiSections(page);
@@ -642,33 +658,17 @@ function WikiDetail({ page, scope, isAdmin, onRefresh }: { page: JsonRecord; sco
   </section>;
 }
 
-function directoryItems(value: unknown): JsonRecord[] {
-  if (Array.isArray(value)) return value.flatMap(directoryItems);
-  const source = asRecord(value);
-  const collection = source.items ?? source.pages ?? source.nodes ?? source.directory ?? source.groups;
-  if (Array.isArray(collection)) {
-    return collection.flatMap((item) => {
-      const children = records(item.children ?? item.modules ?? item.topics ?? item.items);
-      if (children.length) return children.flatMap(directoryItems);
-      const page = asRecord(item.page);
-      return Object.keys(page).length ? [page] : [item];
-    });
-  }
-  return Object.keys(source).length > 0 ? [source] : [];
-}
 
 export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   const scope = useKnowledgeScope();
   const [params, setParams] = useSearchParams();
   const selectedPage = params.get("wikiPage");
   const selectedKey = params.get("wikiKey");
+  const selectedTopic = params.get("wikiTopic") ?? "";
   const [searchInput, setSearchInput] = useState("");
   const [filters, setFilters] = useState({ search: "", status: "", version: "" });
-  const [result, setResult] = useState<JsonRecord[]>();
-  const [directoryTotal, setDirectoryTotal] = useState(0);
-  const [directoryOffset, setDirectoryOffset] = useState(0);
-  const [directoryBusy, setDirectoryBusy] = useState(false);
-  const [collapsedDirectoryPaths, setCollapsedDirectoryPaths] = useState<Set<string>>(new Set());
+  const [levels, setLevels] = useState<Map<string, WikiNavigationLevel>>(new Map());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [page, setPage] = useState<JsonRecord>();
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -677,47 +677,49 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
   const [sourceRefs, setSourceRefs] = useState<string[]>([]);
   const [create, setCreate] = useState({ pageKey: "", title: "", body: "", productVersion: "", reason: "" });
   const requestId = useRef(0);
-  const loadDirectoryPage = async (append = false) => {
+
+  const loadLevel = async (path = "", reset = false) => {
     const id = ++requestId.current;
-    const offset = append ? directoryOffset : 0;
-    setError("");
-    setDirectoryBusy(true);
-    if (!append) {
-      setResult(undefined);
-      setDirectoryOffset(0);
-      setCollapsedDirectoryPaths(new Set());
+    const loadingLevel: WikiNavigationLevel = {
+      path: path.split("/").filter(Boolean), nodes: [], pages: [], total: 0, descendantTotal: 0, versions: [], limit: 50, offset: 0,
+      search: Boolean(filters.search.trim()), loading: true,
+    };
+    if (reset) {
+      setLevels(new Map([[path, loadingLevel]]));
+      setExpanded(new Set());
+    } else {
+      setLevels((current) => new Map(current).set(path, { ...(current.get(path) ?? loadingLevel), loading: true, error: undefined }));
     }
-    const paramsForList = { ...scope, search: filters.search.trim() || undefined, status: filters.status || undefined, productVersion: filters.version || undefined, limit: 200, offset };
     try {
-      let rows: JsonRecord[] = [];
-      let total = 0;
-      try {
-        const directoryResponse = await api.knowledgeWikiDirectory(paramsForList);
-        const directoryRecord = asRecord(directoryResponse);
-        rows = records(directoryRecord.items);
-        if (!rows.length) rows = directoryItems(directoryResponse);
-        total = Number(directoryRecord.total ?? rows.length);
-      } catch {
-        const fallback = await api.knowledgeWikiPages(paramsForList);
-        const fallbackRecord = asRecord(fallback);
-        rows = records(fallbackRecord.items ?? fallbackRecord.pages);
-        total = Number(fallbackRecord.total ?? rows.length);
-      }
-      if (id !== requestId.current) return;
-      setResult((current) => mergeWikiRows(append ? [...(current ?? []), ...rows] : rows));
-      setDirectoryTotal(Number.isFinite(total) ? total : rows.length);
-      setDirectoryOffset(offset + rows.length);
+      const response = asRecord(await api.knowledgeWikiNavigation({
+        ...scope, path: path || undefined, search: filters.search.trim() || undefined, status: filters.status || undefined,
+        productVersion: filters.version || undefined, limit: 50, offset: 0,
+      }));
+      const value: WikiNavigationLevel = {
+        path: Array.isArray(response.path) ? response.path.map((item) => text(item)).filter(Boolean) : path.split("/").filter(Boolean),
+        nodes: records(response.nodes).map((node) => ({
+          key: text(node.key), path: Array.isArray(node.path) ? node.path.map((item) => text(item)).filter(Boolean) : text(node.key).split("/").filter(Boolean),
+          label: text(node.label, "Topic"), count: Number(node.count ?? 0), pageCount: Number(node.pageCount ?? 0), hasChildren: Boolean(node.hasChildren),
+        })).filter((node) => node.key),
+        pages: records(response.pages),
+        total: Number(response.total ?? 0),
+        descendantTotal: Number(response.descendantTotal ?? response.total ?? 0),
+        versions: strings(response.versions),
+        limit: Number(response.limit ?? 50),
+        offset: Number(response.offset ?? 0),
+        search: Boolean(response.search),
+      };
+      if (id === requestId.current) setLevels((current) => new Map(current).set(path, value));
     } catch (err) {
-      if (id === requestId.current) setError(errText(err, "Unable to load Wiki directory"));
-    } finally {
-      if (id === requestId.current) setDirectoryBusy(false);
+      if (id === requestId.current) setLevels((current) => new Map(current).set(path, { ...loadingLevel, loading: false, error: errText(err, "Unable to load Wiki outline") }));
     }
   };
+
   useEffect(() => {
     const timer = window.setTimeout(() => setFilters((current) => current.search === searchInput ? current : { ...current, search: searchInput }), 260);
     return () => window.clearTimeout(timer);
   }, [searchInput]);
-  useEffect(() => { void loadDirectoryPage(false); }, [scope.projectId, scope.environment, filters.search, filters.status, filters.version]);
+  useEffect(() => { void loadLevel("", true); }, [scope.projectId, scope.environment, filters.search, filters.status, filters.version]);
   useEffect(() => {
     let cancelled = false;
     if (!selectedPage && !selectedKey) { setPage(undefined); return; }
@@ -738,60 +740,84 @@ export function WikiPane({ isAdmin }: { isAdmin: boolean }) {
     if (!showCreate) return;
     api.productDocumentsList({ ...scope, status: "published", limit: 100, offset: 0 }).then((data) => setSources(records(data.documents))).catch((err) => setError(errText(err, "Unable to load published sources")));
   }, [showCreate, scope.projectId, scope.environment]);
-  const openPage = (item: WikiDirectoryPage) => setParams((current) => { const next = new URLSearchParams(current); const id = text(item.id); const key = text(item.pageKey); if (id) { next.set("wikiPage", id); next.delete("wikiKey"); } else if (key) { next.set("wikiKey", key); next.delete("wikiPage"); } return next; });
-  const closePage = () => setParams((current) => { const next = new URLSearchParams(current); next.delete("wikiPage"); next.delete("wikiKey"); return next; });
-  const toggleDirectoryPath = (key: string) => setCollapsedDirectoryPaths((current) => {
-    const next = new Set(current);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
+
+  const openPage = (item: WikiDirectoryPage) => setParams((current) => {
+    const next = new URLSearchParams(current);
+    const id = text(item.id), key = text(item.pageKey);
+    if (id) { next.set("wikiPage", id); next.delete("wikiKey"); }
+    else if (key) { next.set("wikiKey", key); next.delete("wikiPage"); }
+    next.delete("wikiTopic");
     return next;
   });
+  const closePage = () => setParams((current) => {
+    const next = new URLSearchParams(current);
+    next.delete("wikiPage"); next.delete("wikiKey"); next.delete("wikiTopic");
+    return next;
+  });
+  const openTopic = (path: string) => {
+    setExpanded((current) => new Set(current).add(path));
+    if (!levels.has(path)) void loadLevel(path);
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set("wikiTopic", path); next.delete("wikiPage"); next.delete("wikiKey");
+      return next;
+    });
+  };
+  const toggleTopic = (path: string) => {
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+    if (!levels.has(path)) void loadLevel(path);
+  };
+  const root = levels.get("");
+  const topicLevel = selectedTopic ? levels.get(selectedTopic) : undefined;
+  const selectedId = selectedPage ?? selectedKey ?? (page ? wikiPageId(page) : undefined);
+  const visibleCount = root?.search ? root.pages.length : root?.descendantTotal ?? 0;
+
   return <div className="wiki-workspace">
-    <section className="wiki-directory-panel" aria-label="Wiki directory">
+    <section className="wiki-directory-panel" aria-label="Wiki topic outline">
       <header className="wiki-directory-header">
         <div className="wiki-directory-meta">
-          <span className="wiki-directory-count">{result?.length ?? 0} topics</span>
-          {directoryTotal > (result?.length ?? 0) && <span>{directoryTotal} directory entries</span>}
-          <span className="wiki-directory-hint" title="Topic families are persisted across imports; Other topics is a flat fallback.">Display index</span>
+          <span className="wiki-directory-count">{visibleCount.toLocaleString()} topics</span>
+          <span className="wiki-directory-hint" title="Topics are navigational groupings, not file-system folders.">Documentation outline</span>
         </div>
         <div className="wiki-directory-actions">
-          <button aria-label="Refresh Wiki directory" title="Refresh Wiki directory" className={btnGhost} disabled={directoryBusy} onClick={() => void loadDirectoryPage(false)}><RefreshCw size={13} className={directoryBusy ? "animate-spin" : ""} /></button>
+          <button aria-label="Refresh Wiki outline" title="Refresh Wiki outline" className={btnGhost} disabled={Boolean(root?.loading)} onClick={() => void loadLevel("", true)}><RefreshCw size={13} className={root?.loading ? "animate-spin" : ""} /></button>
           {isAdmin && <Link aria-label="Open Wiki generation operations" title="Open Wiki generation operations" className={btnGhost} to={withKnowledgeScope("/knowledge/operations/wiki-generation", scope)}><Workflow size={13} /> Generation</Link>}
           {isAdmin && <button className={btn} onClick={() => setShowCreate(!showCreate)}>New page</button>}
         </div>
       </header>
       <div className="wiki-directory-controls">
-        <input aria-label="Search Wiki" aria-busy={directoryBusy} className={`${inputClass} wiki-directory-search`} placeholder="Search Wiki pages…" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} />
+        <input aria-label="Search Wiki" aria-busy={Boolean(root?.loading)} className={`${inputClass} wiki-directory-search`} placeholder="Search Wiki pages…" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} />
         <div className="wiki-directory-filter-row">
           <select aria-label="Filter by status" className={inputClass} value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}><option value="">All statuses</option>{WIKI_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}</select>
-          <select aria-label="Filter by version" className={inputClass} value={filters.version} onChange={(event) => setFilters({ ...filters, version: event.target.value })}><option value="">All versions</option>{[...new Set((result ?? []).flatMap((item) => [...strings(item.supportedVersions), text(item.productVersion)].filter(Boolean)))].map((version) => <option key={version} value={version}>{version}</option>)}</select>
+          <select aria-label="Filter by version" className={inputClass} value={filters.version} onChange={(event) => setFilters({ ...filters, version: event.target.value })}><option value="">All versions</option>{(root?.versions ?? []).map((version) => <option key={version} value={version}>{version}</option>)}</select>
         </div>
-        <div className="wiki-directory-status"><FileText size={12} aria-hidden="true" /><span><strong>{result?.length ?? 0}</strong> visible topics{directoryOffset < directoryTotal ? ` · ${Math.max(0, directoryTotal - directoryOffset)} more available` : ""}</span></div>
-        <p className="wiki-directory-legend">Topic families are stable display groups. Other topics keeps pages without a shared family in one flat list.</p>
+        <div className="wiki-directory-status"><BookOpen size={12} aria-hidden="true" /><span><strong>{visibleCount.toLocaleString()}</strong> topics available</span></div>
+        <p className="wiki-directory-legend">Expand a topic to load only its related branches and articles. The outline is navigation, not a real folder structure.</p>
       </div>
       {showCreate && isAdmin && <div className="wiki-directory-create">
         <div className="grid gap-2 sm:grid-cols-3"><input className={inputClass} placeholder="pageKey (stable identity)" value={create.pageKey} onChange={(event) => setCreate({ ...create, pageKey: event.target.value })} /><input className={inputClass} placeholder="Title" value={create.title} onChange={(event) => setCreate({ ...create, title: event.target.value })} /><input className={inputClass} placeholder="Product version (optional)" value={create.productVersion} onChange={(event) => setCreate({ ...create, productVersion: event.target.value })} /></div>
         <label className="block space-y-1 text-xs text-subtle"><span>Published source documents</span><select multiple size={4} className={`${inputClass} h-auto w-full`} value={sourceRefs} onChange={(event) => setSourceRefs(Array.from(event.target.selectedOptions, (option) => option.value))}>{sources.map((source) => <option key={source.id} value={text(source.id)}>{text(source.title)}{source.productVersion ? ` — v${source.productVersion}` : ""}</option>)}</select></label>
         <textarea className="min-h-24 w-full rounded-md border border-white/10 bg-[var(--field)] px-3 py-2 text-sm text-fg outline-none focus:border-mint" placeholder="Page body" value={create.body} onChange={(event) => setCreate({ ...create, body: event.target.value })} />
-        <div className="flex flex-wrap items-center gap-2"><input className={inputClass} placeholder="Audit reason (required)" value={create.reason} onChange={(event) => setCreate({ ...create, reason: event.target.value })} /><button className={btn} disabled={!sourceRefs.length || !create.pageKey.trim() || !create.title.trim() || !create.body.trim() || !create.reason.trim()} onClick={async () => { try { const data = await api.knowledgeWikiCreate({ ...scope, sourceRefs, pageKey: create.pageKey.trim(), title: create.title.trim(), body: create.body, productVersion: create.productVersion.trim() || undefined, reason: create.reason.trim() }); setNotice("Wiki page created."); setShowCreate(false); setCreate({ pageKey: "", title: "", body: "", productVersion: "", reason: "" }); setSourceRefs([]); await loadDirectoryPage(false); openPage(asRecord(data.page)); } catch (err) { setError(errText(err, "Unable to create Wiki page")); } }}>Create</button></div>
+        <div className="flex flex-wrap items-center gap-2"><input className={inputClass} placeholder="Audit reason (required)" value={create.reason} onChange={(event) => setCreate({ ...create, reason: event.target.value })} /><button className={btn} disabled={!sourceRefs.length || !create.pageKey.trim() || !create.title.trim() || !create.body.trim() || !create.reason.trim()} onClick={async () => { try { const data = await api.knowledgeWikiCreate({ ...scope, sourceRefs, pageKey: create.pageKey.trim(), title: create.title.trim(), body: create.body, productVersion: create.productVersion.trim() || undefined, reason: create.reason.trim() }); setNotice("Wiki page created."); setShowCreate(false); setCreate({ pageKey: "", title: "", body: "", productVersion: "", reason: "" }); setSourceRefs([]); await loadLevel("", true); if (data.page) openPage(asRecord(data.page)); } catch (err) { setError(errText(err, "Unable to create Wiki page")); } }}>Create</button></div>
       </div>}
-      {error && !result && <StatePanel state="error" message={error} onRetry={() => void loadDirectoryPage(false)} />}
-      {error && result && <Err message={error} />}
+      {error && <Err message={error} />}
       {notice && <p className="mx-3 mb-2 rounded-md border border-mint/40 bg-mint/10 p-3 text-sm text-mint">{notice}</p>}
       <div className="wiki-directory-scroll">
-        {!result ? <StatePanel state="loading" message="Loading Wiki directory…" /> : result.length === 0 ? <p className="wiki-directory-empty">No Wiki topics match these filters.</p> : <div className="space-y-3">
-          <WikiDirectoryTreeView items={result} collapsed={collapsedDirectoryPaths} selectedId={selectedPage ?? selectedKey ?? (page ? wikiPageId(page) : undefined)} onToggle={toggleDirectoryPath} onOpen={openPage} />
-          {directoryOffset < directoryTotal && <div className="flex justify-center pt-2"><button className={btnGhost} disabled={directoryBusy} onClick={() => void loadDirectoryPage(true)}>{directoryBusy ? "Loading topics…" : `Load more topics (${Math.max(0, directoryTotal - directoryOffset)} remaining)`}</button></div>}
-        </div>}
+        <WikiOutline level={root} levels={levels} expanded={expanded} selectedId={selectedId} onToggle={toggleTopic} onOpenPage={openPage} onOpenTopic={openTopic} />
       </div>
     </section>
     <main className="wiki-reading-panel">
-      {page ? <><button className={`${btnGhost} wiki-mobile-back`} onClick={closePage}>← Back to directory</button><WikiDetail page={page} scope={scope} isAdmin={isAdmin} onRefresh={async (updated) => { setPage(updated); await loadDirectoryPage(false); }} /></> : <div className="wiki-reader-empty">
+      {page ? <><button className={`${btnGhost} wiki-mobile-back`} onClick={closePage}>← Back to outline</button><WikiDetail page={page} scope={scope} isAdmin={isAdmin} onRefresh={async (updated) => { setPage(updated); await loadLevel(selectedTopic || "", false); }} /></> : selectedTopic ? <WikiTopicLanding path={selectedTopic} level={topicLevel} onOpenPage={openPage} onOpenTopic={openTopic} /> : <div className="wiki-reader-empty">
         <div className="wiki-reader-empty-inner">
           <div className="wiki-reader-empty-icon"><Network size={22} aria-hidden="true" /></div>
           <p className="wiki-reader-kicker">Source-linked reading</p>
           <h2>Select a Wiki topic</h2>
-          <p>Choose a page from the directory. The reader stays beside the tree so you can move between related topics without losing your place.</p>
+          <p>Choose a topic from the documentation outline. Expand a branch to reveal related Wiki articles without loading the whole catalog.</p>
         </div>
       </div>}
     </main>

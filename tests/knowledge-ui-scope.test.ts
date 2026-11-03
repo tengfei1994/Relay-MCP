@@ -35,19 +35,20 @@ test("Product and Wiki detail, revision and mutation requests retain their sourc
     await api.productDocumentsList(scope);
     await api.productDocumentSearch({ ...scope, q: "probe" });
     await api.knowledgeWikiDirectory(scope);
+    await api.knowledgeWikiNavigation(scope);
     await api.knowledgeWikiGeneration(scope);
-    for (const call of calls.slice(8, 13)) {
+    for (const call of calls.slice(8, 14)) {
       const url = new URL(call.url, "http://relay.test");
       assert.equal(url.searchParams.get("projectId"), "project-a");
       assert.equal(url.searchParams.get("environment"), "test");
     }
     await api.knowledgeWikiGenerationStart({ ...scope, retryFailed: true });
-    assert.equal(calls[12].body.projectId, "project-a");
-    assert.equal(calls[12].body.environment, "test");
-    assert.equal(calls[12].body.retryFailed, true);
+    assert.equal(calls[13].body.projectId, "project-a");
+    assert.equal(calls[13].body.environment, "test");
+    assert.equal(calls[13].body.retryFailed, true);
     await api.knowledgeWikiCreate({ ...scope, title: "Wiki", sourceRefs: ["source-1"] });
     await api.knowledgeSearch({ ...scope, query: "probe" });
-    for (const call of calls.slice(13)) {
+    for (const call of calls.slice(14)) {
       assert.equal(call.body.projectId, "project-a");
       assert.equal(call.body.environment, "test");
     }

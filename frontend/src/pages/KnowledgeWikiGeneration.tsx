@@ -66,10 +66,10 @@ export default function KnowledgeWikiGeneration() {
   }, [scope.projectId, scope.environment, jobOffset, topicOffset]);
 
   const jobs = records(generation?.jobs);
-  const summary = generation.summary && typeof generation.summary === "object" ? generation.summary as RecordValue : {};
-  const jobsPage = generation.jobsPage && typeof generation.jobsPage === "object" ? generation.jobsPage as RecordValue : {};
-  const topicsPage = generation.topicsPage && typeof generation.topicsPage === "object" ? generation.topicsPage as RecordValue : {};
-  const topics = records(generation.topics);
+  const summary = generation?.summary && typeof generation.summary === "object" ? generation.summary as RecordValue : {};
+  const jobsPage = generation?.jobsPage && typeof generation.jobsPage === "object" ? generation.jobsPage as RecordValue : {};
+  const topicsPage = generation?.topicsPage && typeof generation.topicsPage === "object" ? generation.topicsPage as RecordValue : {};
+  const topics = records(generation?.topics);
   const activeJobs = jobs.filter((job) => (["queued", "running"].includes(text(job.status)) && text(job.controlState) !== "paused") || text(job.controlState) === "pause_requested");
   const pausedJobs = jobs.filter((job) => text(job.controlState) === "paused");
   const failedJobs = jobs.filter((job) => text(job.status) === "failed");

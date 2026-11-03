@@ -305,7 +305,8 @@ function directoryPathFromGraph(input: WikiDirectoryPathInput, graph: { entities
   });
   if (sourceBases.every((path): path is string[] => Boolean(path))) {
     const prefix = commonPrefix(sourceBases);
-    return [...(prefix.length ? prefix : fallback), title].join("/");
+    const base = prefix.length ? prefix : fallback;
+    return (normalized(base[base.length - 1] ?? "") === normalized(title) ? base : [...base, title]).join("/");
   }
   const paths = sourceRefs.map((sourceId) => {
     const metadataPath = graphMetadataPath(sourceId, graph, input);

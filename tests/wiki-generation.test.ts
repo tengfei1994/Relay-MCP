@@ -161,6 +161,15 @@ test("Wiki directory preserves the legacy DS_HTML5 Content hierarchy", () => {
     store.upsertDocument({ id: "legacy-ds", kind: "product_document", title: "Adding Attachments to a Batch", body: "# Adding Attachments to a Batch", lifecycle: "approved", solution: "samplemanager", module: "samplemanager", locator: `product-doc:${sourcePath}`, sha256: "legacy-ds-sha", createdAt: now, updatedAt: now });
     store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,topic_group_id,normalized_content_sha256,parser_version,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run("legacy-ds", "legacy-ds", "guide", "en", "official", sourcePath, "legacy-ds-sha", "21.3", "topic-legacy-ds", "legacy-ds-normalized", "fixture-v1", now, now);
+    persistProductGraph(store, extractProductGraph({
+      documentId: "legacy-ds",
+      title: "Adding Attachments to a Batch",
+      body: "# Adding Attachments to a Batch",
+      solution: "samplemanager",
+      module: "samplemanager",
+      sourceLocator: `product-doc:${sourcePath}`,
+      sourceSha256: "legacy-ds-sha",
+    }));
     const [path] = buildWikiDirectoryPaths(store, [{ title: "Adding Attachments to a Batch", sourceRefs: ["legacy-ds"], solution: "samplemanager", module: "samplemanager" }]);
     assert.equal(path, "SampleManager/DS HTML5/Content/SM/Batch/Adding Attachments to a Batch");
     const classified = classifyWikiDirectory([{ identityKey: "page:legacy-ds", pageId: "legacy-ds", title: "Adding Attachments to a Batch", rawPath: path, module: "samplemanager" }]);

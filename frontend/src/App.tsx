@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { useState, useEffect, createContext, useContext } from "react";
 import { api } from "./api/client";
 import LoginPage from "./pages/Login";
@@ -31,6 +31,7 @@ export const AuthContext = createContext<AuthCtx>({} as AuthCtx);
 export const useAuth = () => useContext(AuthContext);
 
 export default function App() {
+  const location = useLocation();
   const [user, setUser] = useState<{ id: number; username: string; isAdmin: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -109,7 +110,7 @@ export default function App() {
           <Route path="knowledge/operations/capture" element={<KnowledgeOperations />} />
           <Route path="knowledge/operations/ingest" element={<KnowledgeOperations />} />
           <Route path="knowledge/operations/index" element={<KnowledgeOperations />} />
-          <Route path="knowledge/operations/wiki-generation" element={<KnowledgeWikiGeneration />} />
+          <Route path="knowledge/operations/wiki-generation" element={user?.isAdmin ? <KnowledgeWikiGeneration /> : <Navigate to={{ pathname: "/knowledge/wiki", search: location.search }} replace />} />
           <Route path="tokens" element={<TokensPage />} />
           <Route path="users" element={user?.isAdmin ? <UsersPage /> : <Navigate to="/projects" replace />} />
         </Route>

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildKnowledgeScope, buildWeknoraSearchBody, knowledgeItemScope, knowledgeItemMatchesScope, productEngineDocumentState, withKnowledgeScope } from "../frontend/src/knowledge/integrated-search.ts";
+import { buildKnowledgeScope, buildWeknoraSearchBody, knowledgeItemScope, knowledgeItemMatchesScope, legacyKnowledgeRedirect, productEngineDocumentState, withKnowledgeScope } from "../frontend/src/knowledge/integrated-search.ts";
 
 test("WeKnora retrieval request carries the selected project scope", () => {
   assert.deepEqual(buildWeknoraSearchBody({ q: "provider probe", productVersion: "21.1", solution: "SampleManager", module: "Instruments", limit: "10" }, "e2e-browser"), {
@@ -27,6 +27,12 @@ test("Document links preserve the source project and environment across navigati
   assert.deepEqual(knowledgeItemScope({}, selected), selected);
   assert.deepEqual(buildKnowledgeScope({ projectId: 1, environment: "  " }), { projectId: "1" });
   assert.equal(withKnowledgeScope("/knowledge/integrated?tab=wiki", { projectId: " p1 ", environment: " test " }), "/knowledge/integrated?tab=wiki&projectId=p1&environment=test");
+});
+
+test("Legacy Wiki redirects preserve scope and remaining query parameters", () => {
+  const params = new URLSearchParams("tab=wiki&projectId=p1&environment=test&wikiKey=aqc%2Foverview");
+  assert.equal(legacyKnowledgeRedirect("/knowledge/wiki", params), "/knowledge/wiki?projectId=p1&environment=test&wikiKey=aqc%2Foverview");
+  assert.equal(legacyKnowledgeRedirect("/knowledge/wiki", new URLSearchParams("tab=wiki")), "/knowledge/wiki");
 });
 
 test("Publication readiness rejects legacy staged and incomplete upstream documents", () => {

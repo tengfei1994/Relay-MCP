@@ -226,8 +226,10 @@ function commonPrefix(paths: string[][]): string[] {
 }
 
 function relationPath(sourceId: string, entities: GraphEntity[], relations: GraphRelation[], fallback: { solution?: string; module?: string }): string[] {
-  const entityById = new Map(entities.filter((entity) => entity.documentId === sourceId).map((entity) => [entity.id, entity]));
-  const document = [...entityById.values()].find((entity) => entity.kind === "document" || entity.id.endsWith(`:${sourceId}`) || normalized(entity.name) === normalized(sourceId));
+  // The source document anchors the path, but a relation may legitimately
+  // point at another document in the current source scope.
+  const entityById = new Map(entities.map((entity) => [entity.id, entity]));
+  const document = entities.find((entity) => entity.documentId === sourceId && (entity.kind === "document" || entity.id.endsWith(`:${sourceId}`) || normalized(entity.name) === normalized(sourceId)));
   const outgoing = new Map<string, GraphRelation[]>();
   for (const relation of relations) {
     if (!entityById.has(relation.fromEntityId) || !entityById.has(relation.toEntityId)) continue;
@@ -268,12 +270,13 @@ function relationPath(sourceId: string, entities: GraphEntity[], relations: Grap
   return result;
 }
 
+
 /**
  * Build the persisted/displayed directory from the Product graph. Qualified
  * API identifiers provide shared namespace/class/member parents across source
- * documents; document-local relation edges remain the fallback for prose and
- * non-API content. Traversal is capped so malformed projections cannot produce
- * unbounded paths.
+ * documents; scoped relation edges provide the fallback for prose and
+ * non-API content. Traversal is capped so malformed projections cannot
+ * produce unbounded paths.
  */
 function fallbackDirectoryPath(input: WikiDirectoryPathInput): string {
   const title = label(input.title) ?? "Untitled topic";

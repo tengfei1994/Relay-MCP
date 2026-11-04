@@ -1702,7 +1702,8 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     const topicStatuses = topicRecords.slice(topicOffset, topicOffset + topicLimit);
     const jobScope = "kind='wiki_generation' AND COALESCE(json_extract(payload_json,'$.projectId'),'')=? AND COALESCE(json_extract(payload_json,'$.environment'),'')=?";
     const jobTotal = Number((store.db.prepare(`SELECT COUNT(*) AS count FROM knowledge_ingest_jobs WHERE ${jobScope}`).get(scopeProject, scopeEnvironment) as { count?: number } | undefined)?.count ?? 0);
-    const jobs = (store.db.prepare(`SELECT * FROM knowledge_ingest_jobs WHERE ${jobScope} ORDER BY updated_at DESC LIMIT ? OFFSET ?`).all(scopeProject, scopeEnvironment, jobLimit, jobOffset) as KnowledgeRow[]).map((row) => normalizeWikiGenerationJob(row));
+    const jobs = (store.db.prepare(`SELECT * FROM knowledge_ingest_jobs WHERE ${jobScope} ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END, updated_at DESC, id DESC LIMIT ? OFFSET ?`).all(scopeProject, scopeEnvironment, jobLimit, jobOffset) as KnowledgeRow[]).map((row) => normalizeWikiGenerationJob(row));
+    const activeJobs = (store.db.prepare(`SELECT * FROM knowledge_ingest_jobs WHERE ${jobScope} AND status IN ('queued','running') ORDER BY updated_at DESC, id DESC`).all(scopeProject, scopeEnvironment) as KnowledgeRow[]).map((row) => normalizeWikiGenerationJob(row));
     const states = topicRecords.map((topic) => ({
       topic_group_id: topic.topicGroupId,
       status: topic.generationStatus,
@@ -1723,7 +1724,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
       else result.notStarted += 1;
       return result;
     }, { total: 0, generated: 0, failed: 0, inProgress: 0, paused: 0, notStarted: 0 });
-    return reply.send({ states, jobs, jobsPage: { limit: jobLimit, offset: jobOffset, total: jobTotal }, topics: topicStatuses, topicsPage: { limit: topicLimit, offset: topicOffset, total: topicRecords.length }, summary });
+    return reply.send({ states, jobs, activeJobs, jobsPage: { limit: jobLimit, offset: jobOffset, total: jobTotal }, topics: topicStatuses, topicsPage: { limit: topicLimit, offset: topicOffset, total: topicRecords.length }, summary });
   });
   app.post("/api/knowledge/ingest-jobs/:id/control", { onRequest: [app.authenticate] }, async (request, reply) => {
     if (!request.user.isAdmin) return reply.status(403).send({ error: "Administrator permission is required" });

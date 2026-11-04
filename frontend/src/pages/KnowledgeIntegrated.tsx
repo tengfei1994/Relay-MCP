@@ -8,7 +8,7 @@ import { Badge, cardClass, formatDate, inputClass, StatePanel, StatusBadge } fro
 import { ConfirmDialog, Drawer, PageHeader } from "../components/ui";
 import { ProviderSetupForm, type ProviderSetupDefaults } from "../components/ProviderSetupForm";
 import { StandardPage } from "../components/knowledge/KnowledgeFrame";
-import { knowledgeItemScope, withKnowledgeScope, type KnowledgeScope } from "../knowledge/integrated-search";
+import { knowledgeItemScope, legacyKnowledgeRedirect, withKnowledgeScope, type KnowledgeScope } from "../knowledge/integrated-search";
 import { type WikiDirectoryPage } from "../knowledge/wiki-directory";
 import { mergeWikiPageSources, type WikiPageSource } from "../knowledge/wiki-citations";
 import "./wiki.css";
@@ -873,7 +873,7 @@ export default function KnowledgeIntegrated() {
   const [params, setParams] = useSearchParams();
   const requestedTab = params.get("tab");
   const legacyRoute = requestedTab ? legacyTabRedirects[requestedTab] : undefined;
-  if (legacyRoute) return <Navigate to={legacyRoute} replace />;
+  if (legacyRoute) return <Navigate to={legacyKnowledgeRedirect(legacyRoute, params)} replace />;
   const tab = TABS.some(([key]) => key === requestedTab) ? requestedTab! : "providers";
   const setTab = (value: string) => setParams((current) => { const next = new URLSearchParams(current); next.set("tab", value); return next; });
   return <StandardPage>

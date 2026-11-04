@@ -21,6 +21,14 @@ test("Wiki generation status exposes normalized progress and admin controls", as
     const job = enqueueWikiGeneration(store, { topicGroupIds: ["topic-a", "topic-b", "topic-c", "topic-d"], triggerId: "manual-http", triggerKind: "manual" });
     assert.ok(job);
     store.db.prepare("UPDATE knowledge_ingest_jobs SET result_json=? WHERE id=?").run(JSON.stringify({ processed: 2, total: 4, generatedTotal: 2, failureTotal: 0, generated: [], failures: [] }), job!.id);
+    store.db.prepare("UPDATE knowledge_ingest_jobs SET status='running',control_state='active',updated_at=? WHERE id=?").run("2020-01-01T00:00:00.000Z", job!.id);
+    const historyAt = "2026-01-02T00:00:00.000Z";
+    store.db.prepare(`INSERT INTO knowledge_ingest_jobs
+      (id,kind,payload_json,status,available_at,result_json,created_at,updated_at,finished_at)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(
+      "wiki-history-newer", "wiki_generation", JSON.stringify({ projectId: "", environment: "", topicGroupIds: [] }),
+      "succeeded", historyAt, "{}", historyAt, historyAt, historyAt,
+    );
     const status = await app.inject({ method: "GET", url: "/api/knowledge/wiki/generation?limit=1&offset=0&topicLimit=1&topicOffset=0" });
     assert.equal(status.statusCode, 200, status.body);
     assert.equal(status.json().jobsPage.limit, 1);
@@ -28,6 +36,8 @@ test("Wiki generation status exposes normalized progress and admin controls", as
     assert.ok(status.json().jobsPage.total >= 1);
     assert.equal(status.json().topicsPage.limit, 1);
     assert.ok(Array.isArray(status.json().topics));
+    assert.equal(status.json().jobs[0]?.id, job!.id);
+    assert.equal(status.json().activeJobs[0]?.id, job!.id);
     const listed = status.json().jobs.find((entry: any) => entry.id === job!.id);
     assert.equal(listed.percent, 50); assert.equal(listed.processed, 2); assert.equal(listed.total, 4); assert.equal(listed.generated, 2); assert.equal(listed.controlState, "active"); assert.equal(listed.triggerKind, "manual");
     const paused = await app.inject({ method: "POST", url: `/api/knowledge/ingest-jobs/${encodeURIComponent(job!.id)}/control`, payload: { action: "pause" } });

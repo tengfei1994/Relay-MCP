@@ -103,6 +103,34 @@ test("Wiki directory shares qualified API namespaces across distinct property pa
   }
 });
 
+test("Wiki directory traverses scoped cross-document Product graph relations", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-wiki-cross-document-directory-"));
+  const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });
+  const now = new Date().toISOString();
+  try {
+    for (const [id, title, body] of [["doc-a", "Source A", ""], ["doc-b", "Shared Concept", "# Shared Concept"]] as const) {
+      store.upsertDocument({ id, kind: "product_document", title, body, lifecycle: "approved", solution: "samplemanager", module: "knowledge", locator: `fixture://${id}`, sha256: `${id}-sha`, createdAt: now, updatedAt: now });
+      persistProductGraph(store, extractProductGraph({ documentId: id, title, body, solution: "samplemanager", module: "knowledge", sourceLocator: `fixture://${id}`, sourceSha256: `${id}-sha` }));
+    }
+    const sourceDocument = store.db.prepare("SELECT id FROM knowledge_product_graph_entities WHERE document_id=? AND kind='document'").get("doc-a") as { id?: string } | undefined;
+    const targetHeading = store.db.prepare("SELECT id FROM knowledge_product_graph_entities WHERE document_id=? AND kind='heading'").get("doc-b") as { id?: string } | undefined;
+    assert.ok(sourceDocument?.id);
+    assert.ok(targetHeading?.id);
+    store.db.prepare(`INSERT INTO knowledge_product_graph_relations
+      (id,from_entity_id,to_entity_id,relation_type,document_id,source_locator,source_sha256,product_version,solution,module,project_id,environment,confidence,verified,extraction_version,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      "cross-document-relation", sourceDocument!.id, targetHeading!.id, "contains", "doc-a",
+      "fixture://doc-a", "doc-a-sha", null, "samplemanager", "knowledge", null, null, 0.9, 0,
+      "product-graph-2", now, now,
+    );
+    const [path] = buildWikiDirectoryPaths(store, [{ title: "Combined Wiki", sourceRefs: ["doc-a", "doc-b"], solution: "samplemanager", module: "knowledge" }]);
+    assert.equal(path, "samplemanager/knowledge/Shared Concept/Combined Wiki");
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Wiki directory preserves the Product Document source hierarchy for Form Designer topics", () => {
   const root = mkdtempSync(join(tmpdir(), "relay-wiki-source-directory-"));
   const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });

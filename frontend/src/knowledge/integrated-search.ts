@@ -37,6 +37,13 @@ export function withKnowledgeScope(path: string, scope: KnowledgeScope = {}): st
   return pathname + (query ? `?${query}` : "") + (hash === undefined ? "" : `#${hash}`);
 }
 
+export function legacyKnowledgeRedirect(path: string, params: URLSearchParams): string {
+  const next = new URLSearchParams(params);
+  next.delete("tab");
+  const query = next.toString();
+  return path + (query ? `?${query}` : "");
+}
+
 export function knowledgeItemScope(item: unknown, fallback: KnowledgeScope = {}): KnowledgeScope {
   const source = typeof item === "object" && item !== null ? item as Record<string, unknown> : undefined;
   const projectId = source?.projectId ?? source?.project_id;

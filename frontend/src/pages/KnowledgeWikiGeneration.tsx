@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Pause, Play, RefreshCw, Workflow } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
+import { useAuth } from "../App";
 import { api } from "../api/client";
 import { Badge, formatDate, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
 import { PageHeader } from "../components/ui";
@@ -31,6 +32,8 @@ function scopeFromParams(params: URLSearchParams): Record<string, string> {
 
 export default function KnowledgeWikiGeneration() {
   const [params] = useSearchParams();
+  const { user } = useAuth();
+  const isAdmin = Boolean(user?.isAdmin);
   const scope = useMemo(() => scopeFromParams(params), [params]);
   const [generation, setGeneration] = useState<RecordValue>();
   const [busy, setBusy] = useState(false);
@@ -50,12 +53,13 @@ export default function KnowledgeWikiGeneration() {
     let cancelled = false;
     let timer: number | undefined;
     const poll = async () => {
+      if (!isAdmin) return;
       try {
         const value = (await api.knowledgeWikiGeneration({ ...scope, limit: JOB_LIMIT, offset: jobOffset, topicLimit: TOPIC_LIMIT, topicOffset })) as RecordValue;
         if (cancelled) return;
         setGeneration(value);
         const summary = value.summary && typeof value.summary === "object" ? value.summary as RecordValue : {};
-        const active = numberValue(summary.inProgress) > 0 || numberValue(summary.paused) > 0 || records(value.jobs).some((job) => ["queued", "running"].includes(text(job.status)) || text(job.controlState) === "pause_requested");
+        const active = numberValue(summary.inProgress) > 0 || numberValue(summary.paused) > 0 || records(value.activeJobs).length > 0 || records(value.jobs).some((job) => ["queued", "running"].includes(text(job.status)) || text(job.controlState) === "pause_requested");
         if (active) timer = window.setTimeout(() => void poll(), 2_500);
       } catch (err) {
         if (!cancelled) { setError(errorText(err, "Unable to refresh Wiki generation jobs")); timer = window.setTimeout(() => void poll(), 5_000); }
@@ -63,17 +67,22 @@ export default function KnowledgeWikiGeneration() {
     };
     void poll();
     return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); };
-  }, [scope.projectId, scope.environment, jobOffset, topicOffset]);
+  }, [isAdmin, scope.projectId, scope.environment, jobOffset, topicOffset]);
 
   const jobs = records(generation?.jobs);
+  const activeJobRecords = records(generation?.activeJobs).filter((job) => ["queued", "running"].includes(text(job.status)));
+  const activeJobIds = new Set(activeJobRecords.map((job) => text(job.id)).filter(Boolean));
   const summary = generation?.summary && typeof generation.summary === "object" ? generation.summary as RecordValue : {};
   const jobsPage = generation?.jobsPage && typeof generation.jobsPage === "object" ? generation.jobsPage as RecordValue : {};
   const topicsPage = generation?.topicsPage && typeof generation.topicsPage === "object" ? generation.topicsPage as RecordValue : {};
   const topics = records(generation?.topics);
-  const activeJobs = jobs.filter((job) => (["queued", "running"].includes(text(job.status)) && text(job.controlState) !== "paused") || text(job.controlState) === "pause_requested");
-  const pausedJobs = jobs.filter((job) => text(job.controlState) === "paused");
+  const activeJobs = activeJobRecords.filter((job) => text(job.controlState) !== "paused");
+  const pausedJobs = activeJobRecords.filter((job) => text(job.controlState) === "paused");
   const failedJobs = jobs.filter((job) => text(job.status) === "failed");
-  const visibleJobs = jobs.filter((job) => ["queued", "running", "failed"].includes(text(job.status)) || ["paused", "pause_requested"].includes(text(job.controlState)));
+  const visibleJobs = [
+    ...activeJobRecords,
+    ...jobs.filter((job) => !activeJobIds.has(text(job.id)) && (["queued", "running", "failed"].includes(text(job.status)) || ["paused", "pause_requested"].includes(text(job.controlState)))),
+  ];
   const jobTotal = numberValue(jobsPage.total, jobs.length), topicTotal = numberValue(topicsPage.total, topics.length);
   const jobFrom = jobTotal ? jobOffset + 1 : 0, jobTo = Math.min(jobOffset + jobs.length, jobTotal);
   const topicFrom = topicTotal ? topicOffset + 1 : 0, topicTo = Math.min(topicOffset + topics.length, topicTotal);
@@ -98,12 +107,21 @@ export default function KnowledgeWikiGeneration() {
     catch (err) { setError(errorText(err, `Unable to ${action} Wiki generation`)); }
     finally { setControlBusy((current) => ({ ...current, [id]: false })); }
   };
+  if (!isAdmin) return <StandardPage className="knowledge-operations-page"><PageHeader title="Wiki generation" description="Run and control topic-level Wiki generation jobs." tabs={<PageTabs section="operations" />} /><StatePanel state="error" message="Administrator permission is required." /></StandardPage>;
 
   if (error && !generation) return <StandardPage className="knowledge-operations-page"><PageHeader title="Wiki generation" description="Run and control topic-level Wiki generation jobs." tabs={<PageTabs section="operations" />} /><StatePanel state="error" message={error} onRetry={() => void load()} /></StandardPage>;
   if (!generation) return <StandardPage className="knowledge-operations-page"><PageHeader title="Wiki generation" description="Run and control topic-level Wiki generation jobs." tabs={<PageTabs section="operations" />} /><StatePanel state="loading" message="Loading Wiki generation jobs…" /></StandardPage>;
 
   return <StandardPage className="knowledge-operations-page">
-    <PageHeader title="Wiki generation" description="Run, monitor, pause, and resume topic-level Wiki generation without mixing it into the Wiki reading surface." tabs={<PageTabs section="operations" />} actions={<div className="flex flex-wrap gap-2"><button type="button" className="ui-button ui-button-ghost ui-button-sm" onClick={() => void load()}><RefreshCw size={14} /> Refresh</button><button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={busy} onClick={() => void start()}><Workflow size={14} /> {busy ? "Queueing…" : "Generate topics"}</button></div>} />
+    <PageHeader
+      title="Wiki generation"
+      description="Run, monitor, pause, and resume topic-level Wiki generation without mixing it into the Wiki reading surface."
+      tabs={<PageTabs section="operations" />}
+      actions={isAdmin ? <div className="flex flex-wrap gap-2">
+        <button type="button" className="ui-button ui-button-ghost ui-button-sm" onClick={() => void load()}><RefreshCw size={14} /> Refresh</button>
+        <button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={busy} onClick={() => void start()}><Workflow size={14} /> {busy ? "Queueing…" : "Generate topics"}</button>
+      </div> : undefined}
+    />
     {error && <p role="alert" className="mb-5 rounded-field border border-coral/40 bg-coral/10 p-3 text-sm text-coral">{error}</p>}
     {notice && <p className="mb-5 rounded-field border border-mint/40 bg-mint/10 p-3 text-sm text-mint">{notice}</p>}
     <section className="glass grid grid-cols-2 divide-x divide-y divide-white/10 md:grid-cols-4 md:divide-y-0" aria-label="Wiki generation summary">

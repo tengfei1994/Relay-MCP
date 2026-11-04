@@ -15,6 +15,7 @@ test("Knowledge information architecture exposes every #37 route", () => {
     "knowledge/operations/wiki-generation",
   ];
   for (const route of requiredRoutes) assert.match(app, new RegExp(`path=\\"${route.replaceAll("/", "\\/")}\\"`));
+  assert.match(app, /path="knowledge\/operations\/wiki-generation" element=\{user\?\.isAdmin \? <KnowledgeWikiGeneration \/> : <Navigate/);
   assert.match(navigation, /Product docs/);
   assert.match(navigation, /Capture/);
   assert.match(navigation, /Wiki/);
@@ -117,6 +118,8 @@ test("Wiki generation UI exposes normalized progress and job-scoped pause/resume
   assert.match(wiki, /Documentation outline/);
   assert.match(wiki, /knowledgeWikiNavigation/);
   assert.match(navigationText(), /label: "Wiki generation"[\s\S]*adminOnly: true/);
+  assert.match(generation, /const isAdmin = Boolean\(user\?\.isAdmin\)/);
+  assert.match(generation, /actions=\{isAdmin \?/);
 });
 
 function navigationText(): string {

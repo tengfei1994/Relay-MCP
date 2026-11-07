@@ -1,5 +1,7 @@
 # Bounded real MCP/privacy acceptance driver
 
+> Historical result for the previous MCP contract. Its live driver is retired because those tools and search responses have changed; use [Knowledge v2 validation](../knowledge-access.md#验证入口) for the current release.
+
 `scripts/knowledge-mcp-real-acceptance.ts` completed a bounded real nonproduction run after the controlled privacy deployment. Its helper regressions use only synthetic local SQLite/text. The real result below does not close #53, claim semantic retrieval quality or exercise an upstream fault matrix.
 
 ## Safety and scope

@@ -1,5 +1,7 @@
 # #53 isolated transport fault acceptance — 2026-10-25
 
+> Historical result for the previous Knowledge contract. The current synthetic fault driver now checks the separate Product and Memory tools; see [Knowledge v2 validation](../knowledge-access.md#验证入口). This historical result is not a release pass for the new contract.
+
 This is **deterministic injected-fault evidence**, not a cloud incident, live provider failure, model-success proof or semantic-quality benchmark. The running nonproduction Web, MCP, engine, profile, quota and full v3 migration were not contacted or changed by this packet.
 
 ## Executed packet

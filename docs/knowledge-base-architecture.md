@@ -1,5 +1,7 @@
 # Relay MCP 知识库功能设计
 
+> 历史架构设计：部分工具、Resource 和自动候选方案已经取消。当前实现、权限规则与升级步骤以 [Knowledge 权限与迁移](knowledge-access.md) 为准。
+
 > **Memory model update (2026-10-28):** The durable-memory plane is now
 > Work Session / IntentEnvelope → Evidence → Observation → Candidate Insight →
 > Confirmed Memory. Candidate Insight kinds are `fact|decision|case|pattern`;
@@ -163,7 +165,7 @@ workspace/evidence/     日志、报告、XML、源码快照、部署产物
 workspace/indexes/      FTS 和向量索引的派生文件
 ```
 
-不要把完整案例只放在 `context/*.jsonl`。现有 `context_record_fact` 和 `context_search` 保留为兼容接口，内部可逐步迁移为 `kind=fact` 的知识项。
+历史 `context/*.jsonl` 原文件保留供检查；旧 `context_record_fact` 和 `context_search` MCP 工具已移除，历史事实不会自动成为已确认 Memory。
 
 ### 4.1 Schema 和 Store 约束
 
@@ -172,15 +174,9 @@ workspace/indexes/      FTS 和向量索引的派生文件
 - Knowledge Store 必须支持 `dbPath`、`casebookRoot`、`evidenceRoot` 和时钟等依赖注入，禁止把数据库连接做成不可替换的模块级单例。
 - 现有 Relay 控制平面 schema 不在本项目中一次性重构；但 Knowledge 模块不得复制用户、Project 和权限数据，而应通过稳定的 `project_id`/ACL 适配读取。
 
-### 4.2 `context_*` 兼容迁移
+### 4.2 历史 `context_*` 数据
 
-当前 `context_search` 是按 `userId + project name` 定位 JSONL 文件并进行小写子串匹配。迁移到 `knowledge_facts` 时：
-
-- 通过 `userId + project name` 查找现有 `projects.id`；
-- 找不到对应 Project 时保留 `project_name_snapshot`，标记为 `unresolved`，不得强行归属；
-- `context_search` 继续服务持久化 Project fact；历史案例和记忆统一通过 `memory_search` 检索，并提供 FTS、向量和版本过滤；
-- 调用方必须迁移到明确的工具语义，禁止用旧的通用 `knowledge_search` 名称承载 Memory 检索，避免产品文档与历史记忆混淆；
-- JSONL 原文件在迁移完成并验证前保留为可回滚来源。
+旧 JSONL 和事实记录继续保留，管理员可检查并按需重新提交审核。它们不会自动转为已确认 Memory；客户端应使用 `memory_search`、`knowledge_confirmed_memory_get` 和 `memory_capture`。产品文档使用 `knowledge_search` 与 `knowledge_get`。
 
 ### 4.3 最小数据表
 
@@ -389,14 +385,7 @@ samplemanager_impact_analysis
 
 `memory_search` 默认返回 ACL、Project、Environment 和 Evidence 过滤后的 Confirmed Memory；Candidate Insight 与 Approved Operations 必须显式请求。结果包含类型、摘要、匹配分数、状态、证据引用和适用边界；完整正文通过对应的 Memory/Playbook API 按需读取。
 
-推荐 Resource URI：
-
-```text
-knowledge://case/{id}
-knowledge://pattern/{id}
-knowledge://playbook/{id}
-knowledge://evidence/{id}
-```
+旧 Knowledge MCP Resource 已移除；Evidence 通过网页受控接口访问。
 
 ## 7. Provider 与大模型关系
 
@@ -574,7 +563,7 @@ INSTANCE --uses--> CACHE
 3. `memory_search` 能按 Project、SampleManager 版本、解决方案和模块过滤。
 4. 关键词检索结果不依赖大模型也能正常工作。
 5. 模型不可直接修改 Skill、Playbook 或生产配置。
-6. `context_record_fact` 和 `context_search` 仍保持兼容。
+6. 旧 `context_record_fact` 和 `context_search` 已移除；历史数据保留以供审核。
 7. Form–Task–Assembly 关系能够显示来源和验证状态。
 8. 删除、弃用、审核、索引重建和回滚均有审计记录。
 9. 诊断输出明确区分事实、证据、推断、未知和建议。

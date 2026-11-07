@@ -327,13 +327,19 @@ pm2 save
 
 ### 初始配置
 
-打开 `http://<relay-host>:3000`。第一个注册用户自动成为管理员，然后按以下顺序配置：
+打开 `http://<relay-host>:3000`。第一个注册用户自动成为管理员；请在可信网络中完成初始化后再开放注册。之后的注册均为待审核申请，管理员在 **Users** 中批准或拒绝，批准不会自动授予产品知识权限。已有账号的授权值保持不变。
+
+用户可在公开首页进入登录和注册申请，在控制台的 **Account** 修改自己的密码。产品网站的信息架构及尚待确认的品牌、联系方式和账号细节见 [产品网站设计](docs/product-website-design.md)。
+
+然后按以下顺序配置：
 
 1. **Servers**：创建 SSH Server，或创建带 `agentId` 的 Agent Server。
 2. **Projects**：独立创建 Project，并按 environment 关联一个或多个 Server。
 3. **LIMS Instances**：对 Agent Server 执行只读扫描，审核候选结果后再导入并绑定到 Project link。
-4. **MCP Tokens**：为 Codex 等客户端创建 token，配置 Project 范围、Allowed Servers 和可选默认目标。
-5. **Agent Tokens**：为每个 Agent 创建独立 token；token 只显示一次。
+4. **MCP Access Tokens**：为 Codex 等客户端创建 token，配置 Project 范围、Allowed Servers 和可选默认目标。可以不选择 Project；无项目范围的 token 不能调用项目工具或创建项目。
+5. **Relay Agent Tokens**：为每个 Agent 创建独立 token；token 只显示一次。
+
+Web 登录会话、MCP Access Token 和 Relay Agent Token 不能互相替代。点击 **Delete** 后，凭证的后续请求立即失效；已在处理中的请求可能完成。账号被停用时，现有会话和 Token 的下一次请求会被拒绝。升级前生成的短期上传和下载链接需要重新创建，避免保留来源不明的访问权限。
 
 ### 连接目标服务器
 
@@ -431,6 +437,8 @@ default_tools_approval_mode = "prompt"
 | `RELAY_BUILD_COMMIT` | `development` | 部署 commit fingerprint。 |
 | `RELAY_BUILD_TIME` | `unknown` | 构建时间 fingerprint。 |
 
+新建 Project 使用 `WORKSPACE_ROOT/.relay-projects` 下的独立目录，避免用户名、项目名及大小写产生目录碰撞。已有 Project 继续使用数据库中记录的原路径，无需迁移；新生成的 SSH key 按用户 ID 隔离，已有 key 路径保持不变。请将这些目录纳入部署备份。
+
 端口转发场景中，`RELAY_PUBLIC_URL` 必须填写客户端实际可访问的 Web 地址。例如公网 `7230` 转发到内网 `3000` 时：
 
 ```dotenv
@@ -445,7 +453,9 @@ MCP 客户端则连接公网 MCP 端口，例如 `http://relay.example.com:7231/
 
 ## MCP 工具
 
-Relay MCP 暴露的工具分为 8 类：Project、Remote execution、Remote files、Workspace、Jobs、Playwright、Context、SampleManager。各分类的职责、典型工具和选用思路见 **[docs/mcp-tools.md](docs/mcp-tools.md)**。权威清单是 `src/shared/tool-catalog.ts` 和运行时的 `tools/list`。
+Relay MCP 暴露的工具分为 8 类：Project、Remote execution、Remote files、Workspace、Jobs、Playwright、Knowledge、SampleManager。各分类的职责、典型工具和选用思路见 **[docs/mcp-tools.md](docs/mcp-tools.md)**。权威清单是 `src/shared/tool-catalog.ts` 和运行时的 `tools/list`。
+
+Knowledge 对外提供五个 MCP 工具。产品资料和通用 Memory 使用用户级授权；项目 Memory 使用用户和令牌的 Project 授权。管理员创建用户及注册用户默认不获得产品访问权，管理员可在用户管理页面授权，包括为自己授权。允许创建不含 Project 或 Server 的令牌。候选经验由本地 Agent 主动提交，并经管理员确认后才可检索。详见 [Knowledge 权限与迁移](docs/knowledge-access.md)。
 
 ---
 

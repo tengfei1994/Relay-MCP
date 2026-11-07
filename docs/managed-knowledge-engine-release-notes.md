@@ -1,5 +1,7 @@
 # Unreleased: Relay-managed Product and Wiki engine
 
+> Historical release notes. The Knowledge MCP surface changed; see [current Knowledge access and migration](knowledge-access.md).
+
 Product Documents are now the canonical product domain object. Relay keeps engine identifiers/status/provenance as a projection on each Product Document; legacy WeKnora/migration rows remain compatibility and audit history rather than a second user-facing object.
 
 ## Changes

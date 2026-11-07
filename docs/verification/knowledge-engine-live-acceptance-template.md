@@ -1,5 +1,7 @@
 # Managed knowledge engine live acceptance record
 
+> Historical template: the associated live driver is retired because it expects the previous Knowledge search contract. See [Knowledge v2 validation](../knowledge-access.md#验证入口).
+
 Status: **NOT RUN — template only**. A unit-test pass, a provider probe, and a successful manual Wiki edit are not evidence of a generated Wiki or an integrated Product migration.
 
 This record accompanies `scripts/knowledge-engine-e2e.ts`. The driver performs real requests against an already running, isolated Relay instance. It does not start mock servers, create artificial Product content, create manual Wiki pages, provision credentials, or update issues. It stops on the first failed or unmet milestone and preserves the database and engine state for diagnosis. A passing report is named `passed_bounded_http`, not full acceptance.

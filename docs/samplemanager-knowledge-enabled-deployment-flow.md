@@ -1,5 +1,7 @@
 # Knowledge-enabled Relay MCP SampleManager LIMS 远程部署全流程
 
+> 历史流程：其中已移除的 MCP 工具不再可用，当前工具和权限规则见 [Knowledge 权限与迁移](knowledge-access.md)。
+
 **文档版本**：v1.0  
 **日期**：2026-09-02  
 **用途**：为绘制系统架构图、部署时序图、泳道图和故障回退图提供统一流程描述。  
@@ -219,9 +221,8 @@ EffectiveTarget，包括 projectId、serverId、environment、limsInstanceId、i
 
 - memory_search；
 - knowledge_get；
-- knowledge_playbook_get；
-- knowledge_relation_query；
-- 兼容工具 context_search。
+- knowledge_confirmed_memory_get；
+- knowledge_search（产品文档）。
 
 **典型查询**
 

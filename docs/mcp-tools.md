@@ -14,7 +14,7 @@ Relay MCP 通过 `/mcp` endpoint 暴露一组工具。本页只讲分类和选�
 | Workspace | 管理 Relay 侧 Project 工作区，并在工作区与目标服务器之间传文件 | `list_workspace_files`、`read_local_file`、`write_local_file`、`create_workspace_upload`、`upload_workspace_file`、`sync_workspace` |
 | Jobs | 跟踪长时间运行的异步任务 | `job_status`、`job_wait`、`job_list`、`job_cancel` |
 | Playwright | 通过 Agent 在 Windows 上运行正式 Playwright 测试 | `playwright_suite_upload`、`playwright_run_suite`、`playwright_run_status`、`playwright_artifact_download` |
-| Context | 持久化事实、记忆与 Knowledge Plane：检索、Wiki、Work Session、Candidate 审核 | `context_record_fact`、`context_search`、`memory_search`、`knowledge_search`、`knowledge_wiki_search`、`knowledge_work_session_open` |
+| Knowledge | 检索已发布产品资料和已确认 Memory，提交待审经验 | `knowledge_search`、`knowledge_get`、`memory_search`、`knowledge_confirmed_memory_get`、`memory_capture` |
 | SampleManager | SampleManager LIMS 的诊断、SQL、构建、部署与回滚 | `samplemanager_diagnose`、`samplemanager_sql_query`、`samplemanager_build_deploy_assembly`、`samplemanager_restore_backup` |
 
 ## 各分类说明
@@ -43,18 +43,13 @@ Workspace 指 Relay 侧的 Project 工作区，不是 AI 助手本机路径；�
 
 通过专用 Agent 协议运行正式测试，典型顺序：`playwright_runtime_status` 确认 Node.js、Playwright、Chromium 就绪 → `playwright_suite_upload` 上传测试与 suite 元数据 → `playwright_run_suite` 排队运行 → `playwright_run_status` 读运行记录 → `playwright_artifact_list` / `playwright_artifact_download` 取回 artifact。
 
-### Context
+### Knowledge
 
-这一类包含项目记忆与整个 Knowledge Plane 的 MCP 入口：
+- `knowledge_search` / `knowledge_get` 检索和读取获授权的产品与解决方案文档和 Chunk，不依赖 Project。
+- `memory_search` / `knowledge_confirmed_memory_get` 检索和读取管理员确认的项目或通用 Memory。
+- `memory_capture` 接收本地 Agent 筛选整理的候选或查询审核状态。它不会自动发布；只有管理员确认后才进入正式搜索。
 
-- **项目事实与记忆**：`context_record_fact`、`context_search`、`memory_search`。
-- **检索与阅读**：`knowledge_search`、`knowledge_get`、`knowledge_source_search`、`knowledge_source_read`、`knowledge_topic_get`、`knowledge_topic_diff`、`knowledge_solution_upgrade_analysis`、`knowledge_relation_query`、`knowledge_feedback`。
-- **Wiki**：`knowledge_wiki_search`、`knowledge_wiki_get`、`knowledge_wiki_write`、`knowledge_wiki_review`。
-- **Work Session 与 Candidate**：`knowledge_work_session_*`、`knowledge_candidate_insight_*`、`knowledge_confirmed_memory_*`。
-- **运维与治理**：`knowledge_ingest`、`knowledge_reindex`、`knowledge_provider_config_list`、`knowledge_release_gates`、`knowledge_playbook_get`、`knowledge_evidence_get`。
-- **兼容**：`knowledge_migration_*` 仅用于兼容旧引擎的迁移审计记录，Wiki 生成不需要手动调用。
-
-审核、晋级、Evidence 下载和 Skill diff 的治理边界见 [knowledge-governance.md](knowledge-governance.md)，Case/Pattern/Playbook 模板在 [templates/](templates/)。
+产品知识和通用 Memory 由用户级开关控制，项目 Memory 由用户和令牌的 Project 范围控制。Wiki、历史 Candidate、Work Session、Evidence、导入和运维继续通过网页及受控后台处理，不再暴露旧 Knowledge MCP 工具或 Resource。旧 `context_*` 工具已移除。完整权限矩阵、提交参数和迁移步骤见 [knowledge-access.md](knowledge-access.md)。
 
 ### SampleManager
 
@@ -74,7 +69,7 @@ SQL 默认只读；mutation 必须显式调用，并支持 dry run、备份和 b
 2. **只读核对**：`fetch_logs`、`relay_exec_remote*` 的只读命令，或 `samplemanager_*` 的只读检查类工具。
 3. **变更**：先 dry run 或预检（`samplemanager_instance_preflight`、`preflightOnly`），再显式调用变更类工具；多阶段操作用 `deploymentId` 关联。
 4. **长任务**：设置 `async: true`，用 `job_wait` / `job_status` 跟踪，不要重复提交。
-5. **沉淀**：用 `context_record_fact` 或 Work Session 记录结论，供后续会话检索。
+5. **沉淀**：本地 Agent 判断经验是否值得复用，使用 `memory_capture` 提交整理后的候选；管理员确认后才能被 `memory_search` 检索。
 
 ## 命名约定与扩展
 

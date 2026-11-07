@@ -1,5 +1,7 @@
 # Work Session operational acceptance — 2026-10-25
 
+> Historical result for the previous MCP contract. The live Work Session drivers are retired because their MCP tools have been removed; see [Knowledge v2 validation](../knowledge-access.md#验证入口).
+
 This packet uses the actual deployed nonproduction Relay HTTP/MCP services at ports 18300/18301. It does not use the Relay MCP connector or contact production. The dedicated target is a real user-owned SSH daemon at `127.0.0.1:18322`; its keys, authorized-keys file, exact-command wrapper, local Git origin/checkout and optional HTTP fixture process all live under `/home/ftd/relay-knowledge-engine-nonprod/opsfixture`.
 
 The Git repository contains explicitly synthetic test content. SSH authentication, commands, filesystem changes, Git fetch/checkout/reset, Relay Job/Deployment persistence and Capture Worker execution are real. Generic `deploy` reports no PM2/Docker workload in the fixture's constrained PATH; that is **not** evidence of a generic service restart. A separate real async Job starts/restarts the dedicated Python HTTP server on loopback 18323 and verifies the served revision hash. No Job, Deployment or domain-event success record was inserted directly.

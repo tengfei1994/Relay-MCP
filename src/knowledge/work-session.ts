@@ -92,7 +92,7 @@ function parseJson<T>(value: unknown, fallback: T): T {
   try { return JSON.parse(String(value ?? "")) as T; } catch { return fallback; }
 }
 
-function sessionFromRow(row: Record<string, unknown>): WorkSession {
+export function sessionFromRow(row: Record<string, unknown>): WorkSession {
   return {
     id: String(row.id), actorId: Number(row.actor_id), projectId: String(row.project_id),
     environment: row.environment ? String(row.environment) : undefined,

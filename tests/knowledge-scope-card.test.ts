@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
-import { captureKnowledgeCandidates } from "../src/knowledge/capture-worker.ts";
+import { captureKnowledgeCandidates, evaluateObservationPool } from "../src/knowledge/capture-worker.ts";
 import { generateCandidateCard } from "../src/knowledge/candidate-card.ts";
 import { editCandidateCard, promoteCaseToPattern, reviewDocument } from "../src/knowledge/review-service.ts";
 import { searchKnowledge } from "../src/knowledge/retriever.ts";
@@ -12,12 +12,13 @@ import { createKnowledgeStore } from "../src/knowledge/store.ts";
 
 function cleanup(root: string): void { rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 }); }
 
-test("capture creates a readable Candidate Card while retaining Raw Event and Evidence provenance", async () => {
+test("historical Candidate Cards retain Raw Event and Evidence provenance for review", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-candidate-card-"));
   const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db"), appDbPath: join(root, "app.db"), evidenceRoot: join(root, "evidence") });
   try {
     store.append({ id: "event-card-1", type: "deployment.failed", occurredAt: "2026-09-05T00:00:00.000Z", projectId: "p1", deploymentId: "deploy-card-1", payload: { status: "failed", error: "FormsBin cache is stale", symptoms: ["form load failed"], tags: ["FormsBin", "cache"], sampleManagerVersion: "21.1", solution: "PT 3.5", module: "Instrument", log: "error log" } });
     assert.equal(await captureKnowledgeCandidates(store, "capture"), 1);
+    assert.equal(await evaluateObservationPool(store),1); // Explicit legacy fixture; normal capture does not create candidates.
     store.grantAcl("p1", 7);
     const document = store.listDocuments(7, "p1")[0];
     const card = store.getCandidateCard(document.id);

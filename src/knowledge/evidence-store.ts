@@ -72,6 +72,47 @@ export class EvidenceStore {
   }
   getMetadata(userId: number, evidenceId: string): Evidence { return this.metadata(userId, evidenceId); }
   readMetadata(userId: number, evidenceId: string): Evidence { return this.metadata(userId, evidenceId); }
+  /** A review-only grant is limited to an explicitly attached submission; it never changes project ACLs. */
+  readForSubmissionReview(userId: number, isAdmin: boolean, submissionId: string, evidenceId: string, maxBytes = 5 * 1024 * 1024): Buffer {
+    if (!isAdmin) throw new Error("Administrator access is required");
+    const submission = this.store.db.prepare("SELECT project_id,evidence_refs_json FROM knowledge_memory_submissions WHERE id=?").get(submissionId) as {project_id?:string; evidence_refs_json:string} | undefined;
+    let refs: unknown; try { refs = JSON.parse(submission?.evidence_refs_json ?? "[]"); } catch { refs = []; }
+    const row = this.row(evidenceId);
+    if (!submission || !Array.isArray(refs) || !refs.includes(evidenceId) || !row || !submission.project_id || !this.projectIds(row).includes(submission.project_id)) throw new Error("Submission Evidence not found");
+    if (Number(row.size_bytes) > maxBytes) throw new Error("Evidence exceeds review preview limit");
+    if (!existsSync(row.storage_path)) throw new Error("Evidence content is unavailable");
+    const content = readFileSync(row.storage_path);
+    if (content.length !== Number(row.size_bytes) || createHash("sha256").update(content).digest("hex") !== row.sha256) throw new Error("Evidence integrity check failed");
+    this.store.audit({actorId:userId,projectId:submission.project_id,action:"memory.submission.evidence_review",entityType:"memory_submission",entityId:submissionId,details:{evidenceId,bytes:content.length}});
+    return content;
+  }
+  readForInsightReview(userId: number, isAdmin: boolean, insightId: string, evidenceId: string, maxBytes = 5 * 1024 * 1024): Buffer {
+    if (!isAdmin) throw new Error("Administrator access is required");
+    const insight = this.store.db.prepare("SELECT project_id,evidence_refs_json FROM knowledge_candidate_insights WHERE id=?").get(insightId) as {project_id:string;evidence_refs_json:string}|undefined;
+    let refs:unknown; try { refs=JSON.parse(insight?.evidence_refs_json ?? "[]"); } catch { refs=[]; }
+    const row=this.row(evidenceId);
+    if (!insight || !Array.isArray(refs) || !refs.includes(evidenceId) || !row || !this.projectIds(row).includes(insight.project_id)) throw new Error("Candidate Evidence not found");
+    if (Number(row.size_bytes)>maxBytes) throw new Error("Evidence exceeds review preview limit");
+    if (!existsSync(row.storage_path)) throw new Error("Evidence content is unavailable");
+    const content=readFileSync(row.storage_path);
+    if (content.length!==Number(row.size_bytes) || createHash("sha256").update(content).digest("hex")!==row.sha256) throw new Error("Evidence integrity check failed");
+    this.store.audit({actorId:userId,projectId:insight.project_id,action:"memory.insight.evidence_review",entityType:"candidate_insight",entityId:insightId,details:{evidenceId,bytes:content.length}});
+    return content;
+  }
+  readForLegacyCandidateReview(userId:number,isAdmin:boolean,candidateId:string,evidenceId:string,maxBytes=5*1024*1024):Buffer {
+    if(!isAdmin) throw new Error("Administrator access is required");
+    const candidate=this.store.db.prepare("SELECT d.project_id,c.evidence_refs_json FROM knowledge_candidates c JOIN knowledge_documents d ON d.id=c.id WHERE c.id=? AND d.kind='candidate'").get(candidateId) as {project_id?:string;evidence_refs_json:string}|undefined;
+    let refs:unknown; try {refs=JSON.parse(candidate?.evidence_refs_json ?? "[]");} catch {refs=[];}
+    const linked=Boolean(this.store.db.prepare("SELECT 1 FROM knowledge_entity_evidence WHERE entity_type='candidate' AND entity_id=? AND evidence_id=?").get(candidateId,evidenceId));
+    const row=this.row(evidenceId);
+    if(!candidate?.project_id || !row || !(linked || (Array.isArray(refs) && refs.includes(evidenceId))) || !this.projectIds(row).includes(candidate.project_id)) throw new Error("Candidate Evidence not found");
+    if(Number(row.size_bytes)>maxBytes) throw new Error("Evidence exceeds review preview limit");
+    if(!existsSync(row.storage_path)) throw new Error("Evidence content is unavailable");
+    const content=readFileSync(row.storage_path);
+    if(content.length!==Number(row.size_bytes) || createHash("sha256").update(content).digest("hex")!==row.sha256) throw new Error("Evidence integrity check failed");
+    this.store.audit({actorId:userId,projectId:candidate.project_id,action:"memory.legacy_candidate.evidence_review",entityType:"candidate",entityId:candidateId,details:{evidenceId,bytes:content.length}});
+    return content;
+  }
   read(userId: number, evidenceId: string): Buffer { return this.readWithAction(userId, evidenceId, "evidence.read"); }
   download(userId: number, evidenceId: string, maxBytes = 100 * 1024 * 1024): Buffer {
     const row = this.row(evidenceId);

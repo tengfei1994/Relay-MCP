@@ -53,7 +53,7 @@ test("knowledge request benchmark environment controls are bounded and require a
   assert.throws(() => configFromEnv({ KNOWLEDGE_REQUEST_BENCHMARK_COLD_REPETITIONS: "0", KNOWLEDGE_REQUEST_BENCHMARK_HOT_REPETITIONS: "0" }), /At least one/);
 });
 
-test("knowledge request benchmark smoke covers real HTTP routes, Context Pack, replay, and boundaries", { timeout: 120_000 }, async () => {
+test("knowledge request benchmark smoke covers separated product search, replay, and boundaries", { timeout: 120_000 }, async () => {
   const script = join(repositoryRoot, "scripts", "knowledge-request-benchmark.ts");
   const { stdout, stderr } = await execFileAsync(process.execPath, ["--import", "tsx/esm", script], {
     cwd: repositoryRoot,

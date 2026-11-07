@@ -216,6 +216,7 @@ export class EngineWikiService {
     this.store.db.transaction(() => {
       this.store.db.prepare("INSERT INTO knowledge_wiki_pages(id,page_key,title,body,status,project_id,environment,product_version,topic_id,solution,module,source_refs_json,current_revision,created_by,created_at,updated_at,external_slug) VALUES (?,?,?,'','draft',?,?,?,?,?,?,?,?,?,?,?,?)")
         .run(id, pageKey, page.title, input.projectId ?? null, input.environment ?? null, input.productVersion ?? null, input.topicId ?? null, input.solution ?? null, input.module ?? null, JSON.stringify(page.sourceRefs), page.currentRevision, input.actorId, now, now, row.external_slug);
+      this.store.db.prepare("INSERT OR IGNORE INTO knowledge_wiki_revision_sources(page_id,revision,source_refs_json) VALUES (?,?,?)").run(page.id,page.currentRevision,JSON.stringify(page.sourceRefs));
       this.audit(input.actorId, row, "wiki.create", changeReason, page.currentRevision);
     })();
     return page;
@@ -269,6 +270,7 @@ export class EngineWikiService {
       this.store.db.prepare("INSERT INTO knowledge_wiki_pages(id,page_key,title,body,status,project_id,environment,product_version,topic_id,solution,module,source_refs_json,current_revision,created_by,created_at,updated_at,external_slug) VALUES (?,?,?,'','draft',?,?,?,?,?,?,?,?,?,?,?,?)")
         .run(id, row.page_key, page.title, row.project_id, row.environment, row.product_version, row.topic_id, row.solution, row.module,
           JSON.stringify(page.sourceRefs), page.currentRevision, input.actorId, now, now, slug);
+      this.store.db.prepare("INSERT OR IGNORE INTO knowledge_wiki_revision_sources(page_id,revision,source_refs_json) VALUES (?,?,?)").run(page.id,page.currentRevision,JSON.stringify(page.sourceRefs));
       this.audit(input.actorId, row, duplicateOf ? "wiki.discover_duplicate" : "wiki.discover", changeReason, page.currentRevision,
         duplicateOf ? { canonicalId: duplicateOf } : {});
       if (duplicateOf) {
@@ -319,6 +321,7 @@ export class EngineWikiService {
       const result = this.store.db.prepare("UPDATE knowledge_wiki_pages SET title=?,body='',status='draft',current_revision=?,source_refs_json=?,updated_at=?,published_at=NULL WHERE id=? AND status=? AND current_revision=? AND source_refs_json=?")
         .run(page.title, page.currentRevision, JSON.stringify(page.sourceRefs), this.clock().toISOString(), page.id, current.status, current.current_revision, current.source_refs_json);
       if (!result.changes) throw new EngineWikiError("conflict", "Wiki review state changed concurrently; reload and retry");
+      this.store.db.prepare("INSERT OR IGNORE INTO knowledge_wiki_revision_sources(page_id,revision,source_refs_json) VALUES (?,?,?)").run(page.id,page.currentRevision,JSON.stringify(page.sourceRefs));
       this.audit(input.actorId, row, action, changeReason, page.currentRevision, extra);
     }).immediate();
   }
@@ -418,7 +421,7 @@ export class EngineWikiService {
     const knownSlugs = new Set(candidates.map(row => this.slug(row)));
     const bySlug = new Map(candidates.filter(row => {
       const scope = this.scope(row);
-      return isCanonicalWikiRow(candidates, row) && this.canRead(input.actorId, scope.projectId) && this.inContext(scope, input) &&
+      return (!input.visiblePageIds || input.visiblePageIds.includes(String(row.id))) && isCanonicalWikiRow(candidates, row) && this.canRead(input.actorId, scope.projectId) && this.inContext(scope, input) &&
         (!input.status || row.status === input.status) && (this.reviewer(input.actorId, scope.projectId, input.isAdmin) || row.status === "published") &&
         (["productVersion", "topicId", "solution", "module"] as const).every(key => !input[key] || scope[key] === input[key]);
     }).map(row => [this.slug(row), row]));
@@ -435,7 +438,7 @@ export class EngineWikiService {
       for (const value of result.pages) {
         const remote = object(value);
         let row = bySlug.get(String(remote.slug));
-        if (!row && !knownSlugs.has(String(remote.slug)) && this.reviewer(input.actorId, input.projectId, input.isAdmin)) {
+        if (!row && !input.visiblePageIds && !knownSlugs.has(String(remote.slug)) && this.reviewer(input.actorId, input.projectId, input.isAdmin)) {
           try {
             const discovered = await this.adoptFromEngine({ actorId: input.actorId, isAdmin: input.isAdmin, slug: String(remote.slug), projectId: input.projectId, environment: input.environment,
               productVersion: input.productVersion, topicId: input.topicId, solution: input.solution, module: input.module, reason: "Discovered source-verified engine Wiki draft" }, true);

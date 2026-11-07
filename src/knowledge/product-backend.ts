@@ -32,9 +32,13 @@ function assertScope(store: KnowledgeStore, input: ProductBackendScope): void {
 export function assertProductScope(store: KnowledgeStore, input: ProductBackendScope): void { assertScope(store, input); }
 export function productDocumentVisible(store: KnowledgeStore, row: Row, input: ProductBackendScope): boolean { return localAllowed(store, row, input); }
 function localAllowed(store: KnowledgeStore, row: Row, input: ProductBackendScope): boolean {
-  const projectId = text(row.project_id), environment = text(row.environment);
+  const id = text(row.local_document_id) ?? text(row.id) ?? text(row.document_id);
+  const classification = id ? store.db.prepare("SELECT classification FROM knowledge_product_classifications WHERE document_id=?").get(id) as { classification?: string } | undefined : undefined;
+  if (classification?.classification === "product") return true;
+  const binding = id ? store.db.prepare("SELECT source_project_id FROM knowledge_scope_bindings WHERE document_id=? AND source_project_id IS NOT NULL ORDER BY updated_at DESC LIMIT 1").get(id) as {source_project_id?:string} | undefined : undefined;
+  const projectId = text(row.project_id) ?? text(binding?.source_project_id), environment = text(row.environment);
   const requestedProject = text(input.projectId), requestedEnvironment = text(input.environment);
-  if (!projectId && !environment) return true;
+  if (!projectId && !environment) return false;
   if (!requestedProject || projectId !== requestedProject || environment !== requestedEnvironment) return false;
   return Boolean(input.isAdmin || store.canRead(input.userId, requestedProject));
 }
@@ -74,17 +78,15 @@ function publishedRows(store: KnowledgeStore, input: ProductBackendSearchInput, 
   const projectId = text(input.projectId), environment = text(input.environment);
   const conditions = ["status='published'", "upstream_verified_at IS NOT NULL", "upstream_verified_at<>''", "external_knowledge_base_id=?"];
   const params: Array<string | null> = [knowledgeBaseId];
-  if (!projectId) conditions.push("project_id IS NULL", "environment IS NULL");
-  else {
-    conditions.push("((project_id IS ? AND environment IS ?) OR (project_id IS NULL AND environment IS NULL))");
-    params.push(projectId, environment ?? null);
-  }
   const legacy = legacyMetadataByDocument(store);
   return (store.db.prepare("SELECT * FROM knowledge_weknora_documents WHERE " + conditions.join(" AND ") + " ORDER BY updated_at DESC,id").all(...params) as Row[])
     .map(row => ({ ...row, legacy: legacy.get(String(row.id)) ?? {} }))
     .filter(row => {
       const source = row as Row, metadata = source.legacy as Row;
-      return (!input.product || metadata.project_name_snapshot === input.product) &&
+      const key = text(metadata.localDocumentId) ?? String(source.id);
+      const classification = store.db.prepare("SELECT classification FROM knowledge_product_classifications WHERE document_id=?").get(key) as { classification?: string } | undefined;
+      const visible = classification?.classification === "product" || (classification?.classification === "project" && projectId && source.project_id === projectId && (source.environment ?? null) === (environment ?? null) && (input.isAdmin || store.canRead(input.userId, projectId)));
+      return Boolean(visible) && (!input.product || metadata.project_name_snapshot === input.product) &&
         (!input.sampleManagerVersion || text(source.product_version) === input.sampleManagerVersion) &&
         (!input.solution || text(source.solution) === input.solution) &&
         (!input.module || text(source.module) === input.module) &&
@@ -213,8 +215,10 @@ export async function searchProductBackend(store: KnowledgeStore, input: Product
   assertScope(store, input);
   const limit = Math.max(1, Math.min(500, Math.trunc(input.limit ?? 50)));
   if (!input.engineOnly && new MigrationController(store).activeProductProvider() === "relay_local") {
-    const localRows = searchKnowledgeProducts(store, { ...input, scope: { projectId: text(input.projectId), environment: text(input.environment) }, limit }).filter(result => {
-      const row = store.db.prepare("SELECT project_id,environment FROM knowledge_documents WHERE id=?").get(result.id) as Row | undefined;
+    const allowedDocumentIds = (store.db.prepare("SELECT id,project_id,environment FROM knowledge_documents WHERE kind='product_document' AND lifecycle IN ('approved','verified')").all() as Row[])
+      .filter(row => localAllowed(store,row,input)).map(row=>String(row.id));
+    const localRows = searchKnowledgeProducts(store, { ...input, scope: undefined, allowedDocumentIds, limit }).filter(result => {
+      const row = store.db.prepare("SELECT id,project_id,environment FROM knowledge_documents WHERE id=?").get(result.id) as Row | undefined;
       return Boolean(row && localAllowed(store, row, input));
     }).slice(0, limit);
     return (await augmentProductRows(store, input, localRows, injected)).slice(0, limit);

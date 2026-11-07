@@ -335,26 +335,6 @@ export async function evaluateObservationPool(store: KnowledgeStore, limit = 20,
   return created;
 }
 
-function materializeEvidence(store: KnowledgeStore, event: KnowledgeOutboxEvent, projectId: string | number, candidateId: string): string[] {
-  const values = collectEvidence(event.payload);
-  if (values.length === 0) {
-    store.audit({ projectId: String(projectId), action: "knowledge.candidate.observed", entityType: "candidate", entityId: candidateId, details: { eventId: event.id, evidenceCount: 0 } });
-    return [];
-  }
-  const root = store.evidenceRoot ?? join(process.env.RELAY_STATE_ROOT ?? join(process.env.WORKSPACE_ROOT ?? ".", ".relay-mcp"), "knowledge-evidence");
-  const evidence = new EvidenceStore(store, root);
-  const refs: string[] = [];
-  for (const item of values) {
-    const content = Buffer.isBuffer(item.value) ? item.value : typeof item.value === "string" ? Buffer.from(item.value, "utf8") : Buffer.from(JSON.stringify(item.value), "utf8");
-    const record = evidence.put({ content, mimeType: evidenceMime(item.key), sourceKind: evidenceSourceKind(item.key), projectId: String(projectId), environment: eventEnvironment(event), locator: `relay-event:${event.id}:${item.key}` });
-    refs.push(record.id);
-    store.db.prepare("INSERT OR IGNORE INTO knowledge_entity_evidence(entity_type,entity_id,evidence_id,created_at) VALUES ('candidate',?,?,?)").run(candidateId, record.id, new Date().toISOString());
-  }
-  store.db.prepare("UPDATE knowledge_candidates SET evidence_refs_json = ? WHERE id = ?").run(JSON.stringify([...new Set(refs)]), candidateId);
-  store.audit({ projectId: String(projectId), action: "knowledge.candidate.evidence_linked", entityType: "candidate", entityId: candidateId, details: { eventId: event.id, evidenceCount: refs.length } });
-  return refs;
-}
-
 function materializeObservationEvidence(store: KnowledgeStore, event: KnowledgeOutboxEvent, projectId: string | number, observationId: string): string[] {
   const values = collectEvidence(event.payload);
   if (values.length === 0) return [];
@@ -372,7 +352,7 @@ function materializeObservationEvidence(store: KnowledgeStore, event: KnowledgeO
 }
 
 /**
- * Materialize terminal operational events into Knowledge candidates. Project
+ * Record selected terminal operational events as observations and Evidence. Project
  * resolution distinguishes temporary resolver outages from a project that is
  * definitively absent; only infrastructure outages bypass the poison cap.
  */
@@ -429,8 +409,15 @@ export async function captureKnowledgeCandidates(
       // healthy but returns no project remains finite and dead-letterable.
       projectId = resolveProject(event, resolveProjectId);
       correlateWorkSessionEvent(store, { ...event, projectId: String(projectId) });
+      if (event.attempts >= MAX_CAPTURE_ATTEMPTS) {
+        deadLetter(event, "max attempts exceeded");
+        store.acknowledge(consumer, event.id, event.claimToken);
+        continue;
+      }
 
-      if (!classification.captureCandidate && classification.storeObservation) {
+      // Preserve observations and evidence without automatically creating review
+      // candidates or invoking an inference provider for routine tool events.
+      {
         const now = new Date().toISOString();
         const body = candidateBody(event, projectId);
         const digest = createHash("sha256").update(body, "utf8").digest("hex");
@@ -442,53 +429,6 @@ export async function captureKnowledgeCandidates(
         count++;
         continue;
       }
-
-      if (event.attempts >= MAX_CAPTURE_ATTEMPTS) {
-        deadLetter(event, "max attempts exceeded");
-        store.acknowledge(consumer, event.id, event.claimToken);
-        continue;
-      }
-
-      const body = candidateBody(event, projectId);
-      const digest = createHash("sha256").update(body, "utf8").digest("hex");
-      const now = new Date().toISOString();
-      const environment = typeof event.payload.environment === "string" ? event.payload.environment : undefined;
-      const candidateId = `candidate-${createHash("sha256").update(event.id, "utf8").digest("hex")}`;
-      const metadata = eventMetadata(event);
-      const candidate: import("./domain.js").Candidate = {
-        // Candidate identity follows the immutable event ID; source_sha256
-        // below follows the actual canonical content instead of the ID.
-        id: candidateId,
-        kind: "candidate",
-        title: `${event.type}: ${event.deploymentId ?? event.jobId ?? event.id}`,
-        body,
-        lifecycle: "draft",
-        projectId: String(projectId),
-        projectNameSnapshot: event.projectNameSnapshot,
-        environment,
-        sampleManagerVersion: metadata.sampleManagerVersion,
-        solution: metadata.solution,
-        module: metadata.module,
-        candidateType: metadata.candidateType,
-        eventId: event.id,
-        deploymentId: event.deploymentId,
-        jobId: event.jobId,
-        locator: `relay-event:${event.id}`,
-        sha256: digest,
-        createdAt: now,
-        updatedAt: now,
-      };
-      const repository = new KnowledgeRepository(store);
-      repository.saveCandidate(candidate);
-      const evidenceRefs = materializeEvidence(store, event, projectId, candidateId);
-      const generated = await generateCandidateCard({ event, projectId, candidateId, evidenceRefs, inference: hooks?.inference, eventClass: classification.eventClass, captureReason: classification.captureReason, problemStatement: classification.problemStatement, impact: classification.problemStatement });
-      store.saveCandidateCard(generated.card);
-      // Re-upsert through the canonical store so chunk/FTS projections and
-      // source metadata stay in sync with the semantic title.
-      store.upsertDocument({ ...candidate, title: candidateTitle(event, generated.card), updatedAt: generated.card.updatedAt });
-      if (generated.providerError) store.audit({ projectId: String(projectId), action: "knowledge.candidate.card_provider_rejected", entityType: "candidate", entityId: candidateId, details: { eventId: event.id, error: generated.providerError } });
-      store.acknowledge(consumer, event.id, event.claimToken);
-      count++;
     } catch (error) {
       cycleFailed = true;
       firstFailure ??= error;
@@ -510,9 +450,7 @@ export async function captureKnowledgeCandidates(
     }
   }
 
-  // Review new and historical observations even when the outbox is idle.
-  try { await evaluateObservationPool(store, limit); }
-  catch (error) { cycleFailed = true; firstFailure ??= error; }
+  // Candidates are now submitted explicitly by the local agent for review.
   if (cycleFailed) hooks?.onFailure?.(firstFailure, firstFailureEvent);
   // Do not reset consecutive failure/readiness state merely because a failed
   // event is waiting for its backoff window and this cycle claims nothing.

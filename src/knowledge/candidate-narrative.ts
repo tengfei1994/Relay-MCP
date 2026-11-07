@@ -37,12 +37,12 @@ function deriveBusinessContext(payload: Record<string, unknown>, eventType: stri
   const cache = /cache|formsbin|binform/i.test([eventType, firstSignal, JSON.stringify(payload)].join(" "));
   const directory = /dir\\s|directory|path|exists=/i.test([firstSignal, JSON.stringify(payload)].join(" "));
   const defaults: BusinessContext = cache
-    ? { businessPurpose: "支持 SampleManager 表单快速加载，并让表单定义与运行文件保持一致。", affectedProcess: "使用相关表单进行数据录入、结果处理或审核的业务流程。", businessImpact: "缓存过期或损坏时，相关表单可能打不开、显示旧版本或缺少控件，导致用户无法继续该流程。", technicalComponentPurpose: "FormsBin / 表单运行缓存保存表单编译后的运行文件。", confidence: "inferred" }
+    ? { businessPurpose: "Support fast SampleManager form loading and keep definitions aligned with runtime files.", affectedProcess: "Data entry, result processing or review using the affected forms.", businessImpact: "A stale or damaged cache may prevent forms from opening, display an older version or omit controls.", technicalComponentPurpose: "FormsBin stores compiled form runtime files.", confidence: "inferred" }
     : directory
-    ? { businessPurpose: "确认服务器配置和运行依赖是否齐全。", affectedProcess: "部署、升级或故障排查前的环境检查。", businessImpact: missingPaths ? "缺失路径可能阻止后续部署或运行，但当前记录未证明它一定是必需路径。" : "当前记录未显示对业务流程造成影响。", technicalComponentPurpose: "目录和文件清单用于定位运行时配置与依赖。", confidence: "inferred" }
+    ? { businessPurpose: "Check server configuration and runtime dependencies.", affectedProcess: "Environment checks before deployment, upgrade or troubleshooting.", businessImpact: missingPaths ? "A missing path may affect deployment or operation, but this record does not establish that it is required." : "This record does not show an impact on the business process.", technicalComponentPurpose: "Directory listings help locate runtime configuration and dependencies.", confidence: "inferred" }
     : /build/i.test(eventType)
-    ? { businessPurpose: "生成可部署的软件或配置版本。", affectedProcess: "开发、发布和升级流程。", businessImpact: "构建失败会阻止新版本发布；构建成功也不代表业务功能已验证。", technicalComponentPurpose: "构建产物将源代码和配置转换为可运行版本。", confidence: "inferred" }
-    : { businessPurpose: "支持一次远程运维或诊断任务。", affectedProcess: "与本次任务目标相关的系统运维流程。", businessImpact: "当前记录未说明具体业务中断或影响范围。", technicalComponentPurpose: "技术组件用途尚未从源记录中明确识别。", confidence: "unknown" };
+    ? { businessPurpose: "Produce deployable software or configuration.", affectedProcess: "Development, release and upgrade workflows.", businessImpact: "A failed build can block a release; a successful build does not prove business functionality.", technicalComponentPurpose: "Build artifacts turn source code and configuration into a runnable version.", confidence: "inferred" }
+    : { businessPurpose: "Support a remote operations or diagnostic task.", affectedProcess: "The operational workflow associated with this task.", businessImpact: "The record does not describe a specific business interruption or its scope.", technicalComponentPurpose: "The source does not identify the technical component's purpose.", confidence: "unknown" };
   return {
     ...defaults,
     ...Object.fromEntries(Object.entries(provided).filter(([, value]) => Boolean(value))),
@@ -67,8 +67,8 @@ export function describeCandidate(body: string, fallback: { environment?: unknow
   const found = [...dirs].filter(([, exists]) => exists);
   const names = (entries: Array<[string, boolean]>) => entries.slice(0, 4).map(([path]) => {
     const marker = path.match(/\\Server\\([^\\]+)\\(.+)$/i);
-    return marker ? marker[1] + " 下的 " + marker[2].replaceAll("\\", " / ") : path.split(/[\\/]/).filter(Boolean).slice(-2).join(" / ");
-  }).join("、");
+    return marker ? marker[1] + " / " + marker[2].replaceAll("\\", " / ") : path.split(/[\\/]/).filter(Boolean).slice(-2).join(" / ");
+  }).join(", ");
   const status = short(payload.status).toLowerCase();
   const success = ["succeeded", "success", "completed", "ok", "passed"].includes(status);
   const eventType = short(envelope.eventType);
@@ -78,87 +78,87 @@ export function describeCandidate(body: string, fallback: { environment?: unknow
   const incompleteValidation = ["unknown", "not_run"].includes(validation);
   const hasSignal = signals.length > 0 || failure || contract || validation === "failed";
   const truncated = /truncat(?:ed|ion)|已截断/i.test(output) || payload.truncated === true;
-  const prefix = environment ? "在 " + environment + " 环境中，" : "";
-  const activity = dirs.size ? "任务检查了服务器目录是否存在，并列出了其中的文件" : eventType.startsWith("deployment.") ? "系统执行了一次部署任务" : /build/.test(short(payload.kind)) ? "系统执行了一次构建任务" : "系统执行了一次远程任务";
+  const prefix = environment ? "In the " + environment + " environment, " : "";
+  const activity = dirs.size ? "the task checked server directories and listed their files" : eventType.startsWith("deployment.") ? "the system ran a deployment" : /build/.test(short(payload.kind)) ? "the system ran a build" : "the system ran a remote task";
   const facts: string[] = [];
-  if (success) facts.push("执行器将本次任务报告为成功完成。任务成功不代表所有业务检查均已通过。");
-  else if (failure) facts.push("任务记录显示执行未正常完成。");
-  else facts.push("源记录没有给出明确的成功完成状态。");
-  if (found.length) facts.push("已找到 " + names(found) + (found.length > 4 ? " 等目录。" : "。"));
-  if (missing.length) facts.push("检查时未找到 " + names(missing) + "；源记录未说明这些路径是否为必需路径。");
-  let title = dirs.size ? "服务器目录检查已完成" : "远程任务记录待确认";
+  if (success) facts.push("The runner reported success. This does not establish that all business checks passed.");
+  else if (failure) facts.push("The task record indicates that execution did not complete normally.");
+  else facts.push("The source record does not report an explicit successful completion.");
+  if (found.length) facts.push("Found " + names(found) + (found.length > 4 ? " and other directories." : "."));
+  if (missing.length) facts.push("Not found: " + names(missing) + ". The source does not say whether these paths are required.");
+  let title = dirs.size ? "Server directory check completed" : "Remote task record needs review";
   let finding = "";
-  let nextSteps = ["确认这次任务原本要验证什么，以及实际结果是否满足要求。"];
+  let nextSteps = ["Confirm what the task was intended to check and whether the result meets that requirement."];
   const first = signals[0]?.text ?? "";
   const businessContext = deriveBusinessContext(payload, eventType, first, missing.length);
   if (contract) {
-    title = "任务返回结果无法按约定格式读取";
-    finding = "执行结果的格式检查没有通过，下游步骤可能无法直接使用这份结果。";
-    nextSteps = ["核对期望的数据格式和实际返回内容，修正后重新执行格式检查。"];
+    title = "Task output did not match the expected format";
+    finding = "The output failed its format check and may not be usable by downstream steps.";
+    nextSteps = ["Compare the expected format with the returned data, correct it and repeat the format check."];
   } else if (/rolled_back/.test(eventType)) {
-    title = "部署已执行回退，需要核对恢复结果";
-    finding = "记录显示部署执行了回退，但仅凭该事件无法确认服务已恢复。";
-    nextSteps = ["核对回退后的版本、服务状态和业务验证结果。"];
+    title = "Deployment rolled back; recovery needs verification";
+    finding = "The record reports a rollback, but the event alone does not confirm service recovery.";
+    nextSteps = ["Check the restored version, service status and business verification results."];
   } else if (/interrupted|cancelled/.test(eventType)) {
-    title = "任务中断或被取消，完成情况待确认";
-    finding = "任务没有正常结束，已经执行的步骤及其影响需要核实。";
-    nextSteps = ["核对最后完成的步骤和服务器实际状态，再决定是否继续执行。"];
+    title = "Task interrupted or cancelled; completion is unknown";
+    finding = "The task did not finish normally. Its completed steps and their effects need review.";
+    nextSteps = ["Check the last completed step and the server's current state before deciding whether to continue."];
   } else if (/service/i.test(first) && /wait|start|ready/i.test(first)) {
     const service = first.match(/\bservice\s+['"]?([A-Za-z0-9_.-]+)/i)?.[1];
     const duration = first.match(/(\d+)\s*(?:seconds?|secs?|秒)/i)?.[1];
-    title = "服务启动仍有等待提示";
-    finding = "日志报告" + (service ? "服务 " + service : "服务") + "仍在等待启动" + (duration ? "，记录中的等待时间为 " + duration + " 秒" : "") + "。后续是否启动成功还需要核对。";
-    nextSteps = ["查看该服务在任务结束后的实际状态，并核对启动日志中是否有最终成功或失败记录。"];
+    title = "Service startup is still waiting";
+    finding = "The log reports that " + (service ? "service " + service : "the service") + " is waiting to start" + (duration ? " after " + duration + " seconds" : "") + ". Its final startup status needs verification.";
+    nextSteps = ["Check the service state after the task and inspect the startup log for a final result."];
   } else if (/timeout|timed? out|超时/i.test(first)) {
-    title = "操作等待超时，最终结果待确认";
-    finding = "日志报告操作未在等待期限内返回。远端是否继续执行、是否最终完成，目前还不能确定。";
-    nextSteps = ["先核对远端实际执行状态和最终结果，再判断是否需要重试。"];
+    title = "Operation timed out; final result is unknown";
+    finding = "The operation did not return within the wait period. The remote operation may still be running or may have completed.";
+    nextSteps = ["Check the remote execution state and final result before deciding whether to retry."];
   } else if (/denied|permission|unauthorized|权限/i.test(first)) {
-    title = "操作受到访问权限限制";
-    finding = "执行过程中出现访问被拒绝的提示，相关步骤可能未完成。";
-    nextSteps = ["确认执行账号、访问目标及需要的权限，再重试受影响步骤。"];
+    title = "Operation blocked by an access restriction";
+    finding = "The task reported access denied; affected steps may not have completed.";
+    nextSteps = ["Check the execution account, target and required permissions before retrying."];
   } else if (/stale|cache/i.test(first)) {
-    title = "运行记录提示缓存可能过期";
-    finding = "日志报告缓存状态异常，是否影响当前功能及其具体原因仍需验证。";
-    nextSteps = ["核对缓存对应的版本与源文件，并验证问题是否能够复现。"];
+    title = "Runtime record indicates a possibly stale cache";
+    finding = "The log reports an abnormal cache state; its cause and effect on functionality need verification.";
+    nextSteps = ["Compare the cache version with its source files and check whether the issue can be reproduced."];
   } else if (/missing|not found|找不到|缺失/i.test(first)) {
-    title = "执行过程中有资源未找到";
-    finding = "日志报告所查找的文件、依赖或其他资源不存在。需要确认查找位置是否正确，以及该资源是否必需。";
-    nextSteps = ["核对原始提示中的资源名称、查找位置和配置要求。"];
+    title = "A resource was not found during execution";
+    finding = "The log reports a missing file, dependency or other resource. Check the location and whether it is required.";
+    nextSteps = ["Check the resource name, location and configuration requirements in the original message."];
   } else if (/partial|degraded|乱码/i.test(first)) {
-    title = "任务输出可能不完整或不可直接使用";
-    finding = "日志报告部分结果或输出质量异常，需要核对是否缺少预期数据。";
-    nextSteps = ["对照预期结果检查输出的完整性和可读性。"];
+    title = "Task output may be incomplete or unusable";
+    finding = "The log reports partial results or an output quality issue; check for missing data.";
+    nextSteps = ["Compare the output with the expected result for completeness and readability."];
   } else if (hasSignal) {
-    title = failure ? "远程任务执行失败，需要补充原因" : "任务留下了需要核对的异常提示";
-    finding = "源记录包含异常信号，但现有信息还不足以准确解释具体原因和业务影响。";
-    nextSteps = ["打开下方定位到的源记录，补充问题描述、影响和复现结果。"];
+    title = failure ? "Remote task failed; the cause needs review" : "Task reported a signal that needs review";
+    finding = "The source contains a problem signal, but does not establish its cause or business impact.";
+    nextSteps = ["Review the source record and add the problem description, impact and reproduction results."];
   } else if (dirs.size) {
-    title = missing.length ? "目录检查完成，部分路径未找到" : "目录检查完成，已找到所查路径";
+    title = missing.length ? "Directory check completed; some paths were not found" : "Directory check completed; requested paths found";
     finding = missing.length
-      ? "部分被检查路径不存在。是否属于配置问题，取决于这些路径是否本来就需要存在。"
-      : "当前保留的目录结果显示所查路径存在，尚未发现明确的故障信号。";
-    nextSteps = missing.length ? ["核对未找到的路径是否为实际配置所需；如果只是探索其他可能位置，可将本条视为普通检查记录。"] : ["如本次仅需确认目录和文件位置，可保留为检查证据；如需证明功能正常，还应补充功能验证。"];
+      ? "Some checked paths do not exist. Whether this is a configuration issue depends on whether they are required."
+      : "The retained directory results show the requested paths exist; no clear failure signal was found.";
+    nextSteps = missing.length ? ["Check whether the missing paths are required. An exploratory check alone may be routine."] : ["Keep the result as directory evidence; add functional checks if functionality must be verified."];
   } else if (success) {
-    title = "任务完成，尚未形成可复用的问题结论";
-    finding = "当前保留的输出中未识别出明确异常，尚没有可供审批的根因或解决方法。";
+    title = "Task completed; no reusable problem conclusion yet";
+    finding = "The retained output contains no clear problem, root cause or fix ready for review.";
   }
   if (finding) facts.push(finding);
   const assessment = hasSignal ? "signal" : (success && !missing.length && !truncated && !incompleteValidation && !!Object.keys(payload).length) ? "routine" : "insufficient";
-  const unknowns = ["原始记录未证明根因、修复效果以及适用范围；这些内容仍需人工确认。"];
-  if (truncated) unknowns.unshift("部分输出已被截断，因此无法据此排除被省略内容中的其他情况。");
-  if (incompleteValidation) unknowns.unshift("运行验证尚未执行或结果未知，不能将任务结束视为验证通过。");
-  if (!Object.keys(payload).length) unknowns.unshift("这是旧格式记录，缺少结构化执行上下文，暂时无法自动还原经过。");
+  const unknowns = ["The source does not establish the root cause, effectiveness of a fix or applicability; a person must confirm them."];
+  if (truncated) unknowns.unshift("Some output was truncated, so omitted details may contain additional information.");
+  if (incompleteValidation) unknowns.unshift("Runtime validation was not run or its result is unknown; task completion does not mean validation passed.");
+  if (!Object.keys(payload).length) unknowns.unshift("This legacy record lacks structured execution context and cannot be reconstructed automatically.");
   return {
     version: "candidate-narrative-v1", assessment, title,
-    summary: prefix + activity + "。" + finding,
+    summary: (prefix ? prefix + activity : activity[0].toUpperCase() + activity.slice(1)) + ". " + finding,
     environment: environment || undefined, occurredAt: occurredAt || undefined,
     facts, unknowns, nextSteps,
     recommendation: assessment === "routine"
-      ? "目前更适合作为普通执行证据。如无需要复现和处理的问题，可拒绝此候选。"
+      ? "Treat this as routine execution evidence. Reject the candidate if there is no issue to reproduce and address."
       : assessment === "signal"
-      ? "先核对异常及复现情况；确认问题已复现后再建立案例。根因和修复效果可在后续验证。"
-      : "建议暂缓审批，先补充预期结果及检查结论。如果只是普通检查记录，可拒绝此候选。",
+      ? "Review the signal and reproduction first; create a Case only after the issue is reproduced. Verify the cause and fix separately."
+      : "Defer review until the expected result and findings are available. Reject the candidate if it is only a routine check.",
     sourceSignals: signals.slice(0, 4), businessContext,
   };
 }

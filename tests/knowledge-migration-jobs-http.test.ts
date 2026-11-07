@@ -21,7 +21,7 @@ test("async migration HTTP returns durable 202, protects status, deduplicates an
   // Exercise the durable HTTP boundary independently of dispatch execution,
   // covered by the real child-process/HTTP fixture in migration-jobs.test.ts.
   await stopIngestJobs();
-  runMigrations(); db.insert(users).values({ id: 1, username: "migration-http", passwordHash: "unused", isAdmin: true }).run();
+  runMigrations(); db.insert(users).values({ id: 1, username: "migration-http", passwordHash: "unused", isAdmin: true, knowledgeEnabled:true }).run();
   const store = getKnowledgeStore(); const app = Fastify();
   app.decorate("authenticate", async (req: any) => { req.user = { id: 1, isAdmin: !req.headers["x-nonadmin"] }; });
   await app.register(knowledgeRoutes);

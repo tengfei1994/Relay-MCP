@@ -7,7 +7,7 @@ import { createKnowledgeStore } from "../src/knowledge/store.ts";
 import { captureKnowledgeCandidates, evaluateObservationPool } from "../src/knowledge/capture-worker.ts";
 import { OBSERVATION_REVIEW_INTERVAL_MS } from "../src/knowledge/observation-review.ts";
 
-test("capture cycles continuously evaluate unlinked observations", async () => {
+test("capture cycles preserve observations without automatically creating candidates", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-observation-pool-"));
   const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });
   try {
@@ -15,10 +15,9 @@ test("capture cycles continuously evaluate unlinked observations", async () => {
     store.append(event);
     assert.equal(await captureKnowledgeCandidates(store), 1);
     assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_observations").get().count, 1);
-    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_candidates").get().count, 1);
-    assert.equal(await evaluateObservationPool(store), 0);
-    const candidate = store.db.prepare("SELECT source_observation_id FROM knowledge_candidates WHERE event_id = ?").get(event.id) as { source_observation_id: string };
-    assert.match(candidate.source_observation_id, /^observation-/);
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_candidates").get().count, 0);
+    assert.equal(await captureKnowledgeCandidates(store),0);
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_candidates").get().count, 0);
   } finally {
     store.close();
     rmSync(root, { recursive: true, force: true });
@@ -120,16 +119,16 @@ test("promoted observations expose the concrete warning instead of a generic rev
   } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test("idle capture cycles review historical observations and replay preserves their review state", async () => {
+test("idle capture cycles leave historical observations unchanged", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-observation-idle-"));
   const store = createKnowledgeStore({ dbPath: join(root, "knowledge.db") });
   try {
     seed(store, "a", { status: "succeeded", warning: "missing dependency" });
     for (const event of store.claim("knowledge-capture", 20)) store.acknowledge("knowledge-capture", event.id, event.claimToken);
     assert.equal(await captureKnowledgeCandidates(store), 0);
-    assert.equal(store.db.prepare("SELECT COUNT(*) count FROM knowledge_candidates").get().count, 1);
+    assert.equal(store.db.prepare("SELECT COUNT(*) count FROM knowledge_candidates").get().count, 0);
     seed(store, "a", { status: "succeeded", warning: "missing dependency" });
-    assert.equal(store.db.prepare("SELECT human_status FROM knowledge_observations WHERE id='a'").get().human_status, "candidate_created");
+    assert.notEqual(store.db.prepare("SELECT human_status FROM knowledge_observations WHERE id='a'").get().human_status, "candidate_created");
   } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 

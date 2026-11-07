@@ -14,14 +14,15 @@ test("both product import HTTP endpoints and retry return durable background job
   const { knowledgeRoutes } = await import("../src/server/routes/knowledge.js");
   const { getKnowledgeStore } = await import("../src/server/knowledge-context.js");
   const { runPendingIngestJobs } = await import("../src/knowledge/ingest-worker.js");
-  runMigrations(); db.insert(users).values({ id: 1, username: "import-test", passwordHash: "not-used", isAdmin: true }).run();
+  runMigrations(); db.insert(users).values({ id: 1, username: "import-test", passwordHash: "not-used", isAdmin: true, knowledgeEnabled:true }).run();
   const source = join(root, "docs"); mkdirSync(source); writeFileSync(join(source, "guide.md"), "# Guide\nHello");
   const store = getKnowledgeStore();
   const app = Fastify();
   app.decorate("authenticate", async (req: any) => { req.user = { id: 1, isAdmin: !req.headers["x-nonadmin"] }; });
   await app.register(knowledgeRoutes);
   try {
-    const payload = { root: source, sampleManagerVersion: "21.3", asynchronous: false };
+    const payload = { root: source, sampleManagerVersion: "21.3", asynchronous: false, classification:"product" };
+    assert.equal((await app.inject({method:"POST",url:"/api/knowledge/product-documents/import",payload:{root:source}})).statusCode,400);
     for (const endpoint of ["product-docs", "product-documents"]) {
       const request = { method: "POST" as const, url: `/api/knowledge/${endpoint}/import`, payload, headers: { "idempotency-key": endpoint } };
       const response = await app.inject(request);

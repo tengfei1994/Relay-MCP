@@ -9,10 +9,12 @@ test("Wiki generation status exposes normalized progress and admin controls", as
   process.env.DB_PATH = join(root, "app.db"); process.env.KNOWLEDGE_DB_PATH = join(root, "knowledge.db"); process.env.KNOWLEDGE_ENGINE_HOME = join(root, "engine"); process.env.WEKNORA_BASE_URL = "http://127.0.0.1:1"; process.env.WEKNORA_KNOWLEDGE_BASE_ID = "fixture-kb";
   const { default: Fastify } = await import("fastify");
   const { db, runMigrations } = await import("../src/server/db/index.js");
+  const { users } = await import("../src/server/db/schema.js");
   const { knowledgeRoutes } = await import("../src/server/routes/knowledge.js");
   const { getKnowledgeStore } = await import("../src/server/knowledge-context.js");
   const { enqueueWikiGeneration } = await import("../src/knowledge/ingest-worker.js");
   runMigrations();
+  db.insert(users).values([{id:7,username:"admin",passwordHash:"unused",knowledgeEnabled:true},{id:8,username:"reader",passwordHash:"unused",knowledgeEnabled:true}]).run();
   const store = getKnowledgeStore();
   const app = Fastify();
   app.decorate("authenticate", async (request: any) => { request.user = request.headers["x-nonadmin"] ? { id: 8, isAdmin: false } : { id: 7, isAdmin: true }; });

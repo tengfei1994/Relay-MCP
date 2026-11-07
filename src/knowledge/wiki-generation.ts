@@ -69,9 +69,11 @@ function loadSources(store: KnowledgeStore, input: { topicGroupId: string; proje
   const conditions = [`d.kind='product_document'`, `d.lifecycle IN ('approved','verified')`, topic.sql];
   const params: unknown[] = [...topic.params];
   if (input.projectId) {
-    conditions.push("((d.project_id IS NULL AND d.environment IS NULL) OR (d.project_id=? AND d.environment IS ?))");
+    conditions.push(`(EXISTS (SELECT 1 FROM knowledge_product_classifications c WHERE c.document_id=d.id AND c.classification='product') OR
+      (NOT EXISTS (SELECT 1 FROM knowledge_product_classifications c WHERE c.document_id=d.id AND c.classification='product')
+        AND COALESCE(d.project_id,(SELECT s.source_project_id FROM knowledge_scope_bindings s WHERE s.document_id=d.id AND s.source_project_id IS NOT NULL ORDER BY s.updated_at DESC LIMIT 1))=? AND d.environment IS ?))`);
     params.push(input.projectId, input.environment ?? null);
-  } else conditions.push("d.project_id IS NULL AND d.environment IS NULL");
+  } else conditions.push("EXISTS (SELECT 1 FROM knowledge_product_classifications c WHERE c.document_id=d.id AND c.classification='product')");
   const rows = store.db.prepare(`SELECT d.id,d.title,d.body,d.lifecycle,d.project_id,d.environment,d.solution,d.module,
     p.version,p.source_path,p.source_sha256,p.topic_group_id,p.document_family_id
     FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id
@@ -218,14 +220,16 @@ export class WikiGenerationService {
   }
 }
 
-export function listWikiTopicGroups(store: KnowledgeStore, input: { projectId?: string; environment?: string } = {}): Array<{ topicGroupId: string; title: string; solution?: string; module?: string; supportedVersions: string[]; sourceCount: number }> {
+export function listWikiTopicGroups(store: KnowledgeStore, input: { projectId?: string; environment?: string; includePublic?:boolean } = {}): Array<{ topicGroupId: string; title: string; solution?: string; module?: string; supportedVersions: string[]; sourceCount: number }> {
   const conditions = ["d.kind='product_document'", "d.lifecycle IN ('approved','verified')"];
   const params: unknown[] = [];
-  if (input.projectId) { conditions.push("((d.project_id IS NULL AND d.environment IS NULL) OR (d.project_id=? AND d.environment IS ?))"); params.push(input.projectId, input.environment ?? null); }
-  else conditions.push("d.project_id IS NULL AND d.environment IS NULL");
+  if (input.projectId) {
+    conditions.push(`((c.classification='product' AND ?=1) OR (COALESCE(c.classification,'pending')<>'product' AND COALESCE(d.project_id,(SELECT s.source_project_id FROM knowledge_scope_bindings s WHERE s.document_id=d.id AND s.source_project_id IS NOT NULL ORDER BY s.updated_at DESC LIMIT 1))=? AND d.environment IS ?))`);
+    params.push(input.includePublic === false ? 0 : 1,input.projectId,input.environment ?? null);
+  } else conditions.push("c.classification='product'");
   const rows = store.db.prepare(`SELECT COALESCE(NULLIF(p.topic_group_id,''),b.topic_id,'family:' || p.document_family_id) AS topic_group_id,
     MIN(d.title) AS title,MIN(d.solution) AS solution,MIN(d.module) AS module,COUNT(DISTINCT d.id) AS source_count,GROUP_CONCAT(DISTINCT p.version) AS versions
-    FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id LEFT JOIN knowledge_product_document_bindings b ON b.document_id=d.id
+    FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id LEFT JOIN knowledge_product_document_bindings b ON b.document_id=d.id LEFT JOIN knowledge_product_classifications c ON c.document_id=d.id
     WHERE ${conditions.join(" AND ")} GROUP BY topic_group_id ORDER BY solution,module,title`).all(...params) as Row[];
   return rows.map(row => ({ topicGroupId: String(row.topic_group_id), title: String(row.title ?? row.topic_group_id), solution: text(row.solution), module: text(row.module), supportedVersions: String(row.versions ?? "").split(",").map(value => value.trim()).filter(Boolean).sort(), sourceCount: Number(row.source_count ?? 0) }));
 }
@@ -254,7 +258,7 @@ export interface WikiTopicGenerationRecord {
  * precedence over the last completed state, so the UI can explain that a
  * topic is queued/running/paused before the worker reaches it.
  */
-export function listWikiTopicGenerationStatuses(store: KnowledgeStore, input: { projectId?: string; environment?: string } = {}): WikiTopicGenerationRecord[] {
+export function listWikiTopicGenerationStatuses(store: KnowledgeStore, input: { projectId?: string; environment?: string; includePublic?:boolean } = {}): WikiTopicGenerationRecord[] {
   const groups = listWikiTopicGroups(store, input);
   const scopeProject = input.projectId ?? "", scopeEnvironment = input.environment ?? "";
   const states = new Map((store.db.prepare("SELECT topic_group_id,status,generated_page_id,attempt_count,source_fingerprint,last_error,updated_at FROM knowledge_wiki_generation_state WHERE project_id=? AND environment=?").all(scopeProject, scopeEnvironment) as Row[]).map(row => [String(row.topic_group_id), row] as const));

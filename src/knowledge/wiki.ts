@@ -101,6 +101,7 @@ export interface WikiPageRevision {
 
 export interface WikiPageListQuery {
   actorId: number;
+  visiblePageIds?: string[];
   isAdmin?: boolean;
   projectId?: string;
   environment?: string;
@@ -398,6 +399,7 @@ export class WikiService {
         ))
       )`);
     }
+    if (input.visiblePageIds) { where.push("p.id IN (SELECT value FROM json_each(@visiblePageIds))"); params.visiblePageIds = JSON.stringify(input.visiblePageIds); }
     const predicate = where.join("\n AND ");
     const optionalColumn = (column: string): string => this.hasColumn(column) ? `p.${column}` : `NULL AS ${column}`;
     const summaryColumns = [
@@ -489,6 +491,7 @@ export class WikiService {
       directoryPath: parent,
       directoryPrefix: parent ? `${escapedParent}/%` : "%",
     };
+    if (input.visiblePageIds) { where.push("p.id IN (SELECT value FROM json_each(@visiblePageIds))"); params.visiblePageIds = JSON.stringify(input.visiblePageIds); }
     if (projectId) {
       where.push(`(
         (p.project_id IS NULL AND ${environmentSql} IS NULL AND
@@ -731,10 +734,10 @@ export class WikiService {
           .run(randomUUID(), savedId, 1, title, body, "Automatic topic-level Wiki generation", 0, now);
       } else if (changed) {
         const nextRevision = Number(existing.current_revision) + 1, status = String(existing.status) === "published" ? "draft" : String(existing.status);
-        this.store.db.prepare("INSERT INTO knowledge_wiki_page_revisions(id,page_id,revision,title,body,change_reason,author_id,created_at) VALUES (?,?,?,?,?,?,?,?)")
-          .run(randomUUID(), savedId, nextRevision, title, body, "Automatic topic-level Wiki generation", 0, now);
         this.store.db.prepare(`UPDATE knowledge_wiki_pages SET page_key=?,title=?,body=?,status=?,topic_id=?,topic_group_id=?,solution=?,module=?,source_refs_json=?,supported_versions_json=?,generation_status='succeeded',generation_fingerprint=?,directory_path=?,current_revision=?,updated_at=? WHERE id=?`)
           .run(pageKey, title, body, status, topicGroupId, topicGroupId, input.solution ?? null, input.module ?? null, JSON.stringify(sourceRefs), JSON.stringify([...new Set(input.supportedVersions.filter(Boolean))]), input.fingerprint, input.directoryPath ?? null, nextRevision, now, savedId);
+        this.store.db.prepare("INSERT INTO knowledge_wiki_page_revisions(id,page_id,revision,title,body,change_reason,author_id,created_at) VALUES (?,?,?,?,?,?,?,?)")
+          .run(randomUUID(), savedId, nextRevision, title, body, "Automatic topic-level Wiki generation", 0, now);
       } else {
         this.store.db.prepare("UPDATE knowledge_wiki_pages SET generation_status='succeeded',updated_at=? WHERE id=?").run(now, savedId);
       }
@@ -854,17 +857,20 @@ export class WikiService {
     if (!target) throw new Error(`Wiki revision ${input.revision} not found`);
     const targetRevision = revisionFromRow(target);
     if (targetRevision.revision === page.currentRevision) return page;
+    const sourceRow = this.store.db.prepare("SELECT source_refs_json FROM knowledge_wiki_revision_sources WHERE page_id=? AND revision=?").get(page.id, targetRevision.revision) as {source_refs_json:string} | undefined;
+    if (!sourceRow) throw new Error("Wiki revision source provenance is unavailable");
     this.appendRevision({
-      page, actorId: input.actorId, title: targetRevision.title, body: targetRevision.body, reason,
+      page, actorId: input.actorId, title: targetRevision.title, body: targetRevision.body, reason, sourceRefsJson:sourceRow.source_refs_json,
       action: "rollback", auditDetails: { pageKey: page.pageKey, rolledBackTo: targetRevision.revision },
     });
     return pageFromRow(this.loadRow(input.id));
   }
 
-  private appendRevision(input: { page: WikiPage; actorId: number; title: string; body: string; reason: string; action: "edit" | "rollback"; auditDetails: Record<string, unknown> }): void {
+  private appendRevision(input: { page: WikiPage; actorId: number; title: string; body: string; reason: string; sourceRefsJson?:string; action: "edit" | "rollback"; auditDetails: Record<string, unknown> }): void {
     const now = this.clock().toISOString();
     const nextRevision = input.page.currentRevision + 1;
     this.store.db.transaction(() => {
+      if (input.sourceRefsJson !== undefined) this.store.db.prepare("UPDATE knowledge_wiki_pages SET source_refs_json=? WHERE id=?").run(input.sourceRefsJson,input.page.id);
       this.store.db.prepare("INSERT INTO knowledge_wiki_page_revisions(id,page_id,revision,title,body,change_reason,author_id,created_at) VALUES (?,?,?,?,?,?,?,?)")
         .run(randomUUID(), input.page.id, nextRevision, input.title, input.body, input.reason, input.actorId, now);
       this.store.db.prepare("UPDATE knowledge_wiki_pages SET title = ?, body = ?, current_revision = ?, updated_at = ? WHERE id = ?")

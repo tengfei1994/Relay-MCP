@@ -319,12 +319,31 @@ export async function executeIngestJob(store: KnowledgeStore, id: string, execut
     const result: ProductDocumentImportReport | ArtifactIngestReport = kind.kind === "artifact_set" ? ingestArtifactSet(store, options as never) : await importKnowledgeProductsAsync(store, { ...options, onProgress: (progress) => { assertOwner(); store.db.prepare("UPDATE knowledge_ingest_jobs SET result_json=?,updated_at=? WHERE id=? AND status='running' AND owner_token=?").run(JSON.stringify(progress), new Date().toISOString(), id, ownerToken); } });
     if (kind.kind === "product_documents") {
       const documentIds = (result as ProductDocumentImportReport).documents;
+      if (options.classification) store.db.transaction(() => {
+        if (options.classification === "project" && !options.sourceProjectId) throw new Error("Project material requires a source project");
+        const get = store.db.prepare("SELECT classification FROM knowledge_product_classifications WHERE document_id=?");
+        const classify = store.db.prepare("INSERT INTO knowledge_product_classifications(document_id,classification,reason,updated_at) VALUES(?,?,?,?) ON CONFLICT(document_id) DO NOTHING");
+        for (const documentId of documentIds) {
+          const existing = get.get(documentId) as { classification?: string } | undefined;
+          if (existing && existing.classification !== options.classification) throw new Error("Existing document has a different classification; review it before importing");
+          if (options.classification === "project") {
+            const row = store.db.prepare("SELECT project_id FROM knowledge_documents WHERE id=?").get(documentId) as { project_id?: string | null } | undefined;
+            if (row?.project_id && row.project_id !== options.sourceProjectId) throw new Error("Existing document belongs to a different project");
+            store.db.prepare("UPDATE knowledge_documents SET project_id=? WHERE id=?").run(options.sourceProjectId, documentId);
+            store.db.prepare("UPDATE knowledge_scope_bindings SET visibility='project',source_project_id=? WHERE document_id=?").run(options.sourceProjectId, documentId);
+          } else if (options.sourceProjectId) {
+            store.db.prepare("UPDATE knowledge_scope_bindings SET source_project_id=? WHERE document_id=?").run(options.sourceProjectId, documentId);
+          }
+          classify.run(documentId, options.classification, "Classified at import", new Date().toISOString());
+        }
+      })();
       const groups = documentIds.length
         ? (store.db.prepare(`SELECT DISTINCT COALESCE(NULLIF(p.topic_group_id,''),b.topic_id,'family:' || p.document_family_id) AS topic_group_id
           FROM knowledge_product_documents p LEFT JOIN knowledge_product_document_bindings b ON b.document_id=p.id
           WHERE p.id IN (${documentIds.map(() => "?").join(",")})`).all(...documentIds) as Array<{ topic_group_id?: string }>).map(row => row.topic_group_id).filter((value): value is string => Boolean(value))
         : [];
-      enqueueWikiGeneration(store, { topicGroupIds: groups, triggerId: (result as ProductDocumentImportReport).runId, triggerKind: "automatic" });
+      if (options.classification === "product") enqueueWikiGeneration(store, { topicGroupIds: groups, triggerId: (result as ProductDocumentImportReport).runId, triggerKind: "automatic" });
+      else if (options.classification === "project" && options.sourceProjectId) enqueueWikiGeneration(store, { topicGroupIds: groups, projectId: options.sourceProjectId, triggerId: (result as ProductDocumentImportReport).runId, triggerKind: "automatic" });
     }
     const resultStatus = kind.kind === "artifact_set" ? "succeeded" : (result as ProductDocumentImportReport).status;
     // Item detail already lives in the import tables. Do not return tens of

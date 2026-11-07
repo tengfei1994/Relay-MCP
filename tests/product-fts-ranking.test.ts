@@ -13,6 +13,7 @@ function add(store:KnowledgeStore,id:string,chunks:string[],extra:{project?:stri
     .run(id,"product_document","Guide "+id,chunks.join("\n"),extra.lifecycle??"approved",extra.project??null,extra.environment??null,extra.version??"21.3",extra.module??"Workflow",id+".md",now,extra.updated??now);
   store.db.prepare("INSERT INTO knowledge_product_documents(id,document_family_id,document_type,source_path,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?)")
     .run(id,id,"guide",id+".md",extra.version??"21.3",now,now);
+  store.db.prepare("INSERT INTO knowledge_product_classifications(document_id,classification,updated_at) VALUES (?,?,?)").run(id,extra.project ? "project" : extra.environment ? "pending" : "product",now);
   chunks.forEach((content,ordinal)=>{
     store.db.prepare("INSERT INTO knowledge_chunks(id,document_id,ordinal,content,content_sha256) VALUES(?,?,?,?,?)").run(id+ordinal,id,ordinal,content,"fixture");
     store.db.prepare("INSERT INTO knowledge_fts(document_id,title,body) VALUES(?,?,?)").run(id,"Guide "+id,content);

@@ -44,7 +44,7 @@ test("Capture UI renders independent server-paged histories, not sliced arrays",
   assert.match(history, /\(page - 1\) \* size/);
 });
 
-test("capture HTTP pages expose all events with stable order and scoped counts", async () => {
+test("capture HTTP pages expose only owned project events with stable order and scoped counts", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-capture-http-pages-"));
   const previous = { DB_PATH: process.env.DB_PATH, KNOWLEDGE_DB_PATH: process.env.KNOWLEDGE_DB_PATH, KNOWLEDGE_EVIDENCE_ROOT: process.env.KNOWLEDGE_EVIDENCE_ROOT };
   process.env.DB_PATH = join(root, "app.db");
@@ -70,16 +70,14 @@ test("capture HTTP pages expose all events with stable order and scoped counts",
       assert.equal(reply.statusCode, 200, reply.body);
       return reply.json();
     };
-    const first = await get(0); const second = await get(10); const last = await get(230);
-    assert.equal(first.page.total, 235);
+    const first = await get(0); const second = await get(10); const last = await get(110);
+    assert.equal(first.page.total, 118);
     assert.equal(first.events[0].id, "event-234");
-    assert.equal(second.events[0].id, "event-224");
-    assert.equal(last.events.length, 5);
+    assert.equal(second.events[0].id, "event-214");
+    assert.equal(last.events.length, 8);
     assert.ok(!first.events.some((a: any) => second.events.some((b: any) => a.id === b.id)));
-    const scoped = await get(110, false);
-    assert.equal(scoped.page.total, 118);
-    assert.equal(scoped.events.length, 8);
-    assert.ok(scoped.events.every((row: any) => row.projectId === "1"));
+    assert.ok(first.events.every((row: any) => row.projectId === "1"));
+    assert.equal((await app.inject({url:"/api/knowledge/operations/capture/events",headers:{"x-test-admin":"false"}})).statusCode,403);
     writeFileSync(join(root, "knowledge-capture-dead-letter.jsonl"), Array.from({ length: 235 }, (_, i) => JSON.stringify({ event: { id: `dead-${i}`, projectId: "1" }, reason: "test" })).join("\n"));
     const dead = await app.inject({ url: "/api/knowledge/operations/capture/dead-letter?limit=10&offset=230", headers: { "x-test-admin": "true" } });
     assert.equal(dead.statusCode, 200, dead.body);

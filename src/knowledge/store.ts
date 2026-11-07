@@ -48,6 +48,7 @@ import { KNOWLEDGE_ENTITY_EVIDENCE_INDEX_MIGRATION } from "./migrations/051-know
 import { UNIFIED_PRODUCT_WIKI_MIGRATION } from "./migrations/052-unified-product-wiki.js";
 import { WIKI_GENERATION_CONTROLS_MIGRATION } from "./migrations/053-wiki-generation-controls.js";
 import { WIKI_DIRECTORY_ASSIGNMENTS_MIGRATION } from "./migrations/054-wiki-directory-assignments.js";
+import { KNOWLEDGE_ACCESS_MIGRATION } from "./migrations/055-knowledge-access.js";
 import { PROVIDER_SECRETS_MIGRATION } from "./migrations/039-provider-secrets.js";
 import { WEKNORA_DOCUMENT_MIGRATION } from "./migrations/031-weknora-documents.js";
 import { WORK_SESSION_MIGRATION } from "./migrations/029-work-sessions.js";
@@ -128,6 +129,7 @@ const KNOWLEDGE_MIGRATIONS: Array<{ version: string; sql: string; requiresForeig
   UNIFIED_PRODUCT_WIKI_MIGRATION,
   WIKI_GENERATION_CONTROLS_MIGRATION,
   WIKI_DIRECTORY_ASSIGNMENTS_MIGRATION,
+  KNOWLEDGE_ACCESS_MIGRATION,
 ];
 
 const KNOWLEDGE_BUSY_TIMEOUT_MS = parseBoundedNumber(
@@ -675,11 +677,12 @@ export class KnowledgeStore {
   }
 
   /** Re-queue immutable historical events for a controlled capture replay. */
-  replayCaptureEvents(options: { eventIds?: string[]; projectId?: string; type?: string; from?: string; to?: string; limit?: number; dryRun?: boolean } = {}): { matched: number; queued: number; eventIds: string[] } {
+  replayCaptureEvents(options: { eventIds?: string[]; projectId?: string; allowedProjectIds?:string[]; type?: string; from?: string; to?: string; limit?: number; dryRun?: boolean } = {}): { matched: number; queued: number; eventIds: string[] } {
     const where: string[] = ["length(trim(event_key)) > 0"];
     const params: unknown[] = [];
     if (options.eventIds?.length) { where.push(`id IN (${options.eventIds.map(() => "?").join(",")})`); params.push(...options.eventIds); }
     if (options.projectId) { where.push("project_id = ?"); params.push(options.projectId); }
+    if (options.allowedProjectIds) { where.push("project_id IN (SELECT value FROM json_each(?))"); params.push(JSON.stringify(options.allowedProjectIds)); }
     if (options.type) { where.push("type = ?"); params.push(options.type); }
     if (options.from) { where.push("occurred_at >= ?"); params.push(options.from); }
     if (options.to) { where.push("occurred_at <= ?"); params.push(options.to); }
@@ -828,13 +831,17 @@ export class KnowledgeStore {
     const insert = this.db.prepare("INSERT INTO knowledge_chunks(id,document_id,ordinal,content,content_sha256) VALUES (?,?,?,?,?)");
     const ftsRemove = this.db.prepare("DELETE FROM knowledge_fts WHERE document_id = ?");
     const ftsInsert = this.db.prepare("INSERT INTO knowledge_fts(document_id,title,body) VALUES (?,?,?)");
+    const productFtsRemove = this.db.prepare("DELETE FROM knowledge_product_chunk_fts WHERE document_id = ?");
+    const productFtsInsert = this.db.prepare("INSERT INTO knowledge_product_chunk_fts(chunk_id,document_id,title,body) VALUES (?,?,?,?)");
     this.db.transaction(() => {
       remove.run(document.id);
       if (replaceExisting) ftsRemove.run(document.id);
+      productFtsRemove.run(document.id);
       chunks.forEach((content, ordinal) => {
         const hash = createHash("sha256").update(content, "utf8").digest("hex");
         insert.run(`${document.id}:chunk:${ordinal}`, document.id, ordinal, content, hash);
         ftsInsert.run(document.id, `${document.title} [chunk ${ordinal + 1}]`, content);
+        if (document.kind === "product_document") productFtsInsert.run(`${document.id}:chunk:${ordinal}`,document.id,document.title,content);
       });
     })();
   }

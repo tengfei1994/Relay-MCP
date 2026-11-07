@@ -19,10 +19,12 @@ function local(store: KnowledgeStore, id: string, project?: string, environment?
     .run(id, "product_document", "Local pump manual", "Obsolete local pump body", "approved", project ?? null, environment ?? null, "21.3", "old/" + id, "old-sha", NOW, NOW);
   store.db.prepare("INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,source_path,source_sha256,version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)")
     .run(id, "pump-family", "guide", "en", "old/" + id, "old-sha", "21.3", NOW, NOW);
+  store.db.prepare("INSERT OR IGNORE INTO knowledge_product_classifications(document_id,classification,updated_at) VALUES (?,?,?)").run(id,project ? "project" : environment ? "pending" : "product",NOW);
 }
 function mapped(store: KnowledgeStore, id: string, values: { project?: string; environment?: string; status?: string; kb?: string; verified?: boolean; version?: string } = {}) {
   store.db.prepare("INSERT INTO knowledge_weknora_documents(id,external_document_id,external_knowledge_base_id,external_chunk_ids_json,title,normalized_content_sha256,raw_sha256,parser_version,product_version,source_path,project_id,environment,language,status,idempotency_key,created_at,updated_at,upstream_verified_at,upstream_parse_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
     .run(id, "ext-" + id, values.kb ?? KB, JSON.stringify(["chunk-" + id]), "Verified pump manual", createHash("sha256").update("Actual engine body").digest("hex"), "a".repeat(64), "v2", values.version ?? "21.3", "manual/" + id + ".html#setup", values.project ?? "p1", values.environment ?? "dev", "en", values.status ?? "published", id, NOW, NOW, values.verified === false ? null : NOW, "completed");
+  store.db.prepare("INSERT OR IGNORE INTO knowledge_product_classifications(document_id,classification,updated_at) VALUES (?,'project',?)").run(id,NOW);
 }
 function reference(id: string, override: Partial<KnowledgeReference> = {}): KnowledgeReference {
   return { provider: "weknora", documentId: "ext-" + id, chunkId: "chunk-" + id, title: "Untrusted upstream title", version: "wrong", sourceLocator: "wrong/private/path", snippet: "Actual engine pump excerpt", score: 0.9, retrievalRunId: "run-1", ...override };
@@ -168,6 +170,7 @@ test("Product search rechecks publication after a concurrent upstream request", 
 
 test("a scoped Project can retrieve explicitly global published Product sources without seeing foreign scopes",()=>fixture(async({store,control,refs,select,searches})=>{
   mapped(store,"global");store.db.prepare("UPDATE knowledge_weknora_documents SET project_id=NULL,environment=NULL WHERE id='global'").run();
+  store.db.prepare("UPDATE knowledge_product_classifications SET classification='product' WHERE document_id='global'").run();
   mapped(store,"foreign-global-env",{project:"p2",environment:"prod"});
   select();refs.push(reference("global"));
   const rows=await searchProductBackend(store,{...scope,query:"pump"},control);
@@ -290,6 +293,7 @@ test("no-project Product boundaries expose global local records without ACL and 
 test("relay_local directly reads only verified published global engine mappings by engine or external ID", () => fixture(async ({ store, control, reads }) => {
   mapped(store, "global");
   store.db.prepare("UPDATE knowledge_weknora_documents SET project_id=NULL,environment=NULL WHERE id='global'").run();
+  store.db.prepare("UPDATE knowledge_product_classifications SET classification='product' WHERE document_id='global'").run();
   const input = { userId: 99, isAdmin: true };
   assert.equal((await getProductBackend(store, { ...input, documentId: "global" }, control)).body, "Actual engine body");
   assert.equal((await getProductBackend(store, { ...input, documentId: "ext-global" }, control)).body, "Actual engine body");

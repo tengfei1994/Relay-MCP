@@ -125,9 +125,9 @@ export default function ToolsPage() {
   return (
     <AppPageFrame variant="wide">
       <div className="tools-page">
-      <header className="mb-7">
-        <div className="flex flex-wrap items-center justify-end gap-3">
-          <div className="font-mono text-[13px] text-muted">{tools.length} commands, {filtered.length} shown</div>
+      <header className="tools-toolbar">
+        <div className="font-mono text-[13px] text-muted">{tools.length} commands, {filtered.length} shown</div>
+        <div className="tools-toolbar-controls">
           <label className="relative min-w-[280px] flex-1"><Search size={15} className="pointer-events-none absolute left-3 top-3 text-muted" /><input aria-label="Search commands" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search command name or description" className="h-10 w-full rounded-[10px] border border-white/10 bg-white/[.04] pl-9 pr-9 text-sm text-fg outline-none placeholder:text-muted focus:border-mint" />{query && <button onClick={() => setQuery("")} className="absolute right-2 top-2 rounded p-1 text-muted hover:bg-white/[.08] hover:text-fg" aria-label="Clear search"><X size={15} /></button>}</label>
           <div className="flex h-10 items-center rounded-[10px] border border-white/10 bg-white/[.04] p-1"><Filter size={14} className="mx-2 text-muted" />{["all", "read-only", "mutation"].map((value) => <button key={value} onClick={() => setAccess(value)} className={`rounded-[8px] px-3 py-1.5 text-xs transition ${access === value ? "bg-white/[.12] text-fg" : "text-muted hover:text-fg"}`}>{value === "all" ? "All access" : value === "read-only" ? "Read-only" : "Mutation"}</button>)}</div>
         </div>

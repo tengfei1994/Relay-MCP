@@ -221,9 +221,12 @@ export default function ServersPage() {
 
   return (
     <AppPageFrame>
-      <div className="mb-4 flex justify-end"><Button variant="primary" onClick={() => setShowAdd(true)}><Plus size={14} /> Add server</Button></div>
+      <div className="runtime-page-head">
+        <p className="runtime-page-summary">{servers.length ? `${servers.length} server${servers.length === 1 ? "" : "s"}` : "No servers added yet."}</p>
+        <Button variant="primary" onClick={() => setShowAdd(true)}><Plus size={14} /> Add server</Button>
+      </div>
 
-      <div className="space-y-3">
+      {servers.length > 0 && <div className="space-y-3">
         {servers.map((s) => (
           <div key={s.id} className="glass flex flex-wrap items-center justify-between gap-4 rounded-panel px-5 py-4">
             <div className="flex min-w-0 items-center gap-3">
@@ -274,8 +277,7 @@ export default function ServersPage() {
             </div>
           </div>
         ))}
-        {servers.length === 0 && <p className="text-sm text-muted">No servers added yet.</p>}
-      </div>
+      </div>}
 
       <Dialog
         open={showAdd}

@@ -8,7 +8,9 @@ import { promisify } from "util";
 import { mkdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { NodeSSH } from "node-ssh";
+import { randomUUID } from "crypto";
 import { quotePosix, quotePowerShell } from "../../shared/shell-utils.js";
+import { resolveWorkspacePath } from "../../shared/workspace-path.js";
 import "dotenv/config";
 
 const execFileAsync = promisify(execFile);
@@ -100,7 +102,6 @@ export async function serverRoutes(app: FastifyInstance) {
       const sshUser = body.data.sshUser?.trim() ?? "";
       const agentId = body.data.agentId?.trim() || undefined;
       const userId = req.user.id;
-      const username = req.user.username;
 
       if (connectionMode === "ssh" && (!host || !sshUser)) {
         return reply.status(400).send({ error: "Host and SSH user are required for SSH servers" });
@@ -110,9 +111,7 @@ export async function serverRoutes(app: FastifyInstance) {
       }
 
       // Generate unique key pair for this server
-      const keyDir = join(SSH_KEYS_DIR, username);
-      const safeHost = (host || agentId || name).replace(/[^a-zA-Z0-9.-]/g, "_");
-      const keyPath = join(keyDir, `${safeHost}_${Date.now()}`);
+      const keyPath = resolveWorkspacePath(SSH_KEYS_DIR, `user-${userId}/${randomUUID()}`);
 
       let publicKey = "";
       if (connectionMode === "ssh") {

@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { zipSync } from "fflate";
 import test, { mock } from "node:test";
 import { syncBuiltinESMExports } from "node:module";
 test("Project file operations preview, rename, delete, and enforce workspace ownership", async () => {
   const root = mkdtempSync(join(process.cwd(), ".tmp-project-files-"));
-  const previous = { DB_PATH: process.env.DB_PATH, WORKSPACE_ROOT: process.env.WORKSPACE_ROOT };
+  const previous = { DB_PATH: process.env.DB_PATH, WORKSPACE_ROOT: process.env.WORKSPACE_ROOT, RELAY_STATE_ROOT: process.env.RELAY_STATE_ROOT };
   process.env.DB_PATH = join(root, "app.db");
   process.env.WORKSPACE_ROOT = join(root, "workspaces");
+  process.env.RELAY_STATE_ROOT = join(root, "state");
   const workspace = join(root, "workspace");
   mkdirSync(join(workspace, "folder"), { recursive: true });
   writeFileSync(join(workspace, "notes.txt"), "line one\nline two\n", "utf8");
@@ -31,11 +32,29 @@ test("Project file operations preview, rename, delete, and enforce workspace own
   runMigrations();
   db.insert(users).values({ id: 7, username: "owner", passwordHash: "test" }).run();
   db.insert(users).values({ id: 8, username: "other", passwordHash: "test" }).run();
+  db.insert(users).values({ id: 9, username: "../outside", passwordHash: "test" }).run();
   db.insert(projects).values({ id: 1, userId: 7, name: "fixture", workspacePath: workspace }).run();
   const app = Fastify();
-  app.decorate("authenticate", async (request: any) => { request.user = request.headers["x-other"] ? { id: 8, username: "other", isAdmin: false } : { id: 7, username: "owner", isAdmin: false }; });
+  app.decorate("authenticate", async (request: any) => { request.user = request.headers["x-unsafe"] ? { id: 9, username: "../outside", isAdmin: false } : request.headers["x-other"] ? { id: 8, username: "other", isAdmin: false } : { id: 7, username: "owner", isAdmin: false }; });
   await app.register(projectRoutes);
   try {
+    const unsafe = await app.inject({ method: "POST", url: "/api/projects", headers: { "x-unsafe": "1" }, payload: { name: "escape" } });
+    assert.equal(unsafe.statusCode, 201, "legacy usernames can create safely without being used as paths");
+    const first = await app.inject({ method: "POST", url: "/api/projects", payload: { name: "shared" } });
+    const second = await app.inject({ method: "POST", url: "/api/projects", headers: { "x-other": "1" }, payload: { name: "shared" } });
+    assert.equal(first.statusCode, 201);
+    assert.equal(second.statusCode, 201);
+    const { eq } = await import("drizzle-orm");
+    const newWorkspaces = [unsafe, first, second].map((response) => db.select().from(projects).where(eq(projects.id, response.json().project.id)).get()!.workspacePath);
+    assert.equal(new Set(newWorkspaces.map((path) => path.toLowerCase())).size, 3, "new projects use separate paths even on case-insensitive filesystems");
+    assert.ok(newWorkspaces.every((path) => path.startsWith(join(root, "workspaces", ".relay-projects"))));
+    assert.equal((await app.inject({ method: "GET", url: `/api/projects/${first.json().project.id}/files`, headers: { "x-other": "1" } })).statusCode, 404);
+    const projectList = await app.inject({ method: "GET", url: "/api/projects" });
+    assert.equal(projectList.statusCode, 200);
+    assert.equal(projectList.body.includes(workspace), false, "project lists do not expose workspace paths");
+    assert.equal((await app.inject({ method: "GET", url: "/api/projects/1", headers: { "x-other": "1" } })).statusCode, 404);
+    const projectDetail = await app.inject({ method: "GET", url: "/api/projects/1" });
+    assert.equal(projectDetail.body.includes(workspace), false, "project details do not expose workspace paths");
     const listed = await app.inject({ method: "GET", url: "/api/projects/1/files" });
     assert.equal(listed.statusCode, 200);
     assert.deepEqual(listed.json().entries.map((entry: any) => entry.name).sort(), ["bundle.zip", "folder", "notes.txt", "preview.ico", "preview.png"]);
@@ -58,6 +77,36 @@ test("Project file operations preview, rename, delete, and enforce workspace own
     const archivePayload = archive.json() as { entries: Array<{ path: string }> };
     assert.deepEqual(archivePayload.entries.map((entry) => entry.path), ["assets/icon.bin", "README.txt"]);
 
+    const fs = (await import("node:fs")).default;
+    const originalRead = fs.readFileSync;
+    const deniedPaths = new Set([join(workspace, "preview.ico"), join(workspace, "bundle.zip"), join(workspace, "notes.txt")]);
+    const readMock = mock.method(fs, "readFileSync", ((path: any, ...args: any[]) => {
+      if (deniedPaths.has(String(path))) throw Object.assign(new Error(`EACCES: ${path}`), { code: "EACCES" });
+      return (originalRead as any)(path, ...args);
+    }) as typeof fs.readFileSync);
+    syncBuiltinESMExports();
+    try {
+      for (const url of ["/api/projects/1/files/raw?path=preview.ico", "/api/projects/1/files/archive?path=bundle.zip", "/api/projects/1/files/content?path=notes.txt"]) {
+        const inaccessible = await app.inject({ method: "GET", url });
+        assert.equal(inaccessible.statusCode, 403);
+        assert.equal(inaccessible.body.includes(workspace), false, "file permission errors must not reveal internal paths");
+      }
+    } finally {
+      readMock.mock.restore();
+      syncBuiltinESMExports();
+    }
+
+    const outside = join(root, "outside");
+    mkdirSync(outside);
+    try {
+      symlinkSync(outside, join(workspace, "external-link"), "junction");
+      const withoutExternal = await app.inject({ method: "GET", url: "/api/projects/1/files" });
+      assert.equal(withoutExternal.json().entries.some((entry: any) => entry.name === "external-link"), false);
+      assert.equal((await app.inject({ method: "GET", url: "/api/projects/1/files?path=external-link" })).statusCode, 400);
+    } catch (error: any) {
+      if (!["EPERM", "EACCES", "ENOSYS"].includes(error?.code)) throw error;
+    }
+
     const renamed = await app.inject({ method: "PATCH", url: "/api/projects/1/files", payload: { path: "notes.txt", name: "renamed.txt" } });
     assert.equal(renamed.statusCode, 200);
     assert.equal(readFileSync(join(workspace, "renamed.txt"), "utf8"), "line one\nline two\n");
@@ -70,28 +119,9 @@ test("Project file operations preview, rename, delete, and enforce workspace own
     assert.equal(traversal.statusCode, 400);
     const denied = await app.inject({ method: "GET", url: "/api/projects/1/files", headers: { "x-other": "1" } });
     assert.equal(denied.statusCode, 404);
-
-    const fs = (await import("node:fs")).default;
-    const originalRead = fs.readFileSync;
-    const deniedPaths = new Set([join(workspace, "preview.ico"), join(workspace, "bundle.zip")]);
-    const readMock = mock.method(fs, "readFileSync", ((path: any, ...args: any[]) => {
-      if (deniedPaths.has(String(path))) throw Object.assign(new Error(`EACCES: ${path}`), { code: "EACCES" });
-      return (originalRead as any)(path, ...args);
-    }) as typeof fs.readFileSync);
-    syncBuiltinESMExports();
-    try {
-      const unreadableRaw = await app.inject({ method: "GET", url: "/api/projects/1/files/raw?path=preview.ico" });
-      assert.equal(unreadableRaw.statusCode, 403);
-      assert.equal(unreadableRaw.json().error, "Unable to read file");
-      assert.equal(unreadableRaw.body.includes(workspace), false);
-      const unreadableArchive = await app.inject({ method: "GET", url: "/api/projects/1/files/archive?path=bundle.zip" });
-      assert.equal(unreadableArchive.statusCode, 403);
-      assert.equal(unreadableArchive.json().error, "Unable to read archive");
-      assert.equal(unreadableArchive.body.includes(workspace), false);
-    } finally {
-      readMock.mock.restore();
-      syncBuiltinESMExports();
-    }
+    const audit = readFileSync(join(root, "state", "audit.jsonl"), "utf8");
+    for (const event of ["project_created", "project_files_listed", "project_file_previewed", "project_archive_previewed", "project_file_renamed", "project_file_deleted"]) assert.match(audit, new RegExp(event));
+    assert.equal(audit.includes("line one"), false, "file contents are excluded from audit entries");
   } finally {
     await app.close();
     (db as any).session.client.close();

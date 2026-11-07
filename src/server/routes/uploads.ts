@@ -17,6 +17,7 @@ import {
   publicUploadSession,
 } from "../../shared/upload-store.js";
 import { resolveWorkspacePath } from "../../shared/workspace-path.js";
+import { authorizeTransfer } from "../transfer-auth.js";
 
 const CreateUploadSchema = z.object({
   path: z.string().min(1),
@@ -56,6 +57,7 @@ export async function uploadRoutes(app: FastifyInstance) {
       const { session, token } = createUploadSession({
         userId: req.user.id,
         projectId: project.id,
+        origin: "web",
         project: project.name,
         path: parsed.data.path,
         maxBytes: parsed.data.maxBytes,
@@ -90,12 +92,11 @@ export async function uploadRoutes(app: FastifyInstance) {
     if (!token) return reply.status(401).send({ error: "Missing X-Relay-Upload-Token header" });
 
     let tempPath: string | undefined;
+    let authorized = false;
     try {
       const session = authenticateUploadSession(id, token);
-      const project = db.select().from(projects).where(eq(projects.id, session.projectId)).get();
-      if (!project || project.userId !== session.userId) {
-        throw new Error("Upload project is no longer available");
-      }
+      const project = authorizeTransfer(session.userId, session.projectId, session.mcpTokenDbId, session.origin);
+      authorized = true;
 
       const targetPath = resolveWorkspacePath(project.workspacePath, session.path);
       mkdirSync(dirname(targetPath), { recursive: true });
@@ -143,7 +144,7 @@ export async function uploadRoutes(app: FastifyInstance) {
         try { unlinkSync(tempPath); } catch {}
       }
       const message = error instanceof Error ? error.message : String(error);
-      failUploadSession(id, message);
+      if (authorized) failUploadSession(id, message);
       return reply.status(400).send({ error: message });
     }
   });

@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import { db } from "../db/index.js";
 import { mcpTokenProjectScopes, mcpTokenServerScopes, mcpTokens, projects, projectServers, servers } from "../db/schema.js";
 import { z } from "zod";
+import { writeAudit } from "../../shared/job-store.js";
 
 const CreateTokenSchema = z.object({
   name: z.string().min(1).max(100),
@@ -11,7 +12,7 @@ const CreateTokenSchema = z.object({
   projectIds: z.array(z.number().int()).optional(),
   projectServerId: z.number().int().optional(),
   defaultServerId: z.number().int().optional(),
-  serverIds: z.array(z.number().int()).min(1),
+  serverIds: z.array(z.number().int()).default([]),
   environment: z.string().min(1).max(50).default("production"),
   allowAllProjects: z.boolean().default(false),
   canCreateProjects: z.boolean().default(false),
@@ -22,7 +23,6 @@ export async function tokenRoutes(app: FastifyInstance) {
     const rows = db
       .select({
         id: mcpTokens.id,
-        tokenId: mcpTokens.tokenId,
         name: mcpTokens.name,
         projectId: mcpTokens.projectId,
         projectName: projects.name,
@@ -81,9 +81,6 @@ export async function tokenRoutes(app: FastifyInstance) {
     const scopedProjectIds = Array.from(new Set([...(body.data.projectIds ?? []), ...(body.data.projectId ? [body.data.projectId] : [])]));
     const scopedServerIds = Array.from(new Set(body.data.serverIds));
 
-    if (!body.data.allowAllProjects && scopedProjectIds.length === 0) {
-      return reply.status(400).send({ error: "Select at least one project or allow all projects" });
-    }
     if (body.data.defaultServerId && !scopedServerIds.includes(body.data.defaultServerId)) {
       return reply.status(400).send({ error: "Default server must be included in allowed servers" });
     }
@@ -130,6 +127,7 @@ export async function tokenRoutes(app: FastifyInstance) {
           serverId: projectServers.serverId,
           environment: projectServers.environment,
           projectName: projects.name,
+          projectUserId: projects.userId,
           serverUserId: servers.userId,
         })
         .from(projectServers)
@@ -137,7 +135,7 @@ export async function tokenRoutes(app: FastifyInstance) {
         .innerJoin(servers, eq(projectServers.serverId, servers.id))
         .where(eq(projectServers.id, body.data.projectServerId))
         .get();
-      if (!link || link.serverUserId !== req.user.id) {
+      if (!link || link.serverUserId !== req.user.id || link.projectUserId !== req.user.id) {
         return reply.status(404).send({ error: "Project server link not found" });
       }
       if (body.data.projectId && link.projectId !== body.data.projectId) {
@@ -147,6 +145,10 @@ export async function tokenRoutes(app: FastifyInstance) {
       environment = link.environment ?? environment;
       if (!scopedProjectIds.includes(link.projectId)) scopedProjectIds.push(link.projectId);
       if (!scopedServerIds.includes(link.serverId)) scopedServerIds.push(link.serverId);
+    }
+
+    if (body.data.canCreateProjects && !body.data.allowAllProjects && scopedProjectIds.length === 0) {
+      return reply.status(400).send({ error: "Project creation requires a project scope" });
     }
 
     const tokenId = randomUUID();
@@ -172,7 +174,7 @@ export async function tokenRoutes(app: FastifyInstance) {
         .values(scopedProjectIds.map((projectId) => ({ tokenId: row.id, projectId })))
         .run();
     }
-    db.insert(mcpTokenServerScopes)
+    if (scopedServerIds.length) db.insert(mcpTokenServerScopes)
       .values(scopedServerIds.map((serverId) => ({ tokenId: row.id, serverId })))
       .run();
 
@@ -188,7 +190,9 @@ export async function tokenRoutes(app: FastifyInstance) {
       defaultServerId: body.data.defaultServerId,
     });
 
-    return reply.status(201).send({ token, profile: row });
+    writeAudit({ event: "mcp_token_created", userId: req.user.id, tokenDbId: row.id });
+    const { tokenId: _tokenId, ...profile } = row;
+    return reply.status(201).send({ token, profile });
   });
 
   app.delete("/api/tokens/:id", { onRequest: [app.authenticate] }, async (req, reply) => {
@@ -198,7 +202,7 @@ export async function tokenRoutes(app: FastifyInstance) {
       .from(mcpTokens)
       .where(and(eq(mcpTokens.id, tokenDbId), eq(mcpTokens.userId, req.user.id)))
       .get();
-    if (!existing) return reply.status(404).send({ error: "API key not found" });
+    if (!existing) return reply.status(404).send({ error: "MCP Access Token not found" });
 
     db.transaction((tx) => {
       tx.delete(mcpTokenProjectScopes).where(eq(mcpTokenProjectScopes.tokenId, tokenDbId)).run();
@@ -207,6 +211,7 @@ export async function tokenRoutes(app: FastifyInstance) {
         .where(and(eq(mcpTokens.id, tokenDbId), eq(mcpTokens.userId, req.user.id)))
         .run();
     });
+    writeAudit({ event: "mcp_token_deleted", userId: req.user.id, tokenDbId });
     return reply.send({ ok: true });
   });
 
@@ -220,7 +225,7 @@ export async function tokenRoutes(app: FastifyInstance) {
       .from(mcpTokens)
       .where(and(eq(mcpTokens.id, tokenDbId), eq(mcpTokens.userId, req.user.id)))
       .get();
-    if (!existing) return reply.status(404).send({ error: "API key not found" });
+    if (!existing) return reply.status(404).send({ error: "MCP Access Token not found" });
 
     let environment = body.data.environment;
     const scopedProjectIds = Array.from(new Set([
@@ -229,9 +234,6 @@ export async function tokenRoutes(app: FastifyInstance) {
     ]));
     const scopedServerIds = Array.from(new Set(body.data.serverIds));
 
-    if (!body.data.allowAllProjects && scopedProjectIds.length === 0) {
-      return reply.status(400).send({ error: "Select at least one project or allow all projects" });
-    }
     if (body.data.defaultServerId && !scopedServerIds.includes(body.data.defaultServerId)) {
       return reply.status(400).send({ error: "Default server must be included in allowed servers" });
     }
@@ -262,13 +264,15 @@ export async function tokenRoutes(app: FastifyInstance) {
         projectId: projectServers.projectId,
         serverId: projectServers.serverId,
         environment: projectServers.environment,
+        projectUserId: projects.userId,
         serverUserId: servers.userId,
       })
         .from(projectServers)
+        .innerJoin(projects, eq(projectServers.projectId, projects.id))
         .innerJoin(servers, eq(projectServers.serverId, servers.id))
         .where(eq(projectServers.id, body.data.projectServerId))
         .get();
-      if (!link || link.serverUserId !== req.user.id) {
+      if (!link || link.serverUserId !== req.user.id || link.projectUserId !== req.user.id) {
         return reply.status(404).send({ error: "Project server link not found" });
       }
       if (body.data.projectId && link.projectId !== body.data.projectId) {
@@ -277,6 +281,10 @@ export async function tokenRoutes(app: FastifyInstance) {
       environment = link.environment ?? environment;
       if (!scopedProjectIds.includes(link.projectId)) scopedProjectIds.push(link.projectId);
       if (!scopedServerIds.includes(link.serverId)) scopedServerIds.push(link.serverId);
+    }
+
+    if (body.data.canCreateProjects && !body.data.allowAllProjects && scopedProjectIds.length === 0) {
+      return reply.status(400).send({ error: "Project creation requires a project scope" });
     }
 
     const row = db.transaction((tx) => {
@@ -309,6 +317,8 @@ export async function tokenRoutes(app: FastifyInstance) {
       return updated;
     });
 
-    return reply.send({ profile: row });
+    writeAudit({ event: "mcp_token_scope_changed", userId: req.user.id, tokenDbId });
+    const { tokenId: _tokenId, ...profile } = row;
+    return reply.send({ profile });
   });
 }

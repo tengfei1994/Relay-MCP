@@ -13,6 +13,8 @@ export interface DownloadSession {
   id: string;
   userId: number;
   projectId: number;
+  mcpTokenDbId?: number;
+  origin?: "web" | "mcp";
   project: string;
   path: string;
   bytes: number;
@@ -40,6 +42,8 @@ function hashToken(token: string): string {
 export function createDownloadSession(input: {
   userId: number;
   projectId: number;
+  mcpTokenDbId?: number;
+  origin?: "web" | "mcp";
   project: string;
   path: string;
   bytes: number;
@@ -57,6 +61,8 @@ export function createDownloadSession(input: {
     id: `download-${now}-${randomBytes(4).toString("hex")}`,
     userId: input.userId,
     projectId: input.projectId,
+    mcpTokenDbId: input.mcpTokenDbId,
+    origin: input.origin ?? (input.mcpTokenDbId === undefined ? "web" : "mcp"),
     project: input.project,
     path: input.path,
     bytes: input.bytes,

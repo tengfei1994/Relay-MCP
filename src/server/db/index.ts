@@ -23,7 +23,11 @@ export function runMigrations() {
       username TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       is_admin INTEGER DEFAULT 0,
-      knowledge_enabled INTEGER NOT NULL DEFAULT 1,
+      knowledge_enabled INTEGER NOT NULL DEFAULT 0,
+      account_status TEXT NOT NULL DEFAULT 'active',
+      reviewed_by INTEGER,
+      reviewed_at TEXT,
+      review_reason TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
 
@@ -167,6 +171,11 @@ export function runMigrations() {
   // Incremental migrations for existing databases
   try { sqlite.exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0`); } catch {}
   try { sqlite.exec(`ALTER TABLE users ADD COLUMN knowledge_enabled INTEGER NOT NULL DEFAULT 1`); } catch {}
+  // Existing accounts stay active; only subsequent self-registration is pending.
+  try { sqlite.exec(`ALTER TABLE users ADD COLUMN account_status TEXT NOT NULL DEFAULT 'active'`); } catch {}
+  try { sqlite.exec(`ALTER TABLE users ADD COLUMN reviewed_by INTEGER`); } catch {}
+  try { sqlite.exec(`ALTER TABLE users ADD COLUMN reviewed_at TEXT`); } catch {}
+  try { sqlite.exec(`ALTER TABLE users ADD COLUMN review_reason TEXT`); } catch {}
   try { sqlite.exec(`ALTER TABLE servers ADD COLUMN os TEXT DEFAULT 'linux'`); } catch {}
   try { sqlite.exec(`ALTER TABLE servers ADD COLUMN connection_mode TEXT DEFAULT 'ssh'`); } catch {}
   try { sqlite.exec(`ALTER TABLE servers ADD COLUMN agent_id TEXT`); } catch {}
@@ -180,6 +189,6 @@ export function runMigrations() {
   // Set first user as admin if no admin exists
   const adminExists = sqlite.prepare(`SELECT id FROM users WHERE is_admin = 1 LIMIT 1`).get();
   if (!adminExists) {
-    sqlite.prepare(`UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users)`).run();
+    sqlite.prepare(`UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users WHERE account_status = 'active')`).run();
   }
 }

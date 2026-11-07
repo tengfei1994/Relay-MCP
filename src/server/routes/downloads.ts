@@ -1,9 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { createReadStream, statSync } from "fs";
 import { basename } from "path";
-import { eq } from "drizzle-orm";
-import { db } from "../db/index.js";
-import { projects } from "../db/schema.js";
+import { authorizeTransfer } from "../transfer-auth.js";
 import { authenticateDownloadSession } from "../../shared/download-store.js";
 import { resolveWorkspacePath } from "../../shared/workspace-path.js";
 
@@ -15,10 +13,7 @@ export async function downloadRoutes(app: FastifyInstance) {
 
     try {
       const session = authenticateDownloadSession((req.params as { id: string }).id, token);
-      const project = db.select().from(projects).where(eq(projects.id, session.projectId)).get();
-      if (!project || project.userId !== session.userId) {
-        throw new Error("Download project is no longer available");
-      }
+      const project = authorizeTransfer(session.userId, session.projectId, session.mcpTokenDbId, session.origin);
       const filePath = resolveWorkspacePath(project.workspacePath, session.path, { mustExist: true });
       const stat = statSync(filePath);
       if (!stat.isFile()) throw new Error("Download path is not a file");

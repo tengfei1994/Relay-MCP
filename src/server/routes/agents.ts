@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getAgentStore } from "../../shared/agent-store.js";
-import { agentTokens } from "../db/schema.js";
+import { agentTokens, users, servers } from "../db/schema.js";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 
@@ -30,7 +30,6 @@ export async function agentRoutes(app: FastifyInstance) {
   const authenticateAgent = async (req: any, reply: any) => {
     try {
       await req.jwtVerify();
-      if (req.user.tokenKind === "mcp") return;
       if (req.user.tokenKind !== "agent") throw new Error("Agent endpoints require an Agent token");
       const requestedAgentId = (req.params as { agentId?: string })?.agentId;
       if (requestedAgentId && requestedAgentId.toLowerCase() !== String(req.user.agentId ?? "").toLowerCase()) {
@@ -38,10 +37,16 @@ export async function agentRoutes(app: FastifyInstance) {
       }
       const row = db.select({ id: agentTokens.id })
         .from(agentTokens)
+        .innerJoin(users, eq(users.id, agentTokens.userId))
+        .innerJoin(servers, eq(servers.id, agentTokens.serverId))
         .where(and(
           eq(agentTokens.tokenId, req.user.tokenId),
           eq(agentTokens.userId, req.user.id),
           eq(agentTokens.active, true),
+          eq(users.accountStatus, "active"),
+          eq(servers.userId, req.user.id),
+          eq(servers.agentId, req.user.agentId),
+          eq(servers.connectionMode, "agent"),
         ))
         .get();
       if (!row) throw new Error("Agent token is revoked or not found");

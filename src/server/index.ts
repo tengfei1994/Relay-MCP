@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import { existsSync } from "fs";
 import "dotenv/config";
 import { runMigrations } from "./db/index.js";
+import { registerSessionAuthentication } from "./session-auth.js";
 import { authRoutes } from "./routes/auth.js";
 import { projectRoutes } from "./routes/projects.js";
 import { serverRoutes } from "./routes/servers.js";
@@ -85,13 +86,7 @@ await app.register(fastifyJwt, {
 });
 
 // Auth decorator
-app.decorate("authenticate", async (req: any, reply: any) => {
-  try {
-    await req.jwtVerify();
-  } catch (err) {
-    reply.send(err);
-  }
-});
+registerSessionAuthentication(app);
 
 // Serve frontend build if it exists
 const frontendDist = join(__dirname, "../../frontend/dist");

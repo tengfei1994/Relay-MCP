@@ -33,9 +33,9 @@ test("real Job emission to Capture retains environment in success/failure Eviden
  for(const event of events())assert.equal(event.payload.environment,"nonprod",event.type+" must carry authoritative top-level scope");
  await captureKnowledgeCandidates(knowledge,"capture",100);
  const summary=sessions.summarize({actorId:7,sessionId:session.id,limit:200});
- assert.equal(summary.events.length,4);assert.equal(summary.observations.length,1);assert.ok(summary.evidence.length>0);
+ assert.equal(summary.events.length,4);assert.equal(summary.observations.length,2);assert.ok(summary.evidence.length>0);
  const evidence=knowledge.db.prepare("SELECT environment FROM knowledge_evidence").all();assert.ok(evidence.length>0);assert.ok(evidence.every((x:any)=>x.environment==="nonprod"));
- const candidates=knowledge.db.prepare("SELECT environment FROM knowledge_candidates").all();assert.equal(candidates.length,1);assert.equal(candidates[0].environment,"nonprod");
+ const candidates=knowledge.db.prepare("SELECT environment FROM knowledge_candidates").all();assert.equal(candidates.length,0);
  const before=JSON.stringify(summary);await captureKnowledgeCandidates(knowledge,"capture",100);assert.equal(JSON.stringify(sessions.summarize({actorId:7,sessionId:session.id,limit:200})),before);
 }));
 

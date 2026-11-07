@@ -4,6 +4,8 @@ import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { users } from "../db/schema.js";
 import { z } from "zod";
+import { writeAudit } from "../../shared/job-store.js";
+import { isSafeWorkspaceUserName } from "../../shared/workspace-path.js";
 
 const LoginSchema = z.object({
   username: z.string().min(2).max(50),
@@ -19,24 +21,36 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const { username, password } = body.data;
 
+    if (!isSafeWorkspaceUserName(username)) return reply.status(400).send({ error: "Username must use letters, numbers, hyphens or underscores" });
+
     const existing = db.select().from(users).where(eq(users.username, username)).get();
     if (existing) {
       return reply.status(409).send({ error: "Username already taken" });
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
-    // First user becomes admin
-    const userCount = db.select().from(users).all().length;
-    const isAdmin = userCount === 0;
-
-    const result = db
-      .insert(users)
-      .values({ username, passwordHash, isAdmin })
-      .returning({ id: users.id, username: users.username, isAdmin: users.isAdmin, knowledgeEnabled: users.knowledgeEnabled })
-      .get();
-
-    const token = app.jwt.sign({ id: result.id, username: result.username, isAdmin: result.isAdmin ?? false });
-    return reply.send({ token, user: result });
+    let created;
+    try {
+      // The first-account check and insert must be atomic across server processes.
+      created = db.transaction((tx) => {
+        const isAdmin = !tx.select({ id: users.id }).from(users).limit(1).get();
+        const result = tx.insert(users)
+          .values({ username, passwordHash, isAdmin, knowledgeEnabled: false, accountStatus: isAdmin ? "active" : "pending" })
+          .returning({ id: users.id, username: users.username, isAdmin: users.isAdmin, knowledgeEnabled: users.knowledgeEnabled, accountStatus: users.accountStatus })
+          .get();
+        return { result, isAdmin };
+      }, { behavior: "immediate" });
+    } catch (error) {
+      if (db.select({ id: users.id }).from(users).where(eq(users.username, username)).get()) {
+        return reply.status(409).send({ error: "Username already taken" });
+      }
+      throw error;
+    }
+    const { result, isAdmin } = created;
+    writeAudit({ event: isAdmin ? "initial_admin_created" : "registration_submitted", userId: result.id });
+    if (!isAdmin) return reply.status(201).send({ status: "pending" });
+    const token = app.jwt.sign({ id: result.id, username: result.username, isAdmin: true }, { expiresIn: "12h" });
+    return reply.status(201).send({ status: "active", token, user: result });
   });
 
   // Login
@@ -57,10 +71,17 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(401).send({ error: "Invalid credentials" });
     }
 
-    const token = app.jwt.sign({ id: user.id, username: user.username, isAdmin: user.isAdmin ?? false });
+    if (user.accountStatus !== "active") {
+      const message = user.accountStatus === "pending" ? "Your access request is awaiting administrator review."
+        : user.accountStatus === "rejected" ? "Your access request was not approved."
+        : "This account is disabled. Contact an administrator.";
+      return reply.status(403).send({ error: message, status: user.accountStatus });
+    }
+
+    const token = app.jwt.sign({ id: user.id, username: user.username, isAdmin: user.isAdmin ?? false }, { expiresIn: "12h" });
     return reply.send({
       token,
-      user: { id: user.id, username: user.username, isAdmin: user.isAdmin ?? false, knowledgeEnabled: user.knowledgeEnabled ?? true },
+      user: { id: user.id, username: user.username, isAdmin: user.isAdmin ?? false, knowledgeEnabled: user.knowledgeEnabled ?? false },
     });
   });
 

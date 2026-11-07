@@ -30,6 +30,8 @@ export interface McpUser {
   id: number;
   username: string;
   isAdmin?: boolean;
+  knowledgeEnabled?: boolean;
+  tokenKind?: string;
   tokenId?: string;
   tokenDbId?: number;
   defaultProjectId?: number;
@@ -55,6 +57,13 @@ export function registerToolsForUser(user: McpUser, dependencies: ToolRegistrati
     version: RELAY_MCP_VERSION,
   });
 
+  const livePrincipal = (): McpUser => {
+    if (typeof registry.getMcpPrincipal !== "function") return user;
+    const current = registry.getMcpPrincipal(user.id, user.tokenDbId);
+    if (!current) throw new Error("MCP user or token is unavailable");
+    return { ...user, ...current };
+  };
+
   const relayRoute = (tool: string, extra: Record<string, unknown> = {}) => ({
     route: "relay_mcp",
     tool,
@@ -64,11 +73,12 @@ export function registerToolsForUser(user: McpUser, dependencies: ToolRegistrati
 
   // ── Helper: resolve project + runner ──────────────────────────────────────
   function listAllowedProjects(): ProjectInfo[] {
-    const projects = registry.listScopedProjects(user.id, user.tokenDbId, user.allowAllProjects);
+    const current = livePrincipal();
+    const projects = registry.listScopedProjects(user.id, user.tokenDbId, current.allowAllProjects);
     // A token's default project is only a selector, not an additional scope.
     // Never fall back to it when a scoped token has no matching project-scope
     // rows; doing so would turn a stale/malformed token into an access grant.
-    if (projects.length === 0 && user.defaultProject && (!user.tokenDbId || user.allowAllProjects)) {
+    if (projects.length === 0 && user.defaultProject && (!user.tokenDbId || current.allowAllProjects)) {
       const defaultProject = registry.getProject(user.id, user.defaultProject);
       return defaultProject ? [defaultProject] : [];
     }
@@ -76,7 +86,8 @@ export function registerToolsForUser(user: McpUser, dependencies: ToolRegistrati
   }
 
   function listAllowedServerIds() {
-    return registry.listScopedServerIds(user.id, user.tokenDbId, user.allowAllProjects);
+    livePrincipal();
+    return registry.listScopedServerIds(user.id, user.tokenDbId, false);
   }
 
   function assertServerAllowed(serverId: number) {
@@ -103,7 +114,7 @@ export function registerToolsForUser(user: McpUser, dependencies: ToolRegistrati
         })
       );
     }
-    if (!user.allowAllProjects && user.tokenDbId) {
+    if (!livePrincipal().allowAllProjects && user.tokenDbId) {
       const allowed = allowedProjects.some((project) => project.name === resolved);
       if (!allowed) throw new Error(`Project '${resolved}' is not allowed for this MCP token`);
     }
@@ -253,16 +264,18 @@ export function registerToolsForUser(user: McpUser, dependencies: ToolRegistrati
 
   registerJobTools({ server, user, resolveProjectName });
 
-  registerDiagnosticTools({ server, user, knowledge: dependencies.knowledge, resolveProjectName, getRunner, registry });
+  registerDiagnosticTools({ server, user, knowledge: dependencies.knowledge, resolveProjectName, getRunner, registry, knowledgeAvailable: () => livePrincipal().knowledgeEnabled !== false, currentIsAdmin: () => Boolean(livePrincipal().isAdmin) });
   registerKnowledgeTools({
     server, user, knowledge: dependencies.knowledge, resolveProjectName,
+    knowledgeAvailable: () => livePrincipal().knowledgeEnabled !== false,
+    currentIsAdmin: () => Boolean(livePrincipal().isAdmin),
     resolveProjectNameToId: (name) => {
       const project = registry.getProject(user.id, resolveProjectName(name));
       if (!project) throw new Error("Project is not allowed for this MCP token");
       return String(project.id);
     },
     resolveProjectId: (projectId) => {
-      const project = listAllowedProjects().find((candidate) => String(candidate.id) === projectId);
+      const project = listAllowedProjects().find((candidate) => String(candidate.id) === projectId || candidate.name === projectId);
       if (!project) throw new Error("Project is not allowed for this MCP token");
       return String(project.id);
     },

@@ -364,6 +364,8 @@ export function registerPlaywrightTools(context: PlaywrightToolsContext, legacy?
         const upload = createUploadSession({
           userId: user.id,
           projectId: project.id,
+          origin: "mcp",
+          mcpTokenDbId: user.tokenDbId,
           project: project.name,
           path: workspacePath,
           maxBytes: Number(process.env.RELAY_ARTIFACT_MAX_BYTES ?? 4 * 1024 * 1024 * 1024),
@@ -399,6 +401,8 @@ export function registerPlaywrightTools(context: PlaywrightToolsContext, legacy?
         const download = createDownloadSession({
           userId: user.id,
           projectId: project.id,
+          origin: "mcp",
+          mcpTokenDbId: user.tokenDbId,
           project: project.name,
           path: workspacePath,
           bytes: staged.size,

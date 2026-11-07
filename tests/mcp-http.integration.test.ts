@@ -65,7 +65,9 @@ function seedPermissionDatabase(path: string): void {
       id INTEGER PRIMARY KEY,
       username TEXT NOT NULL,
       password_hash TEXT NOT NULL,
-      is_admin INTEGER DEFAULT 0
+      is_admin INTEGER DEFAULT 0,
+      knowledge_enabled INTEGER DEFAULT 0,
+      account_status TEXT NOT NULL DEFAULT 'active'
     );
     CREATE TABLE projects (
       id INTEGER PRIMARY KEY,
@@ -182,8 +184,9 @@ test("real MCP HTTP server enforces auth and serves tools/list, tools/call, and 
   const root = mkdtempSync(join(tmpdir(), "relay-mcp-http-"));
   const port = await freePort();
   const secret = "integration-secret-that-is-at-least-32-characters";
-  const token = jwt.sign({ id: 7, username: "integration" }, secret);
+  const token = jwt.sign({ id: 7, username: "integration", tokenKind: "mcp", tokenId: "scope-token" }, secret);
   const appDbPath = join(root, "app.db");
+  seedPermissionDatabase(appDbPath);
   // Run the MCP entry point in this process, not through the tsx CLI wrapper.
   const child = spawn(process.execPath, ["--import", "tsx", "src/mcp/index.ts"], {
     cwd: fileURLToPath(new URL("..", import.meta.url)),
@@ -278,6 +281,18 @@ test("real MCP HTTP server enforces auth and serves tools/list, tools/call, and 
     const listed = await readRpc(listedResponse);
     assert.ok(Array.isArray(listed.result?.tools));
     assert.ok(listed.result.tools.some((tool: { name: string }) => tool.name === "relay_mcp_info"));
+    const knowledgeNames = listed.result.tools.map((tool: { name: string }) => tool.name).filter((name: string) => /^(knowledge_|memory_|context_)/.test(name)).sort();
+    assert.deepEqual(knowledgeNames, ["knowledge_confirmed_memory_get", "knowledge_get", "knowledge_search", "memory_capture", "memory_search"]);
+    for (const name of ["context_record_fact", "context_search", "knowledge_wiki_search"]) {
+      const removed = await callMcpTool(base, token, 50, name, {});
+      assert.ok(removed.rpc.error || removed.rpc.result?.isError, `${name} must not be callable`);
+    }
+    const resourcesResponse = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 51, method: "resources/list", params: {} }) });
+    const resources = await readRpc(resourcesResponse);
+    assert.ok(resources.error || (Array.isArray(resources.result?.resources) && resources.result.resources.length === 0), "legacy Knowledge resources are not advertised");
+    const resourceReadResponse = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 52, method: "resources/read", params: { uri: "knowledge://documents/example" } }) });
+    const resourceRead = await readRpc(resourceReadResponse);
+    assert.ok(resourceRead.error || resourceRead.result?.isError, "legacy Knowledge resources cannot be read");
 
     const calledResponse = await fetch(`${base}/mcp`, {
       method: "POST",
@@ -305,6 +320,17 @@ test("real MCP HTTP server enforces auth and serves tools/list, tools/call, and 
       assert.equal(response.status, 200, output);
       assert.ok(Array.isArray((await readRpc(response)).result?.tools));
     }
+
+    const webSession = jwt.sign({ id: 7, username: "scoped" }, secret);
+    const tokenRequest = async (credential: string) => fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${credential}`, "mcp-protocol-version": "2025-06-18" }, body: JSON.stringify({ jsonrpc: "2.0", id: 202, method: "tools/list", params: {} }) });
+    assert.equal((await tokenRequest(webSession)).status, 401, "web sessions cannot bypass MCP token scopes");
+    const liveDb = new Database(appDbPath);
+    liveDb.prepare("UPDATE users SET account_status='disabled' WHERE id=7").run();
+    assert.equal((await tokenRequest(token)).status, 401, "disabling an account invalidates its existing MCP token");
+    liveDb.prepare("UPDATE users SET account_status='active' WHERE id=7").run();
+    liveDb.prepare("DELETE FROM mcp_tokens WHERE token_id='scope-token'").run();
+    assert.equal((await tokenRequest(token)).status, 401, "deleting a token prevents its next use");
+    liveDb.close();
 
     const exitCode = await stop(child);
     stopped = true;
@@ -367,8 +393,8 @@ test("real MCP HTTP handlers enforce project, server, project-create, and Job ow
   child.stdout?.on("data", (chunk) => { output += String(chunk); });
   child.stderr?.on("data", (chunk) => { output += String(chunk); });
   const base = `http://127.0.0.1:${port}`;
-  const scopedToken = jwt.sign({ id: 7, username: "scoped", tokenId: "scope-token" }, secret);
-  const otherUserToken = jwt.sign({ id: 8, username: "other", tokenId: "other-token" }, secret);
+  const scopedToken = jwt.sign({ id: 7, username: "scoped", tokenKind: "mcp", tokenId: "scope-token" }, secret);
+  const otherUserToken = jwt.sign({ id: 8, username: "other", tokenKind: "mcp", tokenId: "other-token" }, secret);
 
   try {
     await waitForHealth(base, child, () => output);
@@ -405,13 +431,13 @@ test("real MCP HTTP handlers enforce project, server, project-create, and Job ow
   }
 });
 
-test("MCP request failures return JSON-RPC errors and do not wedge the HTTP process", async () => {
+test("MCP fails closed when the account database is unavailable and keeps the health endpoint responsive", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-mcp-http-failure-"));
   const appDbDirectory = join(root, "app-db-directory");
   mkdirSync(appDbDirectory, { recursive: true });
   const port = await freePort();
   const secret = "integration-secret-that-is-at-least-32-characters";
-  const token = jwt.sign({ id: 7, username: "integration" }, secret);
+  const token = jwt.sign({ id: 7, username: "integration", tokenKind: "mcp", tokenId: "scope-token" }, secret);
   const child = spawn(process.execPath, ["--import", "tsx", "src/mcp/index.ts"], {
     cwd: fileURLToPath(new URL("..", import.meta.url)),
     env: {
@@ -444,12 +470,7 @@ test("MCP request failures return JSON-RPC errors and do not wedge the HTTP proc
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/list", params: {} }),
     });
-    assert.equal(response.status, 500, output);
-    const error = await response.json() as { jsonrpc?: string; id?: unknown; error?: { code?: number; message?: string } };
-    assert.equal(error.jsonrpc, "2.0");
-    assert.equal(error.id, 7);
-    assert.equal(error.error?.code, -32603);
-    assert.equal(error.error?.message, "Internal server error");
+    assert.equal(response.status, 401, output);
     assert.equal((await fetch(`${base}/mcp/health/live`)).status, 200, "one failed request must not wedge the process");
   } finally {
     await stop(child);
@@ -461,7 +482,8 @@ test("real MCP HTTP server supports legacy query-token auth after explicit opt-i
   const root = mkdtempSync(join(tmpdir(), "relay-mcp-query-token-"));
   const port = await freePort();
   const secret = "integration-secret-that-is-at-least-32-characters";
-  const token = jwt.sign({ id: 7, username: "integration" }, secret);
+  const token = jwt.sign({ id: 7, username: "integration", tokenKind: "mcp", tokenId: "scope-token" }, secret);
+  seedPermissionDatabase(join(root,"app.db"));
   const child = spawn(process.execPath, ["--import", "tsx", "src/mcp/index.ts"], {
     cwd: fileURLToPath(new URL("..", import.meta.url)),
     env: {

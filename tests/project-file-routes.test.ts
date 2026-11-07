@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { zipSync } from "fflate";
-import test from "node:test";
+import test, { mock } from "node:test";
+import { syncBuiltinESMExports } from "node:module";
 test("Project file operations preview, rename, delete, and enforce workspace ownership", async () => {
   const root = mkdtempSync(join(process.cwd(), ".tmp-project-files-"));
   const previous = { DB_PATH: process.env.DB_PATH, WORKSPACE_ROOT: process.env.WORKSPACE_ROOT };
@@ -70,24 +71,26 @@ test("Project file operations preview, rename, delete, and enforce workspace own
     const denied = await app.inject({ method: "GET", url: "/api/projects/1/files", headers: { "x-other": "1" } });
     assert.equal(denied.statusCode, 404);
 
-    chmodSync(join(workspace, "preview.ico"), 0o000);
+    const fs = (await import("node:fs")).default;
+    const originalRead = fs.readFileSync;
+    const deniedPaths = new Set([join(workspace, "preview.ico"), join(workspace, "bundle.zip")]);
+    const readMock = mock.method(fs, "readFileSync", ((path: any, ...args: any[]) => {
+      if (deniedPaths.has(String(path))) throw Object.assign(new Error(`EACCES: ${path}`), { code: "EACCES" });
+      return (originalRead as any)(path, ...args);
+    }) as typeof fs.readFileSync);
+    syncBuiltinESMExports();
     try {
       const unreadableRaw = await app.inject({ method: "GET", url: "/api/projects/1/files/raw?path=preview.ico" });
       assert.equal(unreadableRaw.statusCode, 403);
       assert.equal(unreadableRaw.json().error, "Unable to read file");
       assert.equal(unreadableRaw.body.includes(workspace), false);
-    } finally {
-      chmodSync(join(workspace, "preview.ico"), 0o644);
-    }
-
-    chmodSync(join(workspace, "bundle.zip"), 0o000);
-    try {
       const unreadableArchive = await app.inject({ method: "GET", url: "/api/projects/1/files/archive?path=bundle.zip" });
       assert.equal(unreadableArchive.statusCode, 403);
       assert.equal(unreadableArchive.json().error, "Unable to read archive");
       assert.equal(unreadableArchive.body.includes(workspace), false);
     } finally {
-      chmodSync(join(workspace, "bundle.zip"), 0o644);
+      readMock.mock.restore();
+      syncBuiltinESMExports();
     }
   } finally {
     await app.close();
@@ -96,4 +99,5 @@ test("Project file operations preview, rename, delete, and enforce workspace own
     rmSync(root, { recursive: true, force: true });
   }
 });
+
 

@@ -38,8 +38,11 @@ export function TopBar() {
             );
           })}
         </nav>
-        <div className="shell-desktop-user">
-          <UserMenu />
+        <div className="shell-topbar-right">
+          <span className="shell-connection-state"><i aria-hidden="true" />Connected</span>
+          <div className="shell-desktop-user">
+            <UserMenu />
+          </div>
         </div>
         <button
           type="button"

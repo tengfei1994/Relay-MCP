@@ -2,6 +2,8 @@ import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { useState, useEffect, createContext, useContext } from "react";
 import { api } from "./api/client";
 import LoginPage from "./pages/Login";
+import LandingPage from "./pages/Landing";
+import AccountPage from "./pages/Account";
 import ProjectsPage from "./pages/Projects";
 import ServersPage from "./pages/Servers";
 import UsersPage from "./pages/Users";
@@ -23,7 +25,7 @@ import { AppShell } from "./components/shell/AppShell";
 interface AuthCtx {
   user: { id: number; username: string; isAdmin: boolean } | null;
   login: (username: string, password: string) => Promise<void>;
-  register: (username: string, password: string) => Promise<void>;
+  register: (username: string, password: string) => Promise<"pending" | "active">;
   logout: () => void;
 }
 
@@ -47,6 +49,12 @@ export default function App() {
     }
   }, []);
 
+  useEffect(() => {
+    const expireSession = () => setUser(null);
+    window.addEventListener("relay-session-expired", expireSession);
+    return () => window.removeEventListener("relay-session-expired", expireSession);
+  }, []);
+
   const login = async (username: string, password: string) => {
     const r = await api.login(username, password);
     localStorage.setItem("token", r.token);
@@ -55,8 +63,11 @@ export default function App() {
 
   const register = async (username: string, password: string) => {
     const r = await api.register(username, password);
-    localStorage.setItem("token", r.token);
-    setUser(r.user);
+    if (r.status === "active" && r.token && r.user) {
+      localStorage.setItem("token", r.token);
+      setUser(r.user);
+    }
+    return r.status;
   };
 
   const logout = () => {
@@ -75,26 +86,31 @@ export default function App() {
   return (
     <AuthContext.Provider value={{ user, login, register, logout }}>
       <Routes>
+        <Route path="/" element={<LandingPage />} />
         <Route
           path="/login"
           element={user ? <Navigate to="/projects" replace /> : <LoginPage />}
         />
+        <Route path="/apply" element={user ? <Navigate to="/projects" replace /> : <LoginPage initialMode="register" />} />
         <Route
           path="/"
           element={user ? <AppShell /> : <Navigate to="/login" replace />}
         >
-          <Route index element={<Navigate to="/projects" replace />} />
           <Route path="projects" element={<ProjectsPage />} />
+          <Route path="account" element={<AccountPage />} />
           <Route path="servers" element={<ServersPage />} />
           <Route path="instances" element={<InstancesPage />} />
           <Route path="tools" element={<ToolsPage />} />
           <Route path="knowledge" element={<KnowledgeOverview />} />
-          <Route path="knowledge/integrated" element={<KnowledgeIntegrated />} />
+          <Route path="knowledge/integrated" element={<Navigate to="/knowledge/integrated/providers" replace />} />
+          <Route path="knowledge/integrated/providers" element={<KnowledgeIntegrated />} />
+          <Route path="knowledge/integrated/gates" element={<KnowledgeIntegrated />} />
           <Route path="knowledge/wiki" element={<KnowledgeWiki />} />
           <Route path="knowledge/memory" element={<KnowledgeMemory />} />
           <Route path="knowledge/sessions" element={<KnowledgeMemory />} />
           <Route path="knowledge/candidate-insights" element={<KnowledgeMemory />} />
           <Route path="knowledge/confirmed-memory" element={<KnowledgeMemory />} />
+          <Route path="knowledge/memory-submissions" element={<KnowledgeMemory />} />
           <Route path="knowledge/product-docs" element={<KnowledgeProduct />} />
           <Route path="knowledge/product-docs/topics" element={<KnowledgeProduct />} />
           <Route path="knowledge/product-docs/imports" element={user?.isAdmin ? <KnowledgeProduct /> : <Navigate to="/knowledge/product-docs" replace />} />
@@ -111,7 +127,10 @@ export default function App() {
           <Route path="knowledge/operations/ingest" element={<KnowledgeOperations />} />
           <Route path="knowledge/operations/index" element={<KnowledgeOperations />} />
           <Route path="knowledge/operations/wiki-generation" element={user?.isAdmin ? <KnowledgeWikiGeneration /> : <Navigate to={{ pathname: "/knowledge/wiki", search: location.search }} replace />} />
+          <Route path="tokens/agents" element={<TokensPage />} />
           <Route path="tokens" element={<TokensPage />} />
+          <Route path="users/requests" element={user?.isAdmin ? <UsersPage /> : <Navigate to="/projects" replace />} />
+          <Route path="users/permissions" element={user?.isAdmin ? <UsersPage /> : <Navigate to="/projects" replace />} />
           <Route path="users" element={user?.isAdmin ? <UsersPage /> : <Navigate to="/projects" replace />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

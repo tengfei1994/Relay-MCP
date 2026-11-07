@@ -52,7 +52,7 @@ export function mergeWikiPageSources(sections: WikiCitationSection[], pageCitati
   for (const section of sections) {
     const citations = Array.isArray(section.citations) ? section.citations.filter((item): item is WikiCitationRecord => Boolean(item && typeof item === "object" && !Array.isArray(item))) : [];
     if (citations.length > 0) hasSectionCitations = true;
-    for (const citation of citations) add(citation, text(section.title, "Section"));
+    for (const citation of citations) add(citation, text(section.title) || "Section");
   }
   if (!hasSectionCitations) for (const citation of pageCitations) add(citation);
   return [...grouped.values()];

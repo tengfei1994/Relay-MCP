@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { api } from "../../api/client";
 import { ProjectScopeProvider } from "../../context/ProjectScope";
+import { ContextRail } from "./ContextRail";
 import { MobileMenu } from "./MobileMenu";
 import { SubNav } from "./SubNav";
 import { TopBar } from "./TopBar";
@@ -38,15 +39,20 @@ function ShellContent() {
     <div className="app-shell">
       <a className="skip-link" href="#main">Skip to content</a>
       <TopBar />
-      {inKnowledge && <SubNav />}
-      <main id="main">
-        <Outlet />
-      </main>
-      {health && (
-        <footer className="shell-footer">
-          Web/API build {health.version}, commit {health.commit.slice(0, 12)}, built {health.buildTime}
-        </footer>
-      )}
+      <div className="shell-console-layout">
+        <ContextRail />
+        <div className="shell-content-column">
+          {inKnowledge && <SubNav />}
+          <main id="main" tabIndex={-1}>
+            <Outlet />
+          </main>
+          {health && (
+            <footer className="shell-footer">
+              Web/API build {health.version}, commit {health.commit.slice(0, 12)}, built {health.buildTime}
+            </footer>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -59,5 +65,5 @@ export function AppShell() {
   );
 }
 
-export { MobileMenu, SubNav, TopBar };
+export { ContextRail, MobileMenu, SubNav, TopBar };
 export default AppShell;

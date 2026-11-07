@@ -1,6 +1,6 @@
 import { LazyKnowledgeMarkup as KnowledgeMarkup } from "../components/LazyKnowledgeMarkup";
 import { useEffect, useRef, useState } from "react";
-import { Link, Navigate, useSearchParams } from "react-router-dom";
+import { Link, Navigate, NavLink, useLocation, useSearchParams } from "react-router-dom";
 import { CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, FileText, GitCompare, History, KeyRound, Network, Pencil, RefreshCw, ServerCog, ShieldAlert, Workflow, BookOpen } from "lucide-react";
 import { api } from "../api/client";
 import { useAuth } from "../App";
@@ -257,7 +257,7 @@ function CandidatesPane({ isAdmin }: { isAdmin: boolean }) {
     try {
       const [insightResult, detail] = await Promise.all([api.knowledgeCandidateInsight(id), api.knowledgeCandidateInsightHistory(id)]);
       const insight = asRecord(insightResult.insight);
-      const session = asRecord((await api.knowledgeSession(insight.workSessionId)).session);
+      const session = insightResult.sourceSession ? asRecord(insightResult.sourceSession) : asRecord((await api.knowledgeSession(insight.workSessionId)).session);
       setSelected({ ...insight, sourceEnvironment: insight.sourceScope?.environment ?? session.environment, sessionUpdatedAt: session.updatedAt, currentSessionScope: { projectId: session.projectId, environment: session.environment, sampleManagerVersion: session.intent?.sampleManagerVersion, solution: session.intent?.solution, module: session.intent?.module } }); setHistory(records(detail.history));
       setEdit({ statement: insight.statement ?? "", kind: insight.kind ?? INSIGHT_KINDS[0] });
     } catch (err) { setError(errText(err, "Unable to load Candidate Insight")); }
@@ -399,6 +399,7 @@ type WikiNavigationLevel = {
   versions: string[];
   limit: number;
   offset: number;
+  search?: boolean;
   loading?: boolean;
   error?: string;
 };
@@ -870,16 +871,17 @@ const legacyTabRedirects: Record<string, string> = {
 export default function KnowledgeIntegrated() {
   const { user } = useAuth();
   const isAdmin = Boolean(user?.isAdmin);
-  const [params, setParams] = useSearchParams();
-  const requestedTab = params.get("tab");
+  const location = useLocation();
+  const [params] = useSearchParams();
+  const pathTab = location.pathname.endsWith("/gates") ? "gates" : location.pathname.endsWith("/providers") ? "providers" : undefined;
+  const requestedTab = pathTab ?? params.get("tab");
   const legacyRoute = requestedTab ? legacyTabRedirects[requestedTab] : undefined;
   if (legacyRoute) return <Navigate to={legacyKnowledgeRedirect(legacyRoute, params)} replace />;
   const tab = TABS.some(([key]) => key === requestedTab) ? requestedTab! : "providers";
-  const setTab = (value: string) => setParams((current) => { const next = new URLSearchParams(current); next.set("tab", value); return next; });
   return <StandardPage>
     <PageHeader title="Control plane" description="Sessions, providers, review and publication for Relay knowledge." />
-    <nav className="mb-5 flex flex-wrap gap-2" aria-label="Control plane sections">
-      {TABS.map(([key, label, Icon]) => <button key={key} onClick={() => setTab(key)} className={`inline-flex items-center gap-1.5 rounded-ctl px-3 py-2 text-sm ${tab === key ? "bg-mint text-ink" : "border border-white/10 text-muted hover:border-white/20"}`}><Icon size={14} /> {label}</button>)}
+    <nav className="shell-page-tabs mb-8" aria-label="Control plane sections">
+      {TABS.map(([key, label, Icon]) => <NavLink key={key} to={`/knowledge/integrated/${key}`} className={`shell-page-tab${tab === key ? " active" : ""}`} aria-current={tab === key ? "page" : undefined}><Icon size={14} /> {label}</NavLink>)}
     </nav>
     {tab === "providers" && <ProvidersPane isAdmin={isAdmin} />}
     {tab === "gates" && <GatesPane />}

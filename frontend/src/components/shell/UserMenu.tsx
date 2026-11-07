@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, LogOut } from "lucide-react";
+import { ChevronDown, LogOut, UserRound, Home } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../App";
 
@@ -34,12 +34,15 @@ export function UserMenu({ mobile = false }: { mobile?: boolean }) {
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <span>{user.username}</span>
+        <span className="shell-user-avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span>
+        <span className="shell-user-name">{user.username}</span>
         {user.isAdmin && <span className="shell-admin-badge">Admin</span>}
         <ChevronDown size={14} aria-hidden="true" />
       </button>
       {open && (
         <div className="shell-popover" role="menu">
+          <button type="button" className="shell-popover-item" role="menuitem" onClick={() => { setOpen(false); navigate("/account"); }}><UserRound size={15} aria-hidden="true" /> Account</button>
+          <button type="button" className="shell-popover-item" role="menuitem" onClick={() => { setOpen(false); navigate("/"); }}><Home size={15} aria-hidden="true" /> Product site</button>
           <button type="button" className="shell-popover-item" role="menuitem" onClick={signOut}>
             <LogOut size={15} aria-hidden="true" />
             Sign out

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Archive, ChevronRight, Eye, File, FileImage, FileText, Folder, Plus, Server as ServerIcon, Link2, Unlink, Settings, Pencil, Trash2 } from "lucide-react";
 import { api } from "../api/client";
-import { Button, ConfirmDialog, Dialog, Field, Input, Select } from "../components/ui";
+import { Button, ConfirmDialog, Dialog, Field, Input, PageHeader, Select } from "../components/ui";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
 
 type Project = { id: number; name: string; description?: string };
@@ -67,7 +67,7 @@ function projectServerFrom(value: unknown): ProjectServer | null {
     serverSshUser: optionalString(record.serverSshUser),
     serverHost: optionalString(record.serverHost),
     serverPort: optionalNumber(record.serverPort),
-    limsInstanceId: typeof record.limsInstanceId === "number" || record.limsInstanceId === null ? record.limsInstanceId : undefined,
+    limsInstanceId: record.limsInstanceId === null ? null : optionalNumber(record.limsInstanceId),
     limsInstanceName: optionalString(record.limsInstanceName),
     limsInstanceVersion: optionalString(record.limsInstanceVersion),
     limsRuntimeKind: optionalString(record.limsRuntimeKind),
@@ -169,9 +169,11 @@ function filePreviewDetails(size?: number, modifiedAt?: string): string {
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectsLoading, setProjectsLoading] = useState(true);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [selected, setSelected] = useState<Project | null>(null);
   const [files, setFiles] = useState<FileEntry[]>([]);
+  const [filesLoading, setFilesLoading] = useState(false);
   const [currentPath, setCurrentPath] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
@@ -200,20 +202,31 @@ export default function ProjectsPage() {
   const [editingLinkId, setEditingLinkId] = useState<number | null>(null);
   const [linkError, setLinkError] = useState("");
   const previewRequest = useRef(0);
+  const filesRequest = useRef(0);
 
   useEffect(() => () => {
     if (previewImageUrl) URL.revokeObjectURL(previewImageUrl);
   }, [previewImageUrl]);
 
   useEffect(() => {
-    api.listProjects().then((r) => setProjects(projectsFrom(r)));
-    api.listServers().then((r) => setAllServers(serversFrom(r)));
+    let active = true;
+    api.listProjects().then((r) => { if (active) setProjects(projectsFrom(r)); }).catch((err: unknown) => { if (active) setWorkspaceError(err instanceof Error ? err.message : "Unable to load projects"); }).finally(() => { if (active) setProjectsLoading(false); });
+    api.listServers().then((r) => { if (active) setAllServers(serversFrom(r)); }).catch((err: unknown) => { if (active) setWorkspaceError(err instanceof Error ? err.message : "Unable to load servers"); });
+    return () => { active = false; };
   }, []);
 
   const pathFor = (name: string) => currentPath ? `${currentPath}/${name}` : name;
   const refreshFiles = async (projectId: number, path: string) => {
-    const r = await api.listFiles(projectId, path);
-    setFiles(filesFrom(r));
+    const request = ++filesRequest.current;
+    setFilesLoading(true); setFiles([]); setWorkspaceError("");
+    try {
+      const r = await api.listFiles(projectId, path);
+      if (request === filesRequest.current) setFiles(filesFrom(r));
+    } catch (err: unknown) {
+      if (request === filesRequest.current) setWorkspaceError(err instanceof Error ? err.message : "Unable to load project files");
+    } finally {
+      if (request === filesRequest.current) setFilesLoading(false);
+    }
   };
 
   const closePreview = () => {
@@ -426,12 +439,13 @@ export default function ProjectsPage() {
 
   return (
     <AppPageFrame variant="wide" className="app-page-frame-workspace">
+      <PageHeader title="Projects" description="Browse your files and manage the environments connected to your work." />
       {workspaceError && <p className="mb-3 rounded-[10px] border border-coral/40 bg-coral/10 px-4 py-3 text-sm text-coral" role="alert">{workspaceError}</p>}
       <div className="app-workspace-panel flex min-h-0 flex-1">
       <aside className="app-project-sidebar flex flex-col border-r border-line">
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
-          <h2 className="font-display text-lg font-semibold text-fg">Projects</h2>
-          <button type="button" onClick={() => setShowCreate(true)} className="text-muted transition-colors hover:text-mint" aria-label="Create project">
+          <h2 className="font-display text-sm font-medium text-fg">Your projects</h2>
+          <button type="button" onClick={() => setShowCreate(true)} className="inline-flex min-h-11 min-w-11 items-center justify-center rounded text-muted transition-colors hover:text-mint" aria-label="Create project">
             <Plus size={16} />
           </button>
         </div>
@@ -440,26 +454,25 @@ export default function ProjectsPage() {
           {projects.map((p) => (
             <div
               key={p.id}
-              onClick={() => openProject(p)}
-              className={`group flex cursor-pointer items-center justify-between rounded-ctl px-3 py-2 text-sm transition-colors ${
-                selected?.id === p.id && !showServers ? "bg-mint text-ink" : "text-muted hover:bg-white/5 hover:text-fg"
+              className={`group flex items-center justify-between rounded-ctl px-2 py-1 text-sm transition-colors ${
+                selected?.id === p.id && !showServers ? "bg-white/10 text-fg" : "text-muted hover:bg-white/5 hover:text-fg"
               }`}
             >
-              <div className="flex min-w-0 items-center gap-2">
+              <button type="button" onClick={() => openProject(p)} aria-current={selected?.id === p.id && !showServers ? "page" : undefined} className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded px-1 text-left">
                 <Folder size={14} className="shrink-0" />
                 <span className="truncate">{p.name}</span>
-              </div>
-              <div className="hidden items-center gap-1 group-hover:flex">
-                <button type="button" onClick={(e) => { e.stopPropagation(); openServerPanel(p); }} className="text-muted hover:text-mint" title="Manage servers" aria-label={`Manage servers for ${p.name}`}>
+              </button>
+              <div className="hidden items-center gap-1 group-hover:flex group-focus-within:flex max-sm:flex">
+                <button type="button" onClick={() => openServerPanel(p)} className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:text-mint" title="Manage servers" aria-label={`Manage servers for ${p.name}`}>
                   <Settings size={13} />
                 </button>
-                <button type="button" onClick={(e) => { e.stopPropagation(); deleteProject(p.id); }} className="text-muted hover:text-coral" aria-label={`Delete ${p.name}`}>
+                <button type="button" onClick={() => deleteProject(p.id)} className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:text-coral" aria-label={`Delete ${p.name}`}>
                   <Trash2 size={13} />
                 </button>
               </div>
             </div>
           ))}
-          {projects.length === 0 && <p className="px-3 py-2 text-xs text-muted">No projects yet.</p>}
+          {projectsLoading ? <p className="px-3 py-2 text-xs text-muted" role="status">Loading projects…</p> : projects.length === 0 && !workspaceError && <p className="px-3 py-2 text-xs text-muted">No projects yet.</p>}
         </div>
 
         {showCreate && (
@@ -484,7 +497,7 @@ export default function ProjectsPage() {
       {/* Main panel */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {!selected ? (
-          <div className="flex flex-1 items-center justify-center text-sm text-muted">Select a project to browse files.</div>
+          <div className="project-start"><div className="project-start-icon"><Folder size={28} /></div><h2>{projects.length ? "Open a project to begin." : "A place for your next project."}</h2><p>{projects.length ? "Browse files, preview documents and manage the environments linked to your project." : "Create a project to bring its files, environments and experience together."}</p>{!projectsLoading && !workspaceError && <Button variant="ghost" onClick={() => projects.length ? openProject(projects[0]) : setShowCreate(true)}>{projects.length ? "Open a project" : "Create a project"}<ChevronRight size={15} /></Button>}</div>
         ) : showServers ? (
           /* Server association panel */
           <div className="max-w-2xl flex-1 overflow-y-auto p-6">
@@ -639,7 +652,7 @@ export default function ProjectsPage() {
                   </span>
                 </div>
               ))}
-              {files.length === 0 && <p className="px-3 text-xs text-muted">Empty directory</p>}
+              {filesLoading ? <p className="px-3 text-xs text-muted" role="status">Loading files…</p> : files.length === 0 && !workspaceError && <p className="px-3 text-xs text-muted">Empty directory</p>}
             </div>
           </>
         )}

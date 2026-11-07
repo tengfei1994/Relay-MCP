@@ -17,7 +17,7 @@ export default {
         sans: ['var(--font-sans)'],
         mono: ['var(--font-mono)'],
       },
-      borderRadius: { ctl: '8px', field: '10px', panel: '16px', plate: '24px' },
+      borderRadius: { ctl: '6px', field: '6px', panel: '9px', plate: '14px' },
       borderColor: { line: 'var(--line)', 'line-strong': 'var(--line-strong)' },
     },
   },

@@ -39,6 +39,7 @@ interface OverviewSnapshot {
   projects: Project[];
   projectId: number | undefined;
   index: IndexData;
+  indexAvailable: boolean;
   dashboard: DashboardData | undefined;
   capture: CaptureData | undefined;
   runs: IngestRun[];
@@ -129,17 +130,18 @@ export default function KnowledgeOverview() {
     setError("");
     try {
       const [captureResult, runResult, indexResult, dashboardResult, productResult] = await Promise.all([
-        api.knowledgeOperationsCapture(),
-        api.knowledgeOperationsIngestRuns(8),
-        api.knowledgeOperationsIndex(),
-        projectId === undefined ? Promise.resolve(undefined) : api.knowledgeDashboard(projectId),
-        api.productDocumentsList({ limit: 1 }),
+        api.knowledgeOperationsCapture().catch(() => undefined),
+        api.knowledgeOperationsIngestRuns(8).catch(() => undefined),
+        api.knowledgeOperationsIndex().catch(() => undefined),
+        projectId === undefined ? Promise.resolve(undefined) : api.knowledgeDashboard(projectId).catch(() => undefined),
+        api.productDocumentsList({ limit: 1 }).catch(() => undefined),
       ]);
       if (requestRef.current !== controller || controller.signal.aborted) return;
       setSnapshot({
         projects,
         projectId,
         index: indexData(indexResult),
+        indexAvailable: indexResult !== undefined,
         dashboard: dashboardData(dashboardResult),
         capture: captureData(captureResult),
         runs: runList(runResult),
@@ -182,13 +184,14 @@ export default function KnowledgeOverview() {
     indexedDocuments: snapshot.index.indexedDocuments,
     stale: snapshot.index.stale,
     failedBatches: 0,
-  }) : { wells: Array.from({ length: 96 }, () => "wait" as const), batchSize: 1 };
+  }) : { wells: Array.from({ length: 96 }, () => "empty" as const), batchSize: 1 };
   const counts: PlateCounts = { ok: 0, stale: 0, fail: 0, wait: 0 };
-  for (const state of plate.wells) counts[state] += 1;
+  for (const state of plate.wells) if (state !== "empty") counts[state] += 1;
   const notCurrent = counts.stale + counts.fail + counts.wait;
   const documents = snapshot?.index.documents ?? 0;
-  const title = documents === 0 ? "No documents indexed yet" : snapshot?.index.stale ? "Index is stale" : notCurrent === 0 ? "Index is current" : `Index is current except ${notCurrent} ${notCurrent === 1 ? "batch" : "batches"}`;
-  const lede = documents === 0
+  const title = snapshot && !snapshot.indexAvailable ? "Index status unavailable" : documents === 0 ? "No documents indexed yet" : snapshot?.index.stale ? "Index is stale" : notCurrent === 0 ? "Index is current" : `Index is current except ${notCurrent} ${notCurrent === 1 ? "batch" : "batches"}`;
+  const lede = snapshot && !snapshot.indexAvailable ? "Index status is available to administrators. Project Memory remains accessible according to your project permissions."
+    : documents === 0
     ? "Import product documents to build the index."
     : plate.batchSize === 1
       ? "Each well is one document. Hover a well for its position and state."
@@ -209,12 +212,12 @@ export default function KnowledgeOverview() {
           {snapshot ? <>
             <h1 className="overview-title">{title}</h1>
             <p className="overview-lede">{lede}</p>
-            <ul className="plate-legend" aria-label="Index coverage legend">
+            {snapshot.indexAvailable && <ul className="plate-legend" aria-label="Index coverage legend">
               <li><i className="legend-dot legend-ok" />Current <b>{counts.ok}</b></li>
               <li><i className="legend-dot legend-stale" />Stale <b>{counts.stale}</b></li>
               {counts.fail > 0 && <li><i className="legend-dot legend-fail" />Failed <b>{counts.fail}</b></li>}
               <li><i className="legend-dot legend-wait" />Waiting <b>{counts.wait}</b></li>
-            </ul>
+            </ul>}
             <div className="flex flex-wrap items-center gap-3">
               <Button variant="accent" loading={loading} onClick={() => void load()}><RefreshCw size={16} />Refresh</Button>
               {snapshot.index.stale && <Link className="button-ghost button-sm" to="/knowledge/operations/index">Open index controls</Link>}

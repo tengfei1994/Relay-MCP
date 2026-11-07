@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Plus, Server as ServerIcon, CheckCircle, XCircle, Clock, Copy, Trash2, Key, Pencil, Terminal } from "lucide-react";
 import { api } from "../api/client";
-import { Button, ConfirmDialog, Dialog, Field, Input, Select } from "../components/ui";
+import { Button, ConfirmDialog, Dialog, Field, Input, PageHeader, Select } from "../components/ui";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
 
 type ServerStatus = "connected" | "failed" | "pending" | string;
@@ -221,16 +221,7 @@ export default function ServersPage() {
 
   return (
     <AppPageFrame>
-      <div className="mb-8 flex flex-wrap items-start justify-between gap-5">
-        <div className="min-w-0">
-          <h1 className="font-display text-[30px] font-semibold tracking-[-0.02em] text-fg">Servers</h1>
-          <p className="mt-2 max-w-[60ch] text-sm text-muted">Manage remote hosts and relay agents.</p>
-        </div>
-        <Button variant="primary" onClick={() => setShowAdd(true)}>
-          <Plus size={14} />
-          Add server
-        </Button>
-      </div>
+      <PageHeader title="Servers" description="Manage remote hosts and Relay Agent connections." actions={<Button variant="primary" onClick={() => setShowAdd(true)}><Plus size={14} /> Add server</Button>} />
 
       <div className="space-y-3">
         {servers.map((s) => (

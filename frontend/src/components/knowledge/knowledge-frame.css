@@ -2,19 +2,19 @@
   box-sizing: border-box;
   width: 100%;
   margin-inline: auto;
-  padding: clamp(32px,4vw,48px) clamp(24px,4vw,60px) clamp(56px,6vw,84px);
+  padding: 32px clamp(20px,3vw,40px) 48px;
 }
 
 .knowledge-page-frame-standard {
-  max-width: 1400px;
+  max-width: 1280px;
 }
 
 .knowledge-page-frame-workspace {
-  max-width: 1760px;
+  max-width: 1600px;
 }
 
 @media (max-width: 700px) {
   .knowledge-page-frame {
-    padding: 28px 20px 52px;
+    padding: 24px 20px 36px;
   }
 }

@@ -33,7 +33,8 @@ test("Knowledge navigation gives every capability one canonical visible owner", 
 
 test("Knowledge sub-navigation uses exact matching for Overview", () => {
   const subNav = read("components", "shell", "SubNav.tsx");
-  assert.match(subNav, /end=\{item\.path === \"\/knowledge\"\}/);
+  assert.match(subNav, /const active = item\.matches\(location\.pathname\)/);
+  assert.match(subNav, /aria-current=\{active \? \"page\" : undefined\}/);
 });
 
 test("Knowledge footer and frame share the same content rail", () => {

@@ -5,7 +5,7 @@ import { api } from "../api/client";
 import { useAuth } from "../App";
 import { PageTabs } from "../components/shell/PageTabs";
 import { StandardPage } from "../components/knowledge/KnowledgeFrame";
-import { Badge, Button, DataTable, Drawer, EmptyState, ErrorState, Input, PageHeader, Select, StatusPill } from "../components/ui";
+import { Badge, Button, DataTable, Drawer, EmptyState, ErrorState, Input, Select, StatusPill } from "../components/ui";
 
 type MemoryTab = "sessions" | "evidence" | "observations" | "candidate-insights" | "confirmed-memory" | "memory-submissions";
 type JsonRecord = Record<string, unknown>;
@@ -256,7 +256,7 @@ export default function KnowledgeMemory() {
 
   return (
     <StandardPage>
-      <PageHeader title="Memory" description="Browse confirmed experiences and follow candidates through administrator review. Project access and general access are checked separately." tabs={<PageTabs section="memory" />} />
+      <PageTabs section="memory" className="knowledge-local-tabs mb-6" />
       {tab === "memory-submissions" && Boolean(user?.isAdmin) && <><LegacyScopeQueue /><p className="mb-5 text-sm text-muted">Historical <Link className="underline" to="/knowledge/candidate-insights">candidate insights</Link> and <Link className="underline" to="/knowledge/candidates">candidates</Link> remain available for review.</p></>}
       <div className="mb-6 flex flex-wrap items-end gap-3">
         <label className="relative min-w-[280px] flex-1">

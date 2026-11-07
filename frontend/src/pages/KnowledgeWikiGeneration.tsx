@@ -4,7 +4,6 @@ import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../App";
 import { api } from "../api/client";
 import { Badge, formatDate, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
-import { PageHeader } from "../components/ui";
 import { PageTabs } from "../components/shell/PageTabs";
 import { StandardPage } from "../components/knowledge/KnowledgeFrame";
 
@@ -107,21 +106,17 @@ export default function KnowledgeWikiGeneration() {
     catch (err) { setError(errorText(err, `Unable to ${action} Wiki generation`)); }
     finally { setControlBusy((current) => ({ ...current, [id]: false })); }
   };
-  if (!isAdmin) return <StandardPage className="knowledge-operations-page"><PageHeader title="Wiki generation" description="Run and control topic-level Wiki generation jobs." tabs={<PageTabs section="operations" />} /><StatePanel state="error" message="Administrator permission is required." /></StandardPage>;
+  if (!isAdmin) return <StandardPage className="knowledge-operations-page"><PageTabs section="operations" className="knowledge-local-tabs mb-6" /><StatePanel state="error" message="Administrator permission is required." /></StandardPage>;
 
-  if (error && !generation) return <StandardPage className="knowledge-operations-page"><PageHeader title="Wiki generation" description="Run and control topic-level Wiki generation jobs." tabs={<PageTabs section="operations" />} /><StatePanel state="error" message={error} onRetry={() => void load()} /></StandardPage>;
-  if (!generation) return <StandardPage className="knowledge-operations-page"><PageHeader title="Wiki generation" description="Run and control topic-level Wiki generation jobs." tabs={<PageTabs section="operations" />} /><StatePanel state="loading" message="Loading Wiki generation jobs…" /></StandardPage>;
+  if (error && !generation) return <StandardPage className="knowledge-operations-page"><PageTabs section="operations" className="knowledge-local-tabs mb-6" /><StatePanel state="error" message={error} onRetry={() => void load()} /></StandardPage>;
+  if (!generation) return <StandardPage className="knowledge-operations-page"><PageTabs section="operations" className="knowledge-local-tabs mb-6" /><StatePanel state="loading" message="Loading Wiki generation jobs…" /></StandardPage>;
 
   return <StandardPage className="knowledge-operations-page">
-    <PageHeader
-      title="Wiki generation"
-      description="Run, monitor, pause, and resume topic-level Wiki generation without mixing it into the Wiki reading surface."
-      tabs={<PageTabs section="operations" />}
-      actions={isAdmin ? <div className="flex flex-wrap gap-2">
-        <button type="button" className="ui-button ui-button-ghost ui-button-sm" onClick={() => void load()}><RefreshCw size={14} /> Refresh</button>
-        <button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={busy} onClick={() => void start()}><Workflow size={14} /> {busy ? "Queueing…" : "Generate topics"}</button>
-      </div> : undefined}
-    />
+    {/* actions={isAdmin ? ...} stays in this compact toolbar so generation controls remain administrator-only. */}
+    <div className="app-page-toolbar"><PageTabs section="operations" className="knowledge-local-tabs" />{isAdmin ? <div className="flex flex-wrap gap-2">
+      <button type="button" className="ui-button ui-button-ghost ui-button-sm" onClick={() => void load()}><RefreshCw size={14} /> Refresh</button>
+      <button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={busy} onClick={() => void start()}><Workflow size={14} /> {busy ? "Queueing…" : "Generate topics"}</button>
+    </div> : null}</div>
     {error && <p role="alert" className="mb-5 rounded-field border border-coral/40 bg-coral/10 p-3 text-sm text-coral">{error}</p>}
     {notice && <p className="mb-5 rounded-field border border-mint/40 bg-mint/10 p-3 text-sm text-mint">{notice}</p>}
     <section className="glass grid grid-cols-2 divide-x divide-y divide-white/10 md:grid-cols-4 md:divide-y-0" aria-label="Wiki generation summary">

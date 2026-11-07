@@ -2,7 +2,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import { Activity, BookOpen, Box, Database, FileText, KeyRound, ListChecks, Settings2, ShieldCheck, Users, Wrench } from "lucide-react";
 import { useAuth } from "../../App";
 import { useProjectScope } from "../../context/ProjectScope";
-import { knowledgeNavigation, matchesPath, pageTabNavigation } from "./navigation";
+import { knowledgeNavigation, matchesPath } from "./navigation";
 import type { PageTab } from "./PageTabs";
 
 const iconByLabel: Record<string, typeof Activity> = {
@@ -59,18 +59,6 @@ function contextFor(pathname: string, isAdmin: boolean): { label: string; items:
   if (pathname === "/admin" && isAdmin) {
     return { label: "Relay control plane", items: [{ label: "Access requests", path: "/users/requests", end: true }, { label: "Knowledge review", path: "/knowledge/memory", end: true }, { label: "Audit and release", path: "/knowledge/integrated/gates", end: true }] };
   }
-  if (pathname.startsWith("/knowledge/product-docs")) {
-    return { label: "Product docs", items: pageTabNavigation.productDocs.filter((item) => !("adminOnly" in item) || !item.adminOnly || isAdmin) as readonly PageTab[] };
-  }
-  if (pathname.startsWith("/knowledge/operations")) {
-    return { label: "Knowledge operations", items: pageTabNavigation.operations.filter((item) => !("adminOnly" in item) || !item.adminOnly || isAdmin) as readonly PageTab[] };
-  }
-  if (["/knowledge/memory", "/knowledge/sessions", "/knowledge/evidence", "/knowledge/observations", "/knowledge/candidate-insights", "/knowledge/candidates", "/knowledge/cases", "/knowledge/patterns", "/knowledge/confirmed-memory", "/knowledge/memory-submissions"].some((path) => matchesPath(pathname, path))) {
-    return { label: "Memory", items: pageTabNavigation.memory as unknown as readonly PageTab[] };
-  }
-  if (pathname.startsWith("/knowledge/integrated")) {
-    return { label: "Control plane", items: [{ label: "Providers", path: "/knowledge/integrated/providers", end: true }, { label: "Release gates", path: "/knowledge/integrated/gates", end: true }] };
-  }
   if (pathname.startsWith("/knowledge")) {
     return { label: "Knowledge", items: knowledgeNavigation as unknown as readonly PageTab[] };
   }
@@ -80,13 +68,9 @@ function contextFor(pathname: string, isAdmin: boolean): { label: string; items:
   if (pathname.startsWith("/users") && isAdmin) {
     return { label: "Administrator", items: [{ label: "Users", path: "/users", end: true }, { label: "Access requests", path: "/users/requests", end: true }, { label: "Knowledge permissions", path: "/users/permissions", end: true }] };
   }
-  if (pathname === "/account") {
-    return { label: "Account", items: [], note: "Your sign-in details and password settings." };
-  }
-  if (["/servers", "/instances", "/tools"].includes(pathname)) {
-    return { label: "Runtime", items: [], note: "Use the top bar to switch between runtime surfaces." };
-  }
-  return { label: "Workspace", items: [], note: "Use the top bar to switch between the main console surfaces." };
+  if (pathname === "/account") return { label: "Account", items: [] };
+  if (["/servers", "/instances", "/tools"].includes(pathname)) return { label: "Runtime", items: [] };
+  return { label: "Workspace", items: [] };
 }
 
 export function ContextRail() {
@@ -95,13 +79,13 @@ export function ContextRail() {
   const { selectedProject, loading: projectLoading } = useProjectScope();
   const context = contextFor(location.pathname, Boolean(user?.isAdmin));
   const projectName = selectedProject?.name ?? (projectLoading ? "Loading project…" : "No project selected");
-  const heading = context.label === "Selected workspace" ? projectName : context.label === "Relay control plane" ? "Keep the boundary clear." : location.pathname.startsWith("/knowledge") ? projectName : "Relay console";
+  const heading = context.label === "Selected workspace" || context.label === "Knowledge" ? projectName : context.label === "Relay control plane" ? "Admin overview" : context.label;
 
   return (
     <aside className="shell-context-rail" aria-label={`${context.label} navigation`}>
       <div className="shell-context-heading">
         <span>{context.label}</span>
-        <strong>{heading}</strong>
+        {heading && heading !== context.label ? <strong>{heading}</strong> : null}
       </div>
       {context.items.length > 0 ? (
         <nav className="shell-context-nav" aria-label={`${context.label} sections`}>
@@ -121,12 +105,12 @@ export function ContextRail() {
             );
           })}
         </nav>
-      ) : (
+      ) : context.note ? (
         <div className="shell-context-note">
           <span>Context</span>
           <p>{context.note}</p>
         </div>
-      )}
+      ) : null}
       <div className="shell-context-footer">
         <div><span>Relay API</span><i aria-label="Connected" /></div>
         <div><span>scope</span><code>{selectedProject ? `project: ${selectedProject.name}` : "account"}</code></div>

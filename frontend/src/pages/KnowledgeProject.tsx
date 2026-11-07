@@ -3,8 +3,8 @@ import { CheckCircle2, FileText, MessageSquareWarning, Pencil, ShieldCheck, Spar
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useProjectScope } from "../context/ProjectScope";
-import { Badge, cardClass, confidenceLabel, formatDate, inputClass, jsonValue, LifecyclePipeline, ScopeBanner, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
-import { PageHeader, Drawer } from "../components/ui";
+import { Badge, cardClass, confidenceLabel, formatDate, inputClass, jsonValue, ScopeBanner, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
+import { Drawer } from "../components/ui";
 import { CandidateReviewDetail } from "../components/CandidateReviewDetail";
 import { StandardPage } from "../components/knowledge/KnowledgeFrame";
 
@@ -208,13 +208,10 @@ export default function KnowledgeProject() {
     const query = next.toString();
     return `/knowledge/${targetSection}${query ? `?${query}` : ""}`;
   };
-  const description = section === "evidence" ? "Immutable source artifacts with ACL-controlled preview and traceability." : section === "observations" ? "Runtime facts and warnings that have not yet become a confirmed problem." : "Project records remain readable here. Use the Memory workspace for durable knowledge.";
   return <StandardPage>
-    <PageHeader title={title} description={description} />
     <EnvironmentPicker environment={environment} setEnvironment={selectEnvironment} />
     {scopeError && <p className="mb-4 rounded-field border border-coral/40 bg-coral/10 p-3 text-sm text-coral">{scopeError}</p>}
     <ScopeBanner project={selectedProject?.name} environment={environment} scope="project runtime" acl="owner / granted reviewers" />
-    <LifecyclePipeline current={section === "evidence" ? "Evidence" : section === "observations" ? "Observations" : undefined} />
     <nav className="mt-5 flex flex-wrap gap-2" aria-label="Memory pages">{["evidence", "observations", "candidates", "cases", "patterns", "playbooks"].map((item) => <Link key={item} to={listPath(item)} className={`rounded-ctl px-3 py-2 text-sm ${section === item ? "bg-mint text-ink" : "border border-white/10 text-muted hover:border-white/20"}`}>{item === "candidates" ? "Candidate insights" : item[0].toUpperCase() + item.slice(1)}</Link>)}</nav>
     {scopeLoading ? <div className="mt-5"><StatePanel state="loading" message="Loading project scope..." /></div> : projectId ? <div className="mt-5"><ProjectList section={section} projectId={projectId} environment={environment} onSelect={(id) => { const next = new URLSearchParams(params); next.set("document", id); navigate(`/knowledge/${section}?${next.toString()}`); }} /></div> : <div className="mt-5"><StatePanel state="empty" message="Select a project to inspect records. Use Memory workspace for candidate insights and confirmed memory." /></div>}
     <Drawer open={Boolean(selected && projectId)} onClose={() => navigate(listPath(section))} title={title}>

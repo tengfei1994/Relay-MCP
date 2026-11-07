@@ -73,6 +73,7 @@ textarea.ui-control { height: auto; min-height: 96px; padding-top: 9px; padding-
 .ui-page-header-description { max-width: 64ch; margin: 13px 0 0; color: var(--ui-muted); font-size: 15px; line-height: 1.65; }
 .ui-page-header-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 12px; }
 .ui-page-tabs { min-width: 0; max-width: 100%; margin-top: 24px; }
+.knowledge-action-bar { display: flex; justify-content: flex-end; margin-bottom: 16px; }
 .ui-data-table { overflow: hidden; padding: 0; }
 .ui-data-scroll { overflow-x: auto; }
 .ui-data-table table { width: 100%; border-collapse: collapse; text-align: left; }

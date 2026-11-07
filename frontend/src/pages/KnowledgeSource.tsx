@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Search, RefreshCw } from "lucide-react";
 import { api } from "../api/client";
-import { PageHeader, Drawer, ConfirmDialog, Button, StatusPill } from "../components/ui";
+import { Drawer, ConfirmDialog, Button, StatusPill } from "../components/ui";
 import { StandardPage } from "../components/knowledge/KnowledgeFrame";
 
 type SourceItem = Record<string, unknown>;
@@ -96,7 +96,7 @@ export default function KnowledgeSource() {
   };
 
   return <StandardPage>
-    <PageHeader title="Solutions" description="Solution artifacts and their sources." actions={<Button onClick={() => void load()} variant="ghost"><RefreshCw size={15} /> Refresh</Button>} />
+    <div className="app-page-toolbar"><Button onClick={() => void load()} variant="ghost"><RefreshCw size={15} /> Refresh</Button></div>
     {error && <p role="alert" className="mb-4 rounded-panel border border-coral/40 bg-coral/10 p-3 text-sm text-coral">{error}</p>}
     <div className="mb-4 flex flex-wrap gap-2" aria-label="Solution sections">
       {(["baseline", "snapshot", "compare", "search", "files"] as const).map((name) => <Button key={name} variant={drawer === name ? "accent" : "ghost"} onClick={() => setDrawer(name)}>{name === "baseline" ? "Solution baseline" : name === "snapshot" ? "Project snapshot" : name === "compare" ? "Compare upgrades" : name === "search" ? "Search sources" : "Source files"}</Button>)}

@@ -83,7 +83,7 @@ export function ScopeBanner({ project, environment, scope = "project runtime", a
     { label: "ACL", value: acl, Icon: LockKeyhole },
   ];
   return (
-    <div className={`${cardClass} mb-5 flex flex-wrap items-center gap-x-6 gap-y-3 border-mint/20 bg-mint/[.04]`}>
+    <div className="mb-5 flex flex-wrap items-center gap-x-6 gap-y-3 border-y border-line py-3">
       {items.map(({ label, value, Icon }) => (
         <div key={label} className="flex items-center gap-2 text-sm">
           <Icon size={15} className="text-mint" />

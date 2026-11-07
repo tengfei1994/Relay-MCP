@@ -496,7 +496,7 @@ export default function ProjectsPage() {
       {/* Main panel */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {!selected ? (
-          <div className="project-start"><div className="project-start-icon"><Folder size={28} /></div><h2>{projects.length ? "Open a project to begin." : "A place for your next project."}</h2><p>{projects.length ? "Browse files, preview documents and manage the environments linked to your project." : "Create a project to bring its files, environments and experience together."}</p>{!projectsLoading && !workspaceError && <Button variant="ghost" onClick={() => projects.length ? openProject(projects[0]) : setShowCreate(true)}>{projects.length ? "Open a project" : "Create a project"}<ChevronRight size={15} /></Button>}</div>
+          <div className="project-start"><div className="project-start-icon"><Folder size={28} /></div><h2>{projects.length ? "Select a project" : "No projects yet"}</h2><p>{projects.length ? "Open a project to browse files and manage its runtime links." : "Create a project to start organizing files and runtime links."}</p>{!projectsLoading && !workspaceError && <Button variant="ghost" onClick={() => projects.length ? openProject(projects[0]) : setShowCreate(true)}>{projects.length ? "Open a project" : "Create a project"}<ChevronRight size={15} /></Button>}</div>
         ) : showServers ? (
           /* Server association panel */
           <div className="max-w-2xl flex-1 overflow-y-auto p-6">

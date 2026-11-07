@@ -2,7 +2,7 @@
   box-sizing: border-box;
   width: 100%;
   margin-inline: auto;
-  padding: 32px clamp(20px,3vw,40px) 48px;
+  padding: 18px clamp(20px,3vw,40px) 44px;
 }
 
 .knowledge-page-frame-standard {
@@ -15,6 +15,6 @@
 
 @media (max-width: 700px) {
   .knowledge-page-frame {
-    padding: 24px 20px 36px;
+    padding: 16px 20px 36px;
   }
 }

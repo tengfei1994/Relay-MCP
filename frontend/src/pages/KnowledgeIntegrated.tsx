@@ -5,7 +5,7 @@ import { CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, FileText, GitComp
 import { api } from "../api/client";
 import { useAuth } from "../App";
 import { Badge, cardClass, formatDate, inputClass, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
-import { ConfirmDialog, Drawer, PageHeader } from "../components/ui";
+import { ConfirmDialog, Drawer } from "../components/ui";
 import { ProviderSetupForm, type ProviderSetupDefaults } from "../components/ProviderSetupForm";
 import { StandardPage } from "../components/knowledge/KnowledgeFrame";
 import { knowledgeItemScope, legacyKnowledgeRedirect, withKnowledgeScope, type KnowledgeScope } from "../knowledge/integrated-search";
@@ -879,7 +879,6 @@ export default function KnowledgeIntegrated() {
   if (legacyRoute) return <Navigate to={legacyKnowledgeRedirect(legacyRoute, params)} replace />;
   const tab = TABS.some(([key]) => key === requestedTab) ? requestedTab! : "providers";
   return <StandardPage>
-    <PageHeader title="Control plane" description="Sessions, providers, review and publication for Relay knowledge." />
     <nav className="shell-page-tabs mb-8" aria-label="Control plane sections">
       {TABS.map(([key, label, Icon]) => <NavLink key={key} to={`/knowledge/integrated/${key}`} className={`shell-page-tab${tab === key ? " active" : ""}`} aria-current={tab === key ? "page" : undefined}><Icon size={14} /> {label}</NavLink>)}
     </nav>

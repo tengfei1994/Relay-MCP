@@ -35,8 +35,8 @@ function jsonObject(value: unknown): RecordValue { if (value && typeof value ===
 function statusTone(value: unknown): "mint" | "sun" | "coral" | "neutral" { const state = text(value, "unknown"); if (/failed|error|deprecated|rejected/i.test(state)) return "coral"; if (/warning|partial|needs_review|stale|queued|running|pending/i.test(state)) return "sun"; if (/approved|succeeded|verified|ready|healthy|accepted|active/i.test(state)) return "mint"; return "neutral"; }
 function statusLabel(value: unknown): string { return text(value, "Unknown").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
 
-function PageHeader({ title, description, actions }: { title: string; description: string; actions?: ReactNode }) {
-  return <header className="ui-page-header"><div><h1>{title}</h1><p className="ui-page-header-description">{description}</p></div>{actions && <div className="ui-page-header-actions">{actions}</div>}</header>;
+function PageHeader({ title: _title, description: _description, actions }: { title: string; description: string; actions?: ReactNode }) {
+  return actions ? <div className="ui-page-header-actions knowledge-action-bar">{actions}</div> : null;
 }
 function PageTabs({ active, scope }: { active: string; scope: KnowledgeScope }) {
   const { user } = useAuth();

@@ -7,6 +7,8 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
+process.env.NODE_ENV ??= "test";
+
 async function freePort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolvePort, reject) => server.listen(0, "127.0.0.1", () => resolvePort()).once("error", reject));

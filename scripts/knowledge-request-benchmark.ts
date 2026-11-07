@@ -94,6 +94,11 @@ export async function runKnowledgeRequestBenchmark(config: BenchmarkConfig = con
   // no model is invoked, and no paid provider call can occur in this benchmark.
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
+    const chunkMatch=url.match(/^https:\/\/weknora\.benchmark\.invalid\/api\/v1\/chunks\/by-id\/(benchmark-chunk-\d+)$/);
+    if (chunkMatch && init?.method === "GET") {
+      const index=Number(chunkMatch[1].slice("benchmark-chunk-".length));
+      return Response.json({success:true,data:{id:chunkMatch[1],knowledge_id:`benchmark-external-${index}`,content:`Synthetic benchmark retrieval excerpt ${index}`,is_enabled:true,index_status:"ready"}});
+    }
     if (url !== `${PROVIDER_ORIGIN}/api/v1/knowledge-search` || init?.method !== "POST") throw new Error("Unexpected network request blocked by benchmark replay");
     const request = JSON.parse(String(init.body ?? "{}")) as { query?: string; knowledge_ids?: string[]; match_count?: number };
     replayCalls += 1;
@@ -132,11 +137,12 @@ export async function runKnowledgeRequestBenchmark(config: BenchmarkConfig = con
 
     runMigrations();
     appDb = db.session.client;
-    appDb.prepare("INSERT INTO users(id,username,password_hash,is_admin) VALUES (?,?,?,0)").run(ACTOR_ID, "benchmark-user", "unused");
+    appDb.prepare("INSERT INTO users(id,username,password_hash,is_admin,knowledge_enabled) VALUES (?,?,?,0,1)").run(ACTOR_ID, "benchmark-user", "unused");
     appDb.prepare("INSERT INTO projects(id,user_id,name,description,workspace_path) VALUES (?,?,?,?,?)").run(Number(PROJECT_ID), ACTOR_ID, "Benchmark", "Synthetic isolated benchmark", root);
     store = getKnowledgeStore();
     store.grantAcl(PROJECT_ID, ACTOR_ID);
     seedData(store, new KnowledgeRepository(store), config);
+    store.db.prepare("INSERT INTO knowledge_integration_settings(key,value,updated_by,updated_at) VALUES ('product_provider','weknora',?,?)").run(ACTOR_ID,new Date().toISOString());
 
     app = Fastify({ logger: false });
     app.decorate("authenticate", async (request: FastifyRequest) => { Object.assign(request, { user: { id: ACTOR_ID, isAdmin: false } }); });
@@ -229,6 +235,7 @@ function seedData(store: KnowledgeStore, repository: KnowledgeRepository, config
     for (let index = 0; index < config.productDocuments; index++) {
       const suffix = index.toString(16).padStart(64, "0");
       insertProduct.run(`benchmark-product-${index}`, `benchmark-external-${index}`, "benchmark-knowledge-base", JSON.stringify([`benchmark-chunk-${index}`]), `Synthetic product ${index}`, suffix, "benchmark-fixture", PROJECT_ID, "published", "completed", now, `benchmark-product-${index}`, now, now, now);
+      store.db.prepare("INSERT INTO knowledge_product_classifications(document_id,classification,updated_at) VALUES (?,'product',?)").run(`benchmark-product-${index}`,now);
     }
     for (let index = 0; index < config.candidateInsights; index++) {
       const timestamp = new Date(Date.parse(now) + index * 1_000).toISOString();
@@ -249,7 +256,7 @@ function seedData(store: KnowledgeStore, repository: KnowledgeRepository, config
 function createScenarios(): Scenario[] {
   const search = (name: string, limit: number, query: string, expectation: Scenario["expectation"] = "results"): Scenario => ({
     name, endpoint: "knowledgeSearch", limit, expectation,
-    request: { method: "POST", url: "/api/knowledge/search", payload: { query, projectId: PROJECT_ID, limit } },
+    request: { method: "POST", url: "/api/knowledge/search", payload: { query, limit } },
     validate: validateSearch,
   });
   const insights = (name: string, limit: number, offset?: number, expectation: Scenario["expectation"] = "results"): Scenario => ({
@@ -291,26 +298,13 @@ function materializeScenarioOffsets(scenario: Scenario, config: BenchmarkConfig)
 
 function validateSearch(body: unknown, config: BenchmarkConfig, scenario: Scenario): string[] {
   const root = asRecord(body);
-  const pack = asRecord(root?.contextPack);
-  if (!pack) return ["missing_context_pack"];
   const errors: string[] = [];
-  const counts = asRecord(pack.counts);
-  const sectionNames = ["authoritativeDocs", "confirmedKnowledge", "candidates", "currentFacts"] as const;
-  for (const section of sectionNames) {
-    const value = pack[section];
-    if (!Array.isArray(value)) errors.push(`missing_${section}`);
-    else if (counts?.[section] !== value.length) errors.push(`count_mismatch_${section}`);
-  }
-  if (pack.provider !== "weknora") errors.push("wrong_context_pack_provider");
-  if (!asRecord(pack.degraded) || !asRecord(pack.conflicts)) errors.push("incomplete_context_pack_metadata");
+  if (root?.provider !== "weknora") errors.push("wrong_product_provider");
   if (!Array.isArray(root?.references) || typeof root?.retrievalRunId !== "string") errors.push("incomplete_search_response");
   const expectedDocuments = scenario.expectation === "noResults" ? 0 : Math.min(scenario.limit, config.productDocuments);
-  if (!Array.isArray(pack.authoritativeDocs) || pack.authoritativeDocs.length !== expectedDocuments) errors.push("unexpected_authoritative_count");
-  if (scenario.expectation === "noResults") {
-    for (const section of sectionNames) if (!Array.isArray(pack[section]) || pack[section].length !== 0) errors.push(`unexpected_no_results_${section}`);
-  } else {
-    for (const section of ["confirmedKnowledge", "candidates", "currentFacts"]) if (!Array.isArray(pack[section]) || pack[section].length === 0) errors.push(`empty_${section}`);
-  }
+  if (!Array.isArray(root?.references) || root.references.length !== expectedDocuments) errors.push("unexpected_product_count");
+  if (Array.isArray(root?.references) && root.references.some(value=>{const ref=asRecord(value); return !ref || typeof ref.documentId!=="string" || typeof ref.chunkId!=="string" || !asRecord(ref.citation);})) errors.push("unverified_product_chunk");
+  if (root && ["contextPack","confirmedKnowledge","candidates","currentFacts"].some(key=>key in root)) errors.push("mixed_non_product_content");
   return [...new Set(errors)];
 }
 

@@ -5,6 +5,9 @@ import {createHash} from 'node:crypto';
 import Database from 'better-sqlite3';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+// This historical driver invokes removed Work Session MCP tools and can execute Jobs.
+function retiredDriver(): void { throw new Error('Historical Work Session acceptance driver retired; use the Knowledge v2 validation in docs/knowledge-access.md'); }
+retiredDriver();
 const ROOT='/home/ftd/relay-knowledge-engine-nonprod', F=ROOT+'/opsfixture', WEB='http://127.0.0.1:18300';
 if(process.env.RELAY_E2E_ISOLATED!=='1'||process.platform!=='linux'||resolve(process.cwd())!==ROOT+'/relay')throw new Error('isolated_nonproduction_required');
 const mode=process.argv[2]??'execute';

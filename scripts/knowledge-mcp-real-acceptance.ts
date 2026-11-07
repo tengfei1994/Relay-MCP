@@ -199,4 +199,4 @@ async function main():Promise<void>{
     console.log(JSON.stringify({runId,status:report.status,checks:report.checks.length,report:output,...(report.failureCode?{failureCode:report.failureCode}:{})}));
   }
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)main().catch(()=>{console.error("acceptance_preflight_failed");process.exitCode=1;});
+if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){console.error("Historical MCP acceptance driver retired; use the Knowledge v2 validation in docs/knowledge-access.md");process.exitCode=1;}

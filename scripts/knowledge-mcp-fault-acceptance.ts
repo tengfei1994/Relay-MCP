@@ -33,6 +33,10 @@ const close=(server:Server)=>new Promise<void>(yes=>{server.closeAllConnections(
 const clients:Client[]=[];let app:any,store:any,appDb:any,mcpHttp:Server|undefined;
 const faultHttp=createServer(async(req,res)=>{
  counts.faultHttp++;const requestMode=mode;let raw="";
+ if(req.method==="GET" && req.url==="/api/v1/chunks/by-id/chunk-good"){
+  if(req.headers["x-api-key"]!==secret){res.writeHead(401).end('{}');return;}
+  res.setHeader("content-type","application/json");res.end(JSON.stringify({success:true,data:{id:"chunk-good",knowledge_id:"ext-good",content:privateSnippet,is_enabled:true,index_status:"ready"}}));return;
+ }
  for await(const chunk of req){raw+=chunk;if(raw.length>16_384){res.writeHead(413).end();return;}}
  let body:any;try{body=JSON.parse(raw);}catch{res.writeHead(400).end();return;}
  const authValid=req.headers["x-api-key"]===secret,scopeValid=JSON.stringify(body.knowledge_ids)==='["ext-good"]'&&!body.knowledge_base_id&&!body.knowledge_base_ids;
@@ -50,11 +54,15 @@ try{
  Object.assign(process.env,{DB_PATH:join(root,"app.db"),KNOWLEDGE_DB_PATH:join(root,"knowledge.db"),KNOWLEDGE_ENGINE_HOME:join(root,"absent-engine"),RELAY_STATE_ROOT:join(root,"state"),WORKSPACE_ROOT:join(root,"workspace"),KNOWLEDGE_EVIDENCE_ROOT:join(root,"evidence"),KNOWLEDGE_CASEBOOK_ROOT:join(root,"casebook"),DOTENV_CONFIG_PATH:join(root,"absent.env"),WEKNORA_BASE_URL:faultUrl,WEKNORA_KNOWLEDGE_BASE_ID:"kb-fault-fixture",WEKNORA_API_TOKEN:secret,WEKNORA_AUTH_MODE:"api_key"});
  const [{default:Fastify},{default:express},{db,runMigrations},{knowledgeRoutes},{getKnowledgeStore},{KnowledgeRepository},{EvidenceStore},{ConfirmedMemoryService},{registerKnowledgeTools},{safeRequestLogSerializers,safeRequestLogHooks,sendSafeNotFound},{sanitizeToolAuditArguments},{WeKnoraClient,WeKnoraError}]=await Promise.all([
   import("fastify"),import("express"),import("../src/server/db/index.js"),import("../src/server/routes/knowledge.js"),import("../src/server/knowledge-context.js"),import("../src/knowledge/repository.js"),import("../src/knowledge/evidence-store.js"),import("../src/knowledge/confirmed-memory.js"),import("../src/mcp/tools/knowledge.js"),import("../src/server/request-log.js"),import("../src/shared/retrieval-audit.js"),import("../src/knowledge/weknora.js")]);
- appDb=(db as any).session.client;runMigrations();store=getKnowledgeStore();store.grantAcl("p1",7,true);store.grantAcl("p2",10);
- const now=new Date().toISOString();new KnowledgeRepository(store).saveCase({id:"case-fixture",kind:"case",title:"Cache fixture",body:"cache "+privateBody,lifecycle:"approved",projectId:"p1",environment:"dev",locator:"case:fixture",createdAt:now,updatedAt:now} as any);
- const evidence=new EvidenceStore(store,process.env.KNOWLEDGE_EVIDENCE_ROOT!).put({content:Buffer.from("cache "+privateBody),mimeType:"text/plain",sourceKind:"log",projectId:"p1",environment:"dev",locator:"case:fixture"});
- new ConfirmedMemoryService(store).save({id:"case-fixture",type:"Case",title:"Cache fixture",statement:"cache "+privateBody,details:{symptoms:"cache",rootCause:"fixture",resolution:"reviewed",verification:"confirmed"},scope:{projectId:"p1",environment:"dev",scopeType:"environment",scopeKey:"dev",visibility:"project"},evidenceRefs:[evidence.id],source:{kind:"manual",locator:"case:fixture"},confirmedBy:7,confirmedAt:now,audit:{action:"manual",reason:"fixture"}});
- store.db.prepare(`INSERT INTO knowledge_weknora_documents(id,external_document_id,external_knowledge_base_id,external_chunk_ids_json,title,normalized_content_sha256,raw_sha256,parser_version,product_version,source_path,project_id,environment,language,status,idempotency_key,created_at,updated_at,upstream_verified_at,upstream_parse_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run("mapping-good","ext-good","kb-fault-fixture",'["chunk-good"]',"Synthetic cache manual",hash("synthetic"),hash("synthetic raw"),"fault-fixture-1","21.3","manual/synthetic.html#cache","p1","dev","en","published","fault-fixture",now,now,now,"completed");
+ appDb=(db as any).session.client;runMigrations();
+ appDb.prepare("INSERT INTO users(id,username,password_hash,knowledge_enabled) VALUES (7,'owner','unused',1),(10,'foreign','unused',0)").run();
+ appDb.prepare("INSERT INTO projects(id,user_id,name,workspace_path) VALUES (1,7,'Owner',?),(2,10,'Foreign',?)").run(root,root);
+ store=getKnowledgeStore();store.grantAcl("1",7,true);store.grantAcl("2",10);
+ const now=new Date().toISOString();new KnowledgeRepository(store).saveCase({id:"case-fixture",kind:"case",title:"Cache fixture",body:"cache "+privateBody,lifecycle:"approved",projectId:"1",environment:"dev",locator:"case:fixture",createdAt:now,updatedAt:now} as any);
+ const evidence=new EvidenceStore(store,process.env.KNOWLEDGE_EVIDENCE_ROOT!).put({content:Buffer.from("cache "+privateBody),mimeType:"text/plain",sourceKind:"log",projectId:"1",environment:"dev",locator:"case:fixture"});
+ new ConfirmedMemoryService(store).save({id:"case-fixture",type:"Case",title:"Cache fixture",statement:"cache "+privateBody,details:{symptoms:"cache",rootCause:"fixture",resolution:"reviewed",verification:"confirmed"},scope:{projectId:"1",environment:"dev",scopeType:"environment",scopeKey:"dev",visibility:"project"},evidenceRefs:[evidence.id],source:{kind:"manual",locator:"case:fixture"},confirmedBy:7,confirmedAt:now,audit:{action:"manual",reason:"fixture"}});
+ store.db.prepare(`INSERT INTO knowledge_weknora_documents(id,external_document_id,external_knowledge_base_id,external_chunk_ids_json,title,normalized_content_sha256,raw_sha256,parser_version,product_version,source_path,project_id,environment,language,status,idempotency_key,created_at,updated_at,upstream_verified_at,upstream_parse_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run("mapping-good","ext-good","kb-fault-fixture",'["chunk-good"]',"Synthetic cache manual",hash("synthetic"),hash("synthetic raw"),"fault-fixture-1","21.3","manual/synthetic.html#cache","1","dev","en","published","fault-fixture",now,now,now,"completed");
+ store.db.prepare("INSERT INTO knowledge_product_classifications(document_id,classification,updated_at) VALUES ('mapping-good','product',?)").run(now);
  store.db.prepare("INSERT INTO knowledge_integration_settings(key,value,updated_at) VALUES ('product_provider','weknora',?)").run(now);
  app=Fastify({logger:{stream:{write(line:string){logs+=line;}},serializers:safeRequestLogSerializers,hooks:safeRequestLogHooks}});
  app.addHook("onRequest",async()=>{counts.relayHttp++;});
@@ -66,29 +74,27 @@ try{
   const actor=credential==="Bearer "+adminToken?7:10;
   if(req.body?.method==="tools/call")mcpAudit.push({actor,tool:req.body.params.name,arguments:sanitizeToolAuditArguments(req.body.params.name,req.body.params.arguments)});
   const server=new McpServer({name:"relay-injected-fault-fixture",version:"1.0.0"});
-  registerKnowledgeTools({server,knowledge:store,user:{id:actor,username:"fixture-"+actor,defaultProject:actor===7?"p1":"p2",defaultEnvironment:"dev"}});
+  registerKnowledgeTools({server,knowledge:store,user:{id:actor,username:"fixture-"+actor,knowledgeEnabled:actor===7,defaultProjectId:actor===7?1:2,defaultEnvironment:"dev"}});
   const transport=new StreamableHTTPServerTransport({sessionIdGenerator:undefined});
   try{await server.connect(transport);await transport.handleRequest(req,res,req.body);}catch{if(!res.headersSent)res.status(500).json({error:"Fixture transport failure"});}finally{await server.close();await transport.close();}
  });
  mcpApp.all("/mcp",(_req,res)=>{counts.mcpHttp++;res.status(405).end();});mcpHttp=createServer(mcpApp);const mcpUrl=await listen(mcpHttp);
  const connect=async(token:string)=>{const client=new Client({name:"injected-fault-acceptance",version:"1.0.0"});await client.connect(new StreamableHTTPClientTransport(new URL(mcpUrl+"/mcp"),{requestInit:{headers:{authorization:"Bearer "+token}}}));clients.push(client);return client;};
  const admin=await connect(adminToken),foreign=await connect(foreignToken);
- const httpSearch=async(token=adminToken,environment="dev")=>{const response=await fetch(relayUrl+"/api/knowledge/search?private="+privateQuery,{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"application/json","x-private":privateQuery},body:JSON.stringify({query,projectId:"p1",environment,productVersion:"21.3"})});return {status:response.status,body:await response.json() as any};};
+ const httpSearch=async(token=adminToken)=>{const response=await fetch(relayUrl+"/api/knowledge/search?private="+privateQuery,{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"application/json","x-private":privateQuery},body:JSON.stringify({query,productVersion:"21.3"})});return {status:response.status,body:await response.json() as any};};
  const mcpCall=async(client:Client,name:string,args:Record<string,unknown>)=>{const raw:any=await client.callTool({name,arguments:args},undefined,{timeout:45_000});const text=raw.content?.filter((x:any)=>x.type==="text").map((x:any)=>x.text).join("\n")??"";return {isError:raw.isError===true,text,body:raw.isError?undefined:JSON.parse(text)};};
- const mcpSearch=(client=admin)=>mcpCall(client,"knowledge_search",{query,projectId:"p1",productVersion:"21.3",extraPrivate:privateQuery});
- const memory=async()=>{const result=await mcpCall(admin,"knowledge_get",{documentId:"case-fixture",project:"p1"});check(!result.isError&&result.text.includes(privateBody),"memory_unavailable");return true;};
- const positive=(body:any)=>{check(body.references?.length===1&&body.references[0].documentId==="ext-good"&&body.references[0].chunkId==="chunk-good","healthy_reference_mismatch");check(body.contextPack.confirmedKnowledge.some((x:any)=>x.id==="case-fixture"),"healthy_memory_missing");};
+ const mcpSearch=(client=admin)=>mcpCall(client,"knowledge_search",{query,productVersion:"21.3",extraPrivate:privateQuery});
+ const memory=async()=>{const result=await mcpCall(admin,"knowledge_confirmed_memory_get",{memoryId:"case-fixture"});check(!result.isError&&result.text.includes(privateBody),"memory_unavailable");return true;};
+ const positive=(body:any)=>{check(body.references?.length===1&&body.references[0].documentId==="mapping-good"&&body.references[0].chunkId==="chunk-good","healthy_reference_mismatch");check(!body.contextPack,"search_mixed_memory");};
  const recover=async()=>{mode="healthy";const [http,mcp]=await Promise.all([httpSearch(),mcpSearch()]);check(http.status===200&&!mcp.isError,"healthy_transport_failed");positive(http.body);positive(mcp.body);return "passed";};
  stage="baseline";report.baseline=await recover();
  stage="acl";const beforeAcl=counts.faultHttp;const [deniedHttp,deniedMcp]=await Promise.all([httpSearch(foreignToken),mcpSearch(foreign)]);check(deniedHttp.status===403&&deniedMcp.isError,"foreign_acl_not_denied");check(counts.faultHttp===beforeAcl,"foreign_acl_reached_upstream");errorResponses.push(JSON.stringify(deniedHttp.body),deniedMcp.text);
- const wrongEnvironment=await httpSearch(adminToken,"prod");check(wrongEnvironment.status===200&&wrongEnvironment.body.references.length===0&&counts.faultHttp===beforeAcl,"environment_scope_not_closed");check(wrongEnvironment.body.contextPack.confirmedKnowledge.length===0,"environment_memory_leak");report.acl={deniedWithoutUpstream:true,httpStatus:403,mcpIsError:true,wrongEnvironmentEmpty:true};
+ report.acl={deniedWithoutUpstream:true,httpStatus:403,mcpIsError:true};
  for(const fault of faults){
   stage=fault;mode=fault;const before=counts.faultHttp,started=Date.now();const [http,mcp]=await Promise.all([httpSearch(),mcpSearch()]);
   const elapsedMs=Date.now()-started,upstreamRequests=counts.faultHttp-before;check(upstreamRequests===2,"unexpected_upstream_request_count");
-  if(["timeout","rate_limited","unauthorized"].includes(fault)){
-   check(http.status===200&&!mcp.isError,"degraded_transport_not_successful");
-   for(const body of [http.body,mcp.body]){check(body.references.length===0&&body.contextPack.degraded.productKnowledge===fault,"degraded_code_or_reference_mismatch");check(body.contextPack.confirmedKnowledge.some((x:any)=>x.id==="case-fixture"),"degraded_memory_missing");}
-  }else{check(http.status===502&&mcp.isError,"malformed_response_not_rejected");check(!JSON.stringify(http.body).includes(privateSnippet)&&!mcp.text.includes(privateSnippet),"untrusted_reference_content_leaked");errorResponses.push(JSON.stringify(http.body),mcp.text);}
+  check(http.status===503&&mcp.isError,"engine_fault_not_reported");
+  check(!JSON.stringify(http.body).includes(privateSnippet)&&!mcp.text.includes(privateSnippet),"untrusted_reference_content_leaked");errorResponses.push(JSON.stringify(http.body),mcp.text);
   const memoryAvailable=await memory();
   let direct:any;
   if(fault!=="invalid_ref"){
@@ -100,8 +106,7 @@ try{
   stage=fault+"_recovery";const recovery=await recover();report.scenarios.push({fault,injected:true,httpStatus:http.status,mcpIsError:mcp.isError,errorCode:fault.startsWith("invalid")?"invalid_response":fault,upstreamRequests,elapsedMs,memoryAvailable,recovery,directClient:direct});
  }
  stage="fixture_restart";await close(faultHttp);const [outageHttp,outageMcp]=await Promise.all([httpSearch(),mcpSearch()]);
- check(outageHttp.status===200&&!outageMcp.isError,"restart_outage_failed");
- for(const body of [outageHttp.body,outageMcp.body]){check(body.references.length===0&&body.contextPack.degraded.productKnowledge==="unavailable","restart_outage_code_mismatch");check(body.contextPack.confirmedKnowledge.some((x:any)=>x.id==="case-fixture"),"restart_memory_missing");}
+ check(outageHttp.status===503&&outageMcp.isError,"restart_outage_failed");
  const restartMemory=await memory();await listen(faultHttp,Number(new URL(faultUrl).port));report.restart={degradedCode:"unavailable",memoryAvailable:restartMemory,recovery:await recover(),scope:"only synthetic upstream listener restarted; actual Relay handler and MCP instances kept alive"};
  stage="privacy";const retrievalRows=store.db.prepare("SELECT query,results_json FROM knowledge_retrieval_runs").all();const auditRows=store.db.prepare("SELECT action,details_json FROM knowledge_audit").all();
  const telemetry=JSON.stringify({logs,retrievalRows,auditRows,mcpAudit,traces,errorResponses});

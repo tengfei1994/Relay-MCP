@@ -4,6 +4,10 @@ import {resolve} from 'node:path';
 import {createHash} from 'node:crypto';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+// Historical acceptance driver targeted removed Work Session MCP tools.
+// Stop before opening credentials or contacting a service; see knowledge-access.md.
+function retiredDriver(): void { throw new Error('Historical MCP acceptance driver retired; use the Knowledge v2 validation in docs/knowledge-access.md'); }
+retiredDriver();
 const root='/home/ftd/relay-knowledge-engine-nonprod';
 if(process.env.RELAY_E2E_ISOLATED!=='1'||process.platform!=='linux'||resolve(process.cwd())!==root+'/relay')throw new Error('isolated_nonproduction_required');
 const runId=process.env.RELAY_MCP_RUN_ID??'mcp-live';

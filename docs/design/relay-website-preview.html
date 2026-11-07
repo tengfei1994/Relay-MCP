@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay — Website preview</title>
+<style>
+@font-face{font-family:"Relay Sans";src:url("../../frontend/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400-normal.woff2") format("woff2");font-weight:400;font-display:swap}
+@font-face{font-family:"Relay Sans";src:url("../../frontend/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-500-normal.woff2") format("woff2");font-weight:500;font-display:swap}
+@font-face{font-family:"Relay Sans";src:url("../../frontend/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-600-normal.woff2") format("woff2");font-weight:600;font-display:swap}
+@font-face{font-family:"Relay Mono";src:url("../../frontend/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2") format("woff2");font-weight:400;font-display:swap}
+@font-face{font-family:"Relay Mono";src:url("../../frontend/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2") format("woff2");font-weight:500;font-display:swap}
+:root{
+  --bg:#08090a;--surface:#101113;--raised:#17181b;--line:#25272c;--line-strong:#3a3c43;
+  --text:#f3f4f5;--muted:#a1a4ad;--dim:#62656d;--accent:#e4f222;--accent-ink:#0d0e05;
+  --sans:"Relay Sans","IBM Plex Sans","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+  --mono:"Relay Mono","IBM Plex Mono","Cascadia Mono",Consolas,monospace;
+  --ease:cubic-bezier(.22,1,.36,1);
+  --wrap:min(100% - 64px,1120px);
+}
+*,*::before,*::after{box-sizing:border-box}
+html{color-scheme:dark;background:var(--bg);scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font:17px/1.55 var(--sans);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit}
+h1,h2,h3,h4,p{margin:0}
+h1,h2,h3{font-weight:600;letter-spacing:-.035em;text-wrap:balance}
+p{text-wrap:pretty}
+:focus-visible{outline:2px solid var(--accent);outline-offset:4px;border-radius:6px}
+.skip{position:fixed;left:16px;top:-60px;z-index:100;padding:10px 16px;border-radius:999px;background:var(--accent);color:var(--accent-ink);font-weight:500}
+.skip:focus{top:16px}
+.wrap{width:var(--wrap);margin-inline:auto}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+[id]{scroll-margin-top:56px}
+
+/* Navigation */
+.nav{position:fixed;inset:0 0 auto;z-index:50;height:56px;background:rgba(8,9,10,.72);backdrop-filter:saturate(1.6) blur(20px);-webkit-backdrop-filter:saturate(1.6) blur(20px);border-bottom:1px solid rgba(255,255,255,.06)}
+.nav .wrap{height:100%;display:flex;align-items:center;gap:40px}
+.brand{display:inline-flex;align-items:center;gap:10px;font-weight:600;font-size:18px;letter-spacing:-.03em}
+.brand small{font:400 11px var(--mono);color:var(--muted);letter-spacing:0;margin-left:-4px}
+.mark{position:relative;width:18px;height:18px;flex:none;border:1.5px solid currentColor;border-radius:3px;transform:rotate(45deg)}
+.mark::after{content:"";position:absolute;inset:3.5px;border:1.5px solid var(--accent);border-radius:1px}
+.nav-links{display:flex;gap:28px;margin-left:auto;font-size:13px;color:var(--muted)}
+.nav-links a{transition:color .2s var(--ease)}
+.nav-links a:hover,.nav-links a[aria-current="true"]{color:var(--text)}
+.pill{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 22px;border:0;border-radius:999px;background:none;font-size:15px;font-weight:500;white-space:nowrap;cursor:pointer;transition:transform .25s var(--ease),background .25s var(--ease),color .25s var(--ease)}
+.pill:active{transform:scale(.97)}
+.pill-primary{background:var(--accent);color:var(--accent-ink)}
+.pill-primary:hover{background:#eef75a}
+.pill-quiet{color:var(--text);box-shadow:inset 0 0 0 1px var(--line-strong)}
+.pill-quiet:hover{background:rgba(255,255,255,.06)}
+.nav .pill{min-height:32px;padding:0 14px;font-size:13px}
+
+/* Scene: one call, end to end */
+.relay-scene{position:relative;height:560vh}
+.relay-stage{position:sticky;top:0;height:100vh;height:100svh;overflow:hidden;display:grid;place-items:center}
+.relay-glow{position:absolute;inset:-20% -10%;background:radial-gradient(40% 36% at 50% 52%,rgba(228,242,34,calc(.05 + var(--glow,0) * .1)),transparent 70%);pointer-events:none}
+.hero-copy{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:96px 24px 0;opacity:calc(1 - var(--intro,0) * 1.4);transform:translateY(calc(var(--intro,0) * -90px)) scale(calc(1 - var(--intro,0) * .05));pointer-events:none;z-index:2}
+.hero-copy h1{font-size:clamp(46px,8.2vw,116px);line-height:1;letter-spacing:-.055em}
+.hero-copy h1 span{display:block;opacity:0;transform:translateY(.28em);animation:rise 1.1s var(--ease) forwards}
+.hero-copy h1 span+span{animation-delay:.16s}
+.hero-copy p{max-width:36ch;margin-top:28px;font-size:clamp(17px,1.6vw,21px);color:var(--muted);opacity:0;animation:rise 1s .4s var(--ease) forwards}
+.hero-actions{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin-top:36px;pointer-events:auto;opacity:0;animation:rise 1s .55s var(--ease) forwards}
+.hero-actions[data-hidden="true"]{visibility:hidden}
+.scroll-cue{position:absolute;bottom:32px;left:50%;width:1px;height:48px;background:linear-gradient(var(--muted),transparent);opacity:calc(.8 - var(--intro,0) * 4);transform-origin:top;animation:cue 2.4s var(--ease) infinite}
+@keyframes rise{to{opacity:1;transform:none}}
+@keyframes cue{0%{transform:scaleY(0)}50%{transform:scaleY(1)}100%{transform:scaleY(1);opacity:0}}
+
+.diagram{position:relative;width:min(100% - 32px,1080px);aspect-ratio:1000/540;opacity:var(--build-in,0);transform:translateY(calc((1 - var(--build-in,0)) * 60px)) scale(calc(.9 + var(--build-in,0) * .1))}
+.diagram svg{width:100%;height:100%;overflow:visible}
+.route{fill:none;stroke:var(--line-strong);stroke-width:1.5;stroke-linecap:round}
+.route-live{fill:none;stroke:var(--accent);stroke-width:2;stroke-linecap:round;opacity:.9}
+.node-box{fill:var(--surface);stroke:var(--line-strong);stroke-width:1.2;transition:stroke .5s var(--ease),fill .5s var(--ease)}
+.node[data-on="true"] .node-box{stroke:var(--accent);fill:#15160f}
+.node-title{fill:var(--text);font:500 17px var(--sans);letter-spacing:-.01em}
+.node-meta{fill:var(--muted);font:400 12px var(--mono)}
+.core-outer{fill:var(--bg);stroke:var(--text);stroke-width:2.2}
+.core-inner{fill:rgba(228,242,34,var(--core,0));stroke:var(--accent);stroke-width:2.2;transition:fill .4s var(--ease)}
+.core-ring{fill:none;stroke:var(--accent);stroke-width:1;opacity:0;transform-box:fill-box;transform-origin:center}
+.relay-stage[data-step="2"] .core-ring{animation:ring 1.6s var(--ease) infinite}
+.relay-stage[data-step="2"] .core-ring+.core-ring{animation-delay:.5s}
+@keyframes ring{from{opacity:.8;transform:scale(1)}to{opacity:0;transform:scale(2.2)}}
+.packet{fill:var(--accent);filter:drop-shadow(0 0 10px rgba(228,242,34,.9));opacity:0;transition:opacity .3s var(--ease)}
+.relay-stage[data-step="1"] .packet,.relay-stage[data-step="2"] .packet,.relay-stage[data-step="3"] .packet,.relay-stage[data-step="4"] .packet{opacity:1}
+.relay-label{fill:var(--text);font:600 20px var(--sans);letter-spacing:-.02em}
+
+.steps-panel{position:absolute;left:max(24px,calc((100vw - 1120px) / 2));bottom:clamp(24px,7vh,72px);width:min(420px,calc(100% - 48px));z-index:3;opacity:var(--steps-in,0);transform:translateY(calc((1 - var(--steps-in,0)) * 24px))}
+.steps-panel ol{list-style:none;margin:0;padding:0;display:grid}
+.steps-panel li{grid-area:1/1;opacity:0;transform:translateY(16px);transition:opacity .2s var(--ease),transform .3s var(--ease)}
+.steps-panel li[data-past]{transform:translateY(-16px)}
+.steps-panel li[data-active="true"]{opacity:1;transform:none;transition:opacity .5s .18s var(--ease),transform .7s .18s var(--ease)}
+.step-count{font-size:14px;font-weight:500;color:var(--accent)}
+.steps-panel h2{margin-top:10px;font-size:clamp(28px,3.4vw,40px);line-height:1.08}
+.steps-panel p{margin-top:12px;color:var(--muted);max-width:40ch}
+.call-chip{display:inline-flex;flex-wrap:wrap;gap:6px 14px;margin-top:18px;padding:10px 14px;border:1px solid var(--line-strong);border-radius:12px;background:rgba(16,17,19,.85);font:400 13px var(--mono);color:var(--muted)}
+.call-chip b{font-weight:500;color:var(--text)}
+.call-chip .ok{color:var(--accent)}
+.step-progress{display:flex;gap:6px;margin-top:22px}
+.step-progress span{height:3px;width:28px;border-radius:2px;background:var(--line-strong);overflow:hidden}
+.step-progress span::after{content:"";display:block;height:100%;width:calc(var(--fill,0) * 100%);background:var(--text)}
+
+/* Sections */
+.section{padding:clamp(120px,16vw,200px) 0}
+.section-head{max-width:760px}
+.section-head h2{font-size:clamp(40px,6.4vw,84px);line-height:1.02;letter-spacing:-.05em}
+.lead{margin-top:24px;max-width:38ch;font-size:clamp(18px,1.7vw,22px);line-height:1.45;color:var(--muted)}
+.device{position:relative;margin-top:72px;border:1px solid var(--line);border-radius:28px;background:linear-gradient(180deg,#141518,#0d0e10);box-shadow:0 80px 160px -80px #000,inset 0 1px 0 rgba(255,255,255,.05);transform-origin:50% 0;transform:perspective(1600px) rotateX(calc((1 - var(--tilt,1)) * 22deg)) translateY(calc((1 - var(--tilt,1)) * 90px)) scale(calc(.9 + var(--tilt,1) * .1));opacity:calc(.25 + var(--tilt,1) * .75);will-change:transform}
+.seg{position:relative;display:inline-flex;padding:4px;border-radius:999px;background:#17181b;box-shadow:inset 0 0 0 1px var(--line)}
+.seg button{position:relative;z-index:1;min-height:40px;padding:0 20px;border:0;border-radius:999px;background:none;color:var(--muted);font-size:15px;cursor:pointer;transition:color .35s var(--ease)}
+.seg button[aria-pressed="true"]{color:var(--accent-ink)}
+.seg-thumb{position:absolute;top:4px;left:0;height:40px;border-radius:999px;background:var(--accent);transition:transform .55s var(--ease),width .55s var(--ease)}
+.env{display:grid;grid-template-columns:1.1fr 1fr;gap:0}
+.env-main{padding:40px;border-right:1px solid var(--line)}
+.env-side{padding:40px;display:flex;flex-direction:column;gap:20px}
+.env-links{display:grid;grid-template-columns:auto 1fr;gap:18px 32px;margin:40px 0 0}
+.env-links dt{color:var(--dim);font-size:14px}
+.env-links dd{margin:0;font-size:16px}
+.env-links dd.mono{font:400 14px var(--mono);color:#d7d9de}
+.env-purpose{margin-top:36px;padding-top:24px;border-top:1px solid var(--line);font-size:clamp(22px,2.4vw,30px);line-height:1.2;letter-spacing:-.03em}
+.swap{animation:swap .6s var(--ease)}
+@keyframes swap{from{opacity:0;transform:translateY(10px);filter:blur(4px)}}
+.code{margin:0;padding:22px 24px;border-radius:16px;background:#0a0b0c;box-shadow:inset 0 0 0 1px var(--line);font:400 14px/1.75 var(--mono);color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
+.code b{font-weight:500;color:var(--text)}
+.code em{font-style:normal;color:var(--accent)}
+.note{position:relative;padding-left:18px;color:var(--muted);font-size:14px}
+.note::before{content:"";position:absolute;left:0;top:8px;width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.note code{font:400 13px var(--mono);color:var(--text)}
+
+.kb{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);min-height:440px}
+.kb-search{padding:36px;border-right:1px solid var(--line)}
+.field{display:flex;align-items:center;gap:12px;min-height:56px;padding:0 20px;border-radius:16px;background:#0a0b0c;box-shadow:inset 0 0 0 1px var(--line-strong);transition:box-shadow .3s var(--ease)}
+.field:focus-within{box-shadow:inset 0 0 0 1.5px var(--accent),0 0 0 6px rgba(228,242,34,.08)}
+.field svg{flex:none;color:var(--muted)}
+.field input{flex:1;min-width:0;border:0;outline:0;background:none;color:var(--text);font:400 17px var(--sans)}
+.field input::placeholder{color:var(--dim)}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.chips button{min-height:32px;padding:0 14px;border:0;border-radius:999px;background:#17181b;color:var(--muted);font-size:13px;cursor:pointer;transition:color .2s var(--ease),background .2s var(--ease)}
+.chips button:hover{color:var(--text);background:#202125}
+.results{list-style:none;margin:24px 0 0;padding:0;display:grid;gap:6px}
+.results button{display:block;width:100%;padding:14px 16px;border:0;border-radius:14px;background:none;text-align:left;cursor:pointer;transition:background .25s var(--ease)}
+.results button:hover{background:#15161a}
+.results button[aria-pressed="true"]{background:#1b1c20;box-shadow:inset 0 0 0 1px var(--line-strong)}
+.results strong{display:block;font-weight:500;font-size:16px}
+.results small{display:block;margin-top:2px;color:var(--dim);font-size:13px}
+.results li{animation:swap .5s var(--ease) backwards;animation-delay:calc(var(--i,0) * 60ms)}
+.empty{margin-top:24px;color:var(--muted);font-size:15px}
+.kb-source{position:relative;padding:36px 40px;display:flex;flex-direction:column}
+.source-path{font:400 13px var(--mono);color:var(--dim)}
+.source-title{margin-top:10px;font-size:clamp(24px,2.6vw,34px);line-height:1.1;letter-spacing:-.035em}
+.source-body{margin-top:22px;font-size:18px;line-height:1.6;color:#d4d6db;max-width:44ch}
+.source-body mark{background:rgba(228,242,34,.2);color:var(--text);border-radius:4px;padding:0 2px;box-shadow:0 0 0 1px rgba(228,242,34,.35)}
+.cite{margin-top:auto;padding-top:28px;display:flex;flex-wrap:wrap;gap:8px}
+.cite span{display:inline-flex;align-items:center;min-height:28px;padding:0 12px;border-radius:999px;font-size:12px;color:var(--muted);box-shadow:inset 0 0 0 1px var(--line-strong)}
+.cite span:first-child{color:var(--accent-ink);background:var(--accent);box-shadow:none;font-weight:500}
+
+.mem{padding:36px 40px 40px}
+.mem-top{display:flex;align-items:center;justify-content:space-between;gap:16px 32px;flex-wrap:wrap}
+.mem-access{color:var(--muted);font-size:15px;max-width:42ch}
+.lanes{list-style:none;margin:32px 0 0;padding:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.lane{display:flex;flex-direction:column;min-height:280px;padding:18px;border-radius:20px;background:#0b0c0e;box-shadow:inset 0 0 0 1px var(--line);transition:box-shadow .5s var(--ease),background .5s var(--ease)}
+.lane[data-on="true"]{background:#111215;box-shadow:inset 0 0 0 1px var(--line-strong)}
+.lane h3{font-size:14px;font-weight:500;letter-spacing:0;color:var(--dim);transition:color .4s var(--ease)}
+.lane[data-on="true"] h3{color:var(--text)}
+.lane-slot{margin-top:14px}
+.memory-card{position:relative;padding:18px;border-radius:16px;background:var(--raised);box-shadow:inset 0 0 0 1px var(--line-strong),0 24px 48px -28px #000;transition:opacity .4s var(--ease),box-shadow .4s var(--ease)}
+.memory-card h4{font-size:17px;font-weight:500;line-height:1.3;letter-spacing:-.015em}
+.memory-card p{margin-top:8px;color:var(--muted);font-size:14px;line-height:1.5}
+.memory-card footer{display:flex;justify-content:space-between;gap:12px;margin-top:14px;font-size:12px;color:var(--dim)}
+.memory-card .tag{color:var(--muted)}
+.memory-card[data-state="confirmed"]{box-shadow:inset 0 0 0 1px rgba(228,242,34,.6),0 24px 48px -28px #000}
+.memory-card[data-state="confirmed"] .tag{color:var(--accent)}
+.memory-card[data-state="rejected"]{opacity:.45}
+.mem-search{margin-top:auto;padding:14px 16px;font-size:13px}
+.mem-bottom{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-top:24px}
+.mem-status{color:var(--muted);font-size:15px}
+.mem-actions{display:flex;gap:10px}
+
+.start-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:56px;margin-top:72px;align-items:start}
+.start-steps{list-style:none;margin:0;padding:0;counter-reset:s}
+.start-steps li{counter-increment:s;display:grid;grid-template-columns:44px 1fr;gap:4px 16px;padding:28px 0;border-top:1px solid var(--line)}
+.start-steps li::before{content:counter(s);grid-row:span 2;display:grid;place-items:center;width:32px;height:32px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--line-strong);font:500 13px var(--mono);color:var(--text)}
+.start-steps h3{font-size:22px;letter-spacing:-.025em}
+.start-steps p{color:var(--muted)}
+.start-config{position:sticky;top:96px}
+.start-config p{margin-top:14px;color:var(--dim);font-size:13px}
+.faq{margin-top:clamp(96px,12vw,160px);max-width:820px}
+.faq h2{font-size:clamp(32px,4vw,48px);letter-spacing:-.04em}
+.faq details{border-top:1px solid var(--line)}
+.faq details:last-child{border-bottom:1px solid var(--line)}
+.faq summary{display:flex;align-items:center;justify-content:space-between;gap:24px;min-height:72px;font-size:19px;font-weight:500;letter-spacing:-.015em;cursor:pointer;list-style:none}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{content:"";flex:none;width:12px;height:12px;background:linear-gradient(currentColor,currentColor) center/12px 1.5px no-repeat,linear-gradient(currentColor,currentColor) center/1.5px 12px no-repeat;color:var(--muted);transition:transform .45s var(--ease)}
+.faq details[open] summary::after{transform:rotate(135deg);color:var(--accent)}
+.faq details p{padding:0 48px 28px 0;color:var(--muted);max-width:60ch}
+:root{interpolate-size:allow-keywords}
+.faq details::details-content{height:0;overflow:clip;transition:height .5s var(--ease),content-visibility .5s allow-discrete}
+.faq details[open]::details-content{height:auto}
+.closing{padding:clamp(120px,14vw,180px) 0;text-align:center}
+.closing h2{font-size:clamp(44px,7.4vw,104px);line-height:1;letter-spacing:-.055em}
+.closing .hero-actions{opacity:1;animation:none}
+.closing p{margin:24px auto 0;max-width:44ch;color:var(--muted)}
+
+.footer{padding:56px 0 72px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+.footer .wrap{display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap}
+
+.scene-anchor{position:absolute;left:0;top:calc(460vh * .36);width:1px;height:1px;scroll-margin-top:0}
+.diagram-tall{display:none}
+.diagram-tall .node-title{font-size:14px}
+.diagram-tall .node-meta{font-size:11px}
+.diagram-tall .relay-label{font-size:17px}
+
+/* Reduced motion: the call is shown as a still diagram with all four steps listed. */
+.relay-scene[data-static]{height:auto}
+.relay-scene[data-static] .relay-stage{position:relative;height:auto;display:block;padding:96px 0 40px}
+.relay-scene[data-static] .hero-copy{position:relative;inset:auto;padding:64px 24px 72px;opacity:1;transform:none}
+.relay-scene[data-static] .scroll-cue{display:none}
+.relay-scene[data-static] .diagram{margin:0 auto;opacity:1;transform:none}
+.relay-scene[data-static] .steps-panel{position:relative;inset:auto;width:var(--wrap);margin:56px auto 0;opacity:1;transform:none;background:none;padding:0}
+.relay-scene[data-static] .steps-panel ol{grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:40px}
+.relay-scene[data-static] .steps-panel li{grid-area:auto;opacity:1;transform:none}
+.relay-scene[data-static] .steps-panel h2{font-size:26px}
+.relay-scene[data-static] .step-progress{display:none}
+
+@media (max-width:760px){
+  :root{--wrap:min(100% - 40px,1120px)}
+  body{font-size:16px}
+  .nav-links{display:none}
+  .nav .wrap{justify-content:space-between}
+  .relay-stage{place-items:start center;padding-top:72px}
+  .diagram{width:min(100% - 24px,420px);aspect-ratio:360/400}
+  .diagram-wide{display:none}
+  .diagram-tall{display:block}
+  .steps-panel{left:20px;right:20px;width:auto;bottom:20px;padding-top:40px;background:linear-gradient(to bottom,transparent,var(--bg) 40px)}
+  .steps-panel h2{font-size:26px}
+  .steps-panel p{font-size:15px}
+  .call-chip{font-size:12px}
+  .section-head h2{font-size:clamp(36px,10vw,48px)}
+  .device{margin-top:48px;border-radius:22px}
+  .env,.kb,.start-grid{grid-template-columns:1fr}
+  .env-main,.env-side,.kb-search,.kb-source,.mem{padding:24px}
+  .env-main,.kb-search{border-right:0;border-bottom:1px solid var(--line)}
+  .seg button{padding:0 14px;font-size:14px}
+  .lanes{grid-template-columns:1fr}
+  .lane{min-height:0}
+  .start-grid{gap:32px;margin-top:48px}
+  .start-config{position:static}
+  .faq summary{font-size:17px;min-height:64px}
+  .faq details p{padding-right:0}
+}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation:none!important;transition:none!important}
+  .hero-copy h1 span,.hero-copy p,.hero-actions{opacity:1;transform:none}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="Relay home"><span class="mark" aria-hidden="true"></span>Relay <small>MCP</small></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#how">How a call works</a>
+      <a href="#projects">Projects</a>
+      <a href="#knowledge">Knowledge</a>
+      <a href="#memory">Memory</a>
+      <a href="#start">Get started</a>
+    </nav>
+    <a class="pill pill-primary" href="#start">Request access</a>
+  </div>
+</header>
+
+<main id="main">
+  <section class="relay-scene" id="top" data-scene="relay" aria-label="How Relay handles a tool call">
+    <span class="scene-anchor" id="how" aria-hidden="true"></span>
+    <div class="relay-stage" data-step="0">
+      <div class="relay-glow" aria-hidden="true"></div>
+      <div class="hero-copy">
+        <h1><span>Connect your agent.</span><span>Keep the context.</span></h1>
+        <p>Relay sits between your MCP client and the servers, projects and knowledge it works with. Every call is checked against your access.</p>
+        <div class="hero-actions">
+          <a class="pill pill-primary" href="#start">Request access</a>
+          <a class="pill pill-quiet" href="#how">Follow one call</a>
+        </div>
+      </div>
+      <span class="scroll-cue" aria-hidden="true"></span>
+
+      <div class="diagram" aria-hidden="true">
+        <svg class="diagram-wide" viewBox="0 0 1000 540" data-relay="500 270">
+          <path class="route r-in" d="M200 270 H430"/>
+          <path class="route r-a" d="M570 270 C690 270 690 120 790 120"/>
+          <path class="route r-b" d="M570 270 H790"/>
+          <path class="route r-c" d="M570 270 C690 270 690 420 790 420"/>
+          <path class="route-live l-in" d="M200 270 H430"/>
+          <path class="route-live l-a" d="M570 270 C690 270 690 120 790 120"/>
+          <g class="node" data-node="client">
+            <rect class="node-box" x="20" y="226" width="180" height="88" rx="16"/>
+            <text class="node-title" x="44" y="264">Codex</text>
+            <text class="node-meta" x="44" y="290">MCP client</text>
+          </g>
+          <g class="node" data-node="a">
+            <rect class="node-box" x="790" y="78" width="190" height="84" rx="16"/>
+            <text class="node-title" x="812" y="114">A-SERVER</text>
+            <text class="node-meta" x="812" y="140">analysis</text>
+          </g>
+          <g class="node" data-node="b">
+            <rect class="node-box" x="790" y="228" width="190" height="84" rx="16"/>
+            <text class="node-title" x="812" y="264">B-SERVER</text>
+            <text class="node-meta" x="812" y="290">development</text>
+          </g>
+          <g class="node" data-node="c">
+            <rect class="node-box" x="790" y="378" width="190" height="84" rx="16"/>
+            <text class="node-title" x="812" y="414">PROD-SERVER</text>
+            <text class="node-meta" x="812" y="440">production</text>
+          </g>
+          <g transform="rotate(45 500 270)">
+            <rect class="core-ring" x="450" y="220" width="100" height="100" rx="14"/>
+            <rect class="core-ring" x="450" y="220" width="100" height="100" rx="14"/>
+            <rect class="core-outer" x="450" y="220" width="100" height="100" rx="14"/>
+            <rect class="core-inner" x="475" y="245" width="50" height="50" rx="5"/>
+          </g>
+          <text class="relay-label" x="500" y="372" text-anchor="middle">Relay</text>
+          <circle class="packet" r="7" cx="200" cy="270"/>
+        </svg>
+        <svg class="diagram-tall" viewBox="0 0 360 400" data-relay="180 170">
+          <path class="route r-in" d="M180 68 V119"/>
+          <path class="route r-a" d="M180 221 C180 270 56 268 56 316"/>
+          <path class="route r-b" d="M180 221 V316"/>
+          <path class="route r-c" d="M180 221 C180 270 304 268 304 316"/>
+          <path class="route-live l-in" d="M180 68 V119"/>
+          <path class="route-live l-a" d="M180 221 C180 270 56 268 56 316"/>
+          <g class="node" data-node="client">
+            <rect class="node-box" x="100" y="4" width="160" height="64" rx="14"/>
+            <text class="node-title" x="180" y="32" text-anchor="middle">Codex</text>
+            <text class="node-meta" x="180" y="52" text-anchor="middle">MCP client</text>
+          </g>
+          <g class="node" data-node="a">
+            <rect class="node-box" x="0" y="316" width="112" height="72" rx="14"/>
+            <text class="node-title" x="56" y="346" text-anchor="middle">A-SERVER</text>
+            <text class="node-meta" x="56" y="368" text-anchor="middle">analysis</text>
+          </g>
+          <g class="node" data-node="b">
+            <rect class="node-box" x="124" y="316" width="112" height="72" rx="14"/>
+            <text class="node-title" x="180" y="346" text-anchor="middle">B-SERVER</text>
+            <text class="node-meta" x="180" y="368" text-anchor="middle">development</text>
+          </g>
+          <g class="node" data-node="c">
+            <rect class="node-box" x="248" y="316" width="112" height="72" rx="14"/>
+            <text class="node-title" x="304" y="346" text-anchor="middle">PROD-SERVER</text>
+            <text class="node-meta" x="304" y="368" text-anchor="middle">production</text>
+          </g>
+          <g transform="rotate(45 180 170)">
+            <rect class="core-ring" x="144" y="134" width="72" height="72" rx="11"/>
+            <rect class="core-ring" x="144" y="134" width="72" height="72" rx="11"/>
+            <rect class="core-outer" x="144" y="134" width="72" height="72" rx="11"/>
+            <rect class="core-inner" x="162" y="152" width="36" height="36" rx="4"/>
+          </g>
+          <text class="relay-label" x="246" y="176">Relay</text>
+          <circle class="packet" r="6" cx="180" cy="68"/>
+        </svg>
+      </div>
+
+      <div class="steps-panel" aria-live="polite">
+        <ol>
+          <li data-active="false">
+            <span class="step-count">Step 1 of 4</span>
+            <h2>Authenticate the call.</h2>
+            <p>Codex asks for the last hour of error logs. The call carries its MCP Access Token, and Relay checks that the token is still active before it records the request.</p>
+            <div class="call-chip"><span><b>tools/call</b> fetch_logs</span><span>Authorization: Bearer ••••</span></div>
+          </li>
+          <li data-active="false">
+            <span class="step-count">Step 2 of 4</span>
+            <h2>Check the scope.</h2>
+            <p>The project, the server and the environment link are compared with what the token allows. Nothing runs until all three match.</p>
+            <div class="call-chip"><span class="ok">✓ Project</span><span class="ok">✓ Allowed server</span><span class="ok">✓ Environment link</span></div>
+          </li>
+          <li data-active="false">
+            <span class="step-count">Step 3 of 4</span>
+            <h2>Run it on the right server.</h2>
+            <p>Relay reaches the analysis server over SSH, or hands the job to a Relay Agent that only makes outbound requests. No inbound port is needed on Windows.</p>
+            <div class="call-chip"><span><b>analysis</b> A-SERVER</span><span>SSH or Relay Agent</span></div>
+          </li>
+          <li data-active="false">
+            <span class="step-count">Step 4 of 4</span>
+            <h2>Return what matters.</h2>
+            <p>Codex receives a compact result, or a job ID for long work. The call stays in the audit log with sensitive values removed.</p>
+            <div class="call-chip"><span><b>result</b> 12 errors summarized</span><span>audited</span></div>
+          </li>
+        </ol>
+        <div class="step-progress" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+      </div>
+    </div>
+  </section>
+  <section class="section" id="projects" aria-labelledby="projects-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="projects-title">Name the environment. Relay finds the server.</h2>
+        <p class="lead">A project links each environment to a server, a remote path and a SampleManager instance. Your agent asks for “analysis”, and Relay resolves the rest.</p>
+      </div>
+      <div class="device" data-tilt>
+        <div class="env">
+          <div class="env-main">
+            <div class="seg" role="group" aria-label="Example environment">
+              <span class="seg-thumb" aria-hidden="true"></span>
+              <button type="button" aria-pressed="true" data-env="analysis">analysis</button>
+              <button type="button" aria-pressed="false" data-env="development">development</button>
+              <button type="button" aria-pressed="false" data-env="production">production</button>
+            </div>
+            <dl class="env-links" aria-live="polite">
+              <dt>Server</dt><dd data-field="server">A-SERVER</dd>
+              <dt>Connection</dt><dd data-field="connection">SSH</dd>
+              <dt>Remote path</dt><dd class="mono" data-field="path">/srv/myproject</dd>
+              <dt>LIMS instance</dt><dd data-field="lims">SM-ANALYSIS</dd>
+            </dl>
+            <p class="env-purpose" data-field="purpose">Read-only analysis, logs and configuration checks.</p>
+          </div>
+          <div class="env-side">
+            <pre class="code" aria-label="Example tool call"><b>fetch_logs</b>
+  project:     "MyProject"
+  environment: "<em data-field="env">analysis</em>"
+  since:       "1h"</pre>
+            <p class="note">The agent calls <code>project_server_links_list</code> first, so it uses the exact environment key instead of guessing a display name.</p>
+            <p class="note">The token must allow both the project and the server. A matching name alone is not enough.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="knowledge" aria-labelledby="knowledge-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="knowledge-title">Every answer brings its source.</h2>
+        <p class="lead">Your agent searches product and solution documents down to the fragment, then reads the full document when it needs more. No project is required.</p>
+      </div>
+      <div class="device" data-tilt>
+        <div class="kb">
+          <div class="kb-search">
+            <label class="field">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+              <span class="sr-only">Search example documents</span>
+              <input id="kb-query" type="search" autocomplete="off" placeholder="Search example documents">
+            </label>
+            <div class="chips" aria-label="Try a search">
+              <button type="button" data-q="token">token</button>
+              <button type="button" data-q="scope">scope</button>
+              <button type="button" data-q="version">version</button>
+            </div>
+            <ul class="results" id="kb-results"></ul>
+            <p class="empty" id="kb-empty" role="status" hidden></p>
+          </div>
+          <article class="kb-source" aria-live="polite">
+            <p class="source-path" id="kb-path"></p>
+            <h3 class="source-title" id="kb-title"></h3>
+            <p class="source-body" id="kb-body"></p>
+            <div class="cite" id="kb-cite"></div>
+          </article>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="memory" aria-labelledby="memory-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="memory-title">Experience becomes Memory only after review.</h2>
+        <p class="lead">When a fix works, your agent can submit what it learned. An administrator decides whether it is worth keeping. Only confirmed Memory is searchable.</p>
+      </div>
+      <div class="device" data-tilt>
+        <div class="mem">
+          <div class="mem-top">
+            <div class="seg" id="mem-scope" role="group" aria-label="Example Memory scope">
+              <span class="seg-thumb" aria-hidden="true"></span>
+              <button type="button" aria-pressed="true" data-scope="project">Project Memory</button>
+              <button type="button" aria-pressed="false" data-scope="general">General Memory</button>
+            </div>
+            <p class="mem-access" id="mem-access">Found by people with access to MyProject, through a token scoped to it.</p>
+          </div>
+          <ol class="lanes">
+            <li class="lane" data-lane="submitted">
+              <h3>Agent submits</h3>
+              <div class="lane-slot">
+                <article class="memory-card" id="mem-card" data-state="pending">
+                  <h4>Clear the form cache after deploying a form change.</h4>
+                  <p>The new layout appeared only after the cache was cleared and the instance restarted.</p>
+                  <footer><span class="tag" id="mem-tag">Pending review</span><span id="mem-scope-label">Project Memory</span></footer>
+                </article>
+              </div>
+            </li>
+            <li class="lane" data-lane="review"><h3>Administrator reviews</h3><div class="lane-slot"></div></li>
+            <li class="lane" data-lane="confirmed"><h3>Searchable as Memory</h3><div class="lane-slot"></div><pre class="code mem-search" id="mem-search" hidden><b>memory_search</b> "form cache"</pre></li>
+          </ol>
+          <div class="mem-bottom">
+            <p class="mem-status" id="mem-status" aria-live="polite"></p>
+            <div class="mem-actions" id="mem-actions"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="start" aria-labelledby="start-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="start-title">Three steps to your first call.</h2>
+        <p class="lead">An administrator approves your account. You choose what the token can reach. Your client does the rest.</p>
+      </div>
+      <div class="start-grid">
+        <ol class="start-steps">
+          <li><h3>Request access</h3><p>Submit a username and password. You can sign in once an administrator approves the request. No invitation code is needed.</p></li>
+          <li><h3>Choose the token scope</h3><p>Create an MCP Access Token for selected projects and servers, or for product Knowledge and General Memory only. The secret is shown once.</p></li>
+          <li><h3>Connect your client</h3><p>Add the endpoint and token to Codex or another MCP client. Delete the token in the console and its next request is refused.</p></li>
+        </ol>
+        <div class="start-config">
+          <pre class="code" aria-label="Example Codex configuration"><b>[mcp_servers.relay_mcp]</b>
+url = "http://&lt;relay-host&gt;:3001/mcp"
+bearer_token_env_var = "<em>RELAY_MCP_TOKEN</em>"
+default_tools_approval_mode = "prompt"</pre>
+          <p>Codex reads the token from an environment variable, so the secret stays out of the config file.</p>
+        </div>
+      </div>
+      <div class="faq">
+        <h2>Questions before you connect</h2>
+        <details><summary>Which credentials does Relay manage?</summary><p>MCP Access Tokens connect clients such as Codex to Relay. Relay Agent Tokens connect configured Windows agents. Neither is a model provider API key, and neither can stand in for the other.</p></details>
+        <details><summary>Do I need a project to use Knowledge?</summary><p>No. Product Knowledge and General Memory follow a permission on your account. Project Memory requires access to its project.</p></details>
+        <details><summary>When does an experience become Memory?</summary><p>An agent submits a candidate with memory_capture. It becomes searchable only after an administrator confirms it.</p></details>
+        <details><summary>Does Relay need an inbound port on Windows servers?</summary><p>No. The Relay Agent runs as a Windows service and only makes outbound requests to Relay to collect jobs and return results.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <section class="closing" aria-labelledby="closing-title">
+    <div class="wrap">
+      <h2 id="closing-title">Bring your work into context.</h2>
+      <p>Need access or help? Contact your Relay administrator. This installation has no public contact channel.</p>
+      <div class="hero-actions">
+        <a class="pill pill-primary" href="#start">Request access</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <a class="brand" href="#top"><span class="mark" aria-hidden="true"></span>Relay <small>MCP</small></a>
+    <p>Illustrative preview. Server names, files and results are examples.</p>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)");
+  const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+  const seg = (p, a, b) => clamp((p - a) / (b - a));
+  const ease = t => 1 - Math.pow(1 - t, 3);
+
+  /* Relay scene: intro, diagram build, then the four-step call. */
+  const scene = document.querySelector('[data-scene="relay"]');
+  const stage = scene.querySelector(".relay-stage");
+  const steps = [...scene.querySelectorAll(".steps-panel li")];
+  const bars = [...scene.querySelectorAll(".step-progress span")];
+  const actions = scene.querySelector(".hero-actions");
+  const narrow = matchMedia("(max-width: 760px)");
+  const diagrams = [...scene.querySelectorAll("svg[data-relay]")].map(svg => {
+    const [x, y] = svg.dataset.relay.split(" ").map(Number);
+    return {
+      routes: [".r-in", ".r-a", ".r-b", ".r-c"].map(s => svg.querySelector(s)),
+      liveIn: svg.querySelector(".l-in"),
+      liveA: svg.querySelector(".l-a"),
+      packet: svg.querySelector(".packet"),
+      nodes: Object.fromEntries([...svg.querySelectorAll("[data-node]")].map(n => [n.dataset.node, n])),
+      relay: { x, y },
+      lengths: new Map(),
+    };
+  });
+  const len = (d, path) => { let l = d.lengths.get(path); if (!l) { l = path.getTotalLength(); d.lengths.set(path, l); } return l; };
+  const draw = (d, path, t) => { const l = len(d, path); path.style.strokeDasharray = l; path.style.strokeDashoffset = l * (1 - t); };
+  const point = (d, path, t) => path.getPointAtLength(len(d, path) * clamp(t));
+  const place = (d, pt) => { d.packet.setAttribute("cx", pt.x.toFixed(1)); d.packet.setAttribute("cy", pt.y.toFixed(1)); };
+
+  /* Scroll-linked tilt for product panels. */
+  const tilts = [...document.querySelectorAll("[data-tilt]")];
+  function renderTilts() {
+    for (const el of tilts) {
+      const r = el.getBoundingClientRect();
+      const t = reduce.matches ? 1 : ease(clamp((innerHeight - r.top) / (innerHeight * .75)));
+      el.style.setProperty("--tilt", t.toFixed(4));
+    }
+  }
+
+  /* Projects: environment switcher. */
+  const envData = {
+    analysis: { server: "A-SERVER", connection: "SSH", path: "/srv/myproject", lims: "SM-ANALYSIS", purpose: "Read-only analysis, logs and configuration checks." },
+    development: { server: "B-SERVER", connection: "Relay Agent, outbound only", path: "D:\\Projects\\MyProject", lims: "SM-DEV", purpose: "Builds, deployments and tests." },
+    production: { server: "PROD-SERVER", connection: "Relay Agent, outbound only", path: "E:\\Thermo\\SampleManager", lims: "SM-PROD", purpose: "Controlled production operations." },
+  };
+  const envSeg = document.querySelector("#projects .seg");
+
+  const envButtons = [...envSeg.querySelectorAll("button")];
+  const envFields = [...document.querySelectorAll("#projects [data-field]")];
+  function setEnv(key) {
+    envButtons.forEach(b => b.setAttribute("aria-pressed", String(b.dataset.env === key)));
+    const data = { ...envData[key], env: key };
+    for (const f of envFields) {
+      f.textContent = data[f.dataset.field];
+      restart(f);
+    }
+    segThumb(envSeg);
+  }
+  envButtons.forEach(b => b.addEventListener("click", () => setEnv(b.dataset.env)));
+  segThumb(envSeg);
+
+  /* Knowledge: example document search with highlighted source fragment. */
+  const docs = [
+    { title: "Connecting an MCP client", path: "Relay / Guides / Connection", body: "Create an MCP Access Token in your console. Choose its project scope, then use the token to connect Codex or another compatible MCP client.", cite: ["Product document", "Connection guide", "Fragment 3"] },
+    { title: "Understanding access scopes", path: "Relay / Guides / Access", body: "Product Knowledge and General Memory use your account permission. Project Memory follows access to its project and the scope of your MCP token.", cite: ["Product document", "Access guide", "Fragment 1"] },
+    { title: "One Wiki page across versions", path: "Relay / Knowledge / Wiki", body: "Common sections hold what is true for every version. A version section cites only that version, and a Differences section cites at least two.", cite: ["Wiki", "Version 21.1", "Version 21.3"] },
+  ];
+  const kbInput = document.querySelector("#kb-query");
+  const kbList = document.querySelector("#kb-results");
+  const kbEmpty = document.querySelector("#kb-empty");
+  const kbOut = { path: document.querySelector("#kb-path"), title: document.querySelector("#kb-title"), body: document.querySelector("#kb-body"), cite: document.querySelector("#kb-cite") };
+  let kbSelected = 0;
+  const escapeHtml = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  function showDoc(index, query) {
+    const doc = docs[index];
+    kbOut.path.textContent = doc.path;
+    kbOut.title.textContent = doc.title;
+    const body = escapeHtml(doc.body);
+    kbOut.body.innerHTML = query ? body.replace(new RegExp(escapeRe(escapeHtml(query)), "gi"), m => `<mark>${m}</mark>`) : body;
+    kbOut.cite.innerHTML = doc.cite.map(c => `<span>${escapeHtml(c)}</span>`).join("");
+    for (const el of Object.values(kbOut)) { el.classList.remove("swap"); void el.offsetWidth; el.classList.add("swap"); }
+  }
+  function renderSearch() {
+    const q = kbInput.value.trim();
+    const hits = docs.map((d, i) => ({ ...d, i })).filter(d => !q || `${d.title} ${d.body}`.toLowerCase().includes(q.toLowerCase()));
+    if (!hits.some(h => h.i === kbSelected) && hits.length) kbSelected = hits[0].i;
+    kbList.innerHTML = hits.map((h, n) => `<li style="--i:${n}"><button type="button" data-doc="${h.i}" aria-pressed="${h.i === kbSelected}"><strong>${escapeHtml(h.title)}</strong><small>${escapeHtml(h.path)}</small></button></li>`).join("");
+    kbEmpty.hidden = hits.length > 0;
+    kbEmpty.textContent = hits.length ? "" : `No example documents mention “${q}”. Try “token”, “scope” or “version”.`;
+    document.querySelector(".kb-source").hidden = !hits.length;
+    if (hits.length) showDoc(kbSelected, q);
+  }
+  kbInput.addEventListener("input", renderSearch);
+  kbList.addEventListener("click", e => {
+    const b = e.target.closest("button[data-doc]");
+    if (!b) return;
+    kbSelected = Number(b.dataset.doc);
+    kbList.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+    showDoc(kbSelected, kbInput.value.trim());
+  });
+  document.querySelectorAll(".chips button").forEach(b => b.addEventListener("click", () => { kbInput.value = b.dataset.q; renderSearch(); kbInput.focus(); }));
+  renderSearch();
+
+  /* Segmented controls share one sliding thumb. */
+  function segThumb(segEl) {
+    const on = segEl.querySelector('button[aria-pressed="true"]');
+    const thumb = segEl.querySelector(".seg-thumb");
+    thumb.style.width = on.offsetWidth + "px";
+    thumb.style.transform = `translateX(${on.offsetLeft}px)`;
+  }
+  const restart = el => { el.classList.remove("swap"); void el.offsetWidth; el.classList.add("swap"); };
+
+  /* Memory: candidate moves through review; FLIP keeps the card continuous between lanes. */
+  const memCard = document.querySelector("#mem-card");
+  const memTag = document.querySelector("#mem-tag");
+  const memStatus = document.querySelector("#mem-status");
+  const memActions = document.querySelector("#mem-actions");
+  const memSearch = document.querySelector("#mem-search");
+  const lanes = Object.fromEntries([...document.querySelectorAll("[data-lane]")].map(l => [l.dataset.lane, l]));
+  const memStates = {
+    pending: { lane: "submitted", tag: "Pending review", status: "Submitted with memory_capture. It is not searchable yet.", actions: [["review", "Review as administrator", "primary"]] },
+    review: { lane: "review", tag: "In review", status: "An administrator checks the outcome and the conditions that made it work.", actions: [["confirmed", "Confirm", "primary"], ["rejected", "Reject", "quiet"]] },
+    confirmed: { lane: "confirmed", tag: "Confirmed", status: "Confirmed. memory_search can now return it.", actions: [["pending", "Reset example", "quiet"]] },
+    rejected: { lane: "review", tag: "Rejected", status: "Rejected. It never reaches search.", actions: [["pending", "Reset example", "quiet"]] },
+  };
+  function setMem(state, animate = true) {
+    const s = memStates[state];
+    const first = memCard.getBoundingClientRect();
+    lanes[s.lane].querySelector(".lane-slot").appendChild(memCard);
+    memCard.dataset.state = state;
+    memTag.textContent = s.tag;
+    memStatus.textContent = s.status;
+    memSearch.hidden = state !== "confirmed";
+    Object.values(lanes).forEach(l => l.dataset.on = String(l === lanes[s.lane]));
+    memActions.innerHTML = s.actions.map(([to, label, kind]) => `<button type="button" class="pill pill-${kind}" data-to="${to}">${label}</button>`).join("");
+    if (!animate || reduce.matches) return;
+    const last = memCard.getBoundingClientRect();
+    const dx = first.left - last.left, dy = first.top - last.top;
+    if (dx || dy) memCard.animate([{ transform: `translate(${dx}px, ${dy}px) scale(1.04)` }, { transform: "none" }], { duration: 750, easing: "cubic-bezier(.22,1,.36,1)" });
+  }
+  memActions.addEventListener("click", e => {
+    const b = e.target.closest("button[data-to]");
+    if (!b) return;
+    setMem(b.dataset.to);
+    if (e.detail === 0) memActions.querySelector("button").focus({ preventScroll: true });
+  });
+  setMem("pending", false);
+
+  const memScope = document.querySelector("#mem-scope");
+  const memAccess = document.querySelector("#mem-access");
+  const memScopeLabel = document.querySelector("#mem-scope-label");
+  const scopeCopy = {
+    project: "Found by people with access to MyProject, through a token scoped to it.",
+    general: "Reusable across projects. Found by people with product Knowledge access.",
+  };
+  memScope.querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
+    memScope.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+    memAccess.textContent = scopeCopy[b.dataset.scope];
+    memScopeLabel.textContent = b.textContent;
+    restart(memAccess); restart(memScopeLabel);
+    segThumb(memScope);
+  }));
+  segThumb(memScope);
+  addEventListener("resize", () => { segThumb(envSeg); segThumb(memScope); });
+  document.fonts?.ready.then(() => { segThumb(envSeg); segThumb(memScope); });
+
+  const boundaries = [.34, .5, .64, .8, .97];
+
+  function renderRelay(p) {
+    const d = diagrams[narrow.matches ? 1 : 0];
+    const intro = ease(seg(p, 0, .14));
+    const lines = seg(p, .16, .32);
+    stage.style.setProperty("--intro", intro.toFixed(4));
+    stage.style.setProperty("--build-in", ease(seg(p, .08, .22)).toFixed(4));
+    stage.style.setProperty("--steps-in", ease(seg(p, .3, .36)).toFixed(4));
+    actions.dataset.hidden = intro > .5 ? "true" : "false";
+    d.routes.forEach((path, i) => draw(d, path, ease(seg(lines, i * .12, .6 + i * .12))));
+
+    let step = 0;
+    for (let i = 0; i < 4; i++) if (p >= boundaries[i]) step = i + 1;
+    stage.dataset.step = String(step);
+    const shown = Math.max(step, 1);
+    steps.forEach((li, i) => { li.dataset.active = String(i + 1 === shown); li.toggleAttribute("data-past", i + 1 < shown); });
+    bars.forEach((bar, i) => bar.style.setProperty("--fill", seg(p, boundaries[i], boundaries[i + 1]).toFixed(3)));
+
+    const s1 = ease(seg(p, boundaries[0], boundaries[0] + .1));
+    const s3 = ease(seg(p, boundaries[2], boundaries[2] + .1));
+    const s4 = ease(seg(p, boundaries[3], boundaries[3] + .13));
+    draw(d, d.liveIn, step >= 1 ? s1 : 0);
+    draw(d, d.liveA, step >= 3 ? s3 : 0);
+    stage.style.setProperty("--core", step === 2 ? ".9" : step > 2 ? ".55" : "0");
+    stage.style.setProperty("--glow", step >= 2 ? "1" : "0");
+    d.nodes.client.dataset.on = String(step === 1 || step === 4);
+    d.nodes.a.dataset.on = String(step >= 3);
+
+    if (step === 1) place(d, point(d, d.liveIn, s1));
+    else if (step === 2) place(d, d.relay);
+    else if (step === 3) place(d, point(d, d.liveA, s3));
+    else if (step === 4) place(d, s4 < .5 ? point(d, d.liveA, 1 - s4 * 2) : point(d, d.liveIn, 1 - (s4 - .5) * 2));
+  }
+
+  /* Reduced motion: no pinned scroll; the finished diagram and all four steps are shown together. */
+  function renderStatic() {
+    scene.dataset.static = "";
+    scene.querySelector(".scene-anchor").remove();
+    scene.querySelector(".diagram").id = "how";
+    stage.style.setProperty("--core", ".55");
+    for (const d of diagrams) {
+      [...d.routes, d.liveIn, d.liveA].forEach(path => { path.style.strokeDasharray = "none"; });
+      d.nodes.client.dataset.on = "true";
+      d.nodes.a.dataset.on = "true";
+    }
+  }
+
+  let queued = false;
+  function frame() {
+    queued = false;
+    if (!reduce.matches) {
+      const rect = scene.getBoundingClientRect();
+      const total = rect.height - innerHeight;
+      renderRelay(total > 0 ? clamp(-rect.top / total) : 0);
+    }
+    renderTilts();
+  }
+  function request() { if (!queued) { queued = true; requestAnimationFrame(frame); } }
+  if (reduce.matches) renderStatic();
+  addEventListener("scroll", request, { passive: true });
+  addEventListener("resize", request);
+  frame();
+})();
+</script>
+</body>
+</html>

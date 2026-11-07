@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay MCP — Connect your agent. Keep the context.</title>
+<style>
+@font-face { font-family: 'Relay Sans'; src: url('../../frontend/node_modules/@ibm/plex/IBM-Plex-Sans/fonts/complete/woff2/IBMPlexSans-Regular.woff2') format('woff2'); font-weight: 400; font-display: swap; }
+@font-face { font-family: 'Relay Sans'; src: url('../../frontend/node_modules/@ibm/plex/IBM-Plex-Sans/fonts/complete/woff2/IBMPlexSans-Medium.woff2') format('woff2'); font-weight: 500; font-display: swap; }
+@font-face { font-family: 'Relay Sans'; src: url('../../frontend/node_modules/@ibm/plex/IBM-Plex-Sans/fonts/complete/woff2/IBMPlexSans-SemiBold.woff2') format('woff2'); font-weight: 600; font-display: swap; }
+@font-face { font-family: 'Relay Mono'; src: url('../../frontend/node_modules/@ibm/plex/IBM-Plex-Mono/fonts/complete/woff2/IBMPlexMono-Regular.woff2') format('woff2'); font-weight: 400; font-display: swap; }
+@font-face { font-family: 'Relay Mono'; src: url('../../frontend/node_modules/@ibm/plex/IBM-Plex-Mono/fonts/complete/woff2/IBMPlexMono-Medium.woff2') format('woff2'); font-weight: 500; font-display: swap; }
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0a0b0d;
+  --surface: #13141a;
+  --text: #e8e9f0;
+  --muted: #9ea2b8;
+  --line: #2a2c38;
+  --line-strong: #3d4052;
+  --accent: #b8f24e;
+  --accent-ink: #0d1106;
+  --knowledge-from: #4a90e2;
+  --knowledge-to: #5bc0de;
+  --execution-from: #9b59b6;
+  --execution-to: #c792ea;
+  --memory-from: #2ecc71;
+  --memory-to: #6dd582;
+  --evidence: #f39c12;
+  --sans: 'Relay Sans', system-ui, sans-serif;
+  --mono: 'Relay Mono', 'Cascadia Mono', Consolas, monospace;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+html { scroll-behavior: smooth; }
+body { min-height: 100vh; font: 15px/1.6 var(--sans); color: var(--text); background: var(--bg); overflow-x: hidden; }
+a { color: inherit; text-decoration: none; }
+button { font: inherit; }
+
+/* Header */
+.header { position: sticky; top: 0; z-index: 50; background: rgba(10, 11, 13, 0.94); border-bottom: 1px solid var(--line); backdrop-filter: blur(16px); }
+.header-inner { max-width: 1200px; margin: 0 auto; padding: 0 48px; min-height: 80px; display: flex; align-items: center; gap: 48px; }
+.brand { display: inline-flex; align-items: center; gap: 12px; font: 500 24px/1 var(--sans); letter-spacing: -0.04em; }
+.brand-small { color: var(--muted); font: 400 12px/1 var(--mono); letter-spacing: 0; margin-left: -7px; }
+.glyph { width: 28px; height: 28px; background: linear-gradient(135deg, var(--accent) 0%, #d4ff6e 100%); clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+.nav { display: flex; gap: 32px; margin-left: auto; }
+.nav a { font-size: 14px; color: var(--muted); transition: color 0.2s var(--ease); }
+.nav a:hover { color: var(--text); }
+.pill { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 0 22px; border: 0; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 15px; font-weight: 500; white-space: nowrap; cursor: pointer; transition: transform 0.25s var(--ease), background 0.25s var(--ease); }
+.pill:hover { background: #c9ff72; }
+.pill:active { transform: scale(0.97); }
+
+/* Flow scene */
+.flow-scene { position: relative; height: 560vh; }
+.flow-stage { position: sticky; top: 0; height: 100vh; overflow: hidden; display: grid; place-items: center; }
+.flow-glow { position: absolute; inset: -20% -10%; background: radial-gradient(40% 36% at 50% 52%, rgba(184, 242, 78, calc(0.04 + var(--glow, 0) * 0.08)), transparent 70%); pointer-events: none; }
+.hero-copy { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 96px 24px 0; opacity: calc(1 - var(--intro, 0) * 1.4); transform: translateY(calc(var(--intro, 0) * -90px)) scale(calc(1 - var(--intro, 0) * 0.05)); pointer-events: none; z-index: 2; }
+.hero-copy h1 { font-size: clamp(46px, 8.2vw, 116px); line-height: 1; letter-spacing: -0.055em; font-weight: 500; }
+.hero-copy p { margin-top: 24px; font-size: clamp(16px, 1.8vw, 20px); color: var(--muted); max-width: 52ch; }
+
+.diagram { position: relative; width: min(100% - 32px, 1080px); aspect-ratio: 1000 / 580; opacity: var(--build-in, 0); transform: translateY(calc((1 - var(--build-in, 0)) * 60px)) scale(calc(0.9 + var(--build-in, 0) * 0.1)); }
+.diagram svg { width: 100%; height: 100%; overflow: visible; }
+.route { fill: none; stroke: var(--line-strong); stroke-width: 1.5; stroke-linecap: round; }
+.route-live { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; opacity: 0.9; stroke-dasharray: 1000; stroke-dashoffset: 1000; }
+.node-box { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1.5; }
+.node-title { fill: var(--text); font: 500 15px var(--sans); }
+.node-meta { fill: var(--muted); font: 400 12px var(--mono); }
+.relay-core-outer { fill: var(--bg); stroke: var(--text); stroke-width: 2.2; }
+.relay-core-inner { fill: rgba(184, 242, 78, var(--core, 0)); stroke: var(--accent); stroke-width: 2.2; transition: fill 0.4s var(--ease); }
+.relay-label { fill: var(--text); font: 600 14px var(--sans); letter-spacing: 0.02em; }
+.packet { fill: var(--accent); filter: drop-shadow(0 0 8px rgba(184, 242, 78, 0.6)); }
+.glow-ring { fill: none; stroke: var(--accent); stroke-width: 1; opacity: 0; transform-box: fill-box; transform-origin: center; }
+.flow-stage[data-step="2"] .glow-ring { animation: ring 1.6s var(--ease) infinite; }
+@keyframes ring { 0% { opacity: 0; transform: scale(1); } 40% { opacity: 0.6; } 100% { opacity: 0; transform: scale(1.5); } }
+
+.steps-panel { position: absolute; left: max(24px, calc((100vw - 1120px) / 2)); bottom: clamp(24px, 7vh, 72px); width: min(420px, calc(100% - 48px)); z-index: 3; opacity: var(--steps-in, 0); transform: translateY(calc((1 - var(--steps-in, 0)) * 24px)); }
+.steps-panel ol { list-style: none; display: grid; }
+.steps-panel li { grid-area: 1/1; opacity: 0; transform: translateY(16px); transition: opacity 0.2s var(--ease), transform 0.3s var(--ease); }
+.steps-panel li[data-past] { transform: translateY(-16px); }
+.steps-panel li[data-active="true"] { opacity: 1; transform: none; transition: opacity 0.5s 0.18s var(--ease), transform 0.7s 0.18s var(--ease); }
+.step-count { font-size: 14px; font-weight: 500; color: var(--accent); }
+.steps-panel h2 { margin-top: 10px; font-size: clamp(28px, 3.4vw, 40px); line-height: 1.08; font-weight: 500; letter-spacing: -0.035em; }
+.steps-panel p { margin-top: 12px; color: var(--muted); max-width: 40ch; }
+.step-code { margin-top: 16px; padding: 12px 16px; background: rgba(19, 20, 26, 0.8); border: 1px solid var(--line); border-radius: 8px; font: 400 13px var(--mono); color: var(--text); overflow-x: auto; }
+.step-card { margin-top: 16px; padding: 16px; background: rgba(19, 20, 26, 0.8); border: 1px solid var(--line); border-radius: 8px; }
+.step-card h3 { font-size: 14px; font-weight: 500; margin-bottom: 6px; }
+.step-card p { font-size: 13px; color: var(--muted); margin: 0; }
+.step-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; background: linear-gradient(135deg, var(--memory-from), var(--memory-to)); border-radius: 6px; font: 500 12px var(--sans); color: #fff; margin-top: 12px; }
+
+.flow-scene[data-static] { height: auto; }
+.flow-scene[data-static] .flow-stage { position: relative; height: auto; padding: 80px 24px; }
+.flow-scene[data-static] .hero-copy { position: relative; opacity: 1; transform: none; padding: 0; }
+.flow-scene[data-static] .diagram { opacity: 1; transform: none; margin: 56px auto 0; }
+.flow-scene[data-static] .steps-panel { position: relative; inset: auto; width: min(100%, 1120px); margin: 56px auto 0; opacity: 1; transform: none; }
+.flow-scene[data-static] .steps-panel ol { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 40px; }
+.flow-scene[data-static] .steps-panel li { grid-area: auto; opacity: 1; transform: none; }
+
+/* Bottom section */
+.bottom { max-width: 1200px; margin: 0 auto; padding: 120px 48px; display: grid; grid-template-columns: 1fr 1fr; gap: 80px; align-items: start; }
+.start h2 { font-size: 36px; font-weight: 500; letter-spacing: -0.035em; margin-bottom: 32px; }
+.start ol { list-style: none; counter-reset: step; }
+.start li { counter-increment: step; display: grid; grid-template-columns: 32px 1fr; gap: 16px; margin-bottom: 28px; }
+.start li::before { content: counter(step); width: 32px; height: 32px; display: grid; place-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 50%; font: 500 14px var(--mono); color: var(--accent); }
+.start h3 { font-size: 16px; font-weight: 500; margin-bottom: 6px; }
+.start p { font-size: 14px; color: var(--muted); }
+.config { margin-top: 24px; padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; font: 400 13px var(--mono); color: var(--text); overflow-x: auto; }
+
+.faq h2 { font-size: 36px; font-weight: 500; letter-spacing: -0.035em; margin-bottom: 32px; }
+.faq details { border-bottom: 1px solid var(--line); }
+.faq summary { padding: 20px 0; font-size: 15px; font-weight: 500; cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary > span { transition: transform 0.3s var(--ease); }
+.faq details[open] summary > span { transform: rotate(180deg); }
+.faq summary svg { width: 16px; height: 16px; stroke: var(--muted); }
+.faq p { padding: 0 0 20px; color: var(--muted); line-height: 1.7; }
+
+.cta { max-width: 1200px; margin: 0 auto; padding: 80px 48px; text-align: center; }
+.cta h2 { font-size: 48px; font-weight: 500; letter-spacing: -0.04em; margin-bottom: 16px; }
+.cta p { font-size: 18px; color: var(--muted); margin-bottom: 32px; }
+
+.footer { max-width: 1200px; margin: 0 auto; padding: 56px 48px 72px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+.footer p { font-size: 13px; color: var(--muted); }
+.footer a { font-size: 13px; color: var(--muted); transition: color 0.2s var(--ease); }
+.footer a:hover { color: var(--text); }
+
+@media (max-width: 900px) {
+  .header-inner { padding: 0 24px; gap: 24px; }
+  .nav { display: none; }
+  .bottom { grid-template-columns: 1fr; gap: 64px; padding: 80px 24px; }
+  .cta { padding: 64px 24px; }
+  .cta h2 { font-size: 36px; }
+  .footer { padding: 48px 24px 64px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-copy, .diagram, .steps-panel li { transition: none; }
+  .flow-scene[data-static] { animation: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-inner">
+    <a href="#" class="brand"><span class="glyph" aria-hidden="true"></span>Relay<span class="brand-small">MCP</span></a>
+    <nav class="nav">
+      <a href="#how">How it works</a>
+      <a href="#start">Get started</a>
+    </nav>
+    <button class="pill">Request access</button>
+  </div>
+</header>
+
+<main>
+  <section class="flow-scene" id="how">
+    <div class="flow-stage">
+      <div class="flow-glow"></div>
+      <div class="hero-copy">
+        <h1>Connect your agent.<br>Keep the context.</h1>
+        <p>Relay sits between your MCP client and the servers, projects and knowledge it works with. Every call is checked against your access.</p>
+      </div>
+
+      <div class="diagram">
+        <svg viewBox="0 0 1000 580">
+          <!-- Routes -->
+          <path class="route" d="M180 80 L500 280" />
+          <path class="route" d="M500 340 L200 520" />
+          <path class="route" d="M500 340 L500 520" />
+          <path class="route" d="M500 340 L800 520" />
+          
+          <!-- Live routes animated by JS -->
+          <path class="route-live" d="M180 80 L500 280" data-route="in" />
+          <path class="route-live" d="M500 340 L200 520" data-route="knowledge" />
+          <path class="route-live" d="M500 340 L500 520" data-route="execution" />
+          <path class="route-live" d="M500 340 L800 520" data-route="memory" />
+
+          <!-- Codex -->
+          <g class="node" data-node="codex">
+            <rect class="node-box" x="20" y="36" width="160" height="88" rx="16" />
+            <text class="node-title" x="44" y="74">Codex</text>
+            <text class="node-meta" x="44" y="100">MCP client</text>
+          </g>
+
+          <!-- Relay -->
+          <g class="node" data-node="relay">
+            <rect class="relay-core-outer" x="450" y="230" width="100" height="100" rx="12" transform="rotate(45 500 280)" />
+            <rect class="relay-core-inner" x="460" y="240" width="80" height="80" rx="8" transform="rotate(45 500 280)" />
+            <circle class="glow-ring" cx="500" cy="280" r="50" />
+            <circle class="glow-ring" cx="500" cy="280" r="50" style="animation-delay: 0.5s" />
+            <text class="relay-label" x="500" y="390" text-anchor="middle">Relay</text>
+          </g>
+
+          <!-- Knowledge -->
+          <g class="node" data-node="knowledge">
+            <rect class="node-box" x="20" y="476" width="180" height="88" rx="16" />
+            <text class="node-title" x="44" y="514">Knowledge</text>
+            <text class="node-meta" x="44" y="540">Product + Memory</text>
+          </g>
+
+          <!-- Server -->
+          <g class="node" data-node="server">
+            <rect class="node-box" x="410" y="476" width="180" height="88" rx="16" />
+            <text class="node-title" x="434" y="514">A-SERVER</text>
+            <text class="node-meta" x="434" y="540">SSH / Relay Agent</text>
+          </g>
+
+          <!-- Evidence/Memory -->
+          <g class="node" data-node="evidence">
+            <rect class="node-box" x="800" y="476" width="180" height="88" rx="16" />
+            <text class="node-title" x="824" y="514">Evidence</text>
+            <text class="node-meta" x="824" y="540">→ Memory</text>
+          </g>
+
+          <circle class="packet" r="7" cx="180" cy="80" />
+        </svg>
+      </div>
+
+      <div class="steps-panel">
+        <ol>
+          <li data-active="false">
+            <span class="step-count">Step 1 of 4</span>
+            <h2>Authenticate the call.</h2>
+            <p>Codex sends a request with your MCP Access Token. Relay checks the token, project and server scope before recording the request.</p>
+            <div class="step-code">tools/call fetch_logs<br>Authorization: Bearer ****</div>
+          </li>
+          <li data-active="false">
+            <span class="step-count">Step 2 of 4</span>
+            <h2>Retrieve Knowledge.</h2>
+            <p>Relay searches product documents and confirmed Memory for relevant context. Only authorized scopes are queried.</p>
+            <div class="step-card">
+              <h3>Cache clear sequence for 21.3</h3>
+              <p>Stop services, clear FormsBin, restart in order. Verified in development.</p>
+              <span class="step-badge">
+                <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                Confirmed Memory
+              </span>
+            </div>
+          </li>
+          <li data-active="false">
+            <span class="step-count">Step 3 of 4</span>
+            <h2>Run it on the right server.</h2>
+            <p>Relay reaches the analysis server over SSH or hands the job to a Relay Agent. Results and logs are captured as Evidence.</p>
+            <div class="step-code">[SSH] tail -n 100 /var/log/app.log<br>→ Evidence #ae7f3c</div>
+          </li>
+          <li data-active="false">
+            <span class="step-count">Step 4 of 4</span>
+            <h2>Review and confirm Memory.</h2>
+            <p>The agent submits what it learned with memory_capture. An administrator reviews the outcome and conditions, then confirms it as Project or General Memory.</p>
+            <div class="step-card">
+              <h3>Status: Pending review</h3>
+              <p>Submitted. Not searchable until confirmed.</p>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section class="bottom" id="start">
+    <div class="start">
+      <h2>First three steps to your first call</h2>
+      <ol>
+        <li>
+          <div>
+            <h3>Request access</h3>
+            <p>Submit a username and password. You can sign in once an administrator approves it.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h3>Choose the token scope</h3>
+            <p>Create an MCP Access Token for selected projects and servers, or for product Knowledge and General Memory only.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h3>Connect your client</h3>
+            <p>Add the endpoint and token to Codex or another MCP client. The token secret is shown once.</p>
+          </div>
+        </li>
+      </ol>
+      <div class="config">{<br>  "mcpServers": {<br>    "relay": {<br>      "url": "https://relay.example.com/mcp",<br>      "headers": {<br>        "Authorization": "Bearer YOUR_TOKEN"<br>      }<br>    }<br>  }<br>}</div>
+    </div>
+
+    <div class="faq">
+      <h2>Questions</h2>
+      <details>
+        <summary>Which credentials does Relay manage?<span><svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg></span></summary>
+        <p>MCP Access Tokens connect clients such as Codex to Relay. Relay Agent Tokens connect configured Windows agents. Neither is a model provider API key.</p>
+      </details>
+      <details>
+        <summary>Do I need a project to use Knowledge?<span><svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg></span></summary>
+        <p>No. Product Knowledge and General Memory follow a permission on your account. Project Memory requires access to its project.</p>
+      </details>
+      <details>
+        <summary>When does an experience become Memory?<span><svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg></span></summary>
+        <p>An agent submits a candidate with memory_capture. It becomes searchable only after an administrator confirms it.</p>
+      </details>
+      <details>
+        <summary>Does Relay need an inbound port on Windows servers?<span><svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg></span></summary>
+        <p>No. The Relay Agent runs as a Windows service and only makes outbound requests to Relay.</p>
+      </details>
+    </div>
+  </section>
+
+  <section class="cta">
+    <h2>Bring your work into context.</h2>
+    <p>Less time rebuilding context. More room to move the work forward.</p>
+    <button class="pill">Request access</button>
+  </section>
+</main>
+
+<footer class="footer">
+  <a href="#" class="brand"><span class="glyph" aria-hidden="true"></span>Relay<span class="brand-small">MCP</span></a>
+  <p>Project operations. Knowledge. One connection.</p>
+  <a href="#how">Back to top</a>
+</footer>
+
+<script>
+const reduce = matchMedia('(prefers-reduced-motion: reduce)');
+const scene = document.querySelector('.flow-scene');
+const stage = document.querySelector('.flow-stage');
+const steps = [...document.querySelectorAll('.steps-panel li')];
+const packet = document.querySelector('.packet');
+const routes = {
+  in: document.querySelector('[data-route="in"]'),
+  knowledge: document.querySelector('[data-route="knowledge"]'),
+  execution: document.querySelector('[data-route="execution"]'),
+  memory: document.querySelector('[data-route="memory"]')
+};
+
+function renderStatic() {
+  scene.dataset.static = 'true';
+  stage.style.setProperty('--intro', '0');
+  stage.style.setProperty('--build-in', '1');
+  stage.style.setProperty('--steps-in', '1');
+  stage.style.setProperty('--core', '0.6');
+  stage.style.setProperty('--glow', '0.5');
+  packet.setAttribute('cx', '500');
+  packet.setAttribute('cy', '280');
+}
+
+if (reduce.matches) {
+  renderStatic();
+} else {
+  let queued = false;
+
+  function seg(p, start, end) {
+    if (p < start) return 0;
+    if (p > end) return 1;
+    return (p - start) / (end - start);
+  }
+
+  function ease(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
+  function frame() {
+    queued = false;
+    const { top, height } = scene.getBoundingClientRect();
+    const p = Math.max(0, Math.min(1, -top / (height - innerHeight)));
+
+    stage.style.setProperty('--intro', ease(seg(p, 0, 0.15)).toFixed(3));
+    stage.style.setProperty('--build-in', ease(seg(p, 0.12, 0.3)).toFixed(3));
+    stage.style.setProperty('--steps-in', ease(seg(p, 0.2, 0.35)).toFixed(3));
+    stage.style.setProperty('--glow', seg(p, 0.15, 0.85).toFixed(3));
+
+    const boundaries = [0.25, 0.45, 0.65, 0.85];
+    let step = 0;
+    for (let i = 0; i < 4; i++) if (p >= boundaries[i]) step = i + 1;
+    stage.dataset.step = String(step);
+
+    const shown = Math.max(step, 1);
+    steps.forEach((li, i) => {
+      li.dataset.active = String(i + 1 === shown);
+      li.toggleAttribute('data-past', i + 1 < shown);
+    });
+
+    // Packet movement
+    if (p < 0.25) {
+      const t = seg(p, 0.15, 0.25);
+      packet.setAttribute('cx', 180 + ease(t) * 320);
+      packet.setAttribute('cy', 80 + ease(t) * 200);
+      stage.style.setProperty('--core', (0.3 * ease(t)).toFixed(3));
+    } else if (p < 0.45) {
+      const t = seg(p, 0.25, 0.45);
+      packet.setAttribute('cx', 500 - ease(t) * 300);
+      packet.setAttribute('cy', 280 + ease(t) * 240);
+      stage.style.setProperty('--core', (0.3 + 0.15 * ease(t)).toFixed(3));
+      routes.knowledge.style.strokeDashoffset = 1000 - ease(t) * 1000;
+    } else if (p < 0.65) {
+      const t = seg(p, 0.45, 0.65);
+      packet.setAttribute('cx', 500);
+      packet.setAttribute('cy', 280 + ease(t) * 240);
+      stage.style.setProperty('--core', (0.45 + 0.15 * ease(t)).toFixed(3));
+      routes.execution.style.strokeDashoffset = 1000 - ease(t) * 1000;
+    } else if (p < 0.85) {
+      const t = seg(p, 0.65, 0.85);
+      packet.setAttribute('cx', 500 + ease(t) * 300);
+      packet.setAttribute('cy', 280 + ease(t) * 240);
+      stage.style.setProperty('--core', (0.6 + 0.2 * ease(t)).toFixed(3));
+      routes.memory.style.strokeDashoffset = 1000 - ease(t) * 1000;
+    } else {
+      packet.setAttribute('cx', '890');
+      packet.setAttribute('cy', '520');
+      stage.style.setProperty('--core', '0.8');
+    }
+  }
+
+  function request() {
+    if (!queued) {
+      queued = true;
+      requestAnimationFrame(frame);
+    }
+  }
+
+  window.addEventListener('scroll', request, { passive: true });
+  window.addEventListener('resize', request, { passive: true });
+  request();
+}
+</script>
+
+</body>
+</html>

@@ -229,8 +229,3 @@
 
 .landing-skip { position:absolute; left:16px; top:-56px; z-index:100; padding:8px 14px; border-radius:6px; background:var(--accent); color:var(--accent-ink); font:500 14px/1 var(--sans); }
 .landing-skip:focus { top:12px; }
-
-
-
-
-

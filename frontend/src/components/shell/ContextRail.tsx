@@ -35,6 +35,10 @@ const iconByLabel: Record<string, typeof Activity> = {
   Users,
   "Access requests": Users,
   "Knowledge permissions": ShieldCheck,
+  Projects: Box,
+  Activity,
+  "Knowledge review": ShieldCheck,
+  "Audit and release": FileText,
   Providers: Settings2,
   "Release gates": ShieldCheck,
 };
@@ -49,6 +53,12 @@ function tabActive(tab: PageTab, pathname: string) {
 }
 
 function contextFor(pathname: string, isAdmin: boolean): { label: string; items: readonly PageTab[]; note?: string } {
+  if (pathname === "/workspace" || pathname === "/projects") {
+    return { label: "Selected workspace", items: [{ label: "Overview", path: "/workspace", end: true }, { label: "Projects", path: "/projects", end: true }, { label: "Activity", path: "/knowledge/sessions", end: true }] };
+  }
+  if (pathname === "/admin" && isAdmin) {
+    return { label: "Relay control plane", items: [{ label: "Access requests", path: "/users/requests", end: true }, { label: "Knowledge review", path: "/knowledge/memory", end: true }, { label: "Audit and release", path: "/knowledge/integrated/gates", end: true }] };
+  }
   if (pathname.startsWith("/knowledge/product-docs")) {
     return { label: "Product docs", items: pageTabNavigation.productDocs.filter((item) => !("adminOnly" in item) || !item.adminOnly || isAdmin) as readonly PageTab[] };
   }
@@ -85,12 +95,13 @@ export function ContextRail() {
   const { selectedProject, loading: projectLoading } = useProjectScope();
   const context = contextFor(location.pathname, Boolean(user?.isAdmin));
   const projectName = selectedProject?.name ?? (projectLoading ? "Loading project…" : "No project selected");
+  const heading = context.label === "Selected workspace" ? projectName : context.label === "Relay control plane" ? "Keep the boundary clear." : location.pathname.startsWith("/knowledge") ? projectName : "Relay console";
 
   return (
     <aside className="shell-context-rail" aria-label={`${context.label} navigation`}>
       <div className="shell-context-heading">
         <span>{context.label}</span>
-        <strong>{location.pathname.startsWith("/knowledge") ? projectName : "Relay console"}</strong>
+        <strong>{heading}</strong>
       </div>
       {context.items.length > 0 ? (
         <nav className="shell-context-nav" aria-label={`${context.label} sections`}>

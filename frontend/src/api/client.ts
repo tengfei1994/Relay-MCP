@@ -57,15 +57,15 @@ export const api = {
   health: () => request<{ ok: boolean; version: string; commit: string; buildTime: string; process: string; ts: string }>("GET", "/health"),
   // Auth
   login: (username: string, password: string) =>
-    request<{ token: string; user: { id: number; username: string; isAdmin: boolean } }>(
+    request<{ token: string; user: { id: number; username: string; isAdmin: boolean; knowledgeEnabled?: boolean } }>(
       "POST", "/auth/login", { username, password }
     ),
   register: (username: string, password: string) =>
-    request<{ status: "pending" | "active"; token?: string; user?: { id: number; username: string; isAdmin: boolean } }>(
+    request<{ status: "pending" | "active"; token?: string; user?: { id: number; username: string; isAdmin: boolean; knowledgeEnabled?: boolean } }>(
       "POST", "/auth/register", { username, password }
     ),
   me: () =>
-    request<{ user: { id: number; username: string; isAdmin: boolean } }>("GET", "/auth/me"),
+    request<{ user: { id: number; username: string; isAdmin: boolean; knowledgeEnabled?: boolean } }>("GET", "/auth/me"),
 
   // Projects
   listProjects: () =>

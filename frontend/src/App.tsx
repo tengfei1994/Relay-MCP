@@ -19,11 +19,13 @@ import KnowledgeSource from "./pages/KnowledgeSource";
 import KnowledgeIntegrated from "./pages/KnowledgeIntegrated";
 import KnowledgeWiki from "./pages/KnowledgeWiki";
 import KnowledgeMemory from "./pages/KnowledgeMemory";
+import WorkspaceOverview from "./pages/WorkspaceOverview";
+import AdminOverview from "./pages/AdminOverview";
 
 import { AppShell } from "./components/shell/AppShell";
 
 interface AuthCtx {
-  user: { id: number; username: string; isAdmin: boolean } | null;
+  user: { id: number; username: string; isAdmin: boolean; knowledgeEnabled?: boolean } | null;
   login: (username: string, password: string) => Promise<void>;
   register: (username: string, password: string) => Promise<"pending" | "active">;
   logout: () => void;
@@ -34,7 +36,7 @@ export const useAuth = () => useContext(AuthContext);
 
 export default function App() {
   const location = useLocation();
-  const [user, setUser] = useState<{ id: number; username: string; isAdmin: boolean } | null>(null);
+  const [user, setUser] = useState<{ id: number; username: string; isAdmin: boolean; knowledgeEnabled?: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -83,19 +85,23 @@ export default function App() {
     );
   }
 
+  const consoleHome = user?.isAdmin ? "/admin" : "/workspace";
+
   return (
     <AuthContext.Provider value={{ user, login, register, logout }}>
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route
           path="/login"
-          element={user ? <Navigate to="/projects" replace /> : <LoginPage />}
+          element={user ? <Navigate to={consoleHome} replace /> : <LoginPage />}
         />
-        <Route path="/apply" element={user ? <Navigate to="/projects" replace /> : <LoginPage initialMode="register" />} />
+        <Route path="/apply" element={user ? <Navigate to={consoleHome} replace /> : <LoginPage initialMode="register" />} />
         <Route
           path="/"
           element={user ? <AppShell /> : <Navigate to="/login" replace />}
         >
+          <Route path="workspace" element={<WorkspaceOverview />} />
+          <Route path="admin" element={user?.isAdmin ? <AdminOverview /> : <Navigate to="/workspace" replace />} />
           <Route path="projects" element={<ProjectsPage />} />
           <Route path="account" element={<AccountPage />} />
           <Route path="servers" element={<ServersPage />} />

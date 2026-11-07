@@ -18,7 +18,7 @@ export function TopBar() {
   return (
     <>
       <header className="shell-topbar">
-        <NavLink to="/projects" className="shell-brand" aria-label="Relay MCP home">
+        <NavLink to={user?.isAdmin ? "/admin" : "/workspace"} className="shell-brand" aria-label="Relay MCP workspace home">
           <span className="shell-brand-mark" aria-hidden="true" />
           <span className="shell-brand-name">Relay MCP</span>
         </NavLink>

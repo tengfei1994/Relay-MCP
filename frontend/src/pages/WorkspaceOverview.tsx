@@ -40,6 +40,7 @@ export default function WorkspaceOverview() {
     setLoading(false);
   };
   useEffect(() => { void load(); }, [user?.knowledgeEnabled]);
+  useEffect(() => { const previous = document.title; document.title = "Relay MCP — Workspace overview"; return () => { document.title = previous; }; }, []);
 
   const visibleProjects = projects.length ? projects : scopedProjects as Project[];
   const selectedName = selectedProject?.name ?? visibleProjects[0]?.name ?? "No project selected";

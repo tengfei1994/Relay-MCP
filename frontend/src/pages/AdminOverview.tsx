@@ -36,6 +36,7 @@ export default function AdminOverview() {
     setLoading(false);
   };
   useEffect(() => { void load(); }, [user?.knowledgeEnabled]);
+  useEffect(() => { const previous = document.title; document.title = "Relay MCP — Administrator overview"; return () => { document.title = previous; }; }, []);
 
   const pendingAccounts = users.filter((user) => user.accountStatus !== "active").length;
   const activeAccounts = users.filter((user) => user.accountStatus === "active").length;

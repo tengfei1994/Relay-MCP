@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { Archive, ChevronRight, Eye, File, FileImage, FileText, Folder, Plus, Server as ServerIcon, Link2, Unlink, Settings, Pencil, Trash2 } from "lucide-react";
 import { api } from "../api/client";
 import { Button, ConfirmDialog, Dialog, Field, Input, Select } from "../components/ui";
-import { PageHeader } from "../components/ui";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
 
 type Project = { id: number; name: string; description?: string };
@@ -440,7 +439,6 @@ export default function ProjectsPage() {
 
   return (
     <AppPageFrame variant="wide" className="app-page-frame-workspace">
-      <PageHeader title="Projects" description="Browse your files and manage the environments connected to your work." />
       {workspaceError && <p className="mb-3 rounded-[10px] border border-coral/40 bg-coral/10 px-4 py-3 text-sm text-coral" role="alert">{workspaceError}</p>}
       <div className="app-workspace-panel flex min-h-0 flex-1">
       <aside className="app-project-sidebar flex flex-col border-r border-line">

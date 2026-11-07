@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, Boxes, Check, Database, Pencil, RefreshCw, Server, Trash2, Wrench } from "lucide-react";
 import { api } from "../api/client";
-import { Button, ConfirmDialog, Drawer, EmptyState, Field, Input, PageHeader, Select, StatusPill, Textarea, useToast } from "../components/ui";
+import { Button, ConfirmDialog, Drawer, EmptyState, Field, Input, Select, StatusPill, Textarea, useToast } from "../components/ui";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
 
 type ServiceRecord = {
@@ -304,17 +304,11 @@ export default function InstancesPage() {
 
   return (
     <AppPageFrame variant="wide">
-      <PageHeader
-        title="Instances"
-        description="Discover and maintain SampleManager instance paths, services and database targets."
-        actions={
-          <div className="flex flex-wrap items-end gap-3">
-            <Field label="Windows server"><Select value={serverId} onChange={(event) => setServerId(event.target.value)} className="min-w-52"><option value="">Select a Windows server</option>{servers.filter((server) => server.os === "windows").map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}</Select></Field>
-            <Field label="Root hint"><Input value={rootHint} onChange={(event) => setRootHint(event.target.value)} placeholder="Optional custom root" className="w-52" /></Field>
-            <Button onClick={scan} disabled={!serverId || scanning} loading={scanning} variant="accent"><RefreshCw size={15} /> {scanning ? "Scanning" : "Scan"}</Button>
-          </div>
-        }
-      />
+      <div className="mb-4 flex flex-wrap items-end justify-end gap-3">
+        <Field label="Windows server"><Select value={serverId} onChange={(event) => setServerId(event.target.value)} className="min-w-52"><option value="">Select a Windows server</option>{servers.filter((server) => server.os === "windows").map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}</Select></Field>
+        <Field label="Root hint"><Input value={rootHint} onChange={(event) => setRootHint(event.target.value)} placeholder="Optional custom root" className="w-52" /></Field>
+        <Button onClick={scan} disabled={!serverId || scanning} loading={scanning} variant="accent"><RefreshCw size={15} /> {scanning ? "Scanning" : "Scan"}</Button>
+      </div>
 
       {error && <div className="mb-5 rounded-[10px] border border-coral/40 bg-coral/10 px-4 py-3 text-sm text-coral" role="alert">{error}</div>}
 

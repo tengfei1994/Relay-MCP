@@ -4,7 +4,7 @@ import { BookOpen, KeyRound, Shield, ShieldCheck, Trash2, UserPlus } from "lucid
 import { api } from "../api/client";
 import { useAuth } from "../App";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
-import { Button, ConfirmDialog, Dialog, EmptyState, Field, Input, PageHeader, StatusPill, useToast } from "../components/ui";
+import { Button, ConfirmDialog, Dialog, EmptyState, Field, Input, StatusPill, useToast } from "../components/ui";
 
 type UserRecord = { id: number; username: string; isAdmin: boolean; knowledgeEnabled?: boolean; accountStatus?: string; reviewedBy?: number; reviewedAt?: string; reviewReason?: string | null; createdAt?: string };
 type UserForm = { username: string; password: string; isAdmin: boolean; knowledgeEnabled: boolean };
@@ -104,11 +104,7 @@ export default function UsersPage() {
   return (
     <AppPageFrame variant="wide">
       <div className="mx-auto max-w-[1100px]">
-        <PageHeader
-          title={mode === "requests" ? "Access requests" : mode === "permissions" ? "Knowledge permissions" : "Users"}
-          description={mode === "requests" ? "Review pending, rejected and disabled account requests without changing project access." : mode === "permissions" ? "Manage administrator access and the separate Product Knowledge and General Memory permission." : "Manage accounts, status, passwords and permissions that remain separate from project access."}
-          actions={mode === "accounts" ? <Button onClick={() => { setError(""); setShowCreate(true); }} variant="primary"><UserPlus size={15} /> Add user</Button> : undefined}
-        />
+        {mode === "accounts" && <div className="mb-4 flex justify-end"><Button onClick={() => { setError(""); setShowCreate(true); }} variant="primary"><UserPlus size={15} /> Add user</Button></div>}
         <nav className="shell-page-tabs mb-8" aria-label="Administrator sections">
           <NavLink to="/users" end className={({ isActive }) => `shell-page-tab${isActive ? " active" : ""}`}>Users</NavLink>
           <NavLink to="/users/requests" className={({ isActive }) => `shell-page-tab${isActive ? " active" : ""}`}>Access requests</NavLink>

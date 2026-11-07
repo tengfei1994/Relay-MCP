@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { BookOpen, CheckCircle2, ChevronRight, CircleAlert, Filter, Search, TerminalSquare, X } from "lucide-react";
+import { BookOpen, CheckCircle2, ChevronRight, CircleAlert, Filter, Search, X } from "lucide-react";
 import { api } from "../api/client";
 import { Badge, EmptyState, ErrorState, Skeleton } from "../components/ui";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
@@ -126,14 +126,8 @@ export default function ToolsPage() {
     <AppPageFrame variant="wide">
       <div className="tools-page">
       <header className="mb-7">
-        <div className="flex flex-wrap items-end justify-between gap-5">
-          <div className="flex items-start gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-[10px] border border-mint/30 bg-mint/10 text-mint"><TerminalSquare size={20} /></div>
-            <div><h1 className="font-display text-[30px] font-semibold leading-tight tracking-[-.02em] text-fg">Tools</h1><p className="mt-2 text-sm text-muted">Browse the Relay MCP command catalog and inspect capabilities.</p></div>
-          </div>
+        <div className="flex flex-wrap items-center justify-end gap-3">
           <div className="font-mono text-[13px] text-muted">{tools.length} commands, {filtered.length} shown</div>
-        </div>
-        <div className="mt-7 flex flex-wrap items-center gap-3">
           <label className="relative min-w-[280px] flex-1"><Search size={15} className="pointer-events-none absolute left-3 top-3 text-muted" /><input aria-label="Search commands" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search command name or description" className="h-10 w-full rounded-[10px] border border-white/10 bg-white/[.04] pl-9 pr-9 text-sm text-fg outline-none placeholder:text-muted focus:border-mint" />{query && <button onClick={() => setQuery("")} className="absolute right-2 top-2 rounded p-1 text-muted hover:bg-white/[.08] hover:text-fg" aria-label="Clear search"><X size={15} /></button>}</label>
           <div className="flex h-10 items-center rounded-[10px] border border-white/10 bg-white/[.04] p-1"><Filter size={14} className="mx-2 text-muted" />{["all", "read-only", "mutation"].map((value) => <button key={value} onClick={() => setAccess(value)} className={`rounded-[8px] px-3 py-1.5 text-xs transition ${access === value ? "bg-white/[.12] text-fg" : "text-muted hover:text-fg"}`}>{value === "all" ? "All access" : value === "read-only" ? "Read-only" : "Mutation"}</button>)}</div>
         </div>

@@ -68,7 +68,6 @@
 .shell-page-tab{display:inline-flex;align-items:center;min-height:34px;padding:6px 13px;border-radius:5px;color:rgb(var(--muted));font:500 13px/1.2 var(--font-sans);text-decoration:none;white-space:nowrap}
 .shell-page-tab:hover{color:rgb(var(--fg))}
 .shell-page-tab.active{background:rgba(255,255,255,.1);color:rgb(var(--fg))}
-.shell-footer{box-sizing:border-box;width:100%;max-width:1280px;margin:0 auto;padding:0 clamp(20px,3vw,40px) 32px;color:rgb(var(--muted));font:400 11px/1.5 var(--font-mono)}
 .app-page-frame{box-sizing:border-box;width:100%;margin-inline:auto;padding:20px clamp(20px,3vw,40px) 44px}
 .app-page-frame-standard{max-width:1600px}
 .app-page-frame-wide{max-width:1900px}
@@ -110,7 +109,6 @@
   .shell-subnav{position:sticky;top:76px;z-index:30;display:flex;align-items:center;min-height:48px;padding:0 20px;border-bottom:1px solid var(--line);background:rgba(16,17,19,.96);backdrop-filter:blur(16px)}
   .shell-scope-wrap{padding-left:8px}
   .shell-scope-trigger{max-width:180px}
-  .shell-footer{padding:0 20px 32px}
   .app-page-frame{padding:18px 20px 44px}
   .app-page-frame-workspace{min-height:calc(100dvh - 76px)}
   .app-workspace-panel{min-height:620px}

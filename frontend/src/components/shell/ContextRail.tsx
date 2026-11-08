@@ -81,6 +81,8 @@ export function ContextRail() {
   const projectName = selectedProject?.name ?? (projectLoading ? "Loading project…" : "No project selected");
   const heading = context.label === "Selected workspace" || context.label === "Knowledge" ? projectName : context.label === "Relay control plane" ? "Admin overview" : context.label;
 
+  if (context.items.length === 0 && !context.note) return null;
+
   return (
     <aside className="shell-context-rail" aria-label={`${context.label} navigation`}>
       <div className="shell-context-heading">

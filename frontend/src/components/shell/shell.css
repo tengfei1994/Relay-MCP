@@ -28,7 +28,8 @@
 .shell-mobile-link:hover{color:rgb(var(--fg));background:rgba(255,255,255,.06)}
 .shell-mobile-link[aria-current=page]{color:rgb(var(--ink));background:rgb(var(--mint))}
 .shell-mobile-user{position:relative;padding-top:16px;border-top:1px solid var(--line)}
-.shell-console-layout{display:grid;grid-template-columns:244px minmax(0,1fr);min-height:calc(100dvh - 76px)}
+.shell-console-layout{display:grid;grid-template-columns:minmax(0,1fr);min-height:calc(100dvh - 76px)}
+.shell-console-layout:has(.shell-context-rail){grid-template-columns:244px minmax(0,1fr)}
 .shell-content-column{display:flex;min-width:0;min-height:calc(100dvh - 76px);flex-direction:column}
 .shell-content-column>main{min-height:0;flex:1}
 .shell-context-rail{position:sticky;top:76px;display:flex;height:calc(100dvh - 76px);min-width:0;flex-direction:column;gap:24px;overflow-y:auto;border-right:1px solid var(--line);padding:28px 16px 20px;background:rgba(16,17,19,.76)}
@@ -98,7 +99,7 @@
 @media(max-width:980px){
   .shell-topbar{gap:16px}
   .shell-primary-link{padding-inline:10px}
-  .shell-console-layout{grid-template-columns:212px minmax(0,1fr)}
+  .shell-console-layout:has(.shell-context-rail){grid-template-columns:212px minmax(0,1fr)}
   .shell-context-rail{padding-inline:12px}
 }
 @media(max-width:700px){

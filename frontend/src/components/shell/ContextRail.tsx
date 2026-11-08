@@ -53,8 +53,8 @@ function tabActive(tab: PageTab, pathname: string) {
 }
 
 function contextFor(pathname: string, isAdmin: boolean): { label: string; items: readonly PageTab[]; note?: string } {
-  if (pathname === "/workspace" || pathname === "/projects") {
-    return { label: "Selected workspace", items: [{ label: "Overview", path: "/workspace", end: true }, { label: "Activity", path: "/knowledge/sessions", end: true }] };
+  if (["/workspace", "/projects", "/activity"].includes(pathname)) {
+    return { label: "Selected workspace", items: [{ label: "Overview", path: "/workspace", end: true }, { label: "Projects", path: "/projects", end: true }, { label: "Activity", path: "/activity", end: true }] };
   }
   if (pathname === "/admin" && isAdmin) {
     return { label: "Relay control plane", items: [{ label: "Access requests", path: "/users/requests", end: true }, { label: "Knowledge review", path: "/knowledge/memory", end: true }, { label: "Audit and release", path: "/knowledge/integrated/gates", end: true }] };

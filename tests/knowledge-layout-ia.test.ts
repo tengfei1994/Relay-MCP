@@ -45,3 +45,12 @@ test("Knowledge footer and frame share the same content rail", () => {
   assert.match(shellCss, /max-width:1280px/);
   assert.match(shellCss, /clamp\(20px,3vw,40px\)/);
 });
+
+test("Workspace Activity stays in the workspace navigation", () => {
+  const app = read("App.tsx");
+  const rail = read("components", "shell", "ContextRail.tsx");
+  assert.match(app, /<Route path="activity" element=\{<ActivityPage \/>\} \/>/);
+  assert.match(rail, /\["\/workspace", "\/projects", "\/activity"\]\.includes\(pathname\)/);
+  assert.match(rail, /label: "Activity", path: "\/activity"/);
+  assert.doesNotMatch(rail, /label: "Activity", path: "\/knowledge\/sessions"/);
+});

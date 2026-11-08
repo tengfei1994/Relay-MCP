@@ -19,6 +19,7 @@ import KnowledgeSource from "./pages/KnowledgeSource";
 import KnowledgeIntegrated from "./pages/KnowledgeIntegrated";
 import KnowledgeWiki from "./pages/KnowledgeWiki";
 import KnowledgeMemory from "./pages/KnowledgeMemory";
+import ActivityPage from "./pages/Activity";
 import WorkspaceOverview from "./pages/WorkspaceOverview";
 import AdminOverview from "./pages/AdminOverview";
 
@@ -101,6 +102,7 @@ export default function App() {
           element={user ? <AppShell /> : <Navigate to="/login" replace />}
         >
           <Route path="workspace" element={<WorkspaceOverview />} />
+          <Route path="activity" element={<ActivityPage />} />
           <Route path="admin" element={user?.isAdmin ? <AdminOverview /> : <Navigate to="/workspace" replace />} />
           <Route path="projects" element={<ProjectsPage />} />
           <Route path="account" element={<AccountPage />} />

@@ -77,6 +77,12 @@ export default function TokensPage() {
   };
   useEffect(() => { void reload(); }, []);
 
+  useEffect(() => {
+    const create = new URLSearchParams(location.search).get("create");
+    if (create === "1" && !agentOnly) setShowCreate(true);
+    if (create === "agent" && agentOnly) setShowCreateAgent(true);
+  }, [agentOnly, location.search]);
+
   const toggleProject = (projectId: string) => setForm((current) => {
     const projectIds = current.projectIds.includes(projectId) ? current.projectIds.filter((id) => id !== projectId) : [...current.projectIds, projectId];
     return { ...current, projectIds, defaultProjectId: projectIds.includes(current.defaultProjectId) ? current.defaultProjectId : "", canCreateProjects: projectIds.length > 0 && current.canCreateProjects };

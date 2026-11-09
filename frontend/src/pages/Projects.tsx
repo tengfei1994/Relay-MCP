@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { Archive, ChevronRight, Eye, File, FileImage, FileText, Folder, Plus, Server as ServerIcon, Link2, Unlink, Settings, Pencil, Trash2 } from "lucide-react";
 import { api } from "../api/client";
 import { Button, ConfirmDialog, Dialog, Field, Input, Select } from "../components/ui";
@@ -168,6 +169,7 @@ function filePreviewDetails(size?: number, modifiedAt?: string): string {
 }
 
 export default function ProjectsPage() {
+  const location = useLocation();
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
@@ -214,6 +216,10 @@ export default function ProjectsPage() {
     api.listServers().then((r) => { if (active) setAllServers(serversFrom(r)); }).catch((err: unknown) => { if (active) setWorkspaceError(err instanceof Error ? err.message : "Unable to load servers"); });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (new URLSearchParams(location.search).get("create") === "1") setShowCreate(true);
+  }, [location.search]);
 
   const pathFor = (name: string) => currentPath ? `${currentPath}/${name}` : name;
   const refreshFiles = async (projectId: number, path: string) => {

@@ -41,6 +41,43 @@ esac
 APP_DIR="${APP_DIR:-/opt/remote-ops-platform}"
 WORKSPACE_DIR="/workspace"
 SSH_KEYS_DIR="$WORKSPACE_DIR/.ssh-keys"
+DEPLOY_LOCK_FILE="${DEPLOY_LOCK_FILE:-$APP_DIR/.deploy.lock}"
+
+mkdir -p "$(dirname "$DEPLOY_LOCK_FILE")"
+exec 9>"$DEPLOY_LOCK_FILE"
+if ! flock -n 9; then
+  echo "Another Relay deployment is already running: $DEPLOY_LOCK_FILE" >&2
+  exit 1
+fi
+
+stop_relay_service() {
+  local name="$1"
+  if command -v pm2 >/dev/null && pm2 describe "$name" >/dev/null 2>&1; then
+    pm2 stop "$name" >/dev/null || true
+  fi
+}
+
+wait_for_knowledge_db_idle() {
+  local db="${KNOWLEDGE_DB_PATH:-$WORKSPACE_DIR/.relay-mcp/knowledge.db}"
+  local holders=""
+  for _ in $(seq 1 90); do
+    holders="$(lsof -t "$db" "$db-wal" "$db-shm" 2>/dev/null | sort -u || true)"
+    [ -z "$holders" ] && return 0
+    sleep 1
+  done
+  echo "Knowledge database is still open: $db (PIDs: $holders)" >&2
+  return 1
+}
+
+wait_for_http() {
+  local url="$1"
+  for _ in $(seq 1 60); do
+    curl -fsS "$url" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  echo "Service did not become ready: $url" >&2
+  return 1
+}
 
 echo "=== 1. Installing system dependencies ==="
 apt-get update -q
@@ -108,15 +145,22 @@ else
   fi
 fi
 
-echo "=== 7. Starting with PM2 ==="
+echo "=== 7. Migrating knowledge database offline ==="
 mkdir -p logs
+stop_relay_service remote-ops-web
+stop_relay_service remote-ops-mcp
+wait_for_knowledge_db_idle
+node scripts/migrate-knowledge-db.mjs
+
+echo "=== 8. Starting with PM2 ==="
 if [ "${KNOWLEDGE_ENGINE_ENABLED:-true}" != "false" ]; then
   pm2 startOrRestart ecosystem.config.cjs --only remote-ops-knowledge-engine --update-env
   "${NODE[@]}" scripts/knowledge-engine.mjs wait
 fi
-# startOrReload starts fresh services and refreshes existing ones. Keep Relay
-# serving until the private engine is ready to accept its bootstrap requests.
-pm2 startOrReload ecosystem.config.cjs --only remote-ops-web,remote-ops-mcp --update-env
+pm2 startOrRestart ecosystem.config.cjs --only remote-ops-web --update-env
+wait_for_http "http://127.0.0.1:${PORT:-3000}/api/health"
+pm2 startOrRestart ecosystem.config.cjs --only remote-ops-mcp --update-env
+wait_for_http "http://127.0.0.1:${MCP_PORT:-3001}/mcp/health/ready"
 pm2 save
 pm2 startup | tail -1 | bash || true
 

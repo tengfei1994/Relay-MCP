@@ -223,6 +223,8 @@ export interface KnowledgeStoreOptions {
   casebookRoot?: string;
   evidenceRoot?: string;
   clock?: () => Date;
+  /** Open without running schema migrations; used by the offline migrator. */
+  skipMigrations?: boolean;
 }
 
 export interface KnowledgeOutboxEvent extends RelayDomainEvent { attempts: number; availableAt: string; claimToken: string; }
@@ -256,14 +258,11 @@ export class KnowledgeStore {
       opened = new Database(dbPath, { timeout: KNOWLEDGE_BUSY_TIMEOUT_MS });
       opened.pragma(`busy_timeout = ${KNOWLEDGE_BUSY_TIMEOUT_MS}`);
       this.db = opened;
-      withMigrationRetry(() => {
-        this.db.pragma("journal_mode = WAL");
-        this.db.pragma("foreign_keys = ON");
-      });
+      this.db.pragma("foreign_keys = ON");
       this.casebookRoot = options.casebookRoot;
       this.evidenceRoot = options.evidenceRoot;
       this.now = options.clock ?? (() => new Date());
-      this.migrate();
+      if (!options.skipMigrations) this.migrate();
     } catch (error) {
       // A constructor that throws cannot be closed by its caller. Release the
       // native handle here so migration failures do not leave a Windows file
@@ -312,7 +311,8 @@ export class KnowledgeStore {
   private migrateOnce(): void {
     // Bootstrap before querying it: migration must work on a brand-new database.
     this.db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)");
-    this.repairLegacyDocumentCheckSchema();
+    // Run the legacy table rebuild only when the schema actually needs it.
+    if (this.needsLegacyDocumentCheckRepair()) this.repairLegacyDocumentCheckSchema();
     const applied = this.db.prepare("SELECT version FROM schema_migrations WHERE version = ?");
     const insert = this.db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)");
     const rebuildsReferencedTable = KNOWLEDGE_MIGRATIONS.some((migration) => migration.requiresForeignKeysOff && !applied.get(migration.version));
@@ -992,6 +992,26 @@ export class KnowledgeStore {
 }
 
 export function createKnowledgeStore(options: KnowledgeStoreOptions): KnowledgeStore { return new KnowledgeStore(options); }
+
+/** Run Knowledge migrations in a dedicated, single-connection process. */
+export function migrateKnowledgeDatabase(options: KnowledgeStoreOptions): void {
+  const store = new KnowledgeStore({ ...options, skipMigrations: true });
+  try {
+    withMigrationRetry(() => {
+      store.db.pragma("locking_mode = EXCLUSIVE");
+      store.db.pragma("wal_checkpoint(TRUNCATE)");
+      store.db.pragma("journal_mode = DELETE");
+    });
+    store.migrate();
+    withMigrationRetry(() => {
+      store.db.pragma("journal_mode = WAL");
+      store.db.pragma("locking_mode = NORMAL");
+      store.db.pragma("wal_checkpoint(PASSIVE)");
+    });
+  } finally {
+    if (store.db.open) store.db.close();
+  }
+}
 
 // Stable application/repository exports for API and MCP adapters. The
 // implementation lives in repository.ts to keep persistence concerns separate.

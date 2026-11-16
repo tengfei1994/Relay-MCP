@@ -19,7 +19,7 @@ export function TopBar() {
     <>
       <header className="shell-topbar">
         <Link to={user?.isAdmin ? "/admin" : "/workspace"} className="shell-brand" aria-label="Relay MCP workspace home">
-          <span className="shell-brand-mark" aria-hidden="true" />
+          <img className="shell-brand-mark" src="/relay-mcp-logo.svg" alt="" aria-hidden="true" />
           <span className="shell-brand-name">Relay MCP</span>
         </Link>
         <nav className="shell-primary-nav" aria-label="Primary navigation">
@@ -60,3 +60,4 @@ export function TopBar() {
   );
 }
 export default TopBar;
+

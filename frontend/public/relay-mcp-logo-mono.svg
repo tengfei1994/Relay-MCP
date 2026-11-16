@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Relay MCP monochrome R logo</title>
+  <desc id="desc">A white geometric R with a forwarding arrow.</desc>
+  <path fill="#FFFFFF" fill-rule="evenodd" d="M166 102h425c178 0 291 95 291 250 0 112-66 190-178 226l169 222H651L530 624H392v176H166V102Zm226 180v168h182c72 0 111-30 111-84 0-55-39-84-111-84H392Z"/>
+  <path fill="#FFFFFF" d="M455 510h99l174 174 73-73v166H635l73-73-174-174h-79Z"/>
+</svg>
+

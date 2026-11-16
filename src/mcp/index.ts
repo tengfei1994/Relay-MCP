@@ -140,7 +140,7 @@ const candidateDispatcher = startCandidateInsightDispatcher(() => knowledge, {on
 
 // The capture consumer is part of the production composition root. Events are
 // first persisted to the domain/outbox tables, then periodically claimed and
-// materialized into candidate documents with lease/ownership semantics.
+// recorded as observations and Evidence with lease/ownership semantics.
 const captureTimer = setInterval(() => {
   if (!knowledge || captureRunning) return;
   try { knowledge.heartbeatConsumer("knowledge-capture"); } catch (error) { recordCaptureFailure(error); }
@@ -176,9 +176,14 @@ function verifyToken(req: express.Request): McpUser {
   const token = extractMcpToken(req.headers, req.query as Record<string, unknown>, { allowQueryToken: queryTokenAuthEnabled() });
   if (!token) throw new Error("Missing or invalid authentication");
   const payload = jwt.verify(token, JWT_SECRET) as McpUser;
-  if (!payload.tokenId) return payload;
+  if (payload.tokenKind !== "mcp" || !payload.tokenId) throw new Error("An MCP Access Token is required");
   const db = new Database(DB_PATH, { readonly: false });
   try {
+    const current = db.prepare("SELECT username,is_admin,knowledge_enabled,account_status FROM users WHERE id=?").get(payload.id) as { username?: string; is_admin?: number; knowledge_enabled?: number; account_status?: string } | undefined;
+    if (!current || current.account_status !== "active") throw new Error("MCP user is disabled or not found");
+    payload.username = current.username ?? payload.username;
+    payload.isAdmin = Boolean(current.is_admin);
+    payload.knowledgeEnabled = current.knowledge_enabled === 1;
     const row = db.prepare(`SELECT mt.id, mt.project_id, mt.project_server_id, mt.environment, mt.allow_all_projects, mt.can_create_projects, p.name AS project_name, mt.default_server_id FROM mcp_tokens mt LEFT JOIN projects p ON p.id = mt.project_id WHERE mt.token_id = ? AND mt.user_id = ? AND mt.active = 1`).get(payload.tokenId, payload.id) as Record<string, unknown> | undefined;
     if (!row) throw new Error("MCP token is disabled or not found");
     db.prepare("UPDATE mcp_tokens SET last_used_at = datetime('now') WHERE token_id = ?").run(payload.tokenId);
@@ -309,9 +314,9 @@ app.get("/mcp/diagnostics", (req, res) => {
   let user: McpUser;
   try { user = verifyToken(req); } catch { return res.status(401).json({ error: "Unauthorized" }); }
   if (!user.isAdmin) return res.status(403).json({ error: "Forbidden" });
-  const spool = relayEventSpoolHealth();
+  const {spoolPath:_spoolPath,drainingPath:_drainingPath,lastError:_lastError,lastDeadLetterError:_lastDeadLetterError,...spool} = relayEventSpoolHealth();
   const backlog = knowledge?.consumerBacklog("knowledge-capture");
-  return res.json({ knowledge: { ...knowledgeStatus, spool }, capture: { consecutiveFailures: captureConsecutiveFailures, lastSuccessAt: captureLastSuccessAt, lastError: captureLastError, lastErrorAt: captureLastErrorAt, backlog } });
+  return res.json({ knowledge: { available:knowledgeStatus.available, spool }, capture: { consecutiveFailures: captureConsecutiveFailures, lastSuccessAt: captureLastSuccessAt, lastError: captureLastError ? "Capture processing failed" : undefined, lastErrorAt: captureLastErrorAt, backlog } });
 });
 // express.json() runs before the MCP route, so syntactically invalid JSON
 // reaches this boundary instead of becoming an unhandled async rejection or

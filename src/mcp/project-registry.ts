@@ -1,6 +1,5 @@
 import Database from "better-sqlite3";
-import { mkdirSync } from "fs";
-import { join } from "path";
+import { createProjectWorkspace } from "../shared/workspace-path.js";
 import "dotenv/config";
 
 const DB_PATH = process.env.DB_PATH ?? "./data/app.db";
@@ -81,6 +80,17 @@ export class ProjectRegistry {
       .get(userId) as any;
   }
 
+  /** Authorization is read on every operation, including after asynchronous work. */
+  getMcpPrincipal(userId: number, tokenDbId?: number): { isAdmin: boolean; knowledgeEnabled: boolean; allowAllProjects?: boolean; canCreateProjects?: boolean } | undefined {
+    const user = this.db.prepare("SELECT is_admin,knowledge_enabled,account_status FROM users WHERE id=?").get(userId) as { is_admin?: number; knowledge_enabled?: number; account_status?: string } | undefined;
+    if (!user || user.account_status !== "active") return undefined;
+    if (!tokenDbId) return { isAdmin: Boolean(user.is_admin), knowledgeEnabled: user.knowledge_enabled === 1 };
+    const token = this.db.prepare("SELECT active,allow_all_projects,can_create_projects FROM mcp_tokens WHERE id=? AND user_id=?").get(tokenDbId, userId) as { active?: number; allow_all_projects?: number; can_create_projects?: number } | undefined;
+    if (!token?.active) return undefined;
+    const hasProjectScope = Boolean(token.allow_all_projects) || Boolean(this.db.prepare(`SELECT 1 FROM mcp_token_project_scopes s JOIN projects p ON p.id=s.project_id WHERE s.token_id=? AND p.user_id=? LIMIT 1`).get(tokenDbId, userId));
+    return { isAdmin: Boolean(user.is_admin), knowledgeEnabled: user.knowledge_enabled === 1, allowAllProjects: Boolean(token.allow_all_projects), canCreateProjects: Boolean(token.can_create_projects) && hasProjectScope };
+  }
+
   getProject(userId: number, projectName: string): ProjectInfo | undefined {
     const row = this.db
       .prepare("SELECT * FROM projects WHERE user_id = ? AND name = ?")
@@ -108,12 +118,11 @@ export class ProjectRegistry {
     return rows.map(mapProject);
   }
 
-  createProject(userId: number, username: string, name: string, description = ""): ProjectInfo {
+  createProject(userId: number, _username: string, name: string, description = ""): ProjectInfo {
     const existing = this.getProject(userId, name);
     if (existing) throw new Error(`Project '${name}' already exists`);
 
-    const workspacePath = join(WORKSPACE_ROOT, username, name);
-    mkdirSync(workspacePath, { recursive: true });
+    const workspacePath = createProjectWorkspace(WORKSPACE_ROOT);
     const row = this.db
       .prepare("INSERT INTO projects (user_id, name, description, workspace_path) VALUES (?, ?, ?, ?) RETURNING *")
       .get(userId, name, description, workspacePath) as any;

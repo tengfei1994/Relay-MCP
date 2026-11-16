@@ -17,6 +17,10 @@ const SCOPE_FIELDS = [
 
 /** A retrieval tool's audit copy is metadata; execution still receives the input. */
 export function sanitizeToolAuditArguments(toolName: string, input: unknown): unknown {
+  if (toolName === "memory_capture") {
+    const args = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+    return { schemaVersion: 1, ...(typeof args.action === "string" ? { action: args.action } : {}), ...(typeof args.requestedScope === "string" ? { requestedScope: args.requestedScope } : {}), ...(typeof args.projectId === "string" ? { projectId: args.projectId } : {}) };
+  }
   const operation = knowledgeOperationAuditArguments(toolName, input);
   if (operation) return operation;
   const candidate = candidateCompileAuditArguments(toolName, input);

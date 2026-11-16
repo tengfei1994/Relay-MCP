@@ -7,6 +7,7 @@
     "dev:server": "tsx watch src/server/index.ts",
     "dev:mcp": "tsx watch src/mcp/index.ts",
     "check:mcp-boundary": "node scripts/check-mcp-boundary.mjs",
+    "test:k10": "node scripts/k10-acceptance.mjs",
     "generate:mcp-baseline": "node --import tsx/esm scripts/generate-mcp-tools-baseline.mjs",
     "benchmark:knowledge-fts": "tsx scripts/knowledge-fts-benchmark.ts",
     "test": "npm run check:mcp-boundary && tsx --test --test-concurrency=4 tests/*.test.ts",

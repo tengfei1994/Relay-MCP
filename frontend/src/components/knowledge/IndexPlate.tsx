@@ -7,6 +7,7 @@ const stateLabel: Record<WellState, string> = {
   stale: "stale",
   fail: "failed",
   wait: "waiting to index",
+  empty: "unused",
 };
 type PlateCounts = Record<WellState, number>;
 
@@ -24,10 +25,11 @@ function brightness(index: number): number {
 }
 
 export default function IndexPlate({ wells, batchSize, loading = false, animationKey = 0 }: IndexPlateProps) {
-  const safeWells = wells.length === 96 ? wells : Array.from({ length: 96 }, () => "wait" as WellState);
-  const counts: PlateCounts = { ok: 0, stale: 0, fail: 0, wait: 0 };
+  const safeWells = wells.length === 96 ? wells : Array.from({ length: 96 }, () => "empty" as WellState);
+  const counts: PlateCounts = { ok: 0, stale: 0, fail: 0, wait: 0, empty:0 };
   for (const state of safeWells) counts[state] += 1;
-  const ariaLabel = `Index coverage: ${counts.ok} of 96 batches current, ${counts.stale} stale, ${counts.fail} failed, ${counts.wait} waiting`;
+  const total=96-counts.empty;
+  const ariaLabel = loading ? "Loading index coverage" : `Index coverage: ${counts.ok} of ${total} batches current, ${counts.stale} stale, ${counts.fail} failed, ${counts.wait} waiting`;
 
   return (
     <div className="plate-shell">

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { assertReviewer } from "./domain.js";
 import type { KnowledgeStore } from "./store.js";
 import { ConfirmedMemoryService, type ConfirmedMemoryType } from "./confirmed-memory.js";
-import { WorkSessionService } from "./work-session.js";
+import { sessionFromRow, WorkSessionService } from "./work-session.js";
 import { candidateScopeSnapshot } from "./candidate-scope.js";
 import {
   CANDIDATE_INSIGHT_KINDS,
@@ -66,7 +66,7 @@ function requireReason(reason: string): string {
  * Every mutation is ACL-checked, transactional and audited.
  */
 export class CandidateInsightReviewService {
-  constructor(private readonly store: KnowledgeStore, private readonly clock: () => Date = () => new Date()) {}
+  constructor(private readonly store: KnowledgeStore, private readonly clock: () => Date = () => new Date(), private readonly administratorReview = false) {}
 
   private load(id: string): CandidateInsight {
     const row = this.store.db.prepare("SELECT * FROM knowledge_candidate_insights WHERE id = ?").get(id) as Record<string, unknown> | undefined;
@@ -75,11 +75,12 @@ export class CandidateInsightReviewService {
   }
 
   private assertReader(actorId: number, projectId: string): void {
-    if (!this.store.canRead(actorId, projectId)) throw new Error("Knowledge access denied");
+    if (!this.administratorReview && !this.store.canRead(actorId, projectId)) throw new Error("Knowledge access denied");
   }
 
   private assertProjectReviewer(actorId: number, projectId: string): void {
     this.assertReader(actorId, projectId);
+    if (this.administratorReview) return;
     const acl = this.store.db.prepare("SELECT can_review FROM knowledge_acl WHERE project_id = ? AND user_id = ?").get(projectId, actorId) as { can_review?: number } | undefined;
     assertReviewer(acl?.can_review === 1);
   }
@@ -96,11 +97,13 @@ export class CandidateInsightReviewService {
     }
   }
 
-  list(input: { actorId: number; projectId?: string; status?: CandidateInsightStatus; limit?: number; offset?: number }): CandidateInsight[] {
+  list(input: { actorId: number; projectId?: string; allowedProjectIds?: string[]; status?: CandidateInsightStatus; limit?: number; offset?: number }): CandidateInsight[] {
     if (input.projectId) this.assertReader(input.actorId, input.projectId);
     const limit = Math.max(1, Math.min(200, Math.trunc(input.limit ?? 50)));
     const offset = Math.max(0, Math.trunc(input.offset ?? 0));
     const conditions = input.projectId ? ["project_id = ?"] : [], params: unknown[] = input.projectId ? [input.projectId] : [];
+    if (input.allowedProjectIds) { conditions.push("project_id IN (SELECT value FROM json_each(?))"); params.push(JSON.stringify(input.allowedProjectIds)); }
+    else if (!input.projectId && !this.administratorReview) { conditions.push("project_id IN (SELECT project_id FROM knowledge_acl WHERE user_id=? AND can_read=1)"); params.push(input.actorId); }
     if (input.status) { conditions.push("status = ?"); params.push(input.status); }
     const where = conditions.length ? ` WHERE ${conditions.join(" AND ")}` : "";
     const rows = this.store.db.prepare(`SELECT * FROM knowledge_candidate_insights${where} ORDER BY updated_at DESC, id LIMIT ? OFFSET ?`).all(...params, limit, offset);
@@ -240,7 +243,7 @@ export class CandidateInsightReviewService {
           : { statement: insight.reusableStatement?.statement || insight.statement, applicability: String(insight.reuseBoundary.applicability ?? insight.reuseBoundary.scope ?? "project"), signals: insight.confirmedFacts, exceptions: insight.unknowns };
     const memoryId = `memory-${input.target}-${insight.id}`;
     const promotion: CandidateInsightPromotion = { target: input.target, mode: "persisted", targetId: memoryId, reason, promotedBy: input.actorId, promotedAt: now };
-    new ConfirmedMemoryService(this.store, this.clock).save({
+    new ConfirmedMemoryService(this.store, this.clock, this.administratorReview).save({
       id: memoryId,
       type: targetType,
       title: input.title?.trim().slice(0, 300) || `${targetType}: ${insight.statement.slice(0, 180)}`,
@@ -272,7 +275,8 @@ export class CandidateInsightReviewService {
       const insight = this.load(input.id);
       this.assertProjectReviewer(input.actorId, insight.projectId);
       if (insight.status === "rejected") throw new Error("A rejected Candidate cannot be restored by scope review; create and review a new Candidate");
-      const session = new WorkSessionService(this.store).get({ actorId: input.actorId, sessionId: insight.workSessionId });
+      const sourceSession = this.administratorReview ? this.store.db.prepare("SELECT * FROM knowledge_work_sessions WHERE id=? AND project_id=?").get(insight.workSessionId,insight.projectId) as Record<string,unknown> | undefined : undefined;
+      const session = this.administratorReview ? (sourceSession ? sessionFromRow(sourceSession) : undefined) : new WorkSessionService(this.store).get({ actorId: input.actorId, sessionId: insight.workSessionId });
       if (!session || session.projectId !== insight.projectId) throw new Error("Candidate source Session is unavailable");
       if (input.expectedSessionUpdatedAt !== undefined && session.updatedAt !== input.expectedSessionUpdatedAt) throw new Error("Session scope changed; refresh and review the displayed scope again");
       if (!insight.scopeReviewRequired) return insight;

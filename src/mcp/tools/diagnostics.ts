@@ -1,10 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { McpUser } from "../register-tools.js";
 import { z } from "zod";
 import type { KnowledgeStore } from "../../knowledge/store.js";
 import { WorkSessionService, INTENT_ACTIONS, INTENT_PHASES } from "../../knowledge/work-session.js";
-import { searchKnowledge } from "../../knowledge/retriever.js";
+import { searchConfirmedMemories } from "../../knowledge/memory-v2.js";
+import { searchPublicProductChunks } from "../../knowledge/product-search-v2.js";
 import { analyzeRelationImpact } from "../../knowledge/relations.js";
 import { recentErrors, sampleManagerTableSchema } from "../../shared/samplemanager-tools.js";
 import { createSampleManagerInspectionEnvelope } from "../../shared/samplemanager-capabilities.js";
@@ -14,7 +15,7 @@ import type { ProjectRegistry } from "../project-registry.js";
 import { summarizeJson } from "../../shared/output.js";
 
 /** Reserved P00 boundary for future read-only diagnostic compositions. */
-export interface DiagnosticToolsContext { server: McpServer; user: McpUser; knowledge?: KnowledgeStore; resolveProjectName: ResolveProjectName; getRunner: GetRunner; registry: ProjectRegistry; }
+export interface DiagnosticToolsContext { server: McpServer; user: McpUser; knowledge?: KnowledgeStore; resolveProjectName: ResolveProjectName; getRunner: GetRunner; registry: ProjectRegistry; knowledgeAvailable?: () => boolean; currentIsAdmin?: () => boolean; }
 export function registerDiagnosticTools(context: McpServer | DiagnosticToolsContext): void {
   const ctx: DiagnosticToolsContext = ('user' in context && 'server' in context)
     ? context
@@ -34,8 +35,19 @@ export function registerDiagnosticTools(context: McpServer | DiagnosticToolsCont
     const name = resolveProjectName(project); const store = requireKnowledge(); const connection = getRunner(name, environment); const projectId = connection.project.id.toString();
     if (!workSessionId || !store.db.prepare("SELECT 1 FROM knowledge_acl WHERE project_id=? AND user_id=?").get(projectId,user.id)) store.grantAcl(projectId, user.id, false);
     const sessionRef = assertSession(store, workSessionId, projectId, connection.ps.environment);
-    const knowledgeResult = await searchKnowledge(store, { userId: user.id, projectId, query, workSessionId: sessionRef, sampleManagerVersion: connection.ps.limsInstance?.version, environment: connection.ps.environment, limit: 10 });
     const unknowns: string[] = []; const evidence: unknown[] = []; const facts: unknown[] = []; const inferences: unknown[] = [];
+    const access = { actorId: user.id, isAdmin: ctx.currentIsAdmin?.() ?? Boolean(user.isAdmin), canReadGeneral: () => ctx.knowledgeAvailable?.() ?? user.knowledgeEnabled === true,
+      assertProject: (id: string) => { const current = resolveProjectName(name); const row = ctx.registry.getProject(user.id, current); if (!row || String(row.id) !== id) throw new Error("Project access denied"); } };
+    const memories = searchConfirmedMemories(store, access, { projectId, scope: "both", query, environment: connection.ps.environment, limit: 10 });
+    inferences.push(...memories.results.map((memory) => ({ from: memory.id, statement: memory.title, reasons: ["confirmed Memory"] })));
+    if (memories.generalAccess === "denied") unknowns.push("General Memory is unavailable for this user.");
+    if (access.canReadGeneral()) {
+      try {
+        const products = await searchPublicProductChunks(store, { query, productVersion: connection.ps.limsInstance?.version, limit: 10 });
+        if (!access.canReadGeneral()) throw new Error("Product Knowledge access was revoked");
+        inferences.push(...products.references.map((item) => ({ from: item.documentId, statement: item.snippet, reasons: ["published product source"], chunkId: item.chunkId })));
+      } catch (error) { unknowns.push(`Product Knowledge unavailable: ${error instanceof Error ? error.message : String(error)}`); }
+    } else unknowns.push("Product Knowledge is unavailable for this user.");
     if (formName && taskName && connection.ps.limsInstance?.databaseName) {
       try {
         const raw = await validateSampleManagerFormTaskContract(connection.runner, { instance: connection.ps.limsInstance, databaseHost: connection.ps.limsInstance.databaseHost || "localhost", databaseName: connection.ps.limsInstance.databaseName, formName, taskName, controlNames });
@@ -61,8 +73,9 @@ export function registerDiagnosticTools(context: McpServer | DiagnosticToolsCont
       }
     }
     facts.push({ target: { project: name, environment: connection.ps.environment, server: connection.ps.server.name, instance: connection.ps.limsInstance?.name, version: connection.ps.limsInstance?.version } });
-    inferences.push(...knowledgeResult.results.map((result) => ({ from: result.id, statement: result.title, reasons: result.matchReasons })));
-    return { content: [{ type: "text", text: summarizeJson(createSampleManagerInspectionEnvelope({ capability: "samplemanager_diagnose", provenance: { retrievalRunId: knowledgeResult.retrievalRunId, projectId, traceId: `trace-${Date.now()}`, ...(sessionRef ? { workSessionId: sessionRef, intentStep, objectiveRef, acceptanceCriterionRef } : {}) }, facts, inferences, unknowns, evidence })) }] };
+    access.assertProject(projectId);
+    if (!access.canReadGeneral() && memories.generalAccess === "available") throw new Error("General Memory access was revoked");
+    return { content: [{ type: "text", text: summarizeJson(createSampleManagerInspectionEnvelope({ capability: "samplemanager_diagnose", provenance: { retrievalRunId: `diagnosis-${randomUUID()}`, projectId, traceId: `trace-${Date.now()}`, ...(sessionRef ? { workSessionId: sessionRef, intentStep, objectiveRef, acceptanceCriterionRef } : {}) }, facts, inferences, unknowns, evidence })) }] };
   });
   server.tool("samplemanager_impact_analysis", "Compute a read-only, source-backed impact graph for a SampleManager Form/Task/Assembly/Menu object.", { project: z.string().optional(), environment: z.string().optional(), objectId: z.string(), relationType: z.string().optional(), verifiedOnly: z.boolean().optional(), limit: z.number().int().min(1).max(500).optional(), maxDepth: z.number().int().min(0).max(20).optional(), direction: z.enum(["upstream", "downstream", "both"]).optional(), ...sessionCorrelationSchema }, async ({ project, environment, objectId, relationType, verifiedOnly, limit, maxDepth, direction, workSessionId, intentStep, objectiveRef, acceptanceCriterionRef }) => {
     const name = resolveProjectName(project); const store = requireKnowledge(); const connection = getRunner(name, environment); const projectId = connection.project.id.toString();

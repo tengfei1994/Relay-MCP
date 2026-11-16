@@ -4,6 +4,9 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 
+function retiredDriver(): void { throw new Error('Historical Knowledge acceptance driver retired; use the Knowledge v2 validation in docs/knowledge-access.md'); }
+retiredDriver();
+
 type Row = Record<string, unknown>;
 type Check = { name: string; status: 'running' | 'passed' | 'failed' | 'unmet'; startedAt: string; durationMs?: number; evidence?: unknown; code?: string };
 class Failure extends Error { constructor(readonly code: string, readonly unmet = false) { super(code); } }

@@ -74,7 +74,7 @@ export default function CaptureHistory({ kind, refresh }: { kind: HistoryKind; r
             </> : <>
               <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium text-coral">{deadLetter.error ?? "Unknown error"}</span><StatusPill status="failed" /></div>
               <p className="mt-1 text-xs text-muted">{deadLetter.eventId ?? "no event ID"}, attempts {deadLetter.attempts ?? "unknown"}</p>
-              <p className="mt-1 font-mono text-xs text-muted/80">{deadLetter.sourcePath ?? "unknown source"}, line {deadLetter.lineNumber ?? "unknown"}</p>
+              <p className="mt-1 font-mono text-xs text-muted/80">Record line {deadLetter.lineNumber ?? "unknown"}</p>
             </>}
           </div>;
         })}

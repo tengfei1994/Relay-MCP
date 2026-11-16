@@ -16,6 +16,8 @@ export interface UploadSession {
   id: string;
   userId: number;
   projectId: number;
+  mcpTokenDbId?: number;
+  origin?: "web" | "mcp";
   project: string;
   path: string;
   tokenHash: string;
@@ -50,6 +52,8 @@ function hashToken(token: string): string {
 export function createUploadSession(input: {
   userId: number;
   projectId: number;
+  mcpTokenDbId?: number;
+  origin?: "web" | "mcp";
   project: string;
   path: string;
   maxBytes?: number;
@@ -71,6 +75,8 @@ export function createUploadSession(input: {
     id: `upload-${now}-${randomBytes(4).toString("hex")}`,
     userId: input.userId,
     projectId: input.projectId,
+    mcpTokenDbId: input.mcpTokenDbId,
+    origin: input.origin ?? (input.mcpTokenDbId === undefined ? "web" : "mcp"),
     project: input.project,
     path: input.path,
     tokenHash: hashToken(token),
@@ -140,8 +146,8 @@ export function failUploadSession(id: string, error: string): void {
   });
 }
 
-export function publicUploadSession(session: UploadSession): Omit<UploadSession, "tokenHash"> {
-  const { tokenHash: _tokenHash, ...safe } = session;
+export function publicUploadSession(session: UploadSession): Omit<UploadSession, "tokenHash" | "mcpTokenDbId"> {
+  const { tokenHash: _tokenHash, mcpTokenDbId: _mcpTokenDbId, ...safe } = session;
   return safe;
 }
 

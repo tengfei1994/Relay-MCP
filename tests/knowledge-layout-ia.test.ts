@@ -33,14 +33,25 @@ test("Knowledge navigation gives every capability one canonical visible owner", 
 
 test("Knowledge sub-navigation uses exact matching for Overview", () => {
   const subNav = read("components", "shell", "SubNav.tsx");
-  assert.match(subNav, /end=\{item\.path === \"\/knowledge\"\}/);
+  assert.match(subNav, /const active = item\.matches\(location\.pathname\)/);
+  assert.match(subNav, /aria-current=\{active \? \"page\" : undefined\}/);
 });
 
-test("Knowledge footer and frame share the same content rail", () => {
+test("Knowledge frame keeps the shared content rail", () => {
   const frameCss = readFileSync(join(process.cwd(), "frontend", "src", "components", "knowledge", "knowledge-frame.css"), "utf8");
   const shellCss = readFileSync(join(process.cwd(), "frontend", "src", "components", "shell", "shell.css"), "utf8");
   assert.match(frameCss, /max-width:\s*1280px/);
   assert.match(frameCss, /max-width:\s*1600px/);
-  assert.match(shellCss, /max-width:1280px/);
+  assert.match(shellCss, /app-page-frame-standard\{max-width:1600px\}/);
   assert.match(shellCss, /clamp\(20px,3vw,40px\)/);
+  assert.doesNotMatch(shellCss, /shell-footer/);
+});
+
+test("Workspace Activity stays in the workspace navigation", () => {
+  const app = read("App.tsx");
+  const rail = read("components", "shell", "ContextRail.tsx");
+  assert.match(app, /<Route path="activity" element=\{<ActivityPage \/>\} \/>/);
+  assert.match(rail, /\["\/workspace", "\/projects", "\/activity"\]\.includes\(pathname\)/);
+  assert.match(rail, /label: "Activity", path: "\/activity"/);
+  assert.doesNotMatch(rail, /label: "Activity", path: "\/knowledge\/sessions"/);
 });

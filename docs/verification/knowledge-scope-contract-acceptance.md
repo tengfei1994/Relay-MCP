@@ -1,5 +1,7 @@
 # #46/#53 positive scope and reference contract packet — 2026-10-26
 
+> Historical result for the previous Context Pack contract. The current synthetic driver checks the five-tool contract and separate Product and Memory access; see [Knowledge v2 validation](../knowledge-access.md#验证入口). This record is not a release pass for the new contract.
+
 This packet completes the bounded **synthetic Solution/scope/reference contract** checks identified in [the criterion matrix](issue-acceptance-matrix-20261025.md). It does not assert real Product semantic quality or close either issue. The issue bodies were reread through GitHub: [#46](https://github.com/tengfei1994/Relay-MCP/issues/46) requires the internal Product/Relay-memory Context Pack boundary; [#53](https://github.com/tengfei1994/Relay-MCP/issues/53) also requires compatibility, scope validation, deterministic faults and source references.
 
 ## Execution and isolation

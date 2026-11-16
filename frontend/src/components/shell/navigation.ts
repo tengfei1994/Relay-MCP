@@ -30,6 +30,8 @@ export interface PrimaryNavItem {
   label: string;
   path: string;
   icon?: ReactNode;
+  adminOnly?: boolean;
+  userOnly?: boolean;
 }
 
 export const primaryNavigation = [
@@ -38,12 +40,12 @@ export const primaryNavigation = [
   { label: "Instances", path: "/instances" },
   { label: "Tools", path: "/tools" },
   { label: "Knowledge", path: "/knowledge" },
-  { label: "Tokens", path: "/tokens" },
-  { label: "Users", path: "/users", adminOnly: true },
+  { label: "Tokens", path: "/tokens", userOnly: true },
+  { label: "Admin", path: "/admin", adminOnly: true },
 ] as const;
 export const knowledgeNavigation = [
   { label: "Overview", path: "/knowledge", matches: (pathname: string) => matchesPath(pathname, "/knowledge", true) },
-  { label: "Control plane", path: "/knowledge/integrated", matches: (pathname: string) => matchesPath(pathname, "/knowledge/integrated") },
+  { label: "Control plane", path: "/knowledge/integrated/providers", matches: (pathname: string) => matchesPath(pathname, "/knowledge/integrated") },
   { label: "Wiki", path: "/knowledge/wiki", matches: (pathname: string) => matchesPath(pathname, "/knowledge/wiki") },
   { label: "Product docs", path: "/knowledge/product-docs", matches: (pathname: string) => matchesPath(pathname, "/knowledge/product-docs") },
   { label: "Solutions", path: "/knowledge/solution", matches: (pathname: string) => matchesPath(pathname, "/knowledge/solution") },
@@ -60,6 +62,7 @@ export const knowledgeNavigation = [
       "/knowledge/cases",
       "/knowledge/patterns",
       "/knowledge/confirmed-memory",
+      "/knowledge/memory-submissions",
     ].some((path) => matchesPath(pathname, path)),
   },
   { label: "Playbooks", path: "/knowledge/playbooks", matches: (pathname: string) => matchesPath(pathname, "/knowledge/playbooks") },
@@ -81,6 +84,7 @@ export const pageTabNavigation = {
     { label: "Observations", path: "/knowledge/observations", end: true, matches: (pathname: string) => matchesPath(pathname, "/knowledge/observations") },
     { label: "Candidate insights", path: "/knowledge/candidate-insights", end: true, matches: (pathname: string) => matchesPath(pathname, "/knowledge/candidate-insights") },
     { label: "Confirmed memory", path: "/knowledge/confirmed-memory", end: true, matches: (pathname: string) => matchesPath(pathname, "/knowledge/confirmed-memory") },
+    { label: "Submissions", path: "/knowledge/memory-submissions", end: true, matches: (pathname: string) => matchesPath(pathname, "/knowledge/memory-submissions") },
   ],
   operations: [
     { label: "Capture", path: "/knowledge/operations/capture", end: true, matches: (pathname: string) => matchesPath(pathname, "/knowledge/operations/capture") },

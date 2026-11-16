@@ -3,8 +3,8 @@ import { CheckCircle2, FileText, MessageSquareWarning, Pencil, ShieldCheck, Spar
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useProjectScope } from "../context/ProjectScope";
-import { Badge, cardClass, confidenceLabel, formatDate, inputClass, jsonValue, LifecyclePipeline, ScopeBanner, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
-import { PageHeader, Drawer } from "../components/ui";
+import { Badge, cardClass, confidenceLabel, formatDate, inputClass, jsonValue, ScopeBanner, StatePanel, StatusBadge } from "../components/KnowledgePrimitives";
+import { Drawer } from "../components/ui";
 import { CandidateReviewDetail } from "../components/CandidateReviewDetail";
 import { StandardPage } from "../components/knowledge/KnowledgeFrame";
 
@@ -40,13 +40,13 @@ function CardBlock({ title, value }: { title: string; value: unknown }) { return
 function caseBusinessContext(doc: JsonRecord): JsonRecord | undefined {
   if (doc.businessContext && typeof doc.businessContext === "object") return doc.businessContext as JsonRecord;
   const text = [doc.title, doc.body, doc.symptoms, doc.rootCause, doc.fix].filter(Boolean).map((value) => String(value)).join(" ");
-  if (/cache|formsbin|binform/i.test(text)) return { businessPurpose: "支持 SampleManager 表单快速加载，并保持表单定义与运行文件一致。", affectedProcess: "使用相关表单进行数据录入、结果处理或审核的业务流程。", businessImpact: "缓存过期或损坏可能导致表单打不开、显示旧版本或缺少控件，用户无法继续相关流程。", technicalComponentPurpose: "FormsBin / 表单运行缓存保存表单编译后的运行文件。", confidence: "inferred" };
+  if (/cache|formsbin|binform/i.test(text)) return { businessPurpose: "Support fast SampleManager form loading and keep definitions aligned with runtime files.", affectedProcess: "Data entry, result processing or review using the affected forms.", businessImpact: "A stale or damaged cache may prevent forms from opening, display an older version or omit controls.", technicalComponentPurpose: "FormsBin stores compiled form runtime files.", confidence: "inferred" };
   return undefined;
 }
 function BusinessContextBlock({ doc }: { doc: JsonRecord }) {
   const context = caseBusinessContext(doc);
-  if (!context) return <section className="rounded-panel border border-sun/40 bg-sun/10 p-4"><h3 className="font-medium text-sun">业务场景尚未补齐</h3><p className="mt-2 text-sm leading-6 text-sun/80">当前 Case 只有技术描述。请补充它服务的业务流程、技术组件用途和实际影响，再将它推广为可复用 Pattern。</p></section>;
-  return <section className="rounded-panel border border-iris/40 bg-iris/10 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-medium text-iris">这条 Case 对应的业务场景</h3><span className="text-xs text-iris/70">{context.confidence === "provided" ? "来源提供" : "根据技术信号推断，需确认"}</span></div><div className="mt-3 grid gap-3 sm:grid-cols-2"><CardBlock title="业务用途" value={context.businessPurpose} /><CardBlock title="受影响流程" value={context.affectedProcess} /><CardBlock title="业务影响" value={context.businessImpact} /><CardBlock title="技术组件用途" value={context.technicalComponentPurpose} /></div></section>;
+  if (!context) return <section className="rounded-panel border border-sun/40 bg-sun/10 p-4"><h3 className="font-medium text-sun">Business context needed</h3><p className="mt-2 text-sm leading-6 text-sun/80">This Case has only a technical description. Add the business process, component purpose and impact before promoting it to a reusable Pattern.</p></section>;
+  return <section className="rounded-panel border border-iris/40 bg-iris/10 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-medium text-iris">Business context</h3><span className="text-xs text-iris/70">{context.confidence === "provided" ? "Provided by the source" : "Inferred from technical signals; confirmation needed"}</span></div><div className="mt-3 grid gap-3 sm:grid-cols-2"><CardBlock title="Business purpose" value={context.businessPurpose} /><CardBlock title="Affected process" value={context.affectedProcess} /><CardBlock title="Business impact" value={context.businessImpact} /><CardBlock title="Technical component purpose" value={context.technicalComponentPurpose} /></div></section>;
 }
 function ApprovalDecisionPanel({ card, evidenceRefs }: { card: JsonRecord; evidenceRefs: string[] }) {
   const facts = Array.isArray(card.facts) ? card.facts : [];
@@ -208,13 +208,10 @@ export default function KnowledgeProject() {
     const query = next.toString();
     return `/knowledge/${targetSection}${query ? `?${query}` : ""}`;
   };
-  const description = section === "evidence" ? "Immutable source artifacts with ACL-controlled preview and traceability." : section === "observations" ? "Runtime facts and warnings that have not yet become a confirmed problem." : "Project records remain readable here. Use the Memory workspace for durable knowledge.";
   return <StandardPage>
-    <PageHeader title={title} description={description} />
     <EnvironmentPicker environment={environment} setEnvironment={selectEnvironment} />
     {scopeError && <p className="mb-4 rounded-field border border-coral/40 bg-coral/10 p-3 text-sm text-coral">{scopeError}</p>}
     <ScopeBanner project={selectedProject?.name} environment={environment} scope="project runtime" acl="owner / granted reviewers" />
-    <LifecyclePipeline current={section === "evidence" ? "Evidence" : section === "observations" ? "Observations" : undefined} />
     <nav className="mt-5 flex flex-wrap gap-2" aria-label="Memory pages">{["evidence", "observations", "candidates", "cases", "patterns", "playbooks"].map((item) => <Link key={item} to={listPath(item)} className={`rounded-ctl px-3 py-2 text-sm ${section === item ? "bg-mint text-ink" : "border border-white/10 text-muted hover:border-white/20"}`}>{item === "candidates" ? "Candidate insights" : item[0].toUpperCase() + item.slice(1)}</Link>)}</nav>
     {scopeLoading ? <div className="mt-5"><StatePanel state="loading" message="Loading project scope..." /></div> : projectId ? <div className="mt-5"><ProjectList section={section} projectId={projectId} environment={environment} onSelect={(id) => { const next = new URLSearchParams(params); next.set("document", id); navigate(`/knowledge/${section}?${next.toString()}`); }} /></div> : <div className="mt-5"><StatePanel state="empty" message="Select a project to inspect records. Use Memory workspace for candidate insights and confirmed memory." /></div>}
     <Drawer open={Boolean(selected && projectId)} onClose={() => navigate(listPath(section))} title={title}>

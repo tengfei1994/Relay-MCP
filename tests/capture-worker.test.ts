@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createHash } from "crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -12,7 +11,7 @@ function cleanup(root: string): void {
   rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 });
 }
 
-test("capture worker retries unresolved project identity then captures once resolvable", async (t) => {
+test("capture worker retries unresolved project identity then records an observation once resolvable", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "relay-capture-"));
   const previous = process.env.RELAY_STATE_ROOT;
   process.env.RELAY_STATE_ROOT = root;
@@ -35,19 +34,10 @@ test("capture worker retries unresolved project identity then captures once reso
       assert.equal(failures, 1, "project resolution failures are observable through the worker hook");
 
       now = new Date("2026-09-03T00:00:31.000Z");
-      assert.equal(await captureKnowledgeCandidates(store, "capture", 20, (actorId, projectName) => (projectName === "Demo" ? 42 : undefined)), 1, "the event is retried after the lease and becomes a candidate once resolvable");
-
-      store.grantAcl("42", 7);
-      const documents = store.listDocuments(7, "42");
-      assert.equal(documents.length, 1);
-      assert.equal(documents[0].kind, "candidate");
-      assert.match(documents[0].locator, /^relay-event:/);
-      const provenance = JSON.parse(documents[0].body) as Record<string, unknown>;
-      assert.equal(provenance.eventKey, "job:job-1:finished");
-      assert.equal(provenance.occurredAt, "2026-09-03T00:00:00.000Z");
-      assert.equal(provenance.projectNameSnapshot, "Demo");
-      assert.equal(documents[0].sha256, createHash("sha256").update(documents[0].body, "utf8").digest("hex"));
-      assert.notEqual(documents[0].sha256, createHash("sha256").update("event-resolve", "utf8").digest("hex"));
+      assert.equal(await captureKnowledgeCandidates(store, "capture", 20, (actorId, projectName) => (projectName === "Demo" ? 42 : undefined)), 1, "the event is retried after project resolution");
+      const observation=store.db.prepare("SELECT event_id,project_id,source_locator,source_sha256 FROM knowledge_observations WHERE event_id='event-resolve'").get() as Record<string,unknown>;
+      assert.equal(observation.project_id,"42"); assert.match(String(observation.source_locator),/^relay-event:/); assert.match(String(observation.source_sha256),/^[0-9a-f]{64}$/);
+      assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_candidates").get().n,0);
 
       now = new Date("2026-09-03T00:01:02.000Z");
       assert.equal(store.claim("capture").length, 0, "captured events are checkpointed");
@@ -105,7 +95,7 @@ test("a database-level claim failure is surfaced through the capture failure hoo
   assert.equal(failures, 1);
 });
 
-test("capture worker generates candidates for interrupted terminal events", async (t) => {
+test("capture worker processes interrupted terminal events without a project resolver", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "relay-capture-interrupted-"));
   const previous = process.env.RELAY_STATE_ROOT;
   process.env.RELAY_STATE_ROOT = root;
@@ -132,7 +122,7 @@ test("capture worker generates candidates for interrupted terminal events", asyn
   }
 });
 
-test("capture worker generates a candidate for job cancellation events", async (t) => {
+test("capture worker records job cancellation without creating a review candidate", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "relay-capture-cancelled-"));
   const previous = process.env.RELAY_STATE_ROOT;
   process.env.RELAY_STATE_ROOT = root;
@@ -157,21 +147,9 @@ test("capture worker generates a candidate for job cancellation events", async (
         payload: { status: "cancelled", kind: "remote_command", error: "Job cancelled", phase: "cancelled", sampleManagerVersion: "21.1", solution: "PT 3.5", module: "Instrument", candidateType: "case", tags: ["cancelled", "remote"], summary: "Cancellation captured" },
       });
       assert.equal(await captureKnowledgeCandidates(store, "capture"), 1);
-      store.grantAcl("42", 7);
-      const documents = store.listDocuments(7, "42");
-      assert.equal(documents.length, 1);
-      assert.equal(documents[0].kind, "candidate");
-      const projection = store.db.prepare("SELECT event_id, deployment_id, job_id, samplemanager_version, solution, module, candidate_type FROM knowledge_candidates WHERE id = ?").get(documents[0].id) as Record<string, unknown>;
-      assert.equal(projection.event_id, "event-job-cancelled");
-      assert.equal(projection.job_id, "job-cancelled");
-      assert.equal(projection.samplemanager_version, "21.1");
-      assert.equal(projection.solution, "PT 3.5");
-      assert.equal(projection.module, "Instrument");
-      assert.equal(projection.candidate_type, "case");
-      assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_chunks WHERE document_id = ?").get(documents[0].id).count, 1);
-      const provenance = JSON.parse(documents[0].body) as Record<string, unknown>;
-      assert.equal(provenance.eventType, "job.cancelled");
-      assert.equal((provenance.payload as Record<string, unknown>).status, "cancelled");
+      const observation=store.db.prepare("SELECT event_id,project_id,event_class FROM knowledge_observations WHERE event_id=?").get("event-job-cancelled") as Record<string,unknown>;
+      assert.equal(observation.project_id,"42");assert.equal(observation.event_id,"event-job-cancelled");
+      assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_candidates").get().n,0);
     } finally {
       store.close();
     }

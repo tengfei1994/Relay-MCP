@@ -6,9 +6,11 @@ export type ConfirmedMemoryType = typeof CONFIRMED_MEMORY_TYPES[number];
 export type ConfirmedMemoryStatus = "confirmed" | "deprecated";
 
 export interface ConfirmedMemorySource {
-  kind: "candidate_insight" | "manual" | "legacy";
+  kind: "candidate_insight" | "agent_submission" | "manual" | "legacy";
   id?: string;
   locator: string;
+  /** Agent-provided references are provenance, not independent verification. */
+  sourceRefs?:string[];
 }
 
 export interface ConfirmedMemoryScope {
@@ -91,15 +93,15 @@ export function confirmedMemoryFromRow(row: Record<string, unknown>): ConfirmedM
 }
 
 export class ConfirmedMemoryService {
-  constructor(private readonly store: KnowledgeStore, private readonly clock: () => Date = () => new Date()) {}
+  constructor(private readonly store: KnowledgeStore, private readonly clock: () => Date = () => new Date(), private readonly administratorReview = false) {}
 
   save(input: ConfirmedMemoryInput): ConfirmedMemory {
     assertConfirmedMemoryInput(input);
     const existing = this.store.db.prepare("SELECT memory_type FROM knowledge_confirmed_memories WHERE id = ?").get(input.id) as { memory_type?: string } | undefined;
     if (existing && existing.memory_type !== input.type) throw new Error("Confirmed Memory type is immutable");
-    if (!this.store.canRead(input.confirmedBy, input.scope.projectId)) throw new Error("Confirmed Memory access denied for project");
+    if (!this.administratorReview && !this.store.canRead(input.confirmedBy, input.scope.projectId)) throw new Error("Confirmed Memory access denied for project");
     const reviewer = this.store.db.prepare("SELECT can_review FROM knowledge_acl WHERE project_id = ? AND user_id = ?").get(input.scope.projectId, input.confirmedBy) as { can_review?: number } | undefined;
-    if (reviewer?.can_review !== 1) throw new Error("Confirmed Memory requires a reviewer");
+    if (!this.administratorReview && reviewer?.can_review !== 1) throw new Error("Confirmed Memory requires a reviewer");
     const missing = input.evidenceRefs.filter((id) => !this.store.db.prepare("SELECT 1 FROM knowledge_evidence WHERE id = ? AND deleted_at IS NULL").get(id));
     if (missing.length) throw new Error(`Confirmed Memory Evidence not found: ${missing.join(", ")}`);
     const outside = input.evidenceRefs.filter((id) => {

@@ -1,8 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { cancelJob, getJob, listJobs, waitForJobRecord, writeAudit, type JobRecord } from "../../shared/job-store.js";
+import { cancelJob, getJob, listJobs, waitForJobRecord, type JobRecord } from "../../shared/job-store.js";
 import { compactTextWithMetadata, summarizeJson } from "../../shared/output.js";
-import { recordFact, searchFacts } from "../../shared/context-store.js";
 import type { ResolveProjectName } from "../tool-context.js";
 
 export interface JobToolsContext {
@@ -36,7 +35,7 @@ function jobSnapshot(job: JobRecord) {
   };
 }
 
-export function registerJobTools({ server, user, resolveProjectName }: JobToolsContext): void {
+export function registerJobTools({ server, user }: JobToolsContext): void {
   server.tool(
     "job_status",
     "Get status/result for an asynchronous Relay-MCP job",
@@ -88,29 +87,4 @@ export function registerJobTools({ server, user, resolveProjectName }: JobToolsC
     async ({ jobId, reason }) => ({ content: [{ type: "text", text: summarizeJson(cancelJob(jobId, user.id, reason)) }] }),
   );
 
-  server.tool(
-    "context_record_fact",
-    "Record a durable project fact so future LLM calls do not need chat history",
-    {
-      project: z.string().optional(),
-      text: z.string().describe("Short fact, pitfall, path, or project convention"),
-      tags: z.array(z.string()).optional(),
-    },
-    async ({ project, text, tags = [] }) => {
-      const resolvedProjectName = resolveProjectName(project);
-      const fact = recordFact(user, resolvedProjectName, text, tags);
-      writeAudit({ userId: user.id, username: user.username, project: resolvedProjectName, tool: "context_record_fact", tags });
-      return { content: [{ type: "text", text: summarizeJson(fact) }] };
-    },
-  );
-
-  server.tool(
-    "context_search",
-    "Search durable project facts recorded on the MCP server",
-    { project: z.string().optional(), query: z.string().optional(), limit: z.number().optional() },
-    async ({ project, query = "", limit = 10 }) => {
-      const resolvedProjectName = resolveProjectName(project);
-      return { content: [{ type: "text", text: summarizeJson(searchFacts(user.id, resolvedProjectName, query, limit)) }] };
-    },
-  );
 }

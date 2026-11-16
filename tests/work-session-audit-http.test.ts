@@ -35,18 +35,19 @@ async function readRpc(response: Response): Promise<any> {
 
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
-test("real MCP outer audit does not persist rejected Work Session input and the handler still receives originals", async () => {
+test("real MCP capture audit protects accepted and rejected candidate content", async () => {
   const root = mkdtempSync(join(tmpdir(), "work-session-audit-http-"));
   const port = await freePort();
   const stateRoot = join(root, "state");
   const appPath = join(root, "app.db");
   const knowledgePath = join(stateRoot, "knowledge.db");
   const appDb = new Database(appPath);
-  appDb.exec("CREATE TABLE projects(id INTEGER PRIMARY KEY,user_id INTEGER,name TEXT,description TEXT,workspace_path TEXT)");
+  appDb.exec("CREATE TABLE projects(id INTEGER PRIMARY KEY,user_id INTEGER,name TEXT,description TEXT,workspace_path TEXT); CREATE TABLE users(id INTEGER PRIMARY KEY,username TEXT,is_admin INTEGER,knowledge_enabled INTEGER,account_status TEXT DEFAULT 'active'); INSERT INTO users VALUES(7,'audit-test',0,1,'active')");
   appDb.prepare("INSERT INTO projects VALUES(1,7,'audit-project','',?)").run(root);
+  appDb.exec("CREATE TABLE mcp_tokens(id INTEGER PRIMARY KEY,user_id INTEGER,token_id TEXT,project_id INTEGER,project_server_id INTEGER,environment TEXT,allow_all_projects INTEGER,can_create_projects INTEGER,default_server_id INTEGER,active INTEGER,last_used_at TEXT); INSERT INTO mcp_tokens VALUES(1,7,'audit-token',NULL,NULL,'test',0,0,NULL,1,NULL); CREATE TABLE mcp_token_project_scopes(id INTEGER PRIMARY KEY,token_id INTEGER,project_id INTEGER); CREATE TABLE mcp_token_server_scopes(id INTEGER PRIMARY KEY,token_id INTEGER,server_id INTEGER)");
   appDb.close();
   const secret = randomBytes(32).toString("hex");
-  const token = jwt.sign({ id: 7, username: "audit-test" }, secret);
+  const token = jwt.sign({ id: 7, username: "audit-test", tokenKind: "mcp", tokenId: "audit-token" }, secret);
   const child = spawn(process.execPath, ["--import", "tsx", "src/mcp/index.ts"], {
     cwd: fileURLToPath(new URL("..", import.meta.url)),
     env: { ...process.env, NODE_ENV: "test", JWT_SECRET: secret, MCP_PORT: String(port), DB_PATH: appPath, KNOWLEDGE_DB_PATH: knowledgePath, RELAY_STATE_ROOT: stateRoot, WORKSPACE_ROOT: root, KNOWLEDGE_CAPTURE_INTERVAL_MS: "60000", KNOWLEDGE_OUTBOX_PRUNE_INTERVAL_MS: "86400000", RELAY_MCP_SHUTDOWN_GRACE_MS: "250" },
@@ -73,47 +74,31 @@ test("real MCP outer audit does not persist rejected Work Session input and the 
     }
     assert.equal(ready, true, output);
     const objective = "approved-private-objective-marker";
-    const intent = { actions: ["understand"], phase: "explore", objective, constraints: [], acceptanceCriteria: [], projectId: "1", environment: "nonprod", risk: "read_only", knowledgeMode: "capture" };
-    const opened = await call("knowledge_work_session_open", { idempotencyKey: "audit-open", intent });
-    assert.equal(opened.result?.isError, undefined, JSON.stringify(opened));
-    const session = JSON.parse(opened.result.content[0].text).session;
-    assert.equal(session.intent.objective, objective);
     const summary = "approved-private-summary-marker";
-    const updated = await call("knowledge_work_session_update", { sessionId: session.id, idempotencyKey: "audit-accepted", patch: { summary } });
-    assert.equal(updated.result?.isError, undefined, JSON.stringify(updated));
-    assert.equal(JSON.parse(updated.result.content[0].text).session.summary, summary);
-
-    const marker = "rejected-hidden-reasoning-privacy-marker";
-    const patch = { hiddenReasoning: marker };
-    const rejected = await call("knowledge_work_session_update", { sessionId: session.id, idempotencyKey: "audit-rejected", patch });
-    assert.equal(rejected.result?.isError, true, JSON.stringify(rejected));
-    assert.match(rejected.result.content[0].text, /sensitive fields and hidden reasoning are never persisted/);
-    const result = { acceptanceResults: { hiddenReasoning: marker } };
-    const rejectedClose = await call("knowledge_work_session_close", { sessionId: session.id, result });
-    assert.equal(rejectedClose.result?.isError, true, JSON.stringify(rejectedClose));
-    assert.match(rejectedClose.result.content[0].text, /sensitive fields and hidden reasoning are never persisted/);
-
-    const knowledgeDb = new Database(knowledgePath, { readonly: true });
+    const input = { action:"submit", idempotencyKey:"audit-capture", requestedScope:"general", title:"Reviewed experience", memoryType:"Fact", statement:summary, objective };
+    const accepted=await call("memory_capture",input);
+    assert.equal(accepted.result?.isError,undefined,JSON.stringify(accepted));
+    const id=JSON.parse(accepted.result.content[0].text).submission.id;
+    const status=await call("memory_capture",{action:"status",id});
+    assert.equal(JSON.parse(status.result.content[0].text).submission.status,"pending");
+    const marker="rejected-secret-privacy-marker";
+    const rejected=await call("memory_capture",{...input,idempotencyKey:"audit-rejected",statement:"password: "+marker});
+    assert.equal(rejected.result?.isError,true,JSON.stringify(rejected));
+    const removed=await call("knowledge_work_session_open",{intent:{hiddenReasoning:marker}});
+    assert.equal(removed.result?.isError,true);
+    const knowledgeDb=new Database(knowledgePath,{readonly:true});
     try {
-      const row = knowledgeDb.prepare("SELECT intent_json,summary,status FROM knowledge_work_sessions WHERE id=?").get(session.id) as { intent_json: string; summary: string; status: string };
-      assert.equal(JSON.parse(row.intent_json).objective, objective);
-      assert.equal(row.summary, summary);
-      assert.equal(row.status, "active");
-      assert.equal(JSON.stringify(knowledgeDb.prepare("SELECT * FROM knowledge_work_sessions").all()).includes(marker), false);
-      assert.equal(JSON.stringify(knowledgeDb.prepare("SELECT * FROM knowledge_audit").all()).includes(marker), false);
-    } finally { knowledgeDb.close(); }
-    assert.equal(output.includes(marker), false);
-    const auditText = readFileSync(join(stateRoot, "audit.jsonl"), "utf8");
-    assert.equal(auditText.includes(marker), false, "rejected reasoning must not enter the pre-handler outer audit");
-    assert.equal(auditText.includes(objective), false, "accepted objective text is not audit metadata");
-    assert.equal(auditText.includes(summary), false, "accepted summary text is not audit metadata");
-    const audit = auditText.trim().split(/\r?\n/).map(line => JSON.parse(line)).filter(row => row.event === "tool_called");
-    assert.equal(audit.length, 4);
-    assert.equal(audit[0].arguments.intentHash, digest(intent));
-    assert.equal(audit[2].arguments.patchHash, digest(patch));
-    assert.equal(audit[3].arguments.resultHash, digest(result));
-    assert.equal(audit[2].arguments.sessionId, session.id);
-    assert.equal(audit[2].arguments.patch, undefined);
+      const rows=knowledgeDb.prepare("SELECT * FROM knowledge_memory_submissions").all();
+      assert.equal(rows.length,1);assert.equal(JSON.stringify(rows).includes(marker),false);
+      assert.equal(JSON.stringify(knowledgeDb.prepare("SELECT * FROM knowledge_audit").all()).includes(marker),false);
+    } finally {knowledgeDb.close();}
+    assert.equal(output.includes(marker),false);
+    const auditText=readFileSync(join(stateRoot,"audit.jsonl"),"utf8");
+    assert.equal(auditText.includes(marker),false);assert.equal(auditText.includes(objective),false);assert.equal(auditText.includes(summary),false);
+    const audit=auditText.trim().split(/\r?\n/).map(line=>JSON.parse(line)).filter(row=>row.event==="tool_called"&&row.tool==="memory_capture");
+    assert.equal(audit.length,3);
+    assert.ok(audit.every(row=>!JSON.stringify(row.arguments).includes("private-")));
+
   } finally {
     await stop(child);
     const resolvedRoot = join(tmpdir(), root.slice(tmpdir().length));

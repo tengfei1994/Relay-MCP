@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 import { agentTokens, servers } from "../db/schema.js";
 import { db } from "../db/index.js";
+import { writeAudit } from "../../shared/job-store.js";
 
 const CreateAgentTokenSchema = z.object({
   name: z.string().min(1).max(100),
@@ -62,15 +63,18 @@ export async function agentTokenRoutes(app: FastifyInstance) {
       tokenId,
       agentId: server.agentId,
     });
-    return reply.status(201).send({ token, profile: row });
+    writeAudit({ event: "agent_token_created", userId: req.user.id, tokenDbId: row.id, serverId: server.id });
+    const { tokenId: _tokenId, ...profile } = row;
+    return reply.status(201).send({ token, profile });
   });
 
   app.delete("/api/agent-tokens/:id", { onRequest: [app.authenticate] }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    db.update(agentTokens)
-      .set({ active: false })
+    const removed = db.delete(agentTokens)
       .where(and(eq(agentTokens.id, Number(id)), eq(agentTokens.userId, req.user.id)))
       .run();
+    if (!removed.changes) return reply.status(404).send({ error: "Relay Agent Token not found" });
+    writeAudit({ event: "agent_token_deleted", userId: req.user.id, tokenDbId: Number(id) });
     return reply.send({ ok: true });
   });
 }

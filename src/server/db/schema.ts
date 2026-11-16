@@ -6,7 +6,11 @@ export const users = sqliteTable("users", {
   username: text("username").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
   isAdmin: integer("is_admin", { mode: "boolean" }).default(false),
-  knowledgeEnabled: integer("knowledge_enabled", { mode: "boolean" }).default(true),
+  knowledgeEnabled: integer("knowledge_enabled", { mode: "boolean" }).default(false),
+  accountStatus: text("account_status").notNull().default("active"), // active | pending | rejected | disabled
+  reviewedBy: integer("reviewed_by"),
+  reviewedAt: text("reviewed_at"),
+  reviewReason: text("review_reason"),
   createdAt: text("created_at").default(sql`(datetime('now'))`),
 });
 
@@ -17,7 +21,7 @@ export const projects = sqliteTable("projects", {
     .references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   description: text("description").default(""),
-  workspacePath: text("workspace_path").notNull(), // /workspace/{username}/{project}
+  workspacePath: text("workspace_path").notNull(), // Existing paths are retained; new projects use independent directories.
   createdAt: text("created_at").default(sql`(datetime('now'))`),
 });
 

@@ -17,6 +17,8 @@ const SUPPORTED = new Set([".md", ".markdown", ".html", ".htm", ".pdf", ".chm"])
 export interface ProductDocumentImportOptions {
   onProgress?: (progress: { runId: string; processed: number; total: number; imported: number; unchanged: number; currentFile?: string }) => void;
   root: string;
+  classification?: "product" | "project";
+  sourceProjectId?: string;
   product?: string;
   sampleManagerVersion: string;
   solution?: string;
@@ -77,20 +79,25 @@ export const HTML_PARSER_VERSION = "html-3";
 function sha256(content: Buffer | string): string { return createHash("sha256").update(content).digest("hex"); }
 function safeJson(value: unknown, fallback: unknown): unknown { try { return JSON.parse(String(value ?? "")); } catch { return fallback; } }
 function hasColumn(store: KnowledgeStore, table: string, column: string): boolean { return (store.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((item) => item.name === column); }
-/** Advance the current version pointer only along the same source lineage. */
-function advanceCurrentProductBinding(store: KnowledgeStore, documentId: string, familyId: string, version: string, sourcePath: string, now: string): boolean {
+function sameImportScope(store:KnowledgeStore,documentId:string,options:ProductDocumentImportOptions):boolean {
+  const row=store.db.prepare(`SELECT COALESCE(d.project_id,(SELECT s.source_project_id FROM knowledge_scope_bindings s WHERE s.document_id=d.id AND s.source_project_id IS NOT NULL ORDER BY s.updated_at DESC LIMIT 1)) AS project_id,c.classification
+    FROM knowledge_documents d LEFT JOIN knowledge_product_classifications c ON c.document_id=d.id WHERE d.id=?`).get(documentId) as {project_id?:string|null;classification?:string|null}|undefined;
+  if(!row) return false;
+  if(options.classification === "project") return Boolean(options.sourceProjectId && row.project_id === options.sourceProjectId && row.classification !== "product");
+  return row.classification === "product" || (!row.project_id && row.classification !== "project");
+}
+
+/** Advance the current version pointer only along the same source lineage and access scope. */
+function advanceCurrentProductBinding(store: KnowledgeStore, documentId: string, familyId: string, version: string, sourcePath: string, now: string,options:ProductDocumentImportOptions): boolean {
   // Preserve the binding's identity and reviewed matching metadata. The old
   // document and revision remain addressable; only the current pointer moves.
   // A replay of a deprecated source must not roll a later current source back.
-  store.db.prepare(`UPDATE knowledge_product_document_bindings
-    SET document_id=?,updated_at=?
-    WHERE document_id<>? AND product_version=? AND source_path=?
-      AND EXISTS (SELECT 1 FROM knowledge_product_documents previous
-        WHERE previous.id=knowledge_product_document_bindings.document_id
-          AND previous.document_family_id=? AND previous.version=? AND previous.source_path=?)
-      AND EXISTS (SELECT 1 FROM knowledge_documents current WHERE current.id=? AND current.lifecycle<>'deprecated')
-      AND NOT EXISTS (SELECT 1 FROM knowledge_product_document_bindings assigned WHERE assigned.document_id=?)`)
-    .run(documentId, now, documentId, version, sourcePath, familyId, version, sourcePath, documentId, documentId);
+  const candidates=store.db.prepare(`SELECT b.id,b.document_id FROM knowledge_product_document_bindings b JOIN knowledge_product_documents previous ON previous.id=b.document_id
+    WHERE b.document_id<>? AND b.product_version=? AND b.source_path=? AND previous.document_family_id=? AND previous.version=? AND previous.source_path=?`).all(documentId,version,sourcePath,familyId,version,sourcePath) as Array<{id:string;document_id:string}>;
+  const prior=candidates.find(row=>sameImportScope(store,row.document_id,options));
+  if(prior) store.db.prepare(`UPDATE knowledge_product_document_bindings SET document_id=?,updated_at=? WHERE id=?
+    AND EXISTS (SELECT 1 FROM knowledge_documents current WHERE current.id=? AND current.lifecycle<>'deprecated')
+    AND NOT EXISTS (SELECT 1 FROM knowledge_product_document_bindings assigned WHERE assigned.document_id=?)`).run(documentId,now,prior.id,documentId,documentId);
   return Boolean(store.db.prepare("SELECT 1 FROM knowledge_product_document_bindings WHERE document_id=?").get(documentId));
 }
 
@@ -290,7 +297,7 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
   const hasIdempotencyColumn = hasColumn(store, "knowledge_ingest_runs", "operation_idempotency_key");
   const existingRun = options.idempotencyKey && hasIdempotencyColumn ? store.db.prepare("SELECT id,status,imported,skipped,failed,error FROM knowledge_ingest_runs WHERE operation_idempotency_key = ?").get(options.idempotencyKey) as Record<string, unknown> | undefined : undefined;
   if (existingRun) return { ...report, runId: String(existingRun.id), status: String(existingRun.status) as ProductDocumentImportReport["status"], imported: Number(existingRun.imported ?? 0), unchanged: Number(existingRun.skipped ?? 0), failed: Number(existingRun.failed ?? 0), errors: safeJson(existingRun.error, []) as ProductDocumentImportReport["errors"] };
-  const batchMeta = JSON.stringify({ product: base.product, sampleManagerVersion: base.sampleManagerVersion, solution: base.solution, module: base.module, language: base.language, authority: base.authority, documentFamilyId: base.documentFamilyId, manifestPath: options.manifestPath });
+  const batchMeta = JSON.stringify({ product: base.product, sampleManagerVersion: base.sampleManagerVersion, solution: base.solution, module: base.module, language: base.language, authority: base.authority, documentFamilyId: base.documentFamilyId, manifestPath: options.manifestPath, classification:options.classification, sourceProjectId:options.sourceProjectId });
   if (hasIdempotencyColumn && hasColumn(store, "knowledge_ingest_runs", "batch_metadata_json") && hasColumn(store, "knowledge_ingest_runs", "source_root") && hasColumn(store, "knowledge_ingest_runs", "source_commit")) store.db.prepare("INSERT OR IGNORE INTO knowledge_ingest_runs(id,source_locator,status,started_at,operation_idempotency_key,batch_metadata_json,source_root,source_commit) VALUES (?,?,?,?,?,?,?,?)").run(runId, `product-docs:${options.root}`, "queued", now, options.idempotencyKey ?? null, batchMeta, options.root, options.sourceCommit ?? null);
   else store.db.prepare("INSERT OR IGNORE INTO knowledge_ingest_runs(id,source_locator,status,started_at) VALUES (?,?,?,?)").run(runId, `product-docs:${options.root}`, "queued", now);
   store.db.prepare("UPDATE knowledge_ingest_runs SET status=? WHERE id=?").run("running", runId); report.status = "running";
@@ -328,7 +335,9 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
       // entry merely because the old text-only normalizer collapsed them.
       const normalizedContentSha256 = sha256(parsed.body);
       const proposedRevisionId = `product-revision-${sha256(`${HTML_PARSER_VERSION}\0${normalizedContentSha256}`).slice(0, 32)}`;
-      const id = `product-document-${sha256(`${familyId}\0${version}\0${relativePath}\0${sourceHash}${htmlParsed?`\0${HTML_PARSER_VERSION}`:""}`).slice(0, 32)}`;
+      const scopeKey=options.classification === "project" ? `\0project:${options.sourceProjectId ?? ""}` : "";
+      if(options.classification === "project" && !options.sourceProjectId) throw new Error("Project material requires a source project");
+      const id = `product-document-${sha256(`${familyId}\0${version}\0${relativePath}\0${sourceHash}${htmlParsed?`\0${HTML_PARSER_VERSION}`:""}${scopeKey}`).slice(0, 32)}`;
       const graphInput = {
         documentId: id,
         title: parsed.title,
@@ -349,7 +358,8 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
       const revisionId = (store.db.prepare("SELECT id FROM knowledge_product_revisions WHERE normalized_content_sha256=? AND parser_version=?").get(normalizedContentSha256, HTML_PARSER_VERSION) as {id:string}).id;
       const existing = store.db.prepare("SELECT source_sha256 FROM knowledge_product_documents WHERE id = ?").get(id) as { source_sha256?: string } | undefined;
       if (existing) {
-        advanceCurrentProductBinding(store, id, familyId, version, relativePath, now);
+        if (options.classification && !sameImportScope(store,id,options)) throw new Error("Existing document belongs to a different access scope; review it before importing");
+        advanceCurrentProductBinding(store, id, familyId, version, relativePath, now,options);
         // Re-run native extraction for legacy PDF rows without changing their
         // source identity, review state or access scope. Only replace output
         // that is still exactly the old fallback; preserve authored corrections.
@@ -374,12 +384,12 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
         }
         report.unchanged++; report.documents.push(id); report.items.push({ path: relativePath, id, status: "unchanged" }); return;
       }
-      const prior = store.db.prepare("SELECT d.id,d.lifecycle FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE p.document_family_id=? AND p.version=? AND p.source_path=? AND d.id<>?").get(familyId, version, relativePath, id) as { id?: string; lifecycle?: string } | undefined;
+      const prior = (store.db.prepare("SELECT d.id,d.lifecycle FROM knowledge_documents d JOIN knowledge_product_documents p ON p.id=d.id WHERE p.document_family_id=? AND p.version=? AND p.source_path=? AND d.id<>? ORDER BY d.updated_at DESC").all(familyId,version,relativePath,id) as Array<{id:string;lifecycle:string}>).find(row=>sameImportScope(store,row.id,options));
       const createdAt = now;
       store.upsertDocument({ id, kind: "product_document", title: parsed.title, body, lifecycle: "approved", projectNameSnapshot: local.product, sampleManagerVersion: version, solution: local.solution, module: parsed.module, visibility: "global", scopeType: "version", scopeKey: version, locator: `product-doc:${relativePath}`, commit: options.sourceCommit, sha256: sourceHash, createdAt, updatedAt: createdAt });
       const metadata = { confidence: parsed.confidence, reasons: parsed.reasons, module: parsed.module, sourceFormat: htmlParsed?.sourceFormat ?? (tocEntries.length ? "toc" : parsed.sourceFormat), sourcePath: relativePath, sourceHash, normalizedContentSha256, parserVersion: HTML_PARSER_VERSION, ...(ext === ".pdf" && options.pdfText?.[path] !== undefined ? { pdfExtraction: "pdf-parse" } : {}), stableIdentifiers: parsed.stableIdentifiers, links: htmlParsed?.links ?? [], images: htmlParsed?.images ?? [], tocEntries, manifestRule: rule };
       store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,sections_json,metadata_json,revision_id,topic_group_id,normalized_content_sha256,parser_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET normalized_content_sha256=excluded.normalized_content_sha256,parser_version=excluded.parser_version,updated_at=excluded.updated_at`).run(id, familyId, parsed.documentType, local.language ?? "en", local.authority ?? "official", relativePath, sourceHash, version, JSON.stringify(parsed.sections), JSON.stringify(metadata), revisionId, `family:${familyId}`, normalizedContentSha256, HTML_PARSER_VERSION, createdAt, createdAt);
-      if (!advanceCurrentProductBinding(store, id, familyId, version, relativePath, now)) {
+      if (!advanceCurrentProductBinding(store, id, familyId, version, relativePath, now,options)) {
         // A document family is the compatibility identity used by the first
         // generation importer. Keep it as the fallback topic identity while
         // allowing later stable-ID matching to merge families safely.
@@ -422,9 +432,13 @@ export function importKnowledgeProducts(store: KnowledgeStore, options: ProductD
 }
 
 export interface ProductDocumentSearchScope { projectId?: string; environment?: string; }
-export interface ProductDocumentSearchRequest { query?: string; sampleManagerVersion?: string; product?: string; solution?: string; module?: string; documentType?: string; language?: string; authority?: string; limit?: number; includeDeprecated?: boolean; scope?: ProductDocumentSearchScope; }
+export interface ProductDocumentSearchRequest { query?: string; sampleManagerVersion?: string; product?: string; solution?: string; module?: string; documentType?: string; language?: string; authority?: string; limit?: number; includeDeprecated?: boolean; scope?: ProductDocumentSearchScope; allowedDocumentIds?:string[]; }
 export function searchKnowledgeProducts(store: KnowledgeStore, request: ProductDocumentSearchRequest): Array<Record<string, unknown>> {
   const conditions = ["d.kind='product_document'"]; const params: Record<string, unknown> = {};
+  if (request.allowedDocumentIds) {
+    conditions.push("d.id IN (SELECT value FROM json_each(@allowedDocumentIds))");
+    params.allowedDocumentIds=JSON.stringify(request.allowedDocumentIds);
+  }
   if (request.scope) {
     const projectId = request.scope.projectId ?? null, environment = request.scope.environment ?? null;
     if (projectId === null) conditions.push("d.project_id IS NULL", "d.environment IS NULL");

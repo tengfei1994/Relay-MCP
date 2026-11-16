@@ -14,10 +14,12 @@ test("low-confidence topic bindings require an audited administrative review", a
   // Intentional dynamic imports: database paths must be isolated before module initialization.
   const { default: Fastify } = await import("fastify");
   const { db, runMigrations } = await import("../src/server/db/index.js");
+  const { users } = await import("../src/server/db/schema.js");
   const { knowledgeRoutes } = await import("../src/server/routes/knowledge.js");
   const { getKnowledgeStore } = await import("../src/server/knowledge-context.js");
   const { importKnowledgeProducts } = await import("../src/knowledge/knowledge-products.js");
   runMigrations();
+  db.insert(users).values({id:7,username:"reviewer",passwordHash:"unused",knowledgeEnabled:true}).run();
   const store = getKnowledgeStore();
   const source = join(root, "docs"); mkdirSync(source);
   writeFileSync(join(source, "guide.md"), "# Unmapped Guide\n\nConfigure the guide.\n");

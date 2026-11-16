@@ -1,9 +1,21 @@
-import { existsSync, realpathSync } from "fs";
-import { dirname, isAbsolute, relative, resolve } from "path";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync } from "fs";
+import { dirname, isAbsolute, join, relative, resolve } from "path";
 
 export interface WorkspacePathOptions {
   allowRoot?: boolean;
   mustExist?: boolean;
+}
+
+/** New account names use a predictable, portable format. */
+export function isSafeWorkspaceUserName(username: string): boolean {
+  return /^[A-Za-z0-9_-]{2,50}$/.test(username);
+}
+
+/** Allocate a fresh directory, independent of account and project names. */
+export function createProjectWorkspace(workspaceRoot: string): string {
+  const container = resolveWorkspacePath(workspaceRoot, ".relay-projects");
+  mkdirSync(container, { recursive: true });
+  return mkdtempSync(join(container, "project-"));
 }
 
 export function isPathInside(root: string, candidate: string): boolean {

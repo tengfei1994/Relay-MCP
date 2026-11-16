@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "generatedFrom": "McpServer tools/list",
   "sourceVersion": {
-    "gitCommit": "8c363373a922d0c1d92b5a73e503fcaaa5956987",
+    "gitCommit": "abe89874833b6f45d2f9159d3fdbec0d755feae5",
     "mcpSdkVersion": "1.32.2",
     "generationCommand": "npm run generate:mcp-baseline",
-    "generatedAt": "2026-10-29T02:21:02.698Z",
+    "generatedAt": "2026-11-04T10:49:26.577Z",
     "worktreeDirty": true
   },
   "tools": [
@@ -26,61 +26,6 @@
           "dryRun": {
             "type": "boolean",
             "description": "Preview without deleting; default true"
-          }
-        },
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "context_record_fact",
-      "description": "Record a durable project fact so future LLM calls do not need chat history",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "project": {
-            "type": "string"
-          },
-          "text": {
-            "type": "string",
-            "description": "Short fact, pitfall, path, or project convention"
-          },
-          "tags": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        },
-        "required": [
-          "text"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "context_search",
-      "description": "Search durable project facts recorded on the MCP server",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "project": {
-            "type": "string"
-          },
-          "query": {
-            "type": "string"
-          },
-          "limit": {
-            "type": "number"
           }
         },
         "additionalProperties": false,
@@ -628,170 +573,14 @@
       }
     },
     {
-      "name": "knowledge_candidate_insight_compile",
-      "description": "Compile an Evidence-backed Candidate Insight for a Work Session, with deterministic fallback and no auto-approval.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "sessionId": {
-            "type": "string"
-          },
-          "evidenceRefs": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            },
-            "maxItems": 100
-          },
-          "context": {
-            "type": "object",
-            "additionalProperties": {}
-          },
-          "providerId": {
-            "type": "string"
-          },
-          "async": {
-            "type": "boolean"
-          },
-          "retry": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "sessionId",
-          "evidenceRefs"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_candidate_insight_job_get",
-      "description": "Read an asynchronous Candidate compilation job after Session ACL enforcement.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_candidate_insight_list",
-      "description": "List ACL-scoped Candidate Insights pending or completed through human review.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "projectId": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "draft",
-              "accepted",
-              "edited",
-              "rejected"
-            ]
-          },
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 200
-          },
-          "offset": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "required": [
-          "projectId"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_candidate_insight_review",
-      "description": "Explicitly confirm, edit, reject, or promote a Candidate Insight; every action requires a reason.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "insightId": {
-            "type": "string"
-          },
-          "action": {
-            "type": "string",
-            "enum": [
-              "confirm",
-              "edit",
-              "reject",
-              "promote"
-            ]
-          },
-          "reason": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
-          },
-          "patch": {
-            "type": "object",
-            "additionalProperties": {}
-          },
-          "target": {
-            "type": "string",
-            "enum": [
-              "fact",
-              "decision",
-              "case",
-              "pattern"
-            ]
-          },
-          "title": {
-            "type": "string",
-            "maxLength": 300
-          }
-        },
-        "required": [
-          "insightId",
-          "action",
-          "reason"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
       "name": "knowledge_confirmed_memory_get",
-      "description": "Read one Confirmed Memory with Evidence, scope, source, confirmer and audit metadata.",
+      "description": "Read one human-confirmed Memory after checking its Project or general access.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "memoryId": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
         },
         "required": [
@@ -800,115 +589,29 @@
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_confirmed_memory_list",
-      "description": "List ACL-scoped Confirmed Memory records; Candidate Insights and Playbooks are excluded by default.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "projectId": {
-            "type": "string"
-          },
-          "type": {
-            "type": "string",
-            "enum": [
-              "Fact",
-              "Decision",
-              "Case",
-              "Pattern"
-            ]
-          },
-          "environment": {
-            "type": "string"
-          },
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100
-          }
-        },
-        "required": [
-          "projectId"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
       },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_evidence_get",
-      "description": "Return metadata for Evidence; content is available through a bounded, audited read.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "evidenceId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "evidenceId"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_feedback",
-      "description": "Record whether a Knowledge result was useful; this never mutates the source casebook.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "documentId": {
-            "type": "string"
-          },
-          "helpful": {
-            "type": "boolean"
-          },
-          "comment": {
-            "type": "string",
-            "maxLength": 2000
-          }
-        },
-        "required": [
-          "documentId"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
       "execution": {
         "taskSupport": "forbidden"
       }
     },
     {
       "name": "knowledge_get",
-      "description": "Read a complete Knowledge document by id after project/scope ACL enforcement.",
+      "description": "Read an authorized published Product document or one verified source chunk.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "documentId": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
-          "project": {
-            "type": "string"
-          },
-          "workSessionId": {
-            "type": "string"
-          },
-          "environment": {
-            "type": "string"
+          "chunkId": {
+            "type": "string",
+            "minLength": 1
           }
         },
         "required": [
@@ -917,291 +620,26 @@
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_ingest",
-      "description": "Import Git-managed Casebook Markdown/YAML and legacy context JSONL idempotently.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "casebookRoot": {
-            "type": "string"
-          },
-          "contextFiles": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "project": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "casebookRoot"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
       },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_migration_create",
-      "description": "Create an idempotent staged Product Knowledge migration record.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "idempotencyKey": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 300
-          },
-          "sourceManifest": {
-            "type": "object",
-            "additionalProperties": {}
-          },
-          "kind": {
-            "type": "string",
-            "maxLength": 100
-          }
-        },
-        "required": [
-          "idempotencyKey",
-          "sourceManifest"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_migration_from_local",
-      "description": "Stage local Product Knowledge into WeKnora with a metadata-only manifest and per-document report.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "idempotencyKey": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 300
-          },
-          "parserVersion": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "productVersion": {
-            "type": "string"
-          },
-          "solution": {
-            "type": "string"
-          },
-          "module": {
-            "type": "string"
-          },
-          "projectId": {
-            "type": "string"
-          },
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 10000
-          },
-          "retry": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "idempotencyKey",
-          "parserVersion"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_migration_publish",
-      "description": "Validate, publish and switch a staged Product Knowledge migration to WeKnora.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "migrationId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "migrationId"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_migration_rollback",
-      "description": "Rollback a Product Knowledge migration and restore Relay local retrieval with an audit reason.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "migrationId": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
-          }
-        },
-        "required": [
-          "migrationId",
-          "reason"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_playbook_get",
-      "description": "Read a draft, approved, or deprecated Playbook with its steps and proposed Skill diff.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "playbookId": {
-            "type": "string"
-          },
-          "project": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "playbookId"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_provider_config_list",
-      "description": "List safe Relay provider metadata without returning secrets.",
-      "inputSchema": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "type": "object",
-        "properties": {}
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_reindex",
-      "description": "Rebuild project-scoped FTS and invalidate cached embeddings after a controlled model or source change.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "project": {
-            "type": "string"
-          },
-          "invalidateEmbeddings": {
-            "type": "boolean"
-          }
-        },
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_relation_query",
-      "description": "Query deterministic, source-backed SampleManager object relations.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "project": {
-            "type": "string"
-          },
-          "objectId": {
-            "type": "string"
-          },
-          "relationType": {
-            "type": "string"
-          },
-          "verifiedOnly": {
-            "type": "boolean"
-          },
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 500
-          }
-        },
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_release_gates",
-      "description": "Run deterministic security, migration, provider, ACL and visibility release gates.",
-      "inputSchema": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "type": "object",
-        "properties": {}
-      },
-      "annotations": null,
       "execution": {
         "taskSupport": "forbidden"
       }
     },
     {
       "name": "knowledge_search",
-      "description": "Search published global Product Knowledge by default; explicit Project scope is required only for private Product sources.",
+      "description": "Search authorized published Product and Solution source chunks, independent of Project access.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "query": {
             "type": "string",
-            "minLength": 1
-          },
-          "workSessionId": {
-            "type": "string"
-          },
-          "projectId": {
-            "type": "string"
-          },
-          "environment": {
-            "type": "string"
+            "minLength": 1,
+            "maxLength": 4000
           },
           "productVersion": {
             "type": "string"
@@ -1227,548 +665,12 @@
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_solution_upgrade_analysis",
-      "description": "Run a published-baseline three-way upgrade comparison against a project snapshot.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "oldBaselineId": {
-            "type": "string"
-          },
-          "currentProjectSnapshotId": {
-            "type": "string"
-          },
-          "newBaselineId": {
-            "type": "string"
-          },
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1000
-          }
-        },
-        "required": [
-          "oldBaselineId",
-          "currentProjectSnapshotId",
-          "newBaselineId"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
       },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_source_read",
-      "description": "Read one bounded source chunk or file range from a published baseline/project snapshot.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "chunkId": {
-            "type": "string"
-          },
-          "baselineId": {
-            "type": "string"
-          },
-          "projectSnapshotId": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
-          "lineStart": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "lineEnd": {
-            "type": "integer",
-            "minimum": 1
-          }
-        },
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_source_search",
-      "description": "Search published Product/Solution source chunks with path, symbol, line and version provenance.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "query": {
-            "type": "string",
-            "minLength": 1
-          },
-          "baselineId": {
-            "type": "string"
-          },
-          "projectSnapshotId": {
-            "type": "string"
-          },
-          "solution": {
-            "type": "string"
-          },
-          "version": {
-            "type": "string"
-          },
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 50
-          }
-        },
-        "required": [
-          "query"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_topic_diff",
-      "description": "Compare the bound Product Knowledge revisions for two versions of one topic.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "topicId": {
-            "type": "string"
-          },
-          "fromVersion": {
-            "type": "string"
-          },
-          "toVersion": {
-            "type": "string"
-          },
-          "projectId": {
-            "type": "string"
-          },
-          "environment": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "topicId",
-          "fromVersion",
-          "toVersion"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_topic_get",
-      "description": "Read one logical Product Knowledge topic with all version bindings and revision content.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "topicId": {
-            "type": "string"
-          },
-          "projectId": {
-            "type": "string"
-          },
-          "environment": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "topicId"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_wiki_get",
-      "description": "Read a Relay-native Wiki page and optionally its revision history or unified diff.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "pageId": {
-            "type": "string"
-          },
-          "projectId": {
-            "type": "string"
-          },
-          "environment": {
-            "type": "string"
-          },
-          "includeRevisions": {
-            "type": "boolean"
-          },
-          "fromRevision": {
-            "type": "integer",
-            "exclusiveMinimum": 0
-          },
-          "toRevision": {
-            "type": "integer",
-            "exclusiveMinimum": 0
-          }
-        },
-        "required": [
-          "pageId"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_wiki_review",
-      "description": "Publish, deprecate, or roll back a Wiki page with an explicit reason and audit trail.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "pageId": {
-            "type": "string"
-          },
-          "projectId": {
-            "type": "string"
-          },
-          "environment": {
-            "type": "string"
-          },
-          "action": {
-            "type": "string",
-            "enum": [
-              "publish",
-              "deprecate",
-              "rollback"
-            ]
-          },
-          "revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0
-          },
-          "reason": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
-          }
-        },
-        "required": [
-          "pageId",
-          "action",
-          "reason"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_wiki_search",
-      "description": "Search Relay-native Wiki pages with global Product Wiki access by default; explicit project scope remains supported.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "projectId": {
-            "type": "string"
-          },
-          "environment": {
-            "type": "string"
-          },
-          "query": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "draft",
-              "published",
-              "deprecated"
-            ]
-          },
-          "productVersion": {
-            "type": "string"
-          },
-          "topicId": {
-            "type": "string"
-          },
-          "solution": {
-            "type": "string"
-          },
-          "module": {
-            "type": "string"
-          },
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 200
-          },
-          "offset": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_wiki_write",
-      "description": "Create a page idempotently or append a reviewed edit; content is scanned before persistence.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "pageKey": {
-            "type": "string",
-            "maxLength": 300
-          },
-          "pageId": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "body": {
-            "type": "string",
-            "minLength": 1
-          },
-          "projectId": {
-            "type": "string"
-          },
-          "environment": {
-            "type": "string"
-          },
-          "productVersion": {
-            "type": "string"
-          },
-          "topicId": {
-            "type": "string"
-          },
-          "solution": {
-            "type": "string"
-          },
-          "module": {
-            "type": "string"
-          },
-          "sourceRefs": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 100
-          },
-          "reason": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
-          }
-        },
-        "required": [
-          "title",
-          "body",
-          "reason"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_work_session_close",
-      "description": "Close a Work Session with acceptance results and unknowns.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "sessionId": {
-            "type": "string"
-          },
-          "result": {
-            "type": "object",
-            "properties": {
-              "summary": {
-                "type": "string",
-                "maxLength": 8000
-              },
-              "unknowns": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "maxLength": 2000
-                },
-                "maxItems": 100
-              },
-              "acceptanceResults": {
-                "type": "object",
-                "additionalProperties": {
-                  "anyOf": [
-                    {
-                      "type": "boolean"
-                    },
-                    {
-                      "type": "string",
-                      "maxLength": 500
-                    }
-                  ]
-                }
-              }
-            },
-            "additionalProperties": false
-          },
-          "idempotencyKey": {
-            "type": "string",
-            "maxLength": 300
-          }
-        },
-        "required": [
-          "sessionId"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_work_session_get",
-      "description": "Read a Work Session and its correlated event metadata after ACL enforcement.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "sessionId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "sessionId"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_work_session_list",
-      "description": "List the caller's Work Sessions on projects they can still read, with time-ordered event aggregation.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 200
-          },
-          "offset": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 1000000
-          },
-          "sessionId": {
-            "type": "string"
-          }
-        },
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_work_session_open",
-      "description": "Open an ACL-scoped Work Session with an IntentEnvelope for a multi-step task.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "idempotencyKey": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 300
-          },
-          "intent": {
-            "type": "object",
-            "additionalProperties": {}
-          },
-          "summary": {
-            "type": "string",
-            "maxLength": 8000
-          }
-        },
-        "required": [
-          "idempotencyKey",
-          "intent"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
-      "execution": {
-        "taskSupport": "forbidden"
-      }
-    },
-    {
-      "name": "knowledge_work_session_update",
-      "description": "Update a Work Session phase or user-visible IntentEnvelope fields.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "sessionId": {
-            "type": "string"
-          },
-          "patch": {
-            "type": "object",
-            "additionalProperties": {}
-          },
-          "idempotencyKey": {
-            "type": "string",
-            "maxLength": 300
-          }
-        },
-        "required": [
-          "sessionId",
-          "patch"
-        ],
-        "additionalProperties": false,
-        "$schema": "http://json-schema.org/draft-07/schema#"
-      },
-      "annotations": null,
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -1845,79 +747,166 @@
       }
     },
     {
-      "name": "memory_search",
-      "description": "Search ACL- and scope-filtered Relay Memory. Candidate Insights and Playbooks require explicit filters.",
+      "name": "memory_capture",
+      "description": "Submit a carefully selected reusable experience for administrator review, or check your submission status. Submit only after local investigation; do not upload routine calls, hidden reasoning, or credentials.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "submit",
+              "status"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "requestedScope": {
+            "type": "string",
+            "enum": [
+              "project",
+              "general"
+            ]
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "memoryType": {
+            "type": "string",
+            "enum": [
+              "Fact",
+              "Decision",
+              "Case",
+              "Pattern"
+            ]
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "objective": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "outcome": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "applicability": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "unknowns": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 1000
+            },
+            "maxItems": 50
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxItems": 100
+          },
+          "sourceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            "maxItems": 25,
+            "description": "Agent-supplied citations; they are not independently verified."
+          },
           "workSessionId": {
             "type": "string"
-          },
-          "project": {
-            "type": "string"
-          },
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "memory_search",
+      "description": "Search human-confirmed Project or general Memory. General Memory requires Product Knowledge access.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
           "query": {
             "type": "string",
-            "minLength": 1
+            "maxLength": 4000
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "project",
+              "general",
+              "both"
+            ]
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "Fact",
+              "Decision",
+              "Case",
+              "Pattern"
+            ]
+          },
+          "environment": {
+            "type": "string"
           },
           "limit": {
             "type": "integer",
             "minimum": 1,
             "maximum": 100
           },
-          "sampleManagerVersion": {
-            "type": "string"
-          },
-          "solution": {
-            "type": "string"
-          },
-          "module": {
-            "type": "string"
-          },
-          "environment": {
-            "type": "string"
-          },
-          "scopeType": {
-            "type": "string"
-          },
-          "scopeKey": {
-            "type": "string"
-          },
-          "kinds": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "candidate",
-                "case",
-                "pattern",
-                "playbook",
-                "fact",
-                "decision",
-                "confirmed_memory"
-              ]
-            }
-          },
-          "memoryTypes": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "Fact",
-                "Decision",
-                "Case",
-                "Pattern"
-              ]
-            }
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000
           }
         },
-        "required": [
-          "query"
-        ],
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"
       },
-      "annotations": null,
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
       "execution": {
         "taskSupport": "forbidden"
       }
@@ -5943,15 +4932,7 @@
       "category": "jobs"
     },
     {
-      "name": "context_record_fact",
-      "category": "context"
-    },
-    {
-      "name": "context_search",
-      "category": "context"
-    },
-    {
-      "name": "memory_search",
+      "name": "knowledge_search",
       "category": "context"
     },
     {
@@ -5959,91 +4940,7 @@
       "category": "context"
     },
     {
-      "name": "knowledge_playbook_get",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_evidence_get",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_relation_query",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_feedback",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_ingest",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_reindex",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_source_search",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_source_read",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_topic_get",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_topic_diff",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_solution_upgrade_analysis",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_work_session_open",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_work_session_update",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_work_session_close",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_work_session_get",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_work_session_list",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_provider_config_list",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_candidate_insight_compile",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_candidate_insight_job_get",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_candidate_insight_list",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_candidate_insight_review",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_confirmed_memory_list",
+      "name": "memory_search",
       "category": "context"
     },
     {
@@ -6051,43 +4948,7 @@
       "category": "context"
     },
     {
-      "name": "knowledge_wiki_search",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_wiki_get",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_wiki_write",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_wiki_review",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_migration_from_local",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_migration_create",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_migration_publish",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_migration_rollback",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_release_gates",
-      "category": "context"
-    },
-    {
-      "name": "knowledge_search",
+      "name": "memory_capture",
       "category": "context"
     },
     {

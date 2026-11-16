@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Relay MCP — Admin preview</title>
+  <meta name="description" content="Relay administrator interface design preview with sample data." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%233454d1' d='M16 2 30 16 16 30 2 16Z'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="admin-control-plane-concept.css?v=single-surface-2" />
+  <script defer src="admin-control-plane-concept.js?v=single-surface-2"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="app">
+    <aside class="rail">
+      <a class="brand" href="#overview"><span class="brand-mark" aria-hidden="true"></span>Relay <small>MCP</small></a>
+      <nav aria-label="Admin sections" role="tablist" aria-orientation="vertical">
+        <button id="nav-overview" type="button" role="tab" aria-controls="page-overview" aria-selected="true" data-page-target="overview">Overview</button>
+        <button id="nav-users" type="button" role="tab" aria-controls="page-users" aria-selected="false" tabindex="-1" data-page-target="users">Users</button>
+        <button id="nav-projects" type="button" role="tab" aria-controls="page-projects" aria-selected="false" tabindex="-1" data-page-target="projects">Projects</button>
+        <button id="nav-activity" type="button" role="tab" aria-controls="page-activity" aria-selected="false" tabindex="-1" data-page-target="activity">Activity</button>
+        <button id="nav-resources" type="button" role="tab" aria-controls="page-resources" aria-selected="false" tabindex="-1" data-page-target="resources">Resources</button>
+        <button id="nav-system" type="button" role="tab" aria-controls="page-system" aria-selected="false" tabindex="-1" data-page-target="system">System</button>
+      </nav>
+      <div class="rail-footer"><span>Design preview · sample data</span></div>
+    </aside>
+    <main id="main" tabindex="-1">
+      <header class="topbar"><div class="page-location"><span>Admin /</span><h1 id="context-label">Overview</h1></div><div class="global-actions"><button type="button" class="button" data-create="project">New project</button><button type="button" class="button" data-create="token">Create token</button><a class="button" href="http://localhost:5175/workspace">Workspace <span aria-hidden="true">↗</span></a><span class="account">review-admin</span></div></header>
+      <div class="content">
+        <section class="admin-page" id="page-overview" data-page="overview" role="tabpanel" aria-labelledby="nav-overview"></section>
+        <section class="admin-page" id="page-users" data-page="users" role="tabpanel" aria-labelledby="nav-users" hidden></section>
+        <section class="admin-page" id="page-projects" data-page="projects" role="tabpanel" aria-labelledby="nav-projects" hidden></section>
+        <section class="admin-page" id="page-activity" data-page="activity" role="tabpanel" aria-labelledby="nav-activity" hidden></section>
+        <section class="admin-page" id="page-resources" data-page="resources" role="tabpanel" aria-labelledby="nav-resources" hidden></section>
+        <section class="admin-page" id="page-system" data-page="system" role="tabpanel" aria-labelledby="nav-system" hidden></section>
+      </div>
+      <noscript>This interactive preview requires JavaScript.</noscript>
+    </main>
+  </div>
+  <dialog id="detail-dialog" aria-labelledby="detail-title"><header class="dialog-head"><div><h2 id="detail-title"></h2><p id="detail-meta"></p></div><button class="icon-button" type="button" data-close aria-label="Close details" autofocus>×</button></header><div class="detail-tabs" role="tablist" aria-label="Detail sections" id="detail-tabs"></div><div id="detail-body"></div></dialog>
+  <dialog id="form-dialog" class="form-dialog" aria-labelledby="form-title"><header class="dialog-head"><h2 id="form-title"></h2><button class="icon-button" type="button" data-close aria-label="Close form">×</button></header><form id="edit-form"></form></dialog>
+  <div class="notice" id="notice" role="status" hidden></div>
+</body>
+</html>

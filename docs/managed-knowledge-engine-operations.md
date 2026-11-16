@@ -77,14 +77,14 @@ A newly promoted Case is a draft. Open its Case link, review the Evidence, then 
 
 ## MCP compatibility and fault behavior
 
-The public catalog contains121 tools, including `knowledge_candidate_insight_job_get`. Existing Knowledge tool names and legacy Product document IDs remain available. Knowledge read/search responses retain complete structured JSON/citations with a16MiB bound; oversized payloads fail explicitly instead of becoming a non-JSON preview.
+The public Knowledge MCP surface consists of `knowledge_search`, `knowledge_get`, `memory_search`, `knowledge_confirmed_memory_get`, and `memory_capture`. Older Knowledge tools and Resources are removed. Product document IDs remain subject to publication, classification, and user authorization. Knowledge responses retain structured JSON/citations with a 16 MiB bound; oversized payloads fail explicitly.
 
 `knowledge_search` and the corresponding HTTP search combine Product citations with Relay confirmed memory. On Product availability/timeout/rate-limit/upstream-authentication failure, `references` and authoritativeDocs are empty and `contextPack.degraded.productKnowledge` identifies the category; authorized Relay Memory remains available. A Relay ACL violation or malformed/unverified source reference still fails closed. Product-only reads fail explicitly during an outage and never silently use stale local content.
 
 
 ## Durable Candidate jobs
 
-Both Web and MCP start the Candidate dispatcher against the existing Knowledge store. Enqueue with the managed Candidate providerId, then inspect the returned job through the HTTP status route or `knowledge_candidate_insight_job_get`. A successful model result remains a draft and requires the existing Evidence/review/promotion flow. Repeating the same enqueue operation returns the existing job rather than compiling again.
+The legacy Candidate dispatcher remains available only for explicitly requested backend jobs and historical data. Normal tool events do not enqueue candidates or invoke a model. Local agents submit curated experiences with `memory_capture`; administrators review them in the Memory page. See [Knowledge access and migration](knowledge-access.md).
 
 A worker claims a bounded lease and heartbeats it; model calls run outside SQLite write transactions. A persisted result can recover without another model call. If a process disappears after a remote call but before persistence, an expired uncertain job is failed for explicit reviewer retry. It cannot guarantee exactly-once model billing. Capture/outbox/dead-letter paths remain independent and must be covered by their own deployment acceptance.
 

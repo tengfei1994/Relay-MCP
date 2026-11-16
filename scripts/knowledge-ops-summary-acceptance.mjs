@@ -2,6 +2,8 @@ import {readFile,writeFile,chmod,stat} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {resolve} from 'node:path';
+// This historical driver invokes removed Work Session MCP tools.
+throw Error('Historical Work Session acceptance driver retired; use the Knowledge v2 validation in docs/knowledge-access.md');
 const ROOT='/home/ftd/relay-knowledge-engine-nonprod',F=ROOT+'/opsfixture';
 if(process.env.RELAY_E2E_ISOLATED!=='1'||process.platform!=='linux'||resolve(process.cwd())!==ROOT+'/relay')throw Error('isolated_root_required');
 const require=createRequire(ROOT+'/relay/package.json');

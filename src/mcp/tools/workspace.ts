@@ -49,12 +49,12 @@ export function registerWorkspaceTools(context: WorkspaceToolsContext, legacy?: 
     if (existsSync(destination) && !overwrite) throw new Error(`Relay workspace destination already exists: ${relPath}`); mkdirSync(dirname(destination), { recursive: true }); let bytes: number;
     if (ps.connectionMode === "agent") {
       if (!ps.server.agentId) throw new Error(`Agent server '${ps.server.name}' has no Agent ID`);
-      const upload = createUploadSession({ userId: user.id, projectId: project.id, project: project.name, path: relPath, maxBytes: Number(process.env.RELAY_ARTIFACT_MAX_BYTES ?? 4 * 1024 * 1024 * 1024), ttlMs: timeoutMs + 60_000 }); const agentStore = getAgentStore(); agentStore.assertOnline(user.id, ps.server.agentId);
+      const upload = createUploadSession({ userId: user.id, projectId: project.id, origin: "mcp", mcpTokenDbId: user.tokenDbId, project: project.name, path: relPath, maxBytes: Number(process.env.RELAY_ARTIFACT_MAX_BYTES ?? 4 * 1024 * 1024 * 1024), ttlMs: timeoutMs + 60_000 }); const agentStore = getAgentStore(); agentStore.assertOnline(user.id, ps.server.agentId);
       const agentJob = agentStore.enqueueJob(user.id, ps.server.agentId, "artifact-upload", { remotePath, uploadPath: `/api/uploads/${upload.session.id}`, uploadToken: upload.token }, timeoutMs); const completed = await agentStore.waitForJob(agentJob.id, timeoutMs); const finalUpload = getUploadSession(upload.session.id);
       if (completed.status !== "completed" || finalUpload?.status !== "completed") throw new Error(`Agent artifact transfer failed; jobId=${agentJob.id}; jobStatus=${completed.status}; uploadStatus=${finalUpload?.status ?? "missing"}`); bytes = finalUpload.bytesWritten ?? 0;
     } else { const tempPath = `${destination}.relay-download-${Date.now()}.tmp`; try { ({ bytes } = await runner.downloadFile(remotePath, tempPath)); if (existsSync(destination)) rmSync(destination, { force: true }); renameSync(tempPath, destination); } catch (error) { if (existsSync(tempPath)) rmSync(tempPath, { force: true }); throw error; } }
     const staged = statSync(destination); if (!staged.isFile() || staged.size !== bytes) throw new Error(`Staged artifact size mismatch: reported=${bytes}, actual=${staged.size}`); const digest = createHash("sha256"); for await (const chunk of createReadStream(destination)) digest.update(chunk); const sha256 = digest.digest("hex");
-    const { session, token } = createDownloadSession({ userId: user.id, projectId: project.id, project: project.name, path: relPath, bytes, sha256, fileName: basename(destination), mtimeMs: staged.mtimeMs, ttlMs: ttlSeconds ? ttlSeconds * 1000 : undefined });
+    const { session, token } = createDownloadSession({ userId: user.id, projectId: project.id, origin: "mcp", mcpTokenDbId: user.tokenDbId, project: project.name, path: relPath, bytes, sha256, fileName: basename(destination), mtimeMs: staged.mtimeMs, ttlMs: ttlSeconds ? ttlSeconds * 1000 : undefined });
     return { content: [{ type: "text", text: summarizeJson({ remote: { serverId: ps.server.id, serverName: ps.server.name, connectionMode: ps.connectionMode, path: remotePath.replace(/\\/g, "/") }, relayWorkspacePath: relPath, bytes, sha256, contentType: session.contentType, sessionId: session.id, downloadUrl: `${process.env.RELAY_PUBLIC_URL ?? "http://localhost:3000"}/api/downloads/${session.id}`, token, expiresAt: session.expiresAt }) }] };
   });
   server.tool("write_remote_file", "Write content to a file on the remote server", { project: z.string().optional(), remotePath: z.string(), content: z.string(), environment: z.string().optional() }, async ({ project: projectName, remotePath, content, environment }) => {
@@ -448,6 +448,8 @@ export function registerWorkspaceTools(context: WorkspaceToolsContext, legacy?: 
       const { session, token } = createUploadSession({
         userId: user.id,
         projectId: project.id,
+        origin: "mcp",
+        mcpTokenDbId: user.tokenDbId,
         project: project.name,
         path: relPath,
         maxBytes,

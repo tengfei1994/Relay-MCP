@@ -25,6 +25,7 @@ test("Wiki generation groups versions, validates citations and persists one page
       store.upsertDocument({ id, kind: "product_document", title: "Localization Deployment Kit", body, lifecycle: "approved", sampleManagerVersion: version, solution: "Localization", module: "Deployment", locator: `fixture://${id}`, sha256: `${id}-sha`, createdAt: now, updatedAt: now });
       store.db.prepare(`INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,authority,source_path,source_sha256,version,topic_group_id,normalized_content_sha256,parser_version,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, "localization", "guide", "en", "official", `${id}.md`, `${id}-sha`, version, "topic-localization", `${id}-normalized`, "fixture-v1", now, now);
+      store.db.prepare("INSERT INTO knowledge_product_classifications(document_id,classification,updated_at) VALUES (?,'product',?)").run(id,now);
     }
     for (const [id, version] of [["doc-211", "21.1"], ["doc-213", "21.3"]] as const) {
       persistProductGraph(store, extractProductGraph({

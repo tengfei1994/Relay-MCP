@@ -1,13 +1,14 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { projects } from "../db/schema.js";
 import { z } from "zod";
 import { unzipSync } from "fflate";
-import { mkdirSync, existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from "fs";
+import { existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from "fs";
 import { join } from "path";
 import "dotenv/config";
-import { resolveWorkspacePath } from "../../shared/workspace-path.js";
+import { createProjectWorkspace, resolveWorkspacePath } from "../../shared/workspace-path.js";
+import { writeAudit } from "../../shared/job-store.js";
 
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT ?? "/workspace";
 const MAX_FILE_PREVIEW_BYTES = 1_000_000;
@@ -20,6 +21,17 @@ const CreateProjectSchema = z.object({
   name: z.string().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/),
   description: z.string().max(500).optional(),
 });
+
+function sendFileError(reply: FastifyReply, error: unknown, fallback: string, defaultStatus = 500) {
+  const code = typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : undefined;
+  const status = code === "EACCES" || code === "EPERM" ? 403 : code === "ENOENT" ? 404 : defaultStatus;
+  return reply.status(status).send({ error: fallback });
+}
+
+function sendPathError(reply: FastifyReply, error: unknown) {
+  if (typeof error === "object" && error !== null && "code" in error) return sendFileError(reply, error, "Unable to access project path");
+  return reply.status(400).send({ error: error instanceof Error ? error.message : "Invalid project path" });
+}
 
 function projectForUser(id: number, userId: number) {
   return db
@@ -34,11 +46,6 @@ function mimeTypeForPath(path: string): string {
   return ({
     png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", bmp: "image/bmp", ico: "image/x-icon", avif: "image/avif",
   } as Record<string, string>)[extension ?? ""] ?? "application/octet-stream";
-}
-
-
-function isPermissionError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && (((error as { code?: unknown }).code) === "EACCES" || ((error as { code?: unknown }).code) === "EPERM");
 }
 
 function zipEntries(filePath: string): Array<{ path: string; size: number; type: "file" | "directory" }> {
@@ -77,7 +84,7 @@ export async function projectRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const userId = req.user.id;
       const result = db
-        .select()
+        .select({ id: projects.id, name: projects.name, description: projects.description, createdAt: projects.createdAt })
         .from(projects)
         .where(eq(projects.userId, userId))
         .all();
@@ -108,9 +115,7 @@ export async function projectRoutes(app: FastifyInstance) {
         return reply.status(409).send({ error: "Project name already exists" });
       }
 
-      const username = req.user.username;
-      const workspacePath = join(WORKSPACE_ROOT, username, name);
-      mkdirSync(workspacePath, { recursive: true });
+      const workspacePath = createProjectWorkspace(WORKSPACE_ROOT);
 
       const result = db
         .insert(projects)
@@ -118,7 +123,9 @@ export async function projectRoutes(app: FastifyInstance) {
         .returning()
         .get();
 
-      return reply.status(201).send({ project: result });
+      const { workspacePath: _workspacePath, ...publicProject } = result;
+      writeAudit({ event: "project_created", userId, projectId: result.id });
+      return reply.status(201).send({ project: publicProject });
     }
   );
 
@@ -135,7 +142,8 @@ export async function projectRoutes(app: FastifyInstance) {
       if (!project) {
         return reply.status(404).send({ error: "Project not found" });
       }
-      return reply.send({ project });
+      const { workspacePath: _workspacePath, ...publicProject } = project;
+      return reply.send({ project: publicProject });
     }
   );
 
@@ -154,6 +162,7 @@ export async function projectRoutes(app: FastifyInstance) {
       }
 
       db.delete(projects).where(eq(projects.id, Number(id))).run();
+      writeAudit({ event: "project_deleted", userId, projectId: project.id });
       // Note: workspace directory is NOT deleted — manual cleanup required
       return reply.send({ ok: true });
     }
@@ -177,25 +186,27 @@ export async function projectRoutes(app: FastifyInstance) {
       let targetDir: string;
       try {
         targetDir = resolveWorkspacePath(project.workspacePath, relPath, { allowRoot: true });
-      } catch (error) {
-        return reply.status(400).send({ error: error instanceof Error ? error.message : String(error) });
-      }
+      } catch (error) { return sendPathError(reply, error); }
 
       if (!existsSync(targetDir)) {
         return reply.status(404).send({ error: "Directory not found" });
       }
 
-      const entries = readdirSync(targetDir).map((name) => {
-        const fullPath = join(targetDir, name);
-        const stat = statSync(fullPath);
-        return {
-          name,
-          type: stat.isDirectory() ? "directory" : "file",
-          size: stat.isDirectory() ? null : stat.size,
-          modifiedAt: stat.mtime.toISOString(),
-        };
+      let names: string[];
+      try { names = readdirSync(targetDir); }
+      catch (error) { return sendFileError(reply, error, "Unable to read directory"); }
+      const entries = names.flatMap((name) => {
+        try {
+          const fullPath = resolveWorkspacePath(project.workspacePath, relPath ? join(relPath, name) : name, { mustExist: true });
+          const stat = statSync(fullPath);
+          return [{ name, type: stat.isDirectory() ? "directory" : "file", size: stat.isDirectory() ? null : stat.size, modifiedAt: stat.mtime.toISOString() }];
+        } catch {
+          // Do not expose metadata for broken links or links outside this project.
+          return [];
+        }
       });
 
+      writeAudit({ event: "project_files_listed", userId, projectId: project.id, path: relPath });
       return reply.send({ path: relPath, entries });
     }
   );
@@ -211,13 +222,16 @@ export async function projectRoutes(app: FastifyInstance) {
       if (!project) return reply.status(404).send({ error: "Project not found" });
       let filePath: string;
       try { filePath = resolveWorkspacePath(project.workspacePath, query.data.path, { mustExist: true }); }
-      catch (error) { return reply.status(400).send({ error: error instanceof Error ? error.message : String(error) }); }
-      const info = statSync(filePath);
-      if (info.isDirectory()) return reply.status(400).send({ error: "Directories cannot be previewed" });
-      if (info.size > MAX_FILE_PREVIEW_BYTES) return reply.status(413).send({ error: `File preview is limited to ${MAX_FILE_PREVIEW_BYTES} bytes`, size: info.size });
-      const bytes = readFileSync(filePath);
-      if (bytes.includes(0)) return reply.status(415).send({ error: "Binary files cannot be previewed as text", size: info.size });
-      return reply.send({ path: query.data.path, name: query.data.path.split(/[\\/]/).pop(), content: bytes.toString("utf8"), size: info.size, modifiedAt: info.mtime.toISOString(), truncated: false });
+      catch (error) { return sendPathError(reply, error); }
+      try {
+        const info = statSync(filePath);
+        if (info.isDirectory()) return reply.status(400).send({ error: "Directories cannot be previewed" });
+        if (info.size > MAX_FILE_PREVIEW_BYTES) return reply.status(413).send({ error: `File preview is limited to ${MAX_FILE_PREVIEW_BYTES} bytes`, size: info.size });
+        const bytes = readFileSync(filePath);
+        if (bytes.includes(0)) return reply.status(415).send({ error: "Binary files cannot be previewed as text", size: info.size });
+        writeAudit({ event: "project_file_previewed", userId: req.user.id, projectId, path: query.data.path });
+        return reply.send({ path: query.data.path, name: query.data.path.split(/[\\/]/).pop(), content: bytes.toString("utf8"), size: info.size, modifiedAt: info.mtime.toISOString(), truncated: false });
+      } catch (error) { return sendFileError(reply, error, "Unable to read file"); }
     }
   );
 
@@ -232,16 +246,15 @@ export async function projectRoutes(app: FastifyInstance) {
       if (!project) return reply.status(404).send({ error: "Project not found" });
       let filePath: string;
       try { filePath = resolveWorkspacePath(project.workspacePath, query.data.path, { mustExist: true }); }
-      catch (error) { return reply.status(400).send({ error: error instanceof Error ? error.message : String(error) }); }
+      catch (error) { return sendPathError(reply, error); }
       try {
         const info = statSync(filePath);
         if (info.isDirectory()) return reply.status(400).send({ error: "Directories cannot be previewed" });
         if (info.size > MAX_BINARY_PREVIEW_BYTES) return reply.status(413).send({ error: `Binary preview is limited to ${MAX_BINARY_PREVIEW_BYTES} bytes`, size: info.size });
         const bytes = readFileSync(filePath);
+        writeAudit({ event: "project_file_previewed", userId: req.user.id, projectId, path: query.data.path });
         return reply.header("Cache-Control", "no-store").type(mimeTypeForPath(query.data.path)).send(bytes);
-      } catch (error) {
-        return reply.status(isPermissionError(error) ? 403 : 500).send({ error: "Unable to read file" });
-      }
+      } catch (error) { return sendFileError(reply, error, "Unable to read file"); }
     }
   );
 
@@ -256,14 +269,15 @@ export async function projectRoutes(app: FastifyInstance) {
       if (!project) return reply.status(404).send({ error: "Project not found" });
       let archivePath: string;
       try { archivePath = resolveWorkspacePath(project.workspacePath, query.data.path, { mustExist: true }); }
-      catch (error) { return reply.status(400).send({ error: error instanceof Error ? error.message : String(error) }); }
+      catch (error) { return sendPathError(reply, error); }
       try {
         const info = statSync(archivePath);
         if (info.isDirectory()) return reply.status(400).send({ error: "Directories cannot be previewed as archives" });
-        return reply.send({ path: query.data.path, name: query.data.path.split(/[\\\\/]/).pop(), size: info.size, modifiedAt: info.mtime.toISOString(), entries: zipEntries(archivePath) });
-      } catch (error) {
-        return reply.status(isPermissionError(error) ? 403 : 415).send({ error: isPermissionError(error) ? "Unable to read archive" : "Unable to read ZIP archive" });
+        const entries = zipEntries(archivePath);
+        writeAudit({ event: "project_archive_previewed", userId: req.user.id, projectId, path: query.data.path });
+        return reply.send({ path: query.data.path, name: query.data.path.split(/[\\/]/).pop(), size: info.size, modifiedAt: info.mtime.toISOString(), entries });
       }
+      catch (error) { return sendFileError(reply, error, "Unable to read ZIP archive", 415); }
     }
   );
 
@@ -281,11 +295,13 @@ export async function projectRoutes(app: FastifyInstance) {
         sourcePath = resolveWorkspacePath(project.workspacePath, body.data.path, { mustExist: true });
         const parentPath = body.data.path.replaceAll("\\", "/").split("/").slice(0, -1).filter(Boolean).join("/");
         destinationPath = resolveWorkspacePath(project.workspacePath, parentPath ? `${parentPath}/${body.data.name}` : body.data.name);
-      } catch (error) { return reply.status(400).send({ error: error instanceof Error ? error.message : String(error) }); }
+      } catch (error) { return sendPathError(reply, error); }
       if (existsSync(destinationPath)) return reply.status(409).send({ error: "A file or directory with that name already exists" });
-      renameSync(sourcePath, destinationPath);
+      try { renameSync(sourcePath, destinationPath); }
+      catch (error) { return sendFileError(reply, error, "Unable to rename file"); }
       const parentPath = body.data.path.replaceAll("\\", "/").split("/").slice(0, -1).filter(Boolean).join("/");
       const nextPath = parentPath ? `${parentPath}/${body.data.name}` : body.data.name;
+      writeAudit({ event: "project_file_renamed", userId: req.user.id, projectId, path: body.data.path, destination: nextPath });
       return reply.send({ ok: true, path: nextPath, name: body.data.name });
     }
   );
@@ -301,8 +317,10 @@ export async function projectRoutes(app: FastifyInstance) {
       if (!project) return reply.status(404).send({ error: "Project not found" });
       let targetPath: string;
       try { targetPath = resolveWorkspacePath(project.workspacePath, query.data.path, { mustExist: true }); }
-      catch (error) { return reply.status(400).send({ error: error instanceof Error ? error.message : String(error) }); }
-      rmSync(targetPath, { recursive: true, force: false });
+      catch (error) { return sendPathError(reply, error); }
+      try { rmSync(targetPath, { recursive: true, force: false }); }
+      catch (error) { return sendFileError(reply, error, "Unable to delete file"); }
+      writeAudit({ event: "project_file_deleted", userId: req.user.id, projectId, path: query.data.path });
       return reply.send({ ok: true, path: query.data.path });
     }
   );

@@ -6,6 +6,12 @@ function getToken() {
   return localStorage.getItem("token");
 }
 
+function expireSession() {
+  localStorage.removeItem("token");
+  sessionStorage.setItem("relay-session-expired", "1");
+  window.dispatchEvent(new Event("relay-session-expired"));
+}
+
 async function request<T>(
   method: string,
   path: string,
@@ -28,6 +34,9 @@ async function request<T>(
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
+    if (res.status === 401 && token && !path.startsWith("/auth/login") && !path.startsWith("/auth/register")) {
+      expireSession();
+    }
     throw new Error(err.error ?? "Request failed");
   }
   return res.json();
@@ -38,6 +47,7 @@ async function requestBlob(path: string): Promise<Blob> {
   const res = await fetch(`${BASE}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
+    if (res.status === 401 && token) expireSession();
     throw new Error(err.error ?? "Request failed");
   }
   return res.blob();
@@ -47,15 +57,15 @@ export const api = {
   health: () => request<{ ok: boolean; version: string; commit: string; buildTime: string; process: string; ts: string }>("GET", "/health"),
   // Auth
   login: (username: string, password: string) =>
-    request<{ token: string; user: { id: number; username: string; isAdmin: boolean } }>(
+    request<{ token: string; user: { id: number; username: string; isAdmin: boolean; knowledgeEnabled?: boolean } }>(
       "POST", "/auth/login", { username, password }
     ),
   register: (username: string, password: string) =>
-    request<{ token: string; user: { id: number; username: string; isAdmin: boolean } }>(
+    request<{ status: "pending" | "active"; token?: string; user?: { id: number; username: string; isAdmin: boolean; knowledgeEnabled?: boolean } }>(
       "POST", "/auth/register", { username, password }
     ),
   me: () =>
-    request<{ user: { id: number; username: string; isAdmin: boolean } }>("GET", "/auth/me"),
+    request<{ user: { id: number; username: string; isAdmin: boolean; knowledgeEnabled?: boolean } }>("GET", "/auth/me"),
 
   // Projects
   listProjects: () =>
@@ -189,7 +199,7 @@ export const api = {
   knowledgeManagedProviderDelete: (id: string) => request<{ id: string; deleted: boolean }>("DELETE", `/knowledge/providers/managed/${encodeURIComponent(id)}`),
   knowledgeManagedProviderReindexComplete: (jobId: string) => request<{ job: unknown }>("POST", `/knowledge/providers/managed/reindex/${encodeURIComponent(jobId)}/complete`, {}),
   knowledgeCandidateInsights: (projectId?: string | number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); if (projectId !== undefined && projectId !== "") query.set("projectId", String(projectId)); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ insights: unknown[] }>("GET", `/knowledge/candidate-insights?${query.toString()}`); },
-  knowledgeCandidateInsight: (id: string) => request<{ insight: unknown }>("GET", `/knowledge/candidate-insights/${encodeURIComponent(id)}`),
+  knowledgeCandidateInsight: (id: string) => request<{ insight: unknown; sourceSession?: unknown }>("GET", `/knowledge/candidate-insights/${encodeURIComponent(id)}`),
   knowledgeCandidateInsightHistory: (id: string) => request<{ history: unknown[] }>("GET", `/knowledge/candidate-insights/${encodeURIComponent(id)}/history`),
   knowledgeCandidateInsightCompile: (body: Record<string, unknown>) => request<unknown>("POST", "/knowledge/candidate-insights/compile", body),
   knowledgeCandidateInsightConfirm: (id: string, reason: string) => request<{ insight: unknown }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/confirm`, { reason }),
@@ -197,8 +207,18 @@ export const api = {
   knowledgeCandidateInsightEdit: (id: string, patch: Record<string, unknown>, reason: string) => request<{ insight: unknown }>("PATCH", `/knowledge/candidate-insights/${encodeURIComponent(id)}`, { patch, reason }),
   knowledgeCandidateInsightReviewScope: (id: string, reason: string, expectedSessionUpdatedAt: string) => request<{ insight: unknown }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/review-scope`, { reason, expectedSessionUpdatedAt }),
   knowledgeCandidateInsightPromote: (id: string, body: { target: "fact" | "decision" | "case" | "pattern"; reason: string; title?: string }) => request<{ promotion: unknown }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/promote`, body),
-  knowledgeConfirmedMemories: (projectId?: string | number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); if (projectId !== undefined && projectId !== "") query.set("projectId", String(projectId)); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ memories: unknown[] }>("GET", `/knowledge/confirmed-memories?${query.toString()}`); },
+  knowledgeConfirmedMemories: (projectId?: string | number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); if (projectId !== undefined && projectId !== "") query.set("projectId", String(projectId)); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ memories: unknown[]; page: { limit: number; offset: number; total: number }; generalAccess: string }>("GET", `/knowledge/confirmed-memories?${query.toString()}`); },
   knowledgeConfirmedMemory: (id: string) => request<{ memory: unknown }>("GET", `/knowledge/confirmed-memories/${encodeURIComponent(id)}`),
+  memorySubmissions: (offset = 0) => request<{ submissions: unknown[] }>("GET", `/knowledge/memory-submissions?limit=50&offset=${offset}`),
+  legacyCandidatesForReview: (offset = 0) => request<{ candidates: unknown[] }>("GET", `/knowledge/legacy-candidates/review?limit=50&offset=${offset}`),
+  legacyCandidateReview: (id:string, body:{action:"approve"|"reject"|"needs_info";reason:string;scope?:"project"|"general";title?:string;statement?:string;memoryType?:"Fact"|"Decision"|"Case"|"Pattern";evidenceRefs?:string[]}) => request<unknown>("POST", `/knowledge/legacy-candidates/${encodeURIComponent(id)}/review`,body),
+  memorySubmissionReview: (id: string, body: { action: "approve" | "reject" | "needs_info"; reason: string; scope?: "project" | "general"; title?: string; statement?: string }) => request<{ submission: unknown }>("POST", `/knowledge/memory-submissions/${encodeURIComponent(id)}/review`, body),
+  legacyMemoryScopeQueue: (offset = 0) => request<{ memories: unknown[] }>("GET", `/knowledge/confirmed-memories/scope-review?limit=50&offset=${offset}`),
+  legacyMemoryScopeReview: (id: string, body: { scope: "project" | "general"; reason: string; title: string; statement: string }) => request<unknown>("POST", `/knowledge/confirmed-memories/${encodeURIComponent(id)}/scope-review`, body),
+  productClassifications: (offset = 0) => request<{ documents: unknown[] }>("GET", `/knowledge/product-classifications?limit=50&offset=${offset}`),
+  productClassificationReport: (offset = 0) => request<{ documents: unknown[]; totals: { total: number; pending: number; product: number; project: number }; page: { total: number; limit: number; offset: number } }>("GET", `/knowledge/product-classifications/report?limit=50&offset=${offset}`),
+  productClassificationPreview: (id: string, offset = 0) => request<{document:unknown;page:unknown}>("GET", `/knowledge/product-classifications/${encodeURIComponent(id)}/preview?offset=${offset}`),
+  productClassify: (id: string, classification: "product" | "project", reason: string) => request<{ ok: boolean }>("POST", `/knowledge/product-classifications/${encodeURIComponent(id)}`, { classification, reason }),
   knowledgeSearch: (body: Record<string, unknown>) => request<unknown>("POST", "/knowledge/search", body),
   knowledgeWikiNavigation: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<unknown>("GET", `/knowledge/wiki/navigation?${query.toString()}`); },
   knowledgeWikiDirectory: (params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<unknown>("GET", `/knowledge/wiki/directory?${query.toString()}`); },
@@ -337,10 +357,12 @@ export const api = {
   // Users (admin)
   listUsers: () =>
     request<{ users: unknown[] }>("GET", "/users"),
-  createUser: (username: string, password: string, isAdmin = false, knowledgeEnabled = true) =>
+  createUser: (username: string, password: string, isAdmin = false, knowledgeEnabled = false) =>
     request<{ user: unknown }>("POST", "/users", { username, password, isAdmin, knowledgeEnabled }),
-  changePassword: (id: number, password: string) =>
-    request<{ ok: boolean }>("PATCH", `/users/${id}/password`, { password }),
+  changePassword: (id: number, password: string, currentPassword?: string) =>
+    request<{ ok: boolean }>("PATCH", `/users/${id}/password`, { password, currentPassword }),
+  setUserStatus: (id: number, status: "active" | "rejected" | "disabled", reason?: string) =>
+    request<{ ok: boolean; status: string; reviewedAt: string; reviewedBy: number; reviewReason: string | null }>("PATCH", `/users/${id}/status`, { status, reason }),
   toggleAdmin: (id: number, isAdmin: boolean) =>
     request<{ ok: boolean }>("PATCH", `/users/${id}/admin`, { isAdmin }),
   toggleKnowledge: (id: number, knowledgeEnabled: boolean) =>

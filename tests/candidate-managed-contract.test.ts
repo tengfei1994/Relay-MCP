@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-test('HTTP and MCP Candidate adapters preserve typed JSON and real model provenance', async (t) => {
+test('historical Candidate HTTP adapters preserve typed JSON while MCP compilation is removed', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'candidate-contract-'));
   const env = { DB_PATH: join(root, 'app.db'), KNOWLEDGE_DB_PATH: join(root, 'knowledge.db'), KNOWLEDGE_EVIDENCE_ROOT: join(root, 'evidence'), PROVIDER_SECRET_KEY_FILE: join(root, 'provider.key') };
   const previous = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
@@ -37,7 +37,7 @@ test('HTTP and MCP Candidate adapters preserve typed JSON and real model provena
   const sessions = new WorkSessionService(store);
   const input = (key: string) => ({ sessionId: sessions.open({ actorId: 7, idempotencyKey: key, intent: { actorId: 7, actions: ['verify'], phase: 'validation', objective: 'Verify the sentinel', constraints: [], acceptanceCriteria: [], projectId: '1', environment: 'nonprod', risk: 'read_only', knowledgeMode: 'capture' } }).id, evidenceRefs: [evidenceId], providerId: 'candidate-fixture', context: {} });
   let httpActor = 7;
-  const app = Fastify(); app.decorate('authenticate', async (req: any) => { req.user = { id: httpActor, isAdmin: true }; }); await app.register(knowledgeRoutes);
+  const app = Fastify(); app.decorate('authenticate', async (req: any) => { req.user = { id: httpActor, isAdmin: httpActor===7 }; }); await app.register(knowledgeRoutes);
   const callbacks = new Map<string, (...args: any[]) => any>();
   registerKnowledgeTools({ server: { tool: (name: string, ...args: any[]) => callbacks.set(name, args.at(-1)), resource: () => undefined } as any, user: { id: 7, username: 'candidate-fixture' }, knowledge: store });
   try {
@@ -49,11 +49,9 @@ test('HTTP and MCP Candidate adapters preserve typed JSON and real model provena
       assert.deepEqual(calls.at(-1).response_format, { type: 'json_object' });
       assert.equal(calls.at(-1).model, 'qwen-plus');
     });
-    await t.test('MCP uses JSON response mode and the same configured identity', async () => {
-      const response = await callbacks.get('knowledge_candidate_insight_compile')!(input('mcp'));
-      const insight = JSON.parse(response.content[0].text).insight;
-      assert.equal(insight.generatedBy, 'managed-candidate-llm:candidate-fixture/qwen-plus');
-      assert.deepEqual(calls.at(-1).response_format, { type: 'json_object' });
+    await t.test('MCP does not expose the removed Candidate compiler', async () => {
+      assert.equal(callbacks.has('knowledge_candidate_insight_compile'),false);
+      assert.equal(callbacks.has('knowledge_candidate_insight_job_get'),false);
     });
     await t.test('compiler prompt states the exact field types and omits unknown optional fields', async () => {
       const response = await app.inject({ method: 'POST', url: '/api/knowledge/candidate-insights/compile', payload: input('typed-prompt') });
@@ -82,7 +80,7 @@ test('HTTP and MCP Candidate adapters preserve typed JSON and real model provena
       assert.equal((await post({ reason: 'Explicit review' })).statusCode, 400);
       assert.equal((await post({ reason: 'Explicit review', expectedSessionUpdatedAt: 'stale' })).statusCode, 403);
       httpActor = 8;
-      assert.equal((await post({ reason: 'Explicit review', expectedSessionUpdatedAt: revision })).statusCode, 403);
+      assert.equal((await post({ reason: 'Explicit review', expectedSessionUpdatedAt: revision })).statusCode, 404);
       httpActor = 7;
       assert.equal((store.db.prepare('SELECT scope_snapshot_json FROM knowledge_candidate_insights WHERE id=?').get(id) as {scope_snapshot_json:string|null}).scope_snapshot_json, null);
       const restored = await post({ reason: 'Explicit review', expectedSessionUpdatedAt: revision });
@@ -92,13 +90,14 @@ test('HTTP and MCP Candidate adapters preserve typed JSON and real model provena
       await app.inject({ method: 'POST', url: `/api/knowledge/candidate-insights/${id}/reject`, payload: { reason: 'Rejected evidence' } });
       assert.equal((await post({ reason: 'Cannot restore rejected', expectedSessionUpdatedAt: revision })).statusCode, 403);
     });
-    await t.test('HTTP and MCP async queues are consumed by deployed dispatcher composition with one provider call per job', async () => {
+    await t.test('historical HTTP async queues are consumed by dispatcher composition with one provider call per job', async () => {
       const requests = [input('http-async'),input('mcp-async')], before=calls.length;
       const first=await app.inject({method:'POST',url:'/api/knowledge/candidate-insights/compile',payload:{...requests[0],async:true}});
       assert.equal(first.statusCode,202,first.body);assert.equal(first.json().job.providerId,'candidate-fixture');
       const replay=await app.inject({method:'POST',url:'/api/knowledge/candidate-insights/compile',payload:{...requests[0],async:true}});
       assert.equal(replay.json().job.id,first.json().job.id);assert.equal(replay.json().enqueued,false);
-      const second=JSON.parse((await callbacks.get('knowledge_candidate_insight_compile')!({...requests[1],async:true})).content[0].text);
+      const secondResponse=await app.inject({method:'POST',url:'/api/knowledge/candidate-insights/compile',payload:{...requests[1],async:true}});
+      assert.equal(secondResponse.statusCode,202,secondResponse.body);const second=secondResponse.json();
       assert.equal(calls.length,before,'enqueue never waits for a model');
       httpActor=8;
       assert.equal((await app.inject({method:'GET',url:`/api/knowledge/candidate-insight-jobs/${first.json().job.id}`})).statusCode,404);
@@ -115,7 +114,7 @@ test('HTTP and MCP Candidate adapters preserve typed JSON and real model provena
           assert.equal(job.status,'done');assert.equal(job.attempts,1);
           const insight=(await app.inject({method:'GET',url:`/api/knowledge/candidate-insights/${job.insightId}`})).json().insight;
           assert.equal(insight.generatedBy,'managed-candidate-llm:candidate-fixture/qwen-plus');assert.equal(insight.status,'draft');assert.equal(insight.promotion,undefined);
-          const polled=JSON.parse((await callbacks.get('knowledge_candidate_insight_job_get')!({id})).content[0].text).job;
+          const polled=(await app.inject({method:'GET',url:`/api/knowledge/candidate-insight-jobs/${id}`})).json().job;
           assert.equal(polled.insightId,insight.id);
         }
         assert.equal(calls.length-before,2);

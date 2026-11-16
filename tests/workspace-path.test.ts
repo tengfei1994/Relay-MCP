@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { isPathInside, resolveWorkspacePath } from "../src/shared/workspace-path.ts";
+import { createProjectWorkspace, isPathInside, resolveWorkspacePath } from "../src/shared/workspace-path.ts";
 
 test("resolveWorkspacePath accepts contained relative paths", () => {
   const root = mkdtempSync(join(tmpdir(), "relay-path-"));
@@ -50,4 +50,17 @@ test("resolveWorkspacePath rejects symlink escape when supported", (t) => {
 
 test("isPathInside does not accept sibling paths with a shared prefix", () => {
   assert.equal(isPathInside("C:\\workspace\\project", "C:\\workspace\\project2"), false);
+});
+
+test("new project workspaces are unique and remain beneath the configured root", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-project-path-"));
+  try {
+    const first = createProjectWorkspace(root);
+    const second = createProjectWorkspace(root);
+    assert.notEqual(first.toLowerCase(), second.toLowerCase());
+    assert.equal(isPathInside(root, first), true);
+    assert.equal(isPathInside(root, second), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

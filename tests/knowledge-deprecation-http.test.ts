@@ -13,17 +13,19 @@ test("administrator deprecate API withdraws migration routing and blocks local a
   let upstreamCalls=0; globalThis.fetch=(async()=>{upstreamCalls++;throw new Error("Withdrawn reads must not reach upstream");}) as typeof fetch;
   const {default:Fastify}=await import("fastify");
   const {db,runMigrations}=await import("../src/server/db/index.js");
+  const {users}=await import("../src/server/db/schema.js");
   const {knowledgeRoutes}=await import("../src/server/routes/knowledge.js");
   const {getKnowledgeStore}=await import("../src/server/knowledge-context.js");
   const {WeKnoraIngestor}=await import("../src/knowledge/weknora-ingest.js");
   const {MigrationController}=await import("../src/knowledge/migration-control.js");
   const {runReleaseGates}=await import("../src/knowledge/release-gates.js");
-  runMigrations();const store=getKnowledgeStore();const app=Fastify();let isAdmin=false;
+  runMigrations();db.insert(users).values({id:7,username:"reviewer",passwordHash:"unused",knowledgeEnabled:true}).run();const store=getKnowledgeStore();const app=Fastify();let isAdmin=false;
   app.decorate("authenticate",async(req:any)=>{req.user={id:7,isAdmin};});await app.register(knowledgeRoutes);
   try {
     const now=new Date().toISOString(); store.grantAcl("p1",7);
     store.db.prepare("INSERT INTO knowledge_documents(id,kind,title,body,lifecycle,project_id,source_locator,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").run("local-deprecate","product_document","Document","real imported source","approved","p1","source.html",now,now);
     store.db.prepare("INSERT INTO knowledge_product_documents(id,document_family_id,document_type,language,source_path,source_sha256,version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").run("local-deprecate","family","html","en","source.html","raw-source","21.3",now,now);
+    store.db.prepare("INSERT INTO knowledge_product_classifications(document_id,classification,updated_at) VALUES ('local-deprecate','product',?)").run(now);
     const ingestor=new WeKnoraIngestor(store,{upsertDocument:async()=>({externalDocumentId:"external-doc",knowledgeBaseId:"kb-test",parseStatus:"completed",externalChunkIds:["chunk"]})});
     const controller=new MigrationController(store);
     const migration=await controller.createFromLocal({actorId:7,idempotencyKey:"deprecate-api",parserVersion:"v1"},ingestor);

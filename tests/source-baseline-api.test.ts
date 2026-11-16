@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-test("HTTP and MCP upgrade comparisons return the same classifications and source evidence references", async () => {
+test("HTTP upgrade comparison preserves classifications and source evidence references while legacy MCP is removed", async () => {
   const root = mkdtempSync(join(tmpdir(), "source-baseline-api-"));
   const previous = { DB_PATH: process.env.DB_PATH, KNOWLEDGE_DB_PATH: process.env.KNOWLEDGE_DB_PATH, RELAY_STATE_ROOT: process.env.RELAY_STATE_ROOT };
   process.env.DB_PATH = join(root, "app.db");
@@ -12,12 +12,15 @@ test("HTTP and MCP upgrade comparisons return the same classifications and sourc
   process.env.RELAY_STATE_ROOT = root;
   const { default: Fastify } = await import("fastify");
   const { db, runMigrations } = await import("../src/server/db/index.js");
+  const { users, projects } = await import("../src/server/db/schema.js");
   const { knowledgeRoutes } = await import("../src/server/routes/knowledge.js");
   const { getKnowledgeStore } = await import("../src/server/knowledge-context.js");
   const { registerKnowledgeTools } = await import("../src/mcp/tools/knowledge.js");
   runMigrations();
+  db.insert(users).values([{id:7,username:"baseline-owner",passwordHash:"unused",knowledgeEnabled:true},{id:8,username:"baseline-other",passwordHash:"unused",knowledgeEnabled:true}]).run();
+  db.insert(projects).values({id:1,userId:7,name:"Baseline project",workspacePath:root}).run();
   const store = getKnowledgeStore();
-  store.grantAcl("p1", 7, true);
+  store.grantAcl("1", 7, true);
   const now = new Date().toISOString();
   const insertSet = store.db.prepare("INSERT INTO knowledge_artifact_sets(id,kind,name,version,source_locator,sha256,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)");
   const insertBaseline = store.db.prepare("INSERT INTO knowledge_source_baselines(id,artifact_set_id,solution,version,manifest_sha256,root_locator,created_at) VALUES(?,?,?,?,?,?,?)");
@@ -26,7 +29,7 @@ test("HTTP and MCP upgrade comparisons return the same classifications and sourc
     insertBaseline.run(id, `${id}-set`, "Demo", version, `${id}-manifest`, `fixture://${id}`, now);
     store.db.prepare("INSERT INTO knowledge_artifact_publications(artifact_set_id,status) VALUES(?,?)").run(`${id}-set`, "published");
   }
-  store.db.prepare("INSERT INTO knowledge_project_snapshots(id,project_id,name,source_locator,manifest_sha256,created_at) VALUES(?,?,?,?,?,?)").run("project", "p1", "Current", "fixture://project", "project-manifest", now);
+  store.db.prepare("INSERT INTO knowledge_project_snapshots(id,project_id,name,source_locator,manifest_sha256,created_at) VALUES(?,?,?,?,?,?)").run("project", "1", "Current", "fixture://project", "project-manifest", now);
 
   const sides: Record<string, Record<string, string | undefined>> = {
     old: { "unchanged.cs": "A", "project.cs": "A", "baseline.cs": "A", "conflict.cs": "A", "added.cs": undefined, "deleted.cs": "A" },
@@ -55,7 +58,7 @@ test("HTTP and MCP upgrade comparisons return the same classifications and sourc
   }
 
   const app = Fastify();
-  app.decorate("authenticate", async (request: any) => { request.user = { id: 7, isAdmin: true }; });
+  app.decorate("authenticate", async (request: any) => { request.user = { id: request.headers["x-other"] ? 8 : 7, isAdmin: true }; });
   await app.register(knowledgeRoutes);
   const callbacks = new Map<string, (...args: any[]) => any>();
   registerKnowledgeTools({ server: { tool: (name: string, ...args: any[]) => callbacks.set(name, args.at(-1)), resource: () => undefined } as any, user: { id: 7, username: "fixture", isAdmin: true }, knowledge: store });
@@ -64,8 +67,9 @@ test("HTTP and MCP upgrade comparisons return the same classifications and sourc
     const httpResponse = await app.inject({ method: "POST", url: "/api/knowledge/source-baselines/compare", payload });
     assert.equal(httpResponse.statusCode, 200, httpResponse.body);
     const http = httpResponse.json();
-    const mcpResponse = await callbacks.get("knowledge_solution_upgrade_analysis")!({ oldBaselineId: "old", currentProjectSnapshotId: "project", newBaselineId: "new" });
-    const mcp = JSON.parse(mcpResponse.content[0].text);
+    assert.equal(callbacks.has("knowledge_solution_upgrade_analysis"),false);
+    const denied=await app.inject({method:"POST",url:"/api/knowledge/source-baselines/compare",headers:{"x-other":"1"},payload});
+    assert.equal(denied.statusCode,403);
     const expected = { "unchanged.cs": "UNCHANGED", "project.cs": "PROJECT_ONLY", "baseline.cs": "BASELINE_ONLY", "conflict.cs": "BOTH_CHANGED", "added.cs": "ADDED", "deleted.cs": "DELETED" };
     for (const change of http.changes) {
       assert.equal(change.status, expected[change.path as keyof typeof expected]);
@@ -79,8 +83,7 @@ test("HTTP and MCP upgrade comparisons return the same classifications and sourc
     const runChange = projectChange.symbols.find((symbol: { name: string }) => symbol.name === "Run");
     assert.equal(runChange.status, "PROJECT_ONLY");
     assert.deepEqual(runChange.evidenceRefs, { old: ["old-chunk-project"], project: ["project-chunk-project"], next: ["new-chunk-project"] });
-    assert.deepEqual(mcp.changes, http.changes);
-    assert.deepEqual(mcp.counts, { UNCHANGED: 1, PROJECT_ONLY: 1, BASELINE_ONLY: 1, BOTH_CHANGED: 1, ADDED: 1, DELETED: 1 });
+    assert.equal(http.changes.length,6);
     const baselinePage = (await app.inject({ url: "/api/knowledge/source-baselines?limit=1&offset=1" })).json();
     assert.equal(baselinePage.baselines.length, 1); assert.equal(baselinePage.baselines[0].id, "new"); assert.deepEqual(baselinePage.page, { limit: 1, offset: 1, total: 2 });
     const snapshotPage = (await app.inject({ url: "/api/knowledge/project-snapshots?limit=1&offset=0" })).json();
@@ -96,7 +99,7 @@ test("HTTP and MCP upgrade comparisons return the same classifications and sourc
   }
 });
 
-test("MCP upgrade comparison enforces the project snapshot ACL", async () => {
+test("legacy MCP upgrade comparison is not registered", async () => {
   const root = mkdtempSync(join(tmpdir(), "source-baseline-mcp-acl-"));
   const store = (await import("../src/knowledge/store.js")).createKnowledgeStore({ dbPath: join(root, "knowledge.db"), appDbPath: join(root, "app.db") });
   const now = new Date().toISOString();
@@ -107,11 +110,11 @@ test("MCP upgrade comparison enforces the project snapshot ACL", async () => {
       store.db.prepare("INSERT INTO knowledge_source_baselines(id,artifact_set_id,solution,version,manifest_sha256,root_locator,created_at) VALUES(?,?,?,?,?,?,?)").run(id, `${id}-set`, "Demo", id, id, `fixture://${id}`, now);
       store.db.prepare("INSERT INTO knowledge_artifact_publications(artifact_set_id,status) VALUES(?,?)").run(`${id}-set`, "published");
     }
-    store.db.prepare("INSERT INTO knowledge_project_snapshots(id,project_id,name,source_locator,manifest_sha256,created_at) VALUES(?,?,?,?,?,?)").run("private", "p1", "Private", "fixture://private", "private", now);
+    store.db.prepare("INSERT INTO knowledge_project_snapshots(id,project_id,name,source_locator,manifest_sha256,created_at) VALUES(?,?,?,?,?,?)").run("private", "1", "Private", "fixture://private", "private", now);
     store.db.prepare("INSERT INTO knowledge_project_snapshot_files(id,snapshot_id,relative_path,sha256,size_bytes,created_at) VALUES(?,?,?,?,?,?)").run("private-file", "private", "file.cs", "A", 1, now);
     for (const id of ["old", "new"]) store.db.prepare("INSERT INTO knowledge_source_files(id,baseline_id,relative_path,sha256,size_bytes,created_at) VALUES(?,?,?,?,?,?)").run(`${id}-file`, id, "file.cs", "A", 1, now);
     const callbacks = new Map<string, (...args: any[]) => any>();
     (await import("../src/mcp/tools/knowledge.js")).registerKnowledgeTools({ server: { tool: (name: string, ...args: any[]) => callbacks.set(name, args.at(-1)), resource: () => undefined } as any, user: { id: 7, username: "fixture", isAdmin: false }, knowledge: store });
-    await assert.rejects(() => callbacks.get("knowledge_solution_upgrade_analysis")!({ oldBaselineId: "old", currentProjectSnapshotId: "private", newBaselineId: "new" }), /access denied|not found/i);
+    assert.equal(callbacks.has("knowledge_solution_upgrade_analysis"), false);
   } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });

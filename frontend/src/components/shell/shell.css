@@ -2,10 +2,10 @@
 .shell-topbar-right{display:flex;align-items:center;gap:20px;margin-left:auto}
 .shell-connection-state{display:inline-flex;align-items:center;gap:8px;color:rgb(var(--muted));font:400 11px/1 var(--font-mono);white-space:nowrap}
 .shell-connection-state i{width:7px;height:7px;border-radius:50%;background:rgb(var(--positive));box-shadow:0 0 12px rgb(var(--positive) / .52)}
-.shell-topbar{position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:34px;min-height:76px;padding:0 clamp(24px,3vw,42px);border-bottom:1px solid var(--line);background:rgba(8,9,10,.94);backdrop-filter:blur(16px)}
+.shell-topbar{position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:34px;min-height:76px;padding:0 clamp(24px,3vw,42px);border-bottom:1px solid var(--line);background:rgba(7,20,24,.94);backdrop-filter:blur(16px)}
 .shell-brand{display:inline-flex;align-items:center;gap:11px;flex:none;color:rgb(var(--fg));text-decoration:none}
-.shell-brand .shell-brand-mark{position:relative;width:26px;height:26px;border:1.5px solid rgb(var(--mint));border-radius:4px;background:transparent;transform:rotate(-45deg)}
-.shell-brand .shell-brand-mark::after{position:absolute;inset:5px;border:1.5px solid rgb(var(--mint));border-radius:1px;content:""}
+.shell-brand .shell-brand-mark{position:relative;width:30px;height:30px;border:0;border-radius:0;background:transparent;transform:none;object-fit:contain}
+.shell-brand .shell-brand-mark::after{display:none}
 .shell-brand-name{font:500 22px/1 var(--font-display);letter-spacing:-.045em;white-space:nowrap}
 .shell-primary-nav{display:flex;align-items:center;gap:2px;min-width:0;overflow-x:auto;scrollbar-width:none}
 .shell-primary-nav::-webkit-scrollbar{display:none}
@@ -137,3 +137,4 @@
 @media(prefers-reduced-motion:reduce){
   .shell-primary-link,.shell-popover-item,.shell-context-link,.shell-subnav-link,.shell-scope-trigger,.shell-scope-option,.shell-page-tab{transition:none}
 }
+

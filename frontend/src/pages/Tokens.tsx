@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { NavLink, useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { Copy, Pencil, Plus, Trash2 } from "lucide-react";
 import { api } from "../api/client";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
@@ -40,9 +40,11 @@ type TokenForm = {
 const emptyForm: TokenForm = { name: "", defaultProjectId: "", projectServerId: "", projectIds: [], serverIds: [], defaultServerId: "", environment: "production", allowAllProjects: false, canCreateProjects: false };
 function messageOf(reason: unknown) { return reason instanceof Error ? reason.message : "The request could not be completed."; }
 
-export default function TokensPage() {
+export default function TokensPage({ embedded: embeddedProp = false }: { embedded?: boolean }) {
   const location = useLocation();
-  const agentOnly = location.pathname === "/tokens/agents";
+  const query = new URLSearchParams(location.search);
+  const embedded = embeddedProp || (location.pathname === "/admin" && query.get("view") === "tokens");
+  const agentOnly = embedded ? query.get("section") === "agents" : location.pathname === "/tokens/agents";
   const toast = useToast();
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [agentTokens, setAgentTokens] = useState<AgentToken[]>([]);
@@ -78,7 +80,7 @@ export default function TokensPage() {
   useEffect(() => { void reload(); }, []);
 
   useEffect(() => {
-    const create = new URLSearchParams(location.search).get("create");
+    const create = query.get("create");
     if (create === "1" && !agentOnly) setShowCreate(true);
     if (create === "agent" && agentOnly) setShowCreateAgent(true);
   }, [agentOnly, location.search]);
@@ -175,11 +177,10 @@ export default function TokensPage() {
     catch { toast.error("Could not copy the token. Select and copy it manually."); }
   };
 
-  return (
-    <AppPageFrame variant="wide">
-      <div className="tokens-page">
+  const content = (
+      <div className={`tokens-page${embedded ? " admin-embedded-tokens" : ""}`}>
       <div className="tokens-toolbar">
-        <nav className="shell-page-tabs tokens-mobile-tabs" aria-label="Token sections"><NavLink to="/tokens" end className={({ isActive }) => `shell-page-tab${isActive ? " active" : ""}`}>MCP Access Tokens</NavLink><NavLink to="/tokens/agents" className={({ isActive }) => `shell-page-tab${isActive ? " active" : ""}`}>Relay Agent Tokens</NavLink></nav>
+        <nav className={`shell-page-tabs tokens-mobile-tabs${embedded ? " admin-token-tabs" : ""}`} aria-label="Token sections"><Link to={embedded ? "/admin?view=tokens" : "/tokens"} className={`shell-page-tab${!agentOnly ? " active" : ""}`} aria-current={!agentOnly ? "page" : undefined}>MCP Access Tokens</Link><Link to={embedded ? "/admin?view=tokens&section=agents" : "/tokens/agents"} className={`shell-page-tab${agentOnly ? " active" : ""}`} aria-current={agentOnly ? "page" : undefined}>Relay Agent Tokens</Link></nav>
         {agentOnly ? <Button onClick={() => { setAgentError(""); setShowCreateAgent(true); }} variant="accent"><Plus size={15} /> New Relay Agent Token</Button> : <Button onClick={() => { setEditingTokenId(null); setForm(emptyForm); setError(""); setShowCreate(true); }} variant="primary"><Plus size={15} /> New MCP Access Token</Button>}
       </div>
 
@@ -215,6 +216,6 @@ export default function TokensPage() {
       <ConfirmDialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} title="Delete token" description="Delete this MCP Access Token permanently? Existing MCP clients using it will stop working." confirmLabel="Delete token" tone="danger" onConfirm={deleteApiKey} />
       <ConfirmDialog open={Boolean(revokeTarget)} onClose={() => setRevokeTarget(null)} title="Delete Relay Agent Token" description="Delete this Relay Agent Token? Subsequent agent requests using it will fail. An in-flight request may finish." confirmLabel="Delete token" tone="danger" onConfirm={revokeAgent} />
       </div>
-    </AppPageFrame>
   );
+  return embedded ? content : <AppPageFrame variant="wide">{content}</AppPageFrame>;
 }

@@ -12,6 +12,7 @@ import { knowledgeItemScope, legacyKnowledgeRedirect, withKnowledgeScope, type K
 import { type WikiDirectoryPage } from "../knowledge/wiki-directory";
 import { mergeWikiPageSources, type WikiPageSource } from "../knowledge/wiki-citations";
 import "./wiki.css";
+import "./knowledge-integrated.css";
 const btn = "ui-button ui-button-primary ui-button-sm";
 const btnGhost = "ui-button ui-button-ghost ui-button-sm";
 const btnDanger = "ui-button ui-button-danger ui-button-sm";
@@ -144,7 +145,7 @@ function ProvidersPane({ isAdmin }: { isAdmin: boolean }) {
   const test = async (id: string) => { setError(""); try { const { report } = await api.knowledgeManagedProviderTest(id); setProbe((current) => ({ ...current, [id]: asRecord(report) })); load(); } catch (err) { setError(errText(err, "Provider probe failed")); } };
   if (error && !providers) return <StatePanel state="error" message={error} onRetry={load} />;
   if (!providers) return <StatePanel state="loading" message="Loading managed providers…" />;
-  return <div className="space-y-4">
+  return <div className="knowledge-integrated-surface space-y-4">
     {isAdmin && <section className={cardClass} aria-label="Knowledge engine">
       <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-medium text-fg">Knowledge engine</h3><StatusBadge value={engine?.phase ?? "loading"} /></div>
       <p className="mt-2 text-sm text-subtle">Installed and started with Relay. Embeddings and Wiki generation use the managed providers below.</p>
@@ -263,7 +264,7 @@ function CandidatesPane({ isAdmin }: { isAdmin: boolean }) {
     } catch (err) { setError(errText(err, "Unable to load Candidate Insight")); }
   };
   const refresh = async (insight: JsonRecord) => { setSelected({ ...insight, sourceEnvironment: text(insight.sourceScope?.environment ?? selected?.sourceEnvironment), sessionUpdatedAt: text(selected?.sessionUpdatedAt), currentSessionScope: selected?.currentSessionScope ?? { projectId: insight.projectId, environment: text(insight.environment), sampleManagerVersion: "", solution: "", module: "" } }); const detail = await api.knowledgeCandidateInsightHistory(insight.id); setHistory(records(detail.history)); load(); };
-  return <div className="space-y-4">
+  return <div className="knowledge-integrated-surface space-y-4">
     <section className={cardClass}>
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="font-medium text-fg">Candidate drafts</h3>
@@ -836,7 +837,7 @@ function GatesPane() {
   if (error && !gates) return <StatePanel state="error" message={error} onRetry={load} />;
   if (!gates) return <StatePanel state="loading" message="Running release gates…" />;
   const checks = Object.entries(gates.checks ?? {}) as Array<[string, JsonRecord]>;
-  return <div className="space-y-4">
+  return <div className="knowledge-integrated-surface space-y-4">
     <section className={cardClass}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2"><CheckCircle2 size={16} className={gates.ready ? "text-mint" : "text-coral"} /><h3 className="font-medium text-fg">Release gates</h3></div>

@@ -30,6 +30,8 @@ export interface PrimaryNavItem {
   label: string;
   path: string;
   icon?: ReactNode;
+  adminOnly?: boolean;
+  userOnly?: boolean;
 }
 
 export const primaryNavigation = [
@@ -38,8 +40,8 @@ export const primaryNavigation = [
   { label: "Instances", path: "/instances" },
   { label: "Tools", path: "/tools" },
   { label: "Knowledge", path: "/knowledge" },
-  { label: "Tokens", path: "/tokens" },
-  { label: "Users", path: "/users", adminOnly: true },
+  { label: "Tokens", path: "/tokens", userOnly: true },
+  { label: "Admin", path: "/admin", adminOnly: true },
 ] as const;
 export const knowledgeNavigation = [
   { label: "Overview", path: "/knowledge", matches: (pathname: string) => matchesPath(pathname, "/knowledge", true) },

@@ -48,11 +48,6 @@ function mimeTypeForPath(path: string): string {
   } as Record<string, string>)[extension ?? ""] ?? "application/octet-stream";
 }
 
-
-function isPermissionError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && (((error as { code?: unknown }).code) === "EACCES" || ((error as { code?: unknown }).code) === "EPERM");
-}
-
 function zipEntries(filePath: string): Array<{ path: string; size: number; type: "file" | "directory" }> {
   const archive = readFileSync(filePath);
   if (archive.byteLength > MAX_ARCHIVE_BYTES) throw new Error(`Archive preview is limited to ${MAX_ARCHIVE_BYTES} bytes`);

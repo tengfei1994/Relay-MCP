@@ -1,0 +1,65 @@
+.knowledge-operations-surface {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.knowledge-operations-surface.space-y-6 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0;
+}
+
+.knowledge-operations-surface > * + * {
+  border-top: 1px solid var(--line);
+}
+
+.knowledge-operations-surface > .section-panel,
+.knowledge-operations-surface > .ui-glass,
+.knowledge-operations-surface > .ui-data-table {
+  box-sizing: border-box;
+  width: 100%;
+  border-radius: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.knowledge-operations-surface > .section-panel {
+  padding: 24px 28px 28px;
+}
+
+.knowledge-operations-surface > .ui-glass {
+  padding: 24px 28px 28px;
+}
+
+.knowledge-operations-surface .ops-health-strip {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.knowledge-operations-surface .ui-data-table {
+  overflow: visible;
+}
+
+.knowledge-operations-surface .ui-data-table .ui-data-scroll {
+  border: 0;
+}
+
+.knowledge-operations-surface .ui-empty-state {
+  padding-inline: 28px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+@media (max-width: 700px) {
+  .knowledge-operations-surface > .section-panel,
+  .knowledge-operations-surface > .ui-glass {
+    padding-inline: 18px;
+  }
+}

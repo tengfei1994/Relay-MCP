@@ -1,0 +1,46 @@
+.knowledge-integrated-surface {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.knowledge-integrated-surface.space-y-4 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0;
+}
+
+.knowledge-integrated-surface > * + * {
+  border-top: 1px solid var(--line);
+}
+
+.knowledge-integrated-surface > .glass,
+.knowledge-integrated-surface > .ui-glass {
+  box-sizing: border-box;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.knowledge-integrated-surface > .glass {
+  padding: 24px 28px;
+}
+
+.knowledge-integrated-surface > .ui-glass {
+  padding: 24px 28px;
+}
+
+.knowledge-integrated-surface > .ui-empty-state {
+  padding: 28px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+@media (max-width: 700px) {
+  .knowledge-integrated-surface > .glass,
+  .knowledge-integrated-surface > .ui-glass {
+    padding-inline: 18px;
+  }
+}

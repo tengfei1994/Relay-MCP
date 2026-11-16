@@ -6,7 +6,6 @@ import LandingPage from "./pages/Landing";
 import AccountPage from "./pages/Account";
 import ProjectsPage from "./pages/Projects";
 import ServersPage from "./pages/Servers";
-import UsersPage from "./pages/Users";
 import TokensPage from "./pages/Tokens";
 import InstancesPage from "./pages/Instances";
 import KnowledgeOverview from "./pages/KnowledgeOverview";
@@ -135,11 +134,11 @@ export default function App() {
           <Route path="knowledge/operations/ingest" element={<KnowledgeOperations />} />
           <Route path="knowledge/operations/index" element={<KnowledgeOperations />} />
           <Route path="knowledge/operations/wiki-generation" element={user?.isAdmin ? <KnowledgeWikiGeneration /> : <Navigate to={{ pathname: "/knowledge/wiki", search: location.search }} replace />} />
-          <Route path="tokens/agents" element={<TokensPage />} />
-          <Route path="tokens" element={<TokensPage />} />
-          <Route path="users/requests" element={user?.isAdmin ? <UsersPage /> : <Navigate to="/projects" replace />} />
-          <Route path="users/permissions" element={user?.isAdmin ? <UsersPage /> : <Navigate to="/projects" replace />} />
-          <Route path="users" element={user?.isAdmin ? <UsersPage /> : <Navigate to="/projects" replace />} />
+          <Route path="tokens/agents" element={user?.isAdmin ? <Navigate to="/admin?view=tokens&section=agents" replace /> : <TokensPage />} />
+          <Route path="tokens" element={user?.isAdmin ? <Navigate to="/admin?view=tokens" replace /> : <TokensPage />} />
+          <Route path="users/requests" element={user?.isAdmin ? <Navigate to="/admin?view=users&section=requests" replace /> : <Navigate to="/projects" replace />} />
+          <Route path="users/permissions" element={user?.isAdmin ? <Navigate to="/admin?view=users&section=permissions" replace /> : <Navigate to="/projects" replace />} />
+          <Route path="users" element={user?.isAdmin ? <Navigate to="/admin?view=users" replace /> : <Navigate to="/projects" replace />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

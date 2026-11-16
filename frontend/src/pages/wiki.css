@@ -3,10 +3,10 @@
   grid-template-columns: minmax(270px, 320px) minmax(0, 1fr);
   min-height: 680px;
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  background: rgba(4, 14, 18, .58);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, .22);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .wiki-directory-panel {
@@ -15,11 +15,13 @@
   min-height: 680px;
   flex-direction: column;
   border-right: 1px solid var(--line);
-  background: rgba(255, 255, 255, .025);
+  background: transparent;
 }
 
 .wiki-route-shell {
   width: 100%;
+  max-width: none;
+  margin-inline: 0;
   padding: 0 0 16px;
 }
 
@@ -342,7 +344,7 @@
 
 .wiki-reading-panel {
   min-width: 0;
-  background: rgba(255, 255, 255, .012);
+  background: transparent;
 }
 
 .wiki-reader-empty {

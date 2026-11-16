@@ -1,5 +1,5 @@
 import { Menu, X } from "lucide-react";
-import { NavLink, useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { useAuth } from "../../App";
 import { MobileMenu } from "./MobileMenu";
@@ -18,23 +18,24 @@ export function TopBar() {
   return (
     <>
       <header className="shell-topbar">
-        <NavLink to={user?.isAdmin ? "/admin" : "/workspace"} className="shell-brand" aria-label="Relay MCP workspace home">
+        <Link to={user?.isAdmin ? "/admin" : "/workspace"} className="shell-brand" aria-label="Relay MCP workspace home">
           <span className="shell-brand-mark" aria-hidden="true" />
           <span className="shell-brand-name">Relay MCP</span>
-        </NavLink>
+        </Link>
         <nav className="shell-primary-nav" aria-label="Primary navigation">
           {primaryNavigation.map((item) => {
             if ("adminOnly" in item && item.adminOnly && !user?.isAdmin) return null;
-            const active = matchesPath(location.pathname, item.path);
+            if ("userOnly" in item && item.userOnly && user?.isAdmin) return null;
+            const active = item.label === "Admin" ? location.pathname === "/admin" : matchesPath(location.pathname, item.path);
             return (
-              <NavLink
+              <Link
                 key={item.path}
                 to={item.path}
                 className="shell-primary-link"
                 aria-current={active ? "page" : undefined}
               >
                 {item.label}
-              </NavLink>
+              </Link>
             );
           })}
         </nav>

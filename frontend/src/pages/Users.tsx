@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { NavLink, useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { BookOpen, KeyRound, Shield, ShieldCheck, Trash2, UserPlus } from "lucide-react";
 import { api } from "../api/client";
 import { useAuth } from "../App";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
 import { Button, ConfirmDialog, Dialog, EmptyState, Field, Input, StatusPill, useToast } from "../components/ui";
+import "./users.css";
 
 type UserRecord = { id: number; username: string; isAdmin: boolean; knowledgeEnabled?: boolean; accountStatus?: string; reviewedBy?: number; reviewedAt?: string; reviewReason?: string | null; createdAt?: string };
 type UserForm = { username: string; password: string; isAdmin: boolean; knowledgeEnabled: boolean };
@@ -12,8 +13,11 @@ const emptyUser: UserForm = { username: "", password: "", isAdmin: false, knowle
 const inputClass = "w-full rounded-[10px] border border-white/10 bg-white/[.04] px-3 py-2 text-sm text-fg outline-none placeholder:text-muted focus:border-mint";
 function messageOf(reason: unknown) { return reason instanceof Error ? reason.message : "The request could not be completed."; }
 
-export default function UsersPage() {
+export default function UsersPage({ embedded: embeddedProp = false }: { embedded?: boolean }) {
   const { user: me } = useAuth();
+  const location = useLocation();
+  const query = new URLSearchParams(location.search);
+  const embedded = embeddedProp || (location.pathname === "/admin" && query.get("view") === "users");
   const toast = useToast();
   const [users, setUsers] = useState<UserRecord[]>([]);
   const [showCreate, setShowCreate] = useState(false);
@@ -97,19 +101,27 @@ export default function UsersPage() {
       toast.success("Account status updated.");
     } catch (reason: unknown) { setReviewError(messageOf(reason)); }
   };
-  const location = useLocation();
-  const mode = location.pathname === "/users/requests" ? "requests" : location.pathname === "/users/permissions" ? "permissions" : "accounts";
+  const mode = embedded
+    ? query.get("section") === "requests" ? "requests" : query.get("section") === "permissions" ? "permissions" : "accounts"
+    : location.pathname === "/users/requests" ? "requests" : location.pathname === "/users/permissions" ? "permissions" : "accounts";
+  const usersPath = embedded ? "/admin?view=users" : "/users";
+  const requestsPath = embedded ? "/admin?view=users&section=requests" : "/users/requests";
+  const permissionsPath = embedded ? "/admin?view=users&section=permissions" : "/users/permissions";
   const visibleUsers = mode === "requests" ? users.filter((item) => item.accountStatus !== "active") : users;
 
-  return (
-    <AppPageFrame variant="wide">
+  const content = (
       <div className="mx-auto max-w-[1100px]">
-        {mode === "accounts" && <div className="mb-4 flex justify-end"><Button onClick={() => { setError(""); setShowCreate(true); }} variant="primary"><UserPlus size={15} /> Add user</Button></div>}
-        <nav className="shell-page-tabs admin-mobile-tabs mb-4" aria-label="Administrator sections">
-          <NavLink to="/users" end className={({ isActive }) => `shell-page-tab${isActive ? " active" : ""}`}>Users</NavLink>
-          <NavLink to="/users/requests" className={({ isActive }) => `shell-page-tab${isActive ? " active" : ""}`}>Access requests</NavLink>
-          <NavLink to="/users/permissions" className={({ isActive }) => `shell-page-tab${isActive ? " active" : ""}`}>Knowledge permissions</NavLink>
-        </nav>
+        <div className="users-page-toolbar">
+          <div className="users-page-title"><span>Administrator</span><strong>{mode === "requests" ? "Access requests" : mode === "permissions" ? "Knowledge permissions" : "Users"}</strong></div>
+          <div className="users-page-actions">
+            <nav className={`shell-page-tabs ${embedded ? "admin-tabs" : "admin-mobile-tabs"}`} aria-label="Administrator sections">
+              <Link to={usersPath} className={`shell-page-tab${mode === "accounts" ? " active" : ""}`} aria-current={mode === "accounts" ? "page" : undefined}>Users</Link>
+              <Link to={requestsPath} className={`shell-page-tab${mode === "requests" ? " active" : ""}`} aria-current={mode === "requests" ? "page" : undefined}>Access requests</Link>
+              <Link to={permissionsPath} className={`shell-page-tab${mode === "permissions" ? " active" : ""}`} aria-current={mode === "permissions" ? "page" : undefined}>Knowledge permissions</Link>
+            </nav>
+            {mode === "accounts" && <Button onClick={() => { setError(""); setShowCreate(true); }} variant="primary"><UserPlus size={15} /> Add user</Button>}
+          </div>
+        </div>
         {error && <div className="mb-5 rounded-[10px] border border-coral/40 bg-coral/10 px-4 py-3 text-sm text-coral" role="alert">{error}</div>}
         <div className="divide-y divide-white/[.09]">
           {visibleUsers.map((user) => <div key={user.id} className="user-row">
@@ -139,6 +151,6 @@ export default function UsersPage() {
         <Dialog open={Boolean(reviewTarget)} onClose={() => setReviewTarget(null)} title={reviewAction === "rejected" ? "Reject request" : reviewAction === "disabled" ? "Disable account" : "Approve or enable account"} description={reviewTarget?.username}><form onSubmit={submitReview} className="space-y-4"><p className="text-sm text-muted">{reviewAction === "active" ? "Product Knowledge and general Memory remain controlled by their separate permission." : "Access to protected resources stops on the next request."}</p><Field label="Reason (optional)"><Input value={reviewReason} maxLength={500} onChange={(event) => setReviewReason((event.target as HTMLInputElement).value)} /></Field>{reviewError && <p role="alert" className="text-sm text-coral">{reviewError}</p>}<div className="flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setReviewTarget(null)}>Cancel</Button><Button type="submit" variant="primary">{reviewAction === "rejected" ? "Reject" : reviewAction === "disabled" ? "Disable" : "Approve"}</Button></div></form></Dialog>
         <ConfirmDialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} title="Delete user" description="Delete this user? All their projects and servers will be deleted." confirmLabel="Delete user" tone="danger" onConfirm={deleteUser} />
       </div>
-    </AppPageFrame>
   );
+  return embedded ? content : <AppPageFrame variant="wide">{content}</AppPageFrame>;
 }

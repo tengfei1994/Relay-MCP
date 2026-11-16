@@ -1,4 +1,4 @@
-import { NavLink, useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../../App";
 import { primaryNavigation, matchesPath } from "./navigation";
 import { UserMenu } from "./UserMenu";
@@ -12,9 +12,10 @@ export function MobileMenu({ open, onClose }: { open: boolean; onClose: () => vo
       <nav className="shell-mobile-nav" aria-label="Primary navigation">
         {primaryNavigation.map((item) => {
           if ("adminOnly" in item && item.adminOnly && !user?.isAdmin) return null;
-          const active = matchesPath(location.pathname, item.path);
+          if ("userOnly" in item && item.userOnly && user?.isAdmin) return null;
+          const active = item.label === "Admin" ? location.pathname === "/admin" : matchesPath(location.pathname, item.path);
           return (
-            <NavLink
+            <Link
               key={item.path}
               to={item.path}
               className="shell-mobile-link"
@@ -22,7 +23,7 @@ export function MobileMenu({ open, onClose }: { open: boolean; onClose: () => vo
               onClick={onClose}
             >
               {item.label}
-            </NavLink>
+            </Link>
           );
         })}
       </nav>

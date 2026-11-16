@@ -224,9 +224,7 @@ export function ConfirmDialog({ open, onClose, title, description, confirmLabel,
 
 export interface DrawerProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children' | 'title'> { open: boolean; onClose: () => void; title: ReactNode; description?: ReactNode; children?: ReactNode; footer?: ReactNode; }
 export function Drawer({ open, onClose, title, description, children, footer, className = '', ...props }: DrawerProps) {
-  const ref = useRef<HTMLDivElement>(null); const titleId = useId(); const close = useCallback(() => onClose(), [onClose]); useFocusTrap(open, ref, close);
-  if (!open || typeof document === 'undefined') return null;
-  return createPortal(<><div className="ui-drawer-overlay" onMouseDown={event => { if (event.target === event.currentTarget) close(); }} /><aside ref={ref} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} className={`ui-drawer ${className}`.trim()} {...props}><header className="ui-drawer-header"><div><h2 id={titleId} className="ui-drawer-title">{title}</h2>{description ? <p className="ui-page-header-description">{description}</p> : null}</div><IconButton aria-label="Close" onClick={close}><X size={18} aria-hidden="true" /></IconButton></header><div className="ui-drawer-content">{children}</div>{footer ? <footer className="ui-drawer-footer">{footer}</footer> : null}</aside></>, document.body);
+  return <Dialog open={open} onClose={onClose} title={title} description={description} footer={footer} wide className={className} {...props}>{children}</Dialog>;
 }
 
 export interface PopoverProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> { open: boolean; onClose: () => void; anchorRef: RefObject<HTMLElement>; children?: ReactNode; }

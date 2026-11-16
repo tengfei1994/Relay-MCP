@@ -9,7 +9,6 @@ import { Button, ErrorState, Skeleton } from "../components/ui";
 import AttentionList from "../components/knowledge/AttentionList";
 import IndexPlate from "../components/knowledge/IndexPlate";
 import IngestRunList, { type IngestRun } from "../components/knowledge/IngestRunList";
-import PlaneCard from "../components/knowledge/PlaneCard";
 import { StandardPage } from "../components/knowledge/KnowledgeFrame";
 
 import "../components/knowledge/overview.css";
@@ -114,7 +113,7 @@ function pageTotal(value: unknown): number | undefined {
 
 export default function KnowledgeOverview() {
   const { user } = useAuth();
-  const { projects, projectId, selectedProject, loading: scopeLoading } = useProjectScope();
+  const { projects, projectId, loading: scopeLoading } = useProjectScope();
   const [snapshot, setSnapshot] = useState<OverviewSnapshot>();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -189,14 +188,7 @@ export default function KnowledgeOverview() {
   for (const state of plate.wells) if (state !== "empty") counts[state] += 1;
   const notCurrent = counts.stale + counts.fail + counts.wait;
   const documents = snapshot?.index.documents ?? 0;
-  const title = snapshot && !snapshot.indexAvailable ? "Index status unavailable" : documents === 0 ? "No documents indexed yet" : snapshot?.index.stale ? "Index is stale" : notCurrent === 0 ? "Index is current" : `Index is current except ${notCurrent} ${notCurrent === 1 ? "batch" : "batches"}`;
-  const lede = snapshot && !snapshot.indexAvailable ? "Index status is available to administrators. Project Memory remains accessible according to your project permissions."
-    : documents === 0
-    ? "Import product documents to build the index."
-    : plate.batchSize === 1
-      ? "Each well is one document. Hover a well for its position and state."
-      : `Each well is a batch of about ${plate.batchSize} documents. Hover a well for its position and state.`;
-  const projectName = selectedProject?.name ?? snapshot?.projects.find((project) => project.id === snapshot.projectId)?.name;
+  const statusLabel = snapshot && !snapshot.indexAvailable ? "Index unavailable" : documents === 0 ? "No indexed documents" : snapshot?.index.stale ? "Index stale" : notCurrent === 0 ? "Index current" : `${notCurrent} batches need attention`;
   const captureStatus = snapshot?.capture?.status ? snapshot.capture.status.toLowerCase() : "unknown";
   const isAdmin = user?.isAdmin === true;
 
@@ -206,41 +198,39 @@ export default function KnowledgeOverview() {
 
   return (
     <StandardPage className="overview-page">
-      <section className="overview-hero">
-        <IndexPlate wells={plate.wells} batchSize={plate.batchSize} loading={!snapshot} animationKey={animationKey} />
-        <div className="overview-intro">
-          {snapshot ? <>
-            <h1 className="overview-title">{title}</h1>
-            <p className="overview-lede">{lede}</p>
-            {snapshot.indexAvailable && <ul className="plate-legend" aria-label="Index coverage legend">
-              <li><i className="legend-dot legend-ok" />Current <b>{counts.ok}</b></li>
-              <li><i className="legend-dot legend-stale" />Stale <b>{counts.stale}</b></li>
-              {counts.fail > 0 && <li><i className="legend-dot legend-fail" />Failed <b>{counts.fail}</b></li>}
-              <li><i className="legend-dot legend-wait" />Waiting <b>{counts.wait}</b></li>
-            </ul>}
-            <div className="flex flex-wrap items-center gap-3">
-              <Button variant="accent" loading={loading} onClick={() => void load()}><RefreshCw size={16} />Refresh</Button>
-              {snapshot.index.stale && <Link className="button-ghost button-sm" to="/knowledge/operations/index">Open index controls</Link>}
-            </div>
-            <h2 className="attention-heading">Needs attention</h2>
-            <AttentionList pendingReview={pendingReview} unlinkedEvidence={snapshot.unlinkedEvidence} failedRuns={failedRuns} isAdmin={isAdmin} />
-          </> : <div className="overview-loading"><Skeleton width="88%" height="48px" /><Skeleton width="95%" height="56px" /><Skeleton width="100%" height="88px" /></div>}
+      <section className="knowledge-overview-surface" aria-label="Knowledge workspace">
+        <div className="knowledge-overview-status" aria-live="polite">
+          <div><span>Status</span><strong>{statusLabel}</strong></div>
+          <div><span>Documents</span><strong>{snapshot ? documents.toLocaleString() : "—"}</strong></div>
+          <div><span>Current batches</span><strong className="text-mint">{snapshot ? counts.ok : "—"}</strong></div>
+          <div><span>Needs attention</span><strong className={notCurrent > 0 ? "text-sun" : "text-mint"}>{snapshot ? notCurrent : "—"}</strong></div>
+          <div className="knowledge-overview-status-actions">
+            <Button variant="ghost" loading={loading} onClick={() => void load()}><RefreshCw size={15} /> Refresh</Button>
+            {snapshot?.index.stale && <Link className="button-ghost button-sm" to="/knowledge/operations/index">Index controls</Link>}
+          </div>
         </div>
-      </section>
 
-      <section className="overview-block">
-        <h2 className="section-heading">Where to work</h2>
-        <div className="plane-grid">
-          <PlaneCard title="Product docs" description="Versioned documentation you can import, compare and search." footnote={snapshot ? `${snapshot.productDocumentCount ?? "—"} documents` : <Skeleton width="96px" height="16px" />} to="/knowledge/product-docs" tint="110,231,200" />
-          <PlaneCard title="Memory" description="What sessions captured, and the insights waiting to become knowledge." footnote={snapshot ? `${pendingReview ?? "—"} waiting for review` : <Skeleton width="128px" height="16px" />} to="/knowledge/memory" tint="255,180,84" />
-          <PlaneCard title="Operations" description="Capture, ingest and index health, with rebuild controls." footnote={snapshot ? failedRuns && failedRuns > 0 ? `${failedRuns} failed imports` : `Capture ${captureStatus}` : <Skeleton width="104px" height="16px" />} to="/knowledge/operations/capture" tint={failedRuns && failedRuns > 0 ? "255,122,112" : "138,180,255"} />
+        <div className="knowledge-overview-main">
+          <div className="knowledge-overview-coverage">
+            <div className="knowledge-overview-section-heading"><h2>Index coverage</h2><span>{snapshot?.indexAvailable ? `${counts.ok} current · ${counts.stale} stale · ${counts.fail} failed · ${counts.wait} waiting` : "Waiting for index data"}</span></div>
+            <IndexPlate wells={plate.wells} batchSize={plate.batchSize} loading={!snapshot} animationKey={animationKey} />
+          </div>
+          <div className="knowledge-overview-column">
+            <div className="knowledge-overview-section-heading"><h2>Needs attention</h2><span>Open a queue to continue</span></div>
+            {snapshot ? <AttentionList pendingReview={pendingReview} unlinkedEvidence={snapshot.unlinkedEvidence} failedRuns={failedRuns} isAdmin={isAdmin} /> : <div className="overview-loading"><Skeleton width="100%" height="46px" /><Skeleton width="100%" height="46px" /></div>}
+            <div className="knowledge-overview-section-heading knowledge-overview-section-heading-spaced"><h2>Workspaces</h2><span>Jump to a working surface</span></div>
+            <nav className="knowledge-overview-links" aria-label="Knowledge workspaces">
+              <Link to="/knowledge/product-docs"><span>Product docs</span><b>{snapshot?.productDocumentCount ?? "—"}</b><small>documents</small></Link>
+              <Link to="/knowledge/memory"><span>Memory</span><b>{pendingReview ?? "—"}</b><small>waiting for review</small></Link>
+              <Link to="/knowledge/operations/capture"><span>Operations</span><b>{failedRuns && failedRuns > 0 ? failedRuns : captureStatus}</b><small>{failedRuns && failedRuns > 0 ? "failed imports" : "capture status"}</small></Link>
+            </nav>
+          </div>
         </div>
-      </section>
 
-      <section className="overview-block">
-        <div className="section-heading-row"><h2 className="section-heading">Recent ingest runs</h2><Link className="section-link" to="/knowledge/operations/ingest">View all runs</Link></div>
-        <IngestRunList runs={snapshot?.runs ?? []} loading={!snapshot} isAdmin={isAdmin} />
-        {projectName && <p className="default-project">Default project: <span>{projectName}</span></p>}
+        <div className="knowledge-overview-activity">
+          <div className="knowledge-overview-section-heading"><h2>Recent ingest runs</h2><Link className="section-link" to="/knowledge/operations/ingest">View all</Link></div>
+          <IngestRunList runs={snapshot?.runs ?? []} loading={!snapshot} isAdmin={isAdmin} />
+        </div>
       </section>
     </StandardPage>
   );

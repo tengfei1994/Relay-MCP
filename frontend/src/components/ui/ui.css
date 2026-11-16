@@ -88,7 +88,7 @@ textarea.ui-control { height: auto; min-height: 96px; padding-top: 9px; padding-
 .ui-pagination-actions { display: flex; gap: 8px; }
 .ui-overlay { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: rgba(0,0,0,.72); backdrop-filter: blur(4px); animation: ui-fade-in .16s ease both; }
 .ui-dialog { width: min(520px, calc(100vw - 32px)); max-height: min(760px, calc(100vh - 32px)); overflow: auto; padding: 26px; animation: ui-dialog-in .16s ease both; }
-.ui-dialog-wide { width: min(640px, calc(100vw - 32px)); }
+.ui-dialog-wide { width: min(760px, calc(100vw - 32px)); }
 .ui-dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .ui-dialog-header-copy { min-width: 0; }
 .ui-dialog-close { flex: 0 0 auto; margin: -8px -8px 0 0; }

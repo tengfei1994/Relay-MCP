@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Relay MCP R logo tile</title>
+  <desc id="desc">A blue R with a cyan forwarding arrow on a dark rounded square.</desc>
+  <defs>
+    <linearGradient id="tile" x1="80" y1="40" x2="940" y2="990" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#132C42"/><stop offset="1" stop-color="#07111F"/>
+    </linearGradient>
+    <linearGradient id="r-blue" x1="166" y1="102" x2="850" y2="800" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3B82F6"/><stop offset="0.55" stop-color="#2563EB"/><stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <linearGradient id="relay-cyan" x1="455" y1="510" x2="870" y2="777" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22D3EE"/><stop offset="1" stop-color="#06B6D4"/>
+    </linearGradient>
+  </defs>
+  <rect x="24" y="24" width="976" height="976" rx="214" fill="url(#tile)"/>
+  <rect x="24" y="24" width="976" height="976" rx="214" fill="none" stroke="#2B4761" stroke-opacity=".6" stroke-width="8"/>
+  <path fill="url(#r-blue)" fill-rule="evenodd" d="M166 102h425c178 0 291 95 291 250 0 112-66 190-178 226l169 222H651L530 624H392v176H166V102Zm226 180v168h182c72 0 111-30 111-84 0-55-39-84-111-84H392Z"/>
+  <path fill="url(#relay-cyan)" d="M455 510h99l174 174 73-73v166H635l73-73-174-174h-79Z"/>
+</svg>
+

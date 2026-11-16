@@ -35,12 +35,14 @@ export interface PrimaryNavItem {
 }
 
 export const primaryNavigation = [
-  { label: "Projects", path: "/projects" },
-  { label: "Servers", path: "/servers" },
-  { label: "Instances", path: "/instances" },
-  { label: "Tools", path: "/tools" },
+  { label: "Workspace", path: "/workspace" },
+  { label: "Jobs", path: "/activity" },
+  { label: "Agents", path: "/instances" },
   { label: "Knowledge", path: "/knowledge" },
   { label: "Tokens", path: "/tokens", userOnly: true },
+  { label: "Projects", path: "/projects", adminOnly: true },
+  { label: "Servers", path: "/servers", adminOnly: true },
+  { label: "Tools", path: "/tools", adminOnly: true },
   { label: "Admin", path: "/admin", adminOnly: true },
 ] as const;
 export const knowledgeNavigation = [
@@ -93,3 +95,4 @@ export const pageTabNavigation = {
     { label: "Wiki generation", path: "/knowledge/operations/wiki-generation", end: true, adminOnly: true, matches: (pathname: string) => matchesPath(pathname, "/knowledge/operations/wiki-generation") },
   ],
 } as const;
+

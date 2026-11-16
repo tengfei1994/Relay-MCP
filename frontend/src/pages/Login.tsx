@@ -47,7 +47,7 @@ export default function LoginPage({ initialMode = "login" }: { initialMode?: "lo
   return (
     <main className="auth-page text-fg">
       <aside className="auth-intro" aria-label="About Relay">
-        <Link to="/" className="auth-brand"><span className="auth-brand-mark" aria-hidden="true" />Relay<span>MCP</span></Link>
+        <Link to="/" className="auth-brand"><img className="auth-brand-mark" src="/relay-mcp-logo.svg" alt="" aria-hidden="true" />Relay<span>MCP</span></Link>
         <div className="auth-intro-copy"><p className="auth-caption">Your workspace, connected</p><h2>Keep your work<br />in context.</h2><p>Projects, product knowledge and reviewed experience. Ready for the client you already use.</p><div className="auth-pillars"><span><FolderOpen size={18} />Projects</span><span><BookOpen size={18} />Knowledge</span><span><Layers size={18} />Memory</span></div></div>
         <p className="auth-intro-footer">Access is managed by your Relay administrator.</p>
       </aside>
@@ -67,3 +67,4 @@ export default function LoginPage({ initialMode = "login" }: { initialMode?: "lo
     </main>
   );
 }
+

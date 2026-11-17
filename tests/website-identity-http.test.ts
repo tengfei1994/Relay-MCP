@@ -19,13 +19,14 @@ test("registration review, account state and connection credentials use live aut
   const { default: fastifyJwt } = await import("@fastify/jwt");
   const { eq } = await import("drizzle-orm");
   const { db, runMigrations } = await import("../src/server/db/index.js");
-  const { users, servers, projects, mcpTokenProjectScopes } = await import("../src/server/db/schema.js");
+  const { users, projects, mcpTokenProjectScopes } = await import("../src/server/db/schema.js");
   const { registerSessionAuthentication } = await import("../src/server/session-auth.js");
   const { authRoutes } = await import("../src/server/routes/auth.js");
   const { userRoutes } = await import("../src/server/routes/users.js");
   const { tokenRoutes } = await import("../src/server/routes/tokens.js");
   const { agentRoutes } = await import("../src/server/routes/agents.js");
   const { agentTokenRoutes } = await import("../src/server/routes/agent-tokens.js");
+  const { serverRoutes } = await import("../src/server/routes/servers.js");
   const { uploadRoutes } = await import("../src/server/routes/uploads.js");
   const { downloadRoutes } = await import("../src/server/routes/downloads.js");
   const { createUploadSession, getUploadSession } = await import("../src/shared/upload-store.js");
@@ -39,7 +40,7 @@ test("registration review, account state and connection credentials use live aut
   await app.register(fastifyJwt, { secret: "identity-test-secret-with-at-least-32-characters" });
   registerSessionAuthentication(app);
   await app.register(authRoutes); await app.register(userRoutes); await app.register(tokenRoutes);
-  await app.register(agentRoutes); await app.register(agentTokenRoutes);
+  await app.register(agentRoutes); await app.register(agentTokenRoutes); await app.register(serverRoutes);
   await app.register(uploadRoutes); await app.register(downloadRoutes);
   const headers = (token: string) => ({ authorization: `Bearer ${token}` });
   try {
@@ -113,7 +114,10 @@ test("registration review, account state and connection credentials use live aut
     assert.throws(() => authorizeTransfer(applicant.id, project.id, scoped.json().profile.id, "mcp"), /no longer available/);
     assert.equal((await downloadRequest()).statusCode, 400);
     assert.equal((await uploadRequest(upload.token)).statusCode, 400);
-    const server = db.insert(servers).values({ userId: applicant.id, name: "Agent", host: "localhost", sshUser: "unused", privateKeyPath: "unused", publicKey: "unused", connectionMode: "agent", agentId: "agent-one" }).returning().get();
+    const serverResponse = await app.inject({ method: "POST", url: "/api/servers", headers: headers(user.token), payload: { name: "Agent", connectionMode: "agent", agentId: "agent-one", os: "windows" } });
+    assert.equal(serverResponse.statusCode, 201, serverResponse.body);
+    const server = serverResponse.json().server;
+    assert.equal(server.status, "pending", "an agent server can be configured before any agent connects");
     const agent = await app.inject({ method: "POST", url: "/api/agent-tokens", headers: headers(user.token), payload: { name: "Agent", serverId: server.id } });
     assert.equal(agent.statusCode, 201, agent.body); assert.equal(agent.json().profile.tokenId, undefined);
     const agentHeader = headers(agent.json().token);

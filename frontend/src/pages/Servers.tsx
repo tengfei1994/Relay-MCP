@@ -316,7 +316,7 @@ export default function ServersPage() {
               </Field>
             </>
           ) : (
-            <Field label="Agent ID" required>
+            <Field label="Agent ID" required hint="Choose an ID now and use the same ID in the Relay Agent client. The agent does not need to be connected to add this server.">
               <Input value={newServer.agentId} onChange={(e) => setNewServer((s) => ({ ...s, agentId: e.target.value }))} placeholder="VGSM-SERVER" required />
             </Field>
           )}

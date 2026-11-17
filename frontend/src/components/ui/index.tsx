@@ -184,6 +184,8 @@ export function Pagination({ page, total, limit, onPageChange, className = '', .
 function focusableElements(container: HTMLElement): HTMLElement[] { return Array.from(container.querySelectorAll<HTMLElement>('a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')); }
 function useFocusTrap(open: boolean, containerRef: RefObject<HTMLElement>, onClose: () => void) {
   const previousFocus = useRef<HTMLElement | null>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     if (!open) return;
     previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -192,7 +194,7 @@ function useFocusTrap(open: boolean, containerRef: RefObject<HTMLElement>, onClo
     const focusTarget = existingFocus ?? (container ? focusableElements(container)[0] ?? container : null);
     const frame = requestAnimationFrame(() => focusTarget?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); onClose(); return; }
+      if (event.key === 'Escape') { event.preventDefault(); closeRef.current(); return; }
       if (event.key !== 'Tab' || !container) return;
       const elements = focusableElements(container);
       if (elements.length === 0) { event.preventDefault(); container.focus(); return; }
@@ -202,7 +204,7 @@ function useFocusTrap(open: boolean, containerRef: RefObject<HTMLElement>, onClo
     };
     document.addEventListener('keydown', onKeyDown);
     return () => { cancelAnimationFrame(frame); document.removeEventListener('keydown', onKeyDown); previousFocus.current?.focus(); previousFocus.current = null; };
-  }, [containerRef, onClose, open]);
+  }, [containerRef, open]);
 }
 
 export interface DialogProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children' | 'title'> { open: boolean; onClose: () => void; title: ReactNode; description?: ReactNode; children?: ReactNode; footer?: ReactNode; wide?: boolean; closeOnOverlay?: boolean; busy?: boolean; }

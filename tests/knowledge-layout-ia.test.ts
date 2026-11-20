@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { knowledgeNavigation, primaryNavigation } from "../frontend/src/components/shell/navigation.js";
 
 const root = join(process.cwd(), "frontend", "src");
 const read = (...parts: string[]) => readFileSync(join(root, ...parts), "utf8");
@@ -32,9 +33,10 @@ test("Knowledge navigation gives every capability one canonical visible owner", 
 });
 
 test("Knowledge sub-navigation uses exact matching for Overview", () => {
-  const subNav = read("components", "shell", "SubNav.tsx");
-  assert.match(subNav, /const active = item\.matches\(location\.pathname\)/);
-  assert.match(subNav, /aria-current=\{active \? \"page\" : undefined\}/);
+  const overview = knowledgeNavigation.find((item) => item.path === "/knowledge");
+  assert.ok(overview?.matches("/knowledge"));
+  assert.equal(overview?.matches("/knowledge/wiki"), false);
+  assert.deepEqual(knowledgeNavigation.filter((item) => item.matches("/knowledge/wiki")).map((item) => item.label), ["Wiki"]);
 });
 
 test("Knowledge frame keeps the shared content rail", () => {
@@ -47,11 +49,10 @@ test("Knowledge frame keeps the shared content rail", () => {
   assert.doesNotMatch(shellCss, /shell-footer/);
 });
 
-test("Workspace Activity stays in the workspace navigation", () => {
+test("Workspace Activity and Jobs have distinct console entries", () => {
   const app = read("App.tsx");
-  const rail = read("components", "shell", "ContextRail.tsx");
   assert.match(app, /<Route path="activity" element=\{<ActivityPage \/>\} \/>/);
-  assert.match(rail, /\["\/workspace", "\/projects", "\/activity"\]\.includes\(pathname\)/);
-  assert.match(rail, /label: "Activity", path: "\/activity"/);
-  assert.doesNotMatch(rail, /label: "Activity", path: "\/knowledge\/sessions"/);
+  assert.match(app, /<Route path="jobs" element=\{<JobsPage \/>\} \/>/);
+  assert.deepEqual(primaryNavigation.filter((item) => item.label === "Activity").map((item) => item.path), ["/activity"]);
+  assert.deepEqual(primaryNavigation.filter((item) => item.label === "Jobs").map((item) => item.path), ["/jobs"]);
 });

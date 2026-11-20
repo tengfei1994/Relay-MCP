@@ -67,6 +67,7 @@ function RecordDrawer({ row, tab, onClose }: { row: JsonRecord; tab: MemoryTab; 
             <StatusPill status={row.status ?? row.lifecycle ?? "confirmed"} />
             <code className="text-xs text-muted">{text(row.id, "unknown")}</code>
           </div>
+          {tab === "confirmed-memory" && <p className="mb-3 text-sm text-muted">Searchable in the confirmed scope shown below.</p>}
           <h3 className="mb-3 font-display text-lg font-semibold">Summary</h3>
           <dl className="grid gap-3 sm:grid-cols-2">
             {metadata.map(([name, value]) => <div key={name}><dt className="text-sm text-muted">{name}</dt><dd className="mt-1 break-words text-sm">{text(value, "—")}</dd></div>)}
@@ -259,7 +260,7 @@ export default function KnowledgeMemory() {
       <PageTabs section="memory" className="knowledge-local-tabs mb-6" />
       {tab === "memory-submissions" && Boolean(user?.isAdmin) && <><LegacyScopeQueue /><p className="mb-5 text-sm text-muted">Historical <Link className="underline" to="/knowledge/candidate-insights">candidate insights</Link> and <Link className="underline" to="/knowledge/candidates">candidates</Link> remain available for review.</p></>}
       <div className="mb-6 flex flex-wrap items-end gap-3">
-        <label className="relative min-w-[280px] flex-1">
+        <label className="relative min-w-0 basis-64 flex-1">
           <span className="sr-only">Search {title}</span>
           <Search size={15} aria-hidden="true" className="pointer-events-none absolute left-3 top-3 text-muted" />
           <Input className="pl-9" placeholder={`Search ${title.toLowerCase()}`} value={query} onChange={(event) => applyQuery(event.target.value)} />

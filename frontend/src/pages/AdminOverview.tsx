@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ArrowRight, CircleAlert, FolderPlus, KeyRound, RefreshCw } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { api } from "../api/client";
+import { useRelayHealth } from "../context/RelayHealth";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
 import "./console-overview.css";
 import { useAuth } from "../App";
@@ -22,21 +23,20 @@ export default function AdminOverview() {
   const [pendingSubmissions, setPendingSubmissions] = useState(0);
   const [pendingClassification, setPendingClassification] = useState(0);
   const [providerCount, setProviderCount] = useState<number>();
-  const [health, setHealth] = useState<{ ok?: boolean }>();
+  const health = useRelayHealth();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const load = async () => {
     setLoading(true); setError("");
-    const [userResult, candidatesResult, submissionsResult, classificationResult, providerResult, healthResult] = await Promise.allSettled([
-      api.listUsers(), user?.knowledgeEnabled ? api.legacyCandidatesForReview(0) : Promise.resolve(undefined), user?.knowledgeEnabled ? api.memorySubmissions(0) : Promise.resolve(undefined), user?.knowledgeEnabled ? api.productClassificationReport(0) : Promise.resolve(undefined), api.knowledgeManagedProviders(), api.health(),
+    const [userResult, candidatesResult, submissionsResult, classificationResult, providerResult] = await Promise.allSettled([
+      api.listUsers(), user?.knowledgeEnabled ? api.legacyCandidatesForReview(0) : Promise.resolve(undefined), user?.knowledgeEnabled ? api.memorySubmissions(0) : Promise.resolve(undefined), user?.knowledgeEnabled ? api.productClassificationReport(0) : Promise.resolve(undefined), api.knowledgeManagedProviders(),
     ]);
     if (userResult.status === "fulfilled") setUsers(usersFrom(userResult.value.users)); else setError("Account data is unavailable. Try again.");
     if (candidatesResult.status === "fulfilled" && candidatesResult.value) setPendingCandidates(Array.isArray(candidatesResult.value.candidates) ? candidatesResult.value.candidates.length : 0);
     if (submissionsResult.status === "fulfilled" && submissionsResult.value) setPendingSubmissions(Array.isArray(submissionsResult.value.submissions) ? submissionsResult.value.submissions.length : 0);
     if (classificationResult.status === "fulfilled" && classificationResult.value) setPendingClassification(Number(record(classificationResult.value.totals).pending ?? 0));
     if (providerResult.status === "fulfilled") setProviderCount(Array.isArray(providerResult.value.providers) ? providerResult.value.providers.length : 0);
-    if (healthResult.status === "fulfilled") setHealth(healthResult.value);
     setLoading(false);
   };
 
@@ -48,7 +48,7 @@ export default function AdminOverview() {
   const activeAccounts = users.filter((item) => item.accountStatus === "active").length;
   const knowledgeQueue = pendingCandidates + pendingSubmissions + pendingClassification;
   const selectedUser = users.find((item) => item.id === selectedUserId);
-  const runtimeState = health?.ok === false ? "Attention" : loading ? "Checking" : "Healthy";
+  const runtimeState = health === "healthy" ? "Healthy" : health === "offline" ? "Offline" : health === "degraded" ? "Degraded" : "Checking";
 
   if (adminView === "users") return <UsersPage embedded />;
   if (adminView === "tokens") return <TokensPage embedded />;
@@ -66,7 +66,7 @@ export default function AdminOverview() {
     {error && <div className="admin-error" role="alert"><CircleAlert size={15} aria-hidden="true" />{error}<button type="button" onClick={() => void load()}>Retry</button></div>}
 
     <section className="admin-status-strip" aria-label="System status">
-      <div><span>System</span><strong className={runtimeState === "Healthy" ? "is-good" : runtimeState === "Attention" ? "is-warn" : ""}>{runtimeState}</strong></div>
+      <div><span>System</span><strong className={runtimeState === "Healthy" ? "is-good" : health === "degraded" || health === "offline" ? "is-warn" : ""}>{runtimeState}</strong></div>
       <div><span>Users</span><strong>{loading ? "-" : users.length}</strong><small>{activeAccounts} active</small></div>
       <div><span>Access requests</span><strong>{loading ? "-" : pendingAccounts}</strong><small>waiting</small></div>
       <div><span>Knowledge review</span><strong>{loading ? "-" : knowledgeQueue}</strong><small>{providerCount === undefined ? "status unavailable" : providerCount + " providers"}</small></div>

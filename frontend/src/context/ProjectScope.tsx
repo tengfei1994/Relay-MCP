@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api/client";
 
 export interface Project {
@@ -14,6 +14,7 @@ interface ProjectScopeValue {
   setProjectId: (projectId: number) => void;
   loading: boolean;
   error: string | undefined;
+  refresh: () => void;
 }
 
 const ProjectScopeContext = createContext<ProjectScopeValue | undefined>(undefined);
@@ -31,6 +32,14 @@ export function ProjectScopeProvider({ children }: { children: ReactNode }) {
   const [projectId, setProjectIdState] = useState<number>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+
+  const [attempt, setAttempt] = useState(0);
+  const refresh = useCallback(() => {
+    requestRef.current = undefined;
+    setLoading(true);
+    setError(undefined);
+    setAttempt((value) => value + 1);
+  }, []);
 
   useEffect(() => {
     const effectId = ++effectIdRef.current;
@@ -56,7 +65,7 @@ export function ProjectScopeProvider({ children }: { children: ReactNode }) {
     return () => {
       if (effectIdRef.current === effectId) effectIdRef.current += 1;
     };
-  }, []);
+  }, [attempt]);
 
   const setProjectId = (nextId: number) => {
     if (!projects.some((project) => project.id === nextId)) return;
@@ -69,8 +78,8 @@ export function ProjectScopeProvider({ children }: { children: ReactNode }) {
     [projects, projectId],
   );
   const value = useMemo(
-    () => ({ projects, projectId, selectedProject, setProjectId, loading, error }),
-    [projects, projectId, selectedProject, loading, error],
+    () => ({ projects, projectId, selectedProject, setProjectId, loading, error, refresh }),
+    [projects, projectId, selectedProject, loading, error, refresh],
   );
 
   return <ProjectScopeContext.Provider value={value}>{children}</ProjectScopeContext.Provider>;

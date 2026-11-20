@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { Archive, ChevronRight, Eye, File, FileImage, FileText, Folder, Plus, Server as ServerIcon, Link2, Unlink, Settings, Pencil, Trash2 } from "lucide-react";
 import { api } from "../api/client";
+import { useProjectScope } from "../context/ProjectScope";
 import { Button, ConfirmDialog, Dialog, Field, Input, Select } from "../components/ui";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
 
@@ -175,6 +176,8 @@ function filePreviewDetails(size?: number, modifiedAt?: string): string {
 
 export default function ProjectsPage() {
   const location = useLocation();
+  const { refresh: refreshScope } = useProjectScope();
+  const openedProjectSearch = useRef<string>();
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
@@ -265,6 +268,14 @@ export default function ProjectsPage() {
     try { await refreshFiles(project.id, ""); } catch (err: unknown) { setWorkspaceError(err instanceof Error ? err.message : "Unable to load project files"); }
   };
 
+  useEffect(() => {
+    if (openedProjectSearch.current === location.search || projectsLoading) return;
+    openedProjectSearch.current = location.search;
+    const id = Number(new URLSearchParams(location.search).get("project"));
+    const project = projects.find((item) => item.id === id);
+    if (project) void openProject(project);
+  }, [location.search, projects, projectsLoading]);
+
   const openDir = async (name: string) => {
     if (!selected) return;
     const projectId = selected.id;
@@ -352,6 +363,7 @@ export default function ProjectsPage() {
       const project = projectFrom(typeof r === "object" && r !== null && "project" in r ? r.project : null);
       if (!project) throw new Error("The server returned an invalid project.");
       setProjects((p) => [...p, project]);
+      refreshScope();
       setShowCreate(false);
       setNewName("");
       setNewDesc("");
@@ -368,6 +380,7 @@ export default function ProjectsPage() {
     if (!confirm || confirm.kind !== "project") return;
     await api.deleteProject(confirm.id);
     setProjects((p) => p.filter((proj) => proj.id !== confirm.id));
+    refreshScope();
     if (selected?.id === confirm.id) setSelected(null);
     setConfirm(null);
   };

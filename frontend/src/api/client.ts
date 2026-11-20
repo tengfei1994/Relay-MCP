@@ -77,7 +77,7 @@ async function requestBlob(path: string): Promise<Blob> {
 }
 
 export const api = {
-  health: () => request<{ ok: boolean; version: string; commit: string; buildTime: string; process: string; ts: string }>("GET", "/health"),
+  health: (signal?: AbortSignal) => request<{ ok: boolean; version: string; commit: string; buildTime: string; process: string; ts: string }>("GET", "/health", undefined, undefined, { signal }),
   listJobs: (limit = 100) => request<{ jobs: RelayJob[] }>("GET", "/jobs?limit=" + limit),
   job: (id: string) => request<{ job: RelayJob & { logs: RelayJobLog[]; target?: { server: string; instance?: string | null } } }>("GET", "/jobs/" + encodeURIComponent(id)),
   // Auth

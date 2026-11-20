@@ -3,11 +3,9 @@ import { RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { useAuth } from "../App";
-import { useProjectScope, type Project } from "../context/ProjectScope";
-import { buildPlate } from "../lib/plate";
+import { useProjectScope } from "../context/ProjectScope";
 import { Button, ErrorState, Skeleton } from "../components/ui";
 import AttentionList from "../components/knowledge/AttentionList";
-import IndexPlate from "../components/knowledge/IndexPlate";
 import IngestRunList, { type IngestRun } from "../components/knowledge/IngestRunList";
 import { StandardPage } from "../components/knowledge/KnowledgeFrame";
 
@@ -18,13 +16,6 @@ interface IndexData {
   indexedDocuments: number;
   stale: boolean;
 }
-interface PlateCounts {
-  ok: number;
-  stale: number;
-  fail: number;
-  wait: number;
-}
-
 interface DashboardData {
   counts: Array<{ kind: string; lifecycle: string; count: number }>;
 }
@@ -35,13 +26,12 @@ interface CaptureData {
 }
 
 interface OverviewSnapshot {
-  projects: Project[];
   projectId: number | undefined;
   index: IndexData;
   indexAvailable: boolean;
   dashboard: DashboardData | undefined;
   capture: CaptureData | undefined;
-  runs: IngestRun[];
+  runs: IngestRun[] | undefined;
   productDocumentCount: number | undefined;
   unlinkedEvidence: number | undefined;
 }
@@ -88,9 +78,10 @@ function captureData(value: unknown): CaptureData | undefined {
   };
 }
 
-function runList(value: unknown): IngestRun[] {
+function runList(value: unknown): IngestRun[] | undefined {
   const payload = record(value);
-  const rawRuns = Array.isArray(payload?.runs) ? payload.runs as unknown[] : [];
+  if (!Array.isArray(payload?.runs)) return undefined;
+  const rawRuns: unknown[] = payload.runs;
   return rawRuns.flatMap((item) => {
     const run = record(item);
     if (!run || (typeof run.id !== "string" && typeof run.id !== "number")) return [];
@@ -113,15 +104,15 @@ function pageTotal(value: unknown): number | undefined {
 
 export default function KnowledgeOverview() {
   const { user } = useAuth();
-  const { projects, projectId, loading: scopeLoading } = useProjectScope();
+  const { projectId, loading: scopeLoading, error: scopeError } = useProjectScope();
   const [snapshot, setSnapshot] = useState<OverviewSnapshot>();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const [animationKey, setAnimationKey] = useState(0);
+  const hasKnowledge = Boolean(user?.knowledgeEnabled || user?.isAdmin);
   const requestRef = useRef<AbortController | undefined>(undefined);
 
   const load = useCallback(async () => {
-    if (scopeLoading) return;
+    if (scopeLoading || !hasKnowledge) return;
     requestRef.current?.abort();
     const controller = new AbortController();
     requestRef.current = controller;
@@ -137,7 +128,6 @@ export default function KnowledgeOverview() {
       ]);
       if (requestRef.current !== controller || controller.signal.aborted) return;
       setSnapshot({
-        projects,
         projectId,
         index: indexData(indexResult),
         indexAvailable: indexResult !== undefined,
@@ -147,7 +137,6 @@ export default function KnowledgeOverview() {
         productDocumentCount: pageTotal(productResult),
         unlinkedEvidence: undefined,
       });
-      setAnimationKey((key) => key + 1);
       if (projectId !== undefined) {
         void api.knowledgeEvidenceList(projectId, { unlinked: "true", limit: 1 }, { signal: controller.signal })
           .then((result) => {
@@ -167,7 +156,7 @@ export default function KnowledgeOverview() {
     } finally {
       if (requestRef.current === controller) setLoading(false);
     }
-  }, [projectId, projects, scopeLoading]);
+  }, [projectId, scopeLoading, hasKnowledge]);
 
   useEffect(() => {
     if (!scopeLoading) void load();
@@ -177,20 +166,15 @@ export default function KnowledgeOverview() {
   const pendingReview = useMemo(() => snapshot?.dashboard?.counts
     .filter((item) => item.kind === "candidate" && item.lifecycle === "draft")
     .reduce((total, item) => total + item.count, 0), [snapshot]);
-  const failedRuns = snapshot?.runs.filter((run) => /failed|partial/i.test(String(run.status ?? ""))).length;
-  const plate = snapshot ? buildPlate({
-    documents: snapshot.index.documents,
-    indexedDocuments: snapshot.index.indexedDocuments,
-    stale: snapshot.index.stale,
-    failedBatches: 0,
-  }) : { wells: Array.from({ length: 96 }, () => "empty" as const), batchSize: 1 };
-  const counts: PlateCounts = { ok: 0, stale: 0, fail: 0, wait: 0 };
-  for (const state of plate.wells) if (state !== "empty") counts[state] += 1;
-  const notCurrent = counts.stale + counts.fail + counts.wait;
-  const documents = snapshot?.index.documents ?? 0;
-  const statusLabel = snapshot && !snapshot.indexAvailable ? "Index unavailable" : documents === 0 ? "No indexed documents" : snapshot?.index.stale ? "Index stale" : notCurrent === 0 ? "Index current" : `${notCurrent} batches need attention`;
+  const failedRuns = snapshot?.runs?.filter((run) => /failed|partial/i.test(String(run.status ?? ""))).length;
+  const index = snapshot?.indexAvailable ? snapshot.index : undefined;
+  const statusLabel = loading && !snapshot ? "Checking" : !index ? "Unavailable" : index.stale
+    ? "Stale" : index.documents === 0 ? "Empty" : "Ready";
+  const coverage = index && index.documents > 0 ? Math.min(100, Math.round(index.indexedDocuments / index.documents * 100)) : undefined;
   const captureStatus = snapshot?.capture?.status ? snapshot.capture.status.toLowerCase() : "unknown";
   const isAdmin = user?.isAdmin === true;
+
+  if (!hasKnowledge) return <StandardPage><ErrorState message="Knowledge access is off" description="Ask your Relay administrator to enable Knowledge for your account." /></StandardPage>;
 
   if (error && !snapshot) {
     return <StandardPage className="overview-page"><ErrorState message={error} description="Check the Knowledge service and retry the overview." onRetry={() => void load()} /></StandardPage>;
@@ -198,38 +182,39 @@ export default function KnowledgeOverview() {
 
   return (
     <StandardPage className="overview-page">
-      <section className="knowledge-overview-surface" aria-label="Knowledge workspace">
-        <div className="knowledge-overview-status" aria-live="polite">
-          <div><span>Status</span><strong>{statusLabel}</strong></div>
-          <div><span>Documents</span><strong>{snapshot ? documents.toLocaleString() : "—"}</strong></div>
-          <div><span>Current batches</span><strong className="text-mint">{snapshot ? counts.ok : "—"}</strong></div>
-          <div><span>Needs attention</span><strong className={notCurrent > 0 ? "text-sun" : "text-mint"}>{snapshot ? notCurrent : "—"}</strong></div>
-          <div className="knowledge-overview-status-actions">
-            <Button variant="ghost" loading={loading} onClick={() => void load()}><RefreshCw size={15} /> Refresh</Button>
-            {snapshot?.index.stale && <Link className="button-ghost button-sm" to="/knowledge/operations/index">Index controls</Link>}
+      <header className="knowledge-summary-heading">
+        <h1>Knowledge</h1>
+        <Button variant="ghost" loading={loading} onClick={() => void load()}><RefreshCw size={15} aria-hidden="true" />Refresh</Button>
+      </header>
+      {scopeError && <p className="mb-3 text-sm text-coral" role="status">Project data is unavailable. Account-level Knowledge is shown below.</p>}
+      <section className="knowledge-summary" aria-label="Knowledge overview">
+        <div className="knowledge-summary-index">
+          <div className="knowledge-summary-section-heading"><h2>Index coverage</h2>
+            <strong data-index={statusLabel.toLowerCase()} role="status">{statusLabel}</strong>
           </div>
+          {loading && !snapshot ? <Skeleton width="100%" height="46px" /> : index ? (
+            <>
+              <p>{index.indexedDocuments.toLocaleString()} of {index.documents.toLocaleString()} documents indexed</p>
+              {coverage !== undefined && <progress value={coverage} max={100} aria-label="Document index coverage">{coverage}%</progress>}
+              {index.stale && <Link className="section-link" to="/knowledge/operations/index">View index controls</Link>}
+            </>
+          ) : <p>Index coverage could not be checked. Use Refresh to try again.</p>}
         </div>
-
-        <div className="knowledge-overview-main">
-          <div className="knowledge-overview-coverage">
-            <div className="knowledge-overview-section-heading"><h2>Index coverage</h2><span>{snapshot?.indexAvailable ? `${counts.ok} current · ${counts.stale} stale · ${counts.fail} failed · ${counts.wait} waiting` : "Waiting for index data"}</span></div>
-            <IndexPlate wells={plate.wells} batchSize={plate.batchSize} loading={!snapshot} animationKey={animationKey} />
-          </div>
-          <div className="knowledge-overview-column">
-            <div className="knowledge-overview-section-heading"><h2>Needs attention</h2><span>Open a queue to continue</span></div>
-            {snapshot ? <AttentionList pendingReview={pendingReview} unlinkedEvidence={snapshot.unlinkedEvidence} failedRuns={failedRuns} isAdmin={isAdmin} /> : <div className="overview-loading"><Skeleton width="100%" height="46px" /><Skeleton width="100%" height="46px" /></div>}
-            <div className="knowledge-overview-section-heading knowledge-overview-section-heading-spaced"><h2>Workspaces</h2><span>Jump to a working surface</span></div>
-            <nav className="knowledge-overview-links" aria-label="Knowledge workspaces">
-              <Link to="/knowledge/product-docs"><span>Product docs</span><b>{snapshot?.productDocumentCount ?? "—"}</b><small>documents</small></Link>
-              <Link to="/knowledge/memory"><span>Memory</span><b>{pendingReview ?? "—"}</b><small>waiting for review</small></Link>
-              <Link to="/knowledge/operations/capture"><span>Operations</span><b>{failedRuns && failedRuns > 0 ? failedRuns : captureStatus}</b><small>{failedRuns && failedRuns > 0 ? "failed imports" : "capture status"}</small></Link>
-            </nav>
-          </div>
+        <div className="knowledge-summary-attention">
+          <div className="knowledge-summary-section-heading"><h2>Review queues</h2></div>
+          {snapshot ? <AttentionList pendingReview={pendingReview} unlinkedEvidence={snapshot.unlinkedEvidence} failedRuns={failedRuns} isAdmin={isAdmin} />
+            : <Skeleton width="100%" height="46px" />}
         </div>
-
-        <div className="knowledge-overview-activity">
-          <div className="knowledge-overview-section-heading"><h2>Recent ingest runs</h2><Link className="section-link" to="/knowledge/operations/ingest">View all</Link></div>
-          <IngestRunList runs={snapshot?.runs ?? []} loading={!snapshot} isAdmin={isAdmin} />
+        <nav className="knowledge-summary-links" aria-label="Knowledge sections">
+          <Link to="/knowledge/product-docs">Product docs{snapshot?.productDocumentCount !== undefined ? " (" + snapshot.productDocumentCount + ")" : ""}</Link>
+          <Link to="/knowledge/memory">Memory</Link>
+          <Link to="/knowledge/operations/capture">Capture · {captureStatus}</Link>
+        </nav>
+        <div className="knowledge-summary-ingest">
+          <div className="knowledge-summary-section-heading"><h2>Recent ingest runs</h2><Link className="section-link" to="/knowledge/operations/ingest">View all</Link></div>
+          {snapshot && !snapshot.runs
+            ? <p role="status">Ingest history is unavailable. Use Refresh to try again.</p>
+            : <IngestRunList runs={snapshot?.runs ?? []} loading={!snapshot} isAdmin={isAdmin} />}
         </div>
       </section>
     </StandardPage>

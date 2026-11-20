@@ -1,63 +1,33 @@
-import { Menu, X } from "lucide-react";
-import { Link, useLocation } from "react-router-dom";
-import { useEffect, useState } from "react";
-import { useAuth } from "../../App";
-import { MobileMenu } from "./MobileMenu";
+import { Menu } from "lucide-react";
+import { useRelayHealth, healthLabels } from "../../context/RelayHealth";
+import { useProjectScope } from "../../context/ProjectScope";
 import { UserMenu } from "./UserMenu";
-import { primaryNavigation, matchesPath } from "./navigation";
 
-export function TopBar() {
-  const { user } = useAuth();
-  const location = useLocation();
-  const [mobileOpen, setMobileOpen] = useState(false);
-
-  useEffect(() => {
-    setMobileOpen(false);
-  }, [location.pathname]);
+export function TopBar({ openNavigation }: { openNavigation: () => void }) {
+  const { projects, projectId, setProjectId, loading, error } = useProjectScope();
+  const health = useRelayHealth();
 
   return (
-    <>
-      <header className="shell-topbar">
-        <Link to={user?.isAdmin ? "/admin" : "/workspace"} className="shell-brand" aria-label="Relay MCP workspace home">
-          <img className="shell-brand-mark" src="/relay-mcp-logo.svg" alt="" aria-hidden="true" />
-          <span className="shell-brand-name">Relay MCP</span>
-        </Link>
-        <nav className="shell-primary-nav" aria-label="Primary navigation">
-          {primaryNavigation.map((item) => {
-            if ("adminOnly" in item && item.adminOnly && !user?.isAdmin) return null;
-            if ("userOnly" in item && item.userOnly && user?.isAdmin) return null;
-            const active = item.label === "Admin" ? location.pathname === "/admin" : matchesPath(location.pathname, item.path);
-            return (
-              <Link
-                key={item.path}
-                to={item.path}
-                className="shell-primary-link"
-                aria-current={active ? "page" : undefined}
-              >
-                {item.label}
-              </Link>
-            );
-          })}
-        </nav>
-        <div className="shell-topbar-right">
-          <span className="shell-connection-state"><i aria-hidden="true" />Connected</span>
-          <div className="shell-desktop-user">
-            <UserMenu />
-          </div>
-        </div>
-        <button
-          type="button"
-          className="shell-menu-button shell-user-trigger"
-          aria-label={mobileOpen ? "Close navigation" : "Open navigation"}
-          aria-expanded={mobileOpen}
-          onClick={() => setMobileOpen((value) => !value)}
-        >
-          {mobileOpen ? <X size={20} aria-hidden="true" /> : <Menu size={20} aria-hidden="true" />}
-        </button>
-      </header>
-      <MobileMenu open={mobileOpen} onClose={() => setMobileOpen(false)} />
-    </>
+    <header className="shell-topbar">
+      <button className="shell-icon-button shell-menu-button" type="button" onClick={openNavigation}
+        aria-label="Open navigation" title="Open navigation" aria-haspopup="dialog" aria-controls="shell-mobile-navigation">
+        <Menu size={20} aria-hidden="true" />
+      </button>
+      <label className="shell-project-field">
+        <span>Project</span>
+        <select aria-label="Project" value={projectId ?? ""} disabled={!projects.length}
+          onChange={(event) => setProjectId(Number(event.target.value))}>
+          {!projects.length && <option value="">{loading ? "Loading…" : error ? "Unavailable" : "No projects"}</option>}
+          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </select>
+      </label>
+      <div className="shell-topbar-right">
+        <span className="shell-connection-state" data-health={health} role="status" title="Relay API status">
+          <i aria-hidden="true" />{healthLabels[health]}
+        </span>
+        <UserMenu />
+      </div>
+    </header>
   );
 }
 export default TopBar;
-

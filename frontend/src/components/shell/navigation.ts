@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Activity, BookOpen, Folder, Home, KeyRound, ListChecks, Layers, Server, ShieldCheck, Wrench, type LucideIcon } from "lucide-react";
 
 /**
  * Match path segments rather than raw prefixes so `/knowledge/memory` does
@@ -29,22 +29,23 @@ function matchesProductDocsTab(pathname: string, path: string): boolean {
 export interface PrimaryNavItem {
   label: string;
   path: string;
-  icon?: ReactNode;
+  icon: LucideIcon;
   adminOnly?: boolean;
   userOnly?: boolean;
 }
 
-export const primaryNavigation = [
-  { label: "Workspace", path: "/workspace" },
-  { label: "Jobs", path: "/activity" },
-  { label: "Agents", path: "/instances" },
-  { label: "Knowledge", path: "/knowledge" },
-  { label: "Tokens", path: "/tokens", userOnly: true },
-  { label: "Projects", path: "/projects", adminOnly: true },
-  { label: "Servers", path: "/servers", adminOnly: true },
-  { label: "Tools", path: "/tools", adminOnly: true },
-  { label: "Admin", path: "/admin", adminOnly: true },
-] as const;
+export const primaryNavigation: readonly PrimaryNavItem[] = [
+  { label: "Workspace", path: "/workspace", icon: Home },
+  { label: "Projects", path: "/projects", icon: Folder },
+  { label: "Jobs", path: "/jobs", icon: ListChecks },
+  { label: "Activity", path: "/activity", icon: Activity },
+  { label: "Agents & servers", path: "/servers", icon: Server },
+  { label: "Instances", path: "/instances", icon: Layers },
+  { label: "Tools", path: "/tools", icon: Wrench },
+  { label: "Knowledge", path: "/knowledge", icon: BookOpen },
+  { label: "Tokens", path: "/tokens", icon: KeyRound, userOnly: true },
+  { label: "Admin", path: "/admin", icon: ShieldCheck, adminOnly: true },
+];
 export const knowledgeNavigation = [
   { label: "Overview", path: "/knowledge", matches: (pathname: string) => matchesPath(pathname, "/knowledge", true) },
   { label: "Control plane", path: "/knowledge/integrated/providers", matches: (pathname: string) => matchesPath(pathname, "/knowledge/integrated") },
@@ -95,4 +96,3 @@ export const pageTabNavigation = {
     { label: "Wiki generation", path: "/knowledge/operations/wiki-generation", end: true, adminOnly: true, matches: (pathname: string) => matchesPath(pathname, "/knowledge/operations/wiki-generation") },
   ],
 } as const;
-

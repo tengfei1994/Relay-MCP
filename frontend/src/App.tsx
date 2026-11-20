@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
-import { useState, useEffect, createContext, useContext } from "react";
+import { useState, useEffect, createContext, useContext, lazy } from "react";
 import { api } from "./api/client";
 import LoginPage from "./pages/Login";
 import LandingPage from "./pages/Landing";
@@ -10,20 +10,21 @@ import TokensPage from "./pages/Tokens";
 import InstancesPage from "./pages/Instances";
 import KnowledgeOverview from "./pages/KnowledgeOverview";
 import ToolsPage from "./pages/Tools";
-import KnowledgeProduct from "./pages/KnowledgeProduct";
-import KnowledgeProject from "./pages/KnowledgeProject";
-import KnowledgeOperations from "./pages/KnowledgeOperations";
-import KnowledgeWikiGeneration from "./pages/KnowledgeWikiGeneration";
-import KnowledgeSource from "./pages/KnowledgeSource";
-import KnowledgeIntegrated from "./pages/KnowledgeIntegrated";
-import KnowledgeWiki from "./pages/KnowledgeWiki";
-import KnowledgeMemory from "./pages/KnowledgeMemory";
 import ActivityPage from "./pages/Activity";
-import JobsPage from "./pages/Jobs";
 import WorkspaceOverview from "./pages/WorkspaceOverview";
 import AdminOverview from "./pages/AdminOverview";
 
 import { AppShell } from "./components/shell/AppShell";
+
+const KnowledgeProduct = lazy(() => import("./pages/KnowledgeProduct"));
+const KnowledgeProject = lazy(() => import("./pages/KnowledgeProject"));
+const KnowledgeOperations = lazy(() => import("./pages/KnowledgeOperations"));
+const KnowledgeWikiGeneration = lazy(() => import("./pages/KnowledgeWikiGeneration"));
+const KnowledgeSource = lazy(() => import("./pages/KnowledgeSource"));
+const KnowledgeIntegrated = lazy(() => import("./pages/KnowledgeIntegrated"));
+const KnowledgeWiki = lazy(() => import("./pages/KnowledgeWiki"));
+const KnowledgeMemory = lazy(() => import("./pages/KnowledgeMemory"));
+const JobsPage = lazy(() => import("./pages/Jobs"));
 
 interface AuthCtx {
   user: { id: number; username: string; isAdmin: boolean; knowledgeEnabled?: boolean } | null;
@@ -80,8 +81,8 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="app-shell flex min-h-screen items-center justify-center">
-        <div className="text-muted">Loading…</div>
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="text-muted" role="status">Loading…</div>
       </div>
     );
   }

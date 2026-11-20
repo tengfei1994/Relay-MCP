@@ -6,7 +6,8 @@ import { Button, ConfirmDialog, Dialog, Field, Input, Select } from "../componen
 import { AppPageFrame } from "../components/shell/AppPageFrame";
 
 type Project = { id: number; name: string; description?: string };
-type FileEntry = { name: string; type?: string; size?: number; modifiedAt?: string };
+type FileTarget = { linkId: number; server: string; instance?: string; environment?: string };
+type FileEntry = { name: string; type?: string; size?: number; modifiedAt?: string; target?: FileTarget; targetInherited?: boolean };
 type FilePreview = { path: string; name?: string; content: string; size: number; modifiedAt: string; truncated: boolean };
 type PreviewKind = "text" | "image" | "archive";
 type PreviewMeta = { size?: number; modifiedAt?: string };
@@ -54,7 +55,11 @@ function projectFrom(value: unknown): Project | null {
 function fileFrom(value: unknown): FileEntry | null {
   if (typeof value !== "object" || value === null || !("name" in value) || typeof value.name !== "string") return null;
   const record = value as Record<string, unknown>;
-  return { name: value.name, type: optionalString(record.type), size: optionalNumber(record.size), modifiedAt: optionalString(record.modifiedAt) };
+  const raw = record.target as Partial<FileTarget> | undefined;
+  const target = raw && typeof raw.linkId === "number" && typeof raw.server === "string"
+    ? { linkId: raw.linkId, server: raw.server, instance: optionalString(raw.instance), environment: optionalString(raw.environment) }
+    : undefined;
+  return { name: value.name, target, targetInherited: record.targetInherited === true, type: optionalString(record.type), size: optionalNumber(record.size), modifiedAt: optionalString(record.modifiedAt) };
 }
 
 function projectServerFrom(value: unknown): ProjectServer | null {
@@ -196,6 +201,11 @@ export default function ProjectsPage() {
   const [deleteFileTarget, setDeleteFileTarget] = useState<{ path: string; name: string; type?: string } | null>(null);
 
   // Server association
+  const [targetEditor, setTargetEditor] = useState<{ path: string; linkId: string }>();
+  const [targetOptions, setTargetOptions] = useState<ProjectServer[]>();
+  const [targetError, setTargetError] = useState("");
+  const [targetSaving, setTargetSaving] = useState(false);
+  const targetRequest = useRef(0);
   const [showServers, setShowServers] = useState(false);
   const [linkedServers, setLinkedServers] = useState<ProjectServer[]>([]);
   const [allServers, setAllServers] = useState<Server[]>([]);
@@ -361,6 +371,39 @@ export default function ProjectsPage() {
     if (selected?.id === confirm.id) setSelected(null);
     setConfirm(null);
   };
+
+  function closeTargetEditor() {
+    targetRequest.current += 1;
+    setTargetEditor(undefined);
+  }
+
+  async function editFileTarget(file: FileEntry) {
+    if (!selected) return;
+    const request = ++targetRequest.current;
+    setTargetEditor({ path: pathFor(file.name), linkId: file.target && !file.targetInherited ? String(file.target.linkId) : "" });
+    setTargetOptions(undefined);
+    setTargetError("");
+    try {
+      const result = await api.listProjectServers(selected.id);
+      if (request === targetRequest.current) setTargetOptions(projectServersFrom(result));
+    } catch {
+      if (request === targetRequest.current) setTargetError("Could not load the project's server links.");
+    }
+  }
+
+  async function saveFileTarget(event: React.FormEvent) {
+    event.preventDefault();
+    if (!selected || !targetEditor || targetSaving) return;
+    setTargetSaving(true);
+    setTargetError("");
+    try {
+      await api.setProjectFileTarget(selected.id, targetEditor.path, targetEditor.linkId ? Number(targetEditor.linkId) : null);
+      closeTargetEditor();
+      await refreshFiles(selected.id, currentPath);
+    } catch (error) {
+      setTargetError(error instanceof Error ? error.message : "Could not save the target.");
+    } finally { setTargetSaving(false); }
+  }
 
   const openServerPanel = async (project: Project) => {
     setSelected(project);
@@ -647,10 +690,16 @@ export default function ProjectsPage() {
                     aria-label={`${f.type === "directory" ? "Open folder" : "Preview"} ${f.name}`}
                   >
                     {f.type === "directory" ? <Folder size={14} className="shrink-0 text-mint" /> : <File size={14} className="shrink-0" />}
-                    <span className="min-w-0 flex-1 truncate" title={f.name}>{f.name}</span>
+                                        <span className="min-w-0 flex-1">
+                      <span className="block truncate" title={f.name}>{f.name}</span>
+                      <span className="block break-words text-xs text-muted">
+                        {f.target ? [f.target.server, f.target.instance ?? "No instance", f.target.environment, f.targetInherited ? "Inherited" : ""].filter(Boolean).join(" · ") : "No target assigned"}
+                      </span>
+                    </span>
                     {f.type === "file" && <span className="shrink-0 text-xs text-muted">{formatBytes(f.size)}</span>}
                   </button>
                   <span className="flex shrink-0 items-center gap-1">
+                    <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:text-mint" onClick={() => void editFileTarget(f)} title="Assign target" aria-label={`Assign target for ${f.name}`}><Link2 size={14} /></button>
                     {f.type === "file" && <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:bg-white/10 hover:text-mint" onClick={() => void openPreview(pathFor(f.name), f)} title={`Preview ${f.name}`} aria-label={`Preview ${f.name}`}><Eye size={14} /></button>}
                     <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:bg-white/10 hover:text-mint" onClick={() => { setRenameTarget({ path: pathFor(f.name), name: f.name }); setRenameName(f.name); }} title={`Rename ${f.name}`} aria-label={`Rename ${f.name}`}><Pencil size={14} /></button>
                     <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:bg-coral/10 hover:text-coral" onClick={() => { setDeleteFileTarget({ path: pathFor(f.name), name: f.name, type: f.type }); }} title={`Delete ${f.name}`} aria-label={`Delete ${f.name}`}><Trash2 size={14} /></button>
@@ -661,6 +710,24 @@ export default function ProjectsPage() {
             </div>
           </>
         )}
+      <Dialog open={!!targetEditor} onClose={closeTargetEditor} busy={targetSaving} title="Assign server target"
+        description="Folder assignments apply to descendants unless an item has its own assignment.">
+        {targetEditor && <form onSubmit={saveFileTarget} className="space-y-3">
+          <p className="break-all text-sm font-medium">{targetEditor.path}</p>
+          {targetError && <p className="text-sm text-coral" role="alert">{targetError}</p>}
+          {!targetOptions && !targetError && <p role="status">Loading linked targets…</p>}
+          {targetOptions && <Field label="Server and instance">
+            <Select value={targetEditor.linkId} onChange={(event) => setTargetEditor({ ...targetEditor, linkId: event.target.value })}>
+              <option value="">Use parent assignment, if available</option>
+              {targetOptions.map((target) => <option key={target.id} value={target.id}>
+                {[target.serverName ?? target.serverId, target.limsInstanceName ?? "No instance", target.environment].filter(Boolean).join(" · ")}
+              </option>)}
+            </Select>
+          </Field>}
+          {targetOptions?.length === 0 && selected && <Button type="button" variant="ghost" onClick={() => { closeTargetEditor(); void openServerPanel(selected); }}>Manage project server links</Button>}
+          <div className="flex justify-end"><Button type="submit" variant="primary" loading={targetSaving} disabled={!targetOptions}>Save assignment</Button></div>
+        </form>}
+      </Dialog>
       <ConfirmDialog
         open={confirm?.kind === "project"}
         onClose={() => setConfirm(null)}

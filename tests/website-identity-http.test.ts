@@ -27,6 +27,8 @@ test("registration review, account state and connection credentials use live aut
   const { agentRoutes } = await import("../src/server/routes/agents.js");
   const { agentTokenRoutes } = await import("../src/server/routes/agent-tokens.js");
   const { serverRoutes } = await import("../src/server/routes/servers.js");
+  const { jobRoutes } = await import("../src/server/routes/jobs.js");
+  const { saveJob } = await import("../src/shared/job-store.js");
   const { uploadRoutes } = await import("../src/server/routes/uploads.js");
   const { downloadRoutes } = await import("../src/server/routes/downloads.js");
   const { createUploadSession, getUploadSession } = await import("../src/shared/upload-store.js");
@@ -40,7 +42,7 @@ test("registration review, account state and connection credentials use live aut
   await app.register(fastifyJwt, { secret: "identity-test-secret-with-at-least-32-characters" });
   registerSessionAuthentication(app);
   await app.register(authRoutes); await app.register(userRoutes); await app.register(tokenRoutes);
-  await app.register(agentRoutes); await app.register(agentTokenRoutes); await app.register(serverRoutes);
+  await app.register(agentRoutes); await app.register(agentTokenRoutes); await app.register(serverRoutes); await app.register(jobRoutes);
   await app.register(uploadRoutes); await app.register(downloadRoutes);
   const headers = (token: string) => ({ authorization: `Bearer ${token}` });
   try {
@@ -97,6 +99,21 @@ test("registration review, account state and connection credentials use live aut
     assert.equal((await app.inject({ method: "DELETE", url: `/api/tokens/${mcp.json().profile.id}`, headers: headers(admin.token) })).statusCode, 404);
     assert.equal((await app.inject({ method: "DELETE", url: `/api/tokens/${mcp.json().profile.id}`, headers: headers(user.token) })).statusCode, 200);
     assert.equal((await app.inject({ method: "DELETE", url: `/api/tokens/${mcp.json().profile.id}`, headers: headers(user.token) })).statusCode, 404);
+    const jobId = "validate-1732058400000-fixture";
+    const timestamp = "2026-11-20T00:00:00.000Z";
+    saveJob({ id: jobId, userId: user.user.id, username: user.user.username, project: "project",
+      kind: "validate", status: "failed", startedAt: timestamp, finishedAt: timestamp,
+      input: { privateKey: "private fixture" }, logs: [{ at: timestamp, level: "info", message: "Authorization: Bearer fixture" }] });
+    assert.equal((await app.inject({ url: "/api/jobs" })).statusCode, 401);
+    assert.deepEqual((await app.inject({ url: "/api/jobs", headers: headers(admin.token) })).json(), { jobs: [] });
+    assert.equal((await app.inject({ url: "/api/jobs/" + jobId, headers: headers(admin.token) })).statusCode, 404);
+    const jobPage = await app.inject({ url: "/api/jobs", headers: headers(user.token) });
+    assert.equal(jobPage.json().jobs[0].id, jobId);
+    assert.equal(jobPage.json().jobs[0].logs, undefined);
+    const jobDetail = await app.inject({ url: "/api/jobs/" + jobId, headers: headers(user.token) });
+    assert.equal(jobDetail.statusCode, 200);
+    assert.equal(jobDetail.json().job.input, undefined);
+    assert.equal(jobDetail.json().job.logs[0].message, "[redacted]");
     const project = db.insert(projects).values({ userId: applicant.id, name: "project", workspacePath: root }).returning().get();
     const scoped = await app.inject({ method: "POST", url: "/api/tokens", headers: headers(user.token), payload: { name: "Scoped", projectIds: [project.id], serverIds: [] } });
     assert.equal(scoped.statusCode, 201, scoped.body);
@@ -122,7 +139,36 @@ test("registration review, account state and connection credentials use live aut
     assert.equal(agent.statusCode, 201, agent.body); assert.equal(agent.json().profile.tokenId, undefined);
     const agentHeader = headers(agent.json().token);
     assert.equal((await app.inject({ url: "/api/auth/me", headers: agentHeader })).statusCode, 401);
+    const agentStore = (await import("../src/shared/agent-store.js")).getAgentStore();
+    const queuedAgentJob = agentStore.enqueueJob(applicant.id, "agent-one", "exec", { command: "echo test" }, 5000);
+    const notCheckedIn = await app.inject({ url: "/api/agents/agent-one", headers: agentHeader });
+    assert.equal(notCheckedIn.statusCode, 404);
+    assert.equal(notCheckedIn.json().error, "Agent has not checked in");
+    assert.equal(agentStore.getJob(queuedAgentJob.id)?.status, "queued", "checking a new Agent must not claim a job");
+    assert.equal((await app.inject({ url: "/api/agents/other-agent", headers: agentHeader })).statusCode, 401);
+    const beforeHeartbeat = await app.inject({ url: "/api/servers", headers: headers(user.token) });
+    assert.equal(beforeHeartbeat.json().servers.find((server: { agentId?: string }) => server.agentId === "agent-one")?.heartbeat, "never_seen");
     assert.equal((await app.inject({ method: "POST", url: "/api/agents/heartbeat", headers: agentHeader, payload: { agentId: "agent-one" } })).statusCode, 200);
+    const online = await app.inject({ url: "/api/servers", headers: headers(user.token) });
+    const onlineServer = online.json().servers.find((server: { agentId?: string }) => server.agentId === "agent-one");
+    assert.equal(onlineServer.heartbeat, "online");
+    assert.ok(Number.isFinite(Date.parse(onlineServer.lastSeenAt)));
+    const heartbeatDatabase = new Database(process.env.DB_PATH);
+    try {
+      heartbeatDatabase.prepare("UPDATE agent_states SET last_seen_at = ? WHERE user_id = ? AND agent_id = ?")
+        .run(timestamp, user.user.id, "agent-one");
+    } finally { heartbeatDatabase.close(); }
+    const offline = await app.inject({ url: "/api/servers", headers: headers(user.token) });
+    const offlineServer = offline.json().servers.find((server: { agentId?: string }) => server.agentId === "agent-one");
+    assert.equal(offlineServer.heartbeat, "offline");
+    assert.equal(offlineServer.lastSeenAt, timestamp);
+    assert.equal((await app.inject({ url: "/api/servers", headers: headers(admin.token) })).json().servers.some((server: { agentId?: string }) => server.agentId === "agent-one"), false);
+    const checkedIn = await app.inject({ url: "/api/agents/agent-one", headers: agentHeader });
+    assert.equal(checkedIn.statusCode, 200);
+    assert.equal(checkedIn.json().agent.agentId, "agent-one");
+    assert.equal(agentStore.getJob(queuedAgentJob.id)?.status, "queued", "checking an online Agent must not claim a job");
+    const nextJob = await app.inject({ url: "/api/agents/agent-one/jobs/next", headers: agentHeader });
+    assert.equal(nextJob.json().jobId, queuedAgentJob.id, "the service can still claim the job afterwards");
     assert.equal((await app.inject({ method: "DELETE", url: `/api/agent-tokens/${agent.json().profile.id}`, headers: headers(admin.token) })).statusCode, 404);
     assert.equal((await app.inject({ method: "DELETE", url: `/api/agent-tokens/${agent.json().profile.id}`, headers: headers(user.token) })).statusCode, 200);
     assert.equal((await app.inject({ method: "POST", url: "/api/agents/heartbeat", headers: agentHeader, payload: { agentId: "agent-one" } })).statusCode, 401);

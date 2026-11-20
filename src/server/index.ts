@@ -20,6 +20,7 @@ import { downloadRoutes } from "./routes/downloads.js";
 import { agentRoutes } from "./routes/agents.js";
 import { agentTokenRoutes } from "./routes/agent-tokens.js";
 import { instanceRoutes } from "./routes/instances.js";
+import { jobRoutes } from "./routes/jobs.js";
 import { toolRoutes } from "./routes/tools.js";
 import { knowledgeEngineRoutes } from "./routes/knowledge-engine.js";
 import { getEngineManager } from "../knowledge/engine-service.js";
@@ -124,6 +125,7 @@ await app.register(agentRoutes);
 await app.register(agentTokenRoutes);
 await app.register(instanceRoutes);
 await app.register(toolRoutes);
+await app.register(jobRoutes);
 await app.register(knowledgeRoutes);
 await app.register(knowledgeEngineRoutes);
 // Resume durable document imports after a process restart. The worker claims

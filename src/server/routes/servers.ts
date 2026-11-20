@@ -7,6 +7,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { mkdirSync, readFileSync } from "fs";
 import { join } from "path";
+import { agentHeartbeatIsFresh, getAgentStore } from "../../shared/agent-store.js";
 import { NodeSSH } from "node-ssh";
 import { randomUUID } from "crypto";
 import { quotePosix, quotePowerShell } from "../../shared/shell-utils.js";
@@ -82,8 +83,15 @@ export async function serverRoutes(app: FastifyInstance) {
         .where(eq(servers.userId, req.user.id))
         .all();
       // Don't expose private key path
-      const sanitized = result.map(({ privateKeyPath, ...s }) => s);
-      return reply.send({ servers: sanitized });
+      const now = Date.now();
+      const sanitized = result.map(({ privateKeyPath, ...server }) => {
+        if (server.connectionMode !== "agent" || !server.agentId) return server;
+        const state = getAgentStore().getAgentState(req.user.id, server.agentId);
+        const lastSeenAt = state?.lastSeenAt ?? null;
+        const heartbeat = !lastSeenAt ? "never_seen" : agentHeartbeatIsFresh(lastSeenAt, now) ? "online" : "offline";
+        return { ...server, heartbeat, lastSeenAt };
+      });
+      return reply.header("Cache-Control", "no-store").send({ servers: sanitized });
     }
   );
 

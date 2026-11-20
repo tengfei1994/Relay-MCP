@@ -119,15 +119,15 @@ export default function ToolsPage() {
       .filter((item) => item.inspectors.length > 0);
   }, [sampleManagerEntities, entity, query]);
 
-  const grouped = useMemo(() => categoryOrder
-    .map((id) => ({ id, tools: filtered.filter((tool) => tool.category === id) }))
-    .filter((group) => group.tools.length > 0), [filtered]);
+
   const categoryItems = useMemo(() => {
     const labels = new Map(categories.map((item) => [item.id, item.label]));
     const ordered = categoryOrder.map((id) => ({ id, label: labels.get(id) ?? categoryLabels[id] ?? id })).filter((item) => categories.some((categoryItem) => categoryItem.id === item.id) || tools.some((tool) => tool.category === item.id));
-    const extras = categories.filter((item) => !categoryOrder.includes(item.id as typeof categoryOrder[number]));
+    const known = new Set(categoryOrder);
+    const extras = Array.from(new Set([...categories.map((item) => item.id), ...tools.map((tool) => tool.category)])).filter((id) => !known.has(id)).map((id) => ({ id, label: labels.get(id) ?? id }));
     return [...ordered, ...extras];
   }, [categories, tools]);
+  const grouped = categoryItems.map(({ id }) => ({ id, tools: filtered.filter((tool) => tool.category === id) })).filter((group) => group.tools.length);
   const shownCount = category === "samplemanager"
     ? visibleEntities.reduce((total, item) => total + item.inspectors.length, 0)
     : filtered.length;
@@ -140,7 +140,26 @@ export default function ToolsPage() {
             <div className="tools-category-heading"><span>Tools</span><strong>Category</strong></div>
             <nav className="tools-category-nav" aria-label="Tool categories">
               <button type="button" className={category === "all" ? "is-active" : ""} aria-pressed={category === "all"} onClick={() => { setCategory("all"); setEntity("all"); }}><span>All tools</span><b>{tools.length}</b></button>
-              {categoryItems.map((item) => <button type="button" key={item.id} className={category === item.id ? "is-active" : ""} aria-pressed={category === item.id} onClick={() => { setCategory(item.id); if (item.id !== "samplemanager") setEntity("all"); }}><span>{item.label}</span><b>{item.id === "samplemanager" ? sampleManagerEntities.reduce((total, entityItem) => total + entityItem.inspectors.length, 0) : tools.filter((tool) => tool.category === item.id).length}</b></button>)}
+              {categoryItems.map((item) => (
+                <details key={item.id} className="tools-tree-branch">
+                  <summary><ChevronRight size={14} aria-hidden="true" /><span>{item.label}</span></summary>
+                  <ul>
+                    <li><button type="button" aria-pressed={category === item.id && entity === "all"} onClick={() => { setCategory(item.id); setEntity("all"); }}>View category</button></li>
+                    {item.id === "samplemanager" ? sampleManagerEntities.map((group) => (
+                      <li key={group.id}><details className="tools-tree-branch">
+                        <summary><ChevronRight size={14} aria-hidden="true" />{group.label}</summary>
+                        <ul>
+                          <li><button type="button" aria-pressed={category === item.id && entity === group.id} onClick={() => { setCategory(item.id); setEntity(group.id); }}>View inspectors</button></li>
+                          {group.inspectors.map((inspector) => <li key={inspector.id}><button type="button" onClick={() => setSelected({ kind: "inspector", entity: group, inspector })}>{inspector.label}</button></li>)}
+                        </ul>
+                      </details></li>
+                    )) : null}
+                    {tools.filter((tool) => tool.category === item.id).map((tool) => (
+                      <li key={tool.name}><button type="button" onClick={() => setSelected({ kind: "tool", tool })}>{tool.name}</button></li>
+                    ))}
+                  </ul>
+                </details>
+              ))}
             </nav>
           </aside>
 

@@ -27,13 +27,18 @@ test("Project file operations preview, rename, delete, and enforce workspace own
   writeFileSync(join(workspace, "folder", "nested.txt"), "nested", "utf8");
   const { default: Fastify } = await import("fastify");
   const { db, runMigrations } = await import("../src/server/db/index.js");
-  const { users, projects } = await import("../src/server/db/schema.js");
+  const { limsInstances, projectFileTargets, projectServers, projects, servers, users } = await import("../src/server/db/schema.js");
   const { projectRoutes } = await import("../src/server/routes/projects.js");
   runMigrations();
   db.insert(users).values({ id: 7, username: "owner", passwordHash: "test" }).run();
   db.insert(users).values({ id: 8, username: "other", passwordHash: "test" }).run();
   db.insert(users).values({ id: 9, username: "../outside", passwordHash: "test" }).run();
   db.insert(projects).values({ id: 1, userId: 7, name: "fixture", workspacePath: workspace }).run();
+  const primary = db.insert(servers).values({ userId: 7, name: "Primary", host: "", sshUser: "", privateKeyPath: "", publicKey: "" }).returning().get();
+  const secondary = db.insert(servers).values({ userId: 7, name: "Secondary", host: "", sshUser: "", privateKeyPath: "", publicKey: "" }).returning().get();
+  const instance = db.insert(limsInstances).values({ userId: 7, serverId: primary.id, name: "LIMS A", rootPath: ".", exePath: ".", formsPath: ".", formsBinPath: ".", solutionAssembliesPath: ".", logfilePath: ".", dataPath: "." }).returning().get();
+  const link = db.insert(projectServers).values({ projectId: 1, serverId: primary.id, limsInstanceId: instance.id, remotePath: "", environment: "test" }).returning().get();
+  const alternate = db.insert(projectServers).values({ projectId: 1, serverId: secondary.id, remotePath: "", environment: "test" }).returning().get();
   const app = Fastify();
   app.decorate("authenticate", async (request: any) => { request.user = request.headers["x-unsafe"] ? { id: 9, username: "../outside", isAdmin: false } : request.headers["x-other"] ? { id: 8, username: "other", isAdmin: false } : { id: 7, username: "owner", isAdmin: false }; });
   await app.register(projectRoutes);
@@ -58,6 +63,28 @@ test("Project file operations preview, rename, delete, and enforce workspace own
     const listed = await app.inject({ method: "GET", url: "/api/projects/1/files" });
     assert.equal(listed.statusCode, 200);
     assert.deepEqual(listed.json().entries.map((entry: any) => entry.name).sort(), ["bundle.zip", "folder", "notes.txt", "preview.ico", "preview.png"]);
+
+    const assign = (path: string, linkId: number | null, headers?: Record<string, string>, projectId = 1) => app.inject({
+      method: "PUT", url: "/api/projects/" + projectId + "/file-target", payload: { path, linkId }, headers,
+    });
+    assert.equal((await assign("folder", link.id, { "x-other": "1" })).statusCode, 404);
+    assert.equal((await assign("../outside", link.id)).statusCode, 400);
+    assert.equal((await assign("folder", alternate.id + 1000)).statusCode, 404);
+    assert.equal((await assign("folder", link.id)).statusCode, 200);
+    const folderEntries = async (folder: string) => (await app.inject({ url: "/api/projects/1/files?path=" + folder })).json().entries;
+    let [nested] = await folderEntries("folder");
+    assert.equal(nested.target.server, "Primary");
+    assert.equal(nested.target.instance, "LIMS A");
+    assert.equal(nested.targetInherited, true);
+    assert.equal((await assign("folder/nested.txt", alternate.id)).statusCode, 200);
+    [nested] = await folderEntries("folder");
+    assert.equal(nested.target.server, "Secondary");
+    assert.equal(nested.targetInherited, false);
+    assert.equal((await assign("folder/nested.txt", null)).statusCode, 200);
+    [nested] = await folderEntries("folder");
+    assert.equal(nested.target.linkId, link.id);
+    assert.equal(nested.targetInherited, true);
+    assert.equal((await assign("folder/nested.txt", alternate.id)).statusCode, 200);
 
     const preview = await app.inject({ method: "GET", url: "/api/projects/1/files/content?path=notes.txt" });
     assert.equal(preview.statusCode, 200);
@@ -111,10 +138,15 @@ test("Project file operations preview, rename, delete, and enforce workspace own
     assert.equal(renamed.statusCode, 200);
     assert.equal(readFileSync(join(workspace, "renamed.txt"), "utf8"), "line one\nline two\n");
 
+    const movedFolder = await app.inject({ method: "PATCH", url: "/api/projects/1/files", payload: { path: "folder", name: "moved" } });
+    assert.equal(movedFolder.statusCode, 200);
+    assert.equal((await folderEntries("moved"))[0].target.linkId, alternate.id);
+    assert.equal((await app.inject({ method: "PATCH", url: "/api/projects/1/files", payload: { path: "moved", name: "folder" } })).statusCode, 200);
     const deleted = await app.inject({ method: "DELETE", url: "/api/projects/1/files?path=folder" });
     assert.equal(deleted.statusCode, 200);
     assert.equal(await import("node:fs").then(({ existsSync }) => existsSync(join(workspace, "folder"))), false);
 
+    assert.deepEqual(db.select().from(projectFileTargets).all(), []);
     const traversal = await app.inject({ method: "GET", url: "/api/projects/1/files/content?path=..%2Foutside.txt" });
     assert.equal(traversal.statusCode, 400);
     const denied = await app.inject({ method: "GET", url: "/api/projects/1/files", headers: { "x-other": "1" } });

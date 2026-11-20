@@ -93,6 +93,14 @@ export function runMigrations() {
       UNIQUE(server_id, name)
     );
 
+    CREATE TABLE IF NOT EXISTS project_file_targets (
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      path TEXT NOT NULL,
+      project_server_id INTEGER NOT NULL REFERENCES project_servers(id) ON DELETE CASCADE,
+      PRIMARY KEY (project_id, path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_file_targets_link ON project_file_targets(project_server_id);
+
     CREATE TABLE IF NOT EXISTS mcp_tokens (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

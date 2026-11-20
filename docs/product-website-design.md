@@ -1,5 +1,7 @@
 # Relay product website and console
 
+The dark-theme visual notes below are historical. The current Web and Windows Relay Agent Client designs use light surfaces and blue accents. See [issue #80](https://github.com/tengfei1994/Relay-MCP/issues/80) for the current workflow acceptance criteria.
+
 This design describes the public product site, access requests and the existing console. All interface copy is in English. The current Relay visual system supplies the typefaces, colours and components.
 
 ## Visual revision — 2026-11-05

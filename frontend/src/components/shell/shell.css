@@ -119,3 +119,12 @@ body:has(.shell-mobile-panel[open]){overflow:hidden}
   .app-project-sidebar{width:100%;max-height:260px;flex:0 0 auto;border-right:0;border-bottom:1px solid var(--line)}
   .app-workspace-panel>div:last-child{min-width:0;min-height:380px}
 }
+
+.shell-project-search .ui-combobox{display:flex;align-items:center;gap:8px}
+.shell-project-search input{height:42px;width:clamp(120px,22vw,260px)}
+.shell-project-search .ui-combobox-menu{min-width:180px}
+@media(max-width:600px){
+ .shell-project-search .ui-combobox{display:grid;gap:0}
+ .shell-project-search .ui-field-label{font-size:10px;line-height:1.1}
+ .shell-project-search input{height:40px;width:clamp(105px,35vw,144px)}
+}

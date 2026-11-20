@@ -224,9 +224,97 @@ export function ConfirmDialog({ open, onClose, title, description, confirmLabel,
   return <Dialog open={open} onClose={onClose} title={title} description={description} busy={busy} footer={<><Button variant="ghost" disabled={busy} onClick={onClose}>Cancel</Button><Button variant={tone === 'danger' ? 'danger' : 'primary'} loading={busy} disabled={requireReason && reason.trim() === ''} onClick={() => void confirm()}>{confirmLabel}</Button></>}><div>{requireReason ? <Field label="Reason" hint="Recorded in the audit log" required><Textarea value={reason} onChange={event => setReason(event.target.value)} required /></Field> : null}{error ? <p className="ui-dialog-error" role="alert">{error}</p> : null}</div></Dialog>;
 }
 
-export interface DrawerProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children' | 'title'> { open: boolean; onClose: () => void; title: ReactNode; description?: ReactNode; children?: ReactNode; footer?: ReactNode; }
-export function Drawer({ open, onClose, title, description, children, footer, className = '', ...props }: DrawerProps) {
-  return <Dialog open={open} onClose={onClose} title={title} description={description} footer={footer} wide className={className} {...props}>{children}</Dialog>;
+export interface DrawerProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children' | 'title'> {
+  open: boolean; onClose: () => void; title: ReactNode; description?: ReactNode; children?: ReactNode;
+  footer?: ReactNode; busy?: boolean; presentation?: "dialog" | "responsive";
+}
+export function Drawer({ open, onClose, title, description, children, footer, busy, presentation = "dialog", className = '', ...props }: DrawerProps) {
+  const [wide, setWide] = useState(() => window.matchMedia("(min-width: 960px)").matches);
+  const id = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const inline = presentation === "responsive" && wide;
+  useEffect(() => {
+    if (presentation !== "responsive") return;
+    const media = window.matchMedia("(min-width: 960px)");
+    const update = () => setWide(media.matches);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [presentation]);
+  useEffect(() => {
+    if (!open || !inline) return;
+    const trigger = document.activeElement;
+    const panel = panelRef.current;
+    panel?.focus();
+    return () => {
+      if (panel?.contains(document.activeElement) && trigger instanceof HTMLElement && trigger.isConnected) trigger.focus();
+    };
+  }, [open, inline]);
+  if (!inline) {
+    return <Dialog open={open} onClose={onClose} title={title} description={description} footer={footer} busy={busy}
+      closeOnOverlay={presentation !== "responsive"} wide {...props} className={presentation === "responsive" ? "ui-mobile-sheet " + className : className}>{children}</Dialog>;
+  }
+  if (!open) return null;
+  return <div ref={panelRef} role="region" aria-labelledby={id} tabIndex={-1} className={"ui-inline-drawer " + className}
+    onKeyDown={(event) => { if (event.key === "Escape" && !busy && !event.defaultPrevented) onClose(); }} {...props}>
+    <div className="ui-dialog-header"><div className="ui-dialog-header-copy"><h2 id={id} className="ui-dialog-title">{title}</h2>
+      {description && <p className="ui-dialog-description">{description}</p>}</div>
+      <IconButton aria-label="Close details" disabled={busy} onClick={onClose}><X size={18} aria-hidden="true" /></IconButton></div>
+    <div className="ui-dialog-body">{children}</div>
+    {footer && <div className="ui-dialog-footer">{footer}</div>}
+  </div>;
+}
+
+export interface ComboboxOption { value: string; label: string; group?: string; }
+export function Combobox({ label, value, options, onChange, disabled = false }: {
+  label: string; value: string; options: ComboboxOption[]; onChange: (value: string) => void; disabled?: boolean;
+}) {
+  const id = useId();
+  const selected = options.find((option) => option.value === value)?.label ?? "";
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+  const matches = options.filter((option) => [option.group, option.label].join(" ").toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  const choose = (index: number) => {
+    if (!matches[index]) return;
+    onChange(matches[index].value);
+    setOpen(false);
+    setQuery("");
+    setActive(-1);
+  };
+  useEffect(() => {
+    if (open && active >= 0) document.getElementById(id + "-" + active)?.scrollIntoView({ block: "nearest" });
+  }, [open, active, id]);
+  return <div className="ui-combobox">
+    <label className="ui-field-label" htmlFor={id}>{label}</label>
+    <input id={id} className="ui-control" role="combobox" aria-autocomplete="list" aria-controls={id + "-options"} aria-expanded={open}
+      aria-activedescendant={open && matches[active] ? id + "-" + active : undefined}
+      disabled={disabled} value={open ? query : selected} placeholder={selected || "Search options"}
+      onFocus={() => { setQuery(""); setOpen(true); }}
+      onClick={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+      onChange={(event) => { setOpen(true); setQuery(event.target.value); setActive(-1); }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && open) {
+          event.preventDefault(); event.stopPropagation(); setOpen(false); return;
+        }
+        if (["ArrowDown", "ArrowUp"].includes(event.key)) {
+          event.preventDefault(); setOpen(true);
+          setActive((previous) => event.key === "ArrowDown" ? Math.min(previous + 1, matches.length - 1) : previous < 0 ? matches.length - 1 : Math.max(0, previous - 1));
+        } else if (event.key === "Enter" && open) {
+          event.preventDefault(); choose(active === -1 ? 0 : active);
+        }
+      }} />
+    {open && <div className="ui-combobox-menu">
+      <ul id={id + "-options"} role="listbox" aria-label={label}>
+        {matches.map((option, index) => <li key={option.value} id={id + "-" + index} role="option"
+          aria-selected={value === option.value} data-active={index === active}
+          onPointerDown={(event) => event.preventDefault()} onClick={() => choose(index)}>
+          {option.group && <small>{option.group}</small>}{option.label}
+        </li>)}
+      </ul>
+      {!matches.length && <p role="status">No matching options</p>}
+    </div>}
+  </div>;
 }
 
 export interface PopoverProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> { open: boolean; onClose: () => void; anchorRef: RefObject<HTMLElement>; children?: ReactNode; }

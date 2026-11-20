@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
@@ -16,10 +16,6 @@ interface IndexData {
   indexedDocuments: number;
   stale: boolean;
 }
-interface DashboardData {
-  counts: Array<{ kind: string; lifecycle: string; count: number }>;
-}
-
 interface CaptureData {
   status?: string;
   deadLetterCount?: number;
@@ -29,7 +25,7 @@ interface OverviewSnapshot {
   projectId: number | undefined;
   index: IndexData;
   indexAvailable: boolean;
-  dashboard: DashboardData | undefined;
+  reviewQueues: { label: string; to: string; value: number | string | undefined }[];
   capture: CaptureData | undefined;
   runs: IngestRun[] | undefined;
   productDocumentCount: number | undefined;
@@ -54,19 +50,6 @@ function indexData(value: unknown): IndexData {
     indexedDocuments: numberValue(index.indexedDocuments),
     stale: index.stale === true,
   };
-}
-
-function dashboardData(value: unknown): DashboardData | undefined {
-  const payload = record(value);
-  const rawCounts = Array.isArray(payload?.counts) ? payload.counts as unknown[] : undefined;
-  if (!rawCounts) return undefined;
-  const counts = rawCounts.flatMap((item) => {
-    const entry = record(item);
-    return typeof entry?.kind === "string" && typeof entry.lifecycle === "string"
-      ? [{ kind: entry.kind, lifecycle: entry.lifecycle, count: numberValue(entry.count) }]
-      : [];
-  });
-  return { counts };
 }
 
 function captureData(value: unknown): CaptureData | undefined {
@@ -109,6 +92,7 @@ export default function KnowledgeOverview() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const hasKnowledge = Boolean(user?.knowledgeEnabled || user?.isAdmin);
+  const isAdmin = user?.isAdmin === true;
   const requestRef = useRef<AbortController | undefined>(undefined);
 
   const load = useCallback(async () => {
@@ -119,19 +103,29 @@ export default function KnowledgeOverview() {
     setLoading(true);
     setError("");
     try {
-      const [captureResult, runResult, indexResult, dashboardResult, productResult] = await Promise.all([
+      const [captureResult, runResult, indexResult, productResult, submissions, draft, edited] = await Promise.all([
         api.knowledgeOperationsCapture().catch(() => undefined),
         api.knowledgeOperationsIngestRuns(8).catch(() => undefined),
         api.knowledgeOperationsIndex().catch(() => undefined),
-        projectId === undefined ? Promise.resolve(undefined) : api.knowledgeDashboard(projectId).catch(() => undefined),
         api.productDocumentsList({ limit: 1 }).catch(() => undefined),
+        api.memorySubmissions(0, "pending", 1).catch(() => undefined),
+        isAdmin ? api.knowledgeCandidateInsights(projectId, { status: "draft", limit: 101 }).catch(() => undefined) : undefined,
+        isAdmin ? api.knowledgeCandidateInsights(projectId, { status: "edited", limit: 101 }).catch(() => undefined) : undefined,
       ]);
       if (requestRef.current !== controller || controller.signal.aborted) return;
+      const candidateQueue = (status: "draft" | "edited", count?: number) => ({
+        label: (status === "draft" ? "Draft candidate insights" : "Edited candidate insights") + (projectId ? " (current project)" : " (all projects)"),
+        to: "/knowledge/memory-submissions?" + new URLSearchParams({ source: "insights", status, ...(projectId ? { projectId: String(projectId) } : {}) }),
+        value: count === 101 ? "100+" : count,
+      });
       setSnapshot({
         projectId,
         index: indexData(indexResult),
         indexAvailable: indexResult !== undefined,
-        dashboard: dashboardData(dashboardResult),
+        reviewQueues: [
+          { label: isAdmin ? "Pending Memory submissions (all projects)" : "My pending Memory submissions", to: "/knowledge/memory-submissions?source=submissions&status=pending", value: submissions?.page?.total },
+          ...(isAdmin ? [candidateQueue("draft", draft?.insights.length), candidateQueue("edited", edited?.insights.length)] : []),
+        ],
         capture: captureData(captureResult),
         runs: runList(runResult),
         productDocumentCount: pageTotal(productResult),
@@ -156,23 +150,19 @@ export default function KnowledgeOverview() {
     } finally {
       if (requestRef.current === controller) setLoading(false);
     }
-  }, [projectId, scopeLoading, hasKnowledge]);
+  }, [projectId, scopeLoading, hasKnowledge, isAdmin]);
 
   useEffect(() => {
     if (!scopeLoading) void load();
     return () => requestRef.current?.abort();
   }, [load, scopeLoading]);
 
-  const pendingReview = useMemo(() => snapshot?.dashboard?.counts
-    .filter((item) => item.kind === "candidate" && item.lifecycle === "draft")
-    .reduce((total, item) => total + item.count, 0), [snapshot]);
   const failedRuns = snapshot?.runs?.filter((run) => /failed|partial/i.test(String(run.status ?? ""))).length;
   const index = snapshot?.indexAvailable ? snapshot.index : undefined;
   const statusLabel = loading && !snapshot ? "Checking" : !index ? "Unavailable" : index.stale
     ? "Stale" : index.documents === 0 ? "Empty" : "Ready";
   const coverage = index && index.documents > 0 ? Math.min(100, Math.round(index.indexedDocuments / index.documents * 100)) : undefined;
   const captureStatus = snapshot?.capture?.status ? snapshot.capture.status.toLowerCase() : "unknown";
-  const isAdmin = user?.isAdmin === true;
 
   if (!hasKnowledge) return <StandardPage><ErrorState message="Knowledge access is off" description="Ask your Relay administrator to enable Knowledge for your account." /></StandardPage>;
 
@@ -202,7 +192,7 @@ export default function KnowledgeOverview() {
         </div>
         <div className="knowledge-summary-attention">
           <div className="knowledge-summary-section-heading"><h2>Review queues</h2></div>
-          {snapshot ? <AttentionList pendingReview={pendingReview} unlinkedEvidence={snapshot.unlinkedEvidence} failedRuns={failedRuns} isAdmin={isAdmin} />
+          {snapshot ? <AttentionList reviewQueues={snapshot.projectId === projectId ? snapshot.reviewQueues : []} unlinkedEvidence={snapshot.unlinkedEvidence} failedRuns={failedRuns} isAdmin={isAdmin} />
             : <Skeleton width="100%" height="46px" />}
         </div>
         <nav className="knowledge-summary-links" aria-label="Knowledge sections">

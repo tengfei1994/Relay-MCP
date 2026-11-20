@@ -1,13 +1,13 @@
-import { useEffect, useRef, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Archive, ChevronRight, Eye, File, FileImage, FileText, Folder, Plus, Server as ServerIcon, Link2, Unlink, Settings, Pencil, Trash2 } from "lucide-react";
 import { api } from "../api/client";
 import { useProjectScope } from "../context/ProjectScope";
-import { Button, ConfirmDialog, Dialog, Field, Input, Select } from "../components/ui";
+import { Button, Combobox, ConfirmDialog, Dialog, Drawer, Field, Input, Select } from "../components/ui";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
 
 type Project = { id: number; name: string; description?: string };
-type FileTarget = { linkId: number; server: string; instance?: string; environment?: string };
+type FileTarget = { linkId: number; path?: string; server: string; instance?: string; environment?: string };
 type FileEntry = { name: string; type?: string; size?: number; modifiedAt?: string; target?: FileTarget; targetInherited?: boolean };
 type FilePreview = { path: string; name?: string; content: string; size: number; modifiedAt: string; truncated: boolean };
 type PreviewKind = "text" | "image" | "archive";
@@ -58,7 +58,7 @@ function fileFrom(value: unknown): FileEntry | null {
   const record = value as Record<string, unknown>;
   const raw = record.target as Partial<FileTarget> | undefined;
   const target = raw && typeof raw.linkId === "number" && typeof raw.server === "string"
-    ? { linkId: raw.linkId, server: raw.server, instance: optionalString(raw.instance), environment: optionalString(raw.environment) }
+    ? { linkId: raw.linkId, path: optionalString(raw.path), server: raw.server, instance: optionalString(raw.instance), environment: optionalString(raw.environment) }
     : undefined;
   return { name: value.name, target, targetInherited: record.targetInherited === true, type: optionalString(record.type), size: optionalNumber(record.size), modifiedAt: optionalString(record.modifiedAt) };
 }
@@ -176,15 +176,14 @@ function filePreviewDetails(size?: number, modifiedAt?: string): string {
 
 export default function ProjectsPage() {
   const location = useLocation();
-  const { refresh: refreshScope } = useProjectScope();
-  const openedProjectSearch = useRef<string>();
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [projectsLoading, setProjectsLoading] = useState(true);
+  const navigate = useNavigate();
+  const { projects, selectedProject: selected, refresh: refreshScope, loading: projectsLoading, error: projectsError } = useProjectScope();
+  const params = new URLSearchParams(location.search);
+  const currentPath = params.get("path") ?? "";
+  const showServers = params.get("view") === "servers";
   const [confirm, setConfirm] = useState<ConfirmState>(null);
-  const [selected, setSelected] = useState<Project | null>(null);
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
-  const [currentPath, setCurrentPath] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
   const [newDesc, setNewDesc] = useState("");
@@ -204,12 +203,13 @@ export default function ProjectsPage() {
   const [deleteFileTarget, setDeleteFileTarget] = useState<{ path: string; name: string; type?: string } | null>(null);
 
   // Server association
-  const [targetEditor, setTargetEditor] = useState<{ path: string; linkId: string }>();
+  const [targetEditor, setTargetEditor] = useState<{ path: string; linkId: string; original?: FileTarget; inherited?: boolean }>();
+  const [fallback, setFallback] = useState<FileTarget | null | "unknown" | "loading">(null);
+  const targetLock = useRef(false);
   const [targetOptions, setTargetOptions] = useState<ProjectServer[]>();
   const [targetError, setTargetError] = useState("");
   const [targetSaving, setTargetSaving] = useState(false);
   const targetRequest = useRef(0);
-  const [showServers, setShowServers] = useState(false);
   const [linkedServers, setLinkedServers] = useState<ProjectServer[]>([]);
   const [allServers, setAllServers] = useState<Server[]>([]);
   const [availableInstances, setAvailableInstances] = useState<Instance[]>([]);
@@ -225,7 +225,6 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     let active = true;
-    api.listProjects().then((r) => { if (active) setProjects(projectsFrom(r)); }).catch((err: unknown) => { if (active) setWorkspaceError(err instanceof Error ? err.message : "Unable to load projects"); }).finally(() => { if (active) setProjectsLoading(false); });
     api.listServers().then((r) => { if (active) setAllServers(serversFrom(r)); }).catch((err: unknown) => { if (active) setWorkspaceError(err instanceof Error ? err.message : "Unable to load servers"); });
     return () => { active = false; };
   }, []);
@@ -259,48 +258,31 @@ export default function ProjectsPage() {
     setPreviewLoading(false);
   };
 
-  const openProject = async (project: Project) => {
+  function openLocation(projectId: number, path = "", view?: "servers") {
+    const next = new URLSearchParams({ project: String(projectId) });
+    if (path) next.set("path", path);
+    if (view) next.set("view", view);
+    if (next.toString() !== params.toString()) navigate("/projects?" + next.toString());
+  }
+
+  const openProject = (project: Project) => openLocation(project.id);
+
+  useLayoutEffect(() => {
     closePreview();
-    setSelected(project);
-    setCurrentPath("");
-    setShowServers(false);
-    setWorkspaceError("");
-    try { await refreshFiles(project.id, ""); } catch (err: unknown) { setWorkspaceError(err instanceof Error ? err.message : "Unable to load project files"); }
+    closeTargetEditor();
+    setRenameTarget(null);
+    setDeleteFileTarget(null);
+    setConfirm(null);
+    if (selected && !showServers) void refreshFiles(selected.id, currentPath);
+    return () => { filesRequest.current += 1; previewRequest.current += 1; targetRequest.current += 1; };
+  }, [selected?.id, currentPath, showServers]);
+
+  const openDir = (name: string) => { if (selected) openLocation(selected.id, pathFor(name)); };
+  const goUp = () => {
+    if (selected) openLocation(selected.id, currentPath.split("/").slice(0, -1).join("/"));
   };
-
-  useEffect(() => {
-    if (openedProjectSearch.current === location.search || projectsLoading) return;
-    openedProjectSearch.current = location.search;
-    const id = Number(new URLSearchParams(location.search).get("project"));
-    const project = projects.find((item) => item.id === id);
-    if (project) void openProject(project);
-  }, [location.search, projects, projectsLoading]);
-
-  const openDir = async (name: string) => {
-    if (!selected) return;
-    const projectId = selected.id;
-    const newPath = currentPath ? `${currentPath}/${name}` : name;
-    setCurrentPath(newPath);
-    try { await refreshFiles(projectId, newPath); } catch (err: unknown) { setWorkspaceError(err instanceof Error ? err.message : "Unable to open directory"); }
-  };
-
-  const goUp = async () => {
-    if (!selected) return;
-    const projectId = selected.id;
-    const parts = currentPath.split("/");
-    parts.pop();
-    const newPath = parts.join("/");
-    setCurrentPath(newPath);
-    try { await refreshFiles(projectId, newPath); } catch (err: unknown) { setWorkspaceError(err instanceof Error ? err.message : "Unable to open directory"); }
-  };
-
-  const openBreadcrumb = async (parts: string[], index: number) => {
-    if (!selected) return;
-    const projectId = selected.id;
-    const newPath = parts.slice(0, index + 1).join("/");
-    if (newPath === currentPath) return;
-    setCurrentPath(newPath);
-    try { await refreshFiles(projectId, newPath); } catch (err: unknown) { setWorkspaceError(err instanceof Error ? err.message : "Unable to open directory"); }
+  const openBreadcrumb = (parts: string[], index: number) => {
+    if (selected) openLocation(selected.id, parts.slice(0, index + 1).join("/"));
   };
 
   const openPreview = async (path: string, entry?: FileEntry) => {
@@ -341,17 +323,19 @@ export default function ProjectsPage() {
 
   const submitRename = async () => {
     if (!selected || !renameTarget || !renameName.trim()) return;
+    const request = filesRequest.current;
     setFileBusy(true); setWorkspaceError("");
-    try { await api.renameFile(selected.id, renameTarget.path, renameName.trim()); setRenameTarget(null); await refreshFiles(selected.id, currentPath); }
-    catch (err: unknown) { setWorkspaceError(err instanceof Error ? err.message : "Unable to rename item"); }
+    try { await api.renameFile(selected.id, renameTarget.path, renameName.trim()); if (request !== filesRequest.current) return; setRenameTarget(null); await refreshFiles(selected.id, currentPath); }
+    catch (err: unknown) { if (request === filesRequest.current) setWorkspaceError(err instanceof Error ? err.message : "Unable to rename item"); }
     finally { setFileBusy(false); }
   };
 
   const confirmDeleteFile = async () => {
     if (!selected || !deleteFileTarget) return;
+    const request = filesRequest.current;
     setFileBusy(true); setWorkspaceError("");
-    try { await api.deleteFile(selected.id, deleteFileTarget.path); setDeleteFileTarget(null); await refreshFiles(selected.id, currentPath); }
-    catch (err: unknown) { setWorkspaceError(err instanceof Error ? err.message : "Unable to delete item"); }
+    try { await api.deleteFile(selected.id, deleteFileTarget.path); if (request !== filesRequest.current) return; setDeleteFileTarget(null); await refreshFiles(selected.id, currentPath); }
+    catch (err: unknown) { if (request === filesRequest.current) setWorkspaceError(err instanceof Error ? err.message : "Unable to delete item"); }
     finally { setFileBusy(false); }
   };
 
@@ -362,7 +346,6 @@ export default function ProjectsPage() {
       const r = await api.createProject(newName, newDesc);
       const project = projectFrom(typeof r === "object" && r !== null && "project" in r ? r.project : null);
       if (!project) throw new Error("The server returned an invalid project.");
-      setProjects((p) => [...p, project]);
       refreshScope();
       setShowCreate(false);
       setNewName("");
@@ -379,9 +362,7 @@ export default function ProjectsPage() {
   const confirmDeleteProject = async () => {
     if (!confirm || confirm.kind !== "project") return;
     await api.deleteProject(confirm.id);
-    setProjects((p) => p.filter((proj) => proj.id !== confirm.id));
     refreshScope();
-    if (selected?.id === confirm.id) setSelected(null);
     setConfirm(null);
   };
 
@@ -391,11 +372,21 @@ export default function ProjectsPage() {
   }
 
   async function editFileTarget(file: FileEntry) {
-    if (!selected) return;
+    if (!selected || targetLock.current) return;
     const request = ++targetRequest.current;
-    setTargetEditor({ path: pathFor(file.name), linkId: file.target && !file.targetInherited ? String(file.target.linkId) : "" });
+    setTargetEditor({ path: pathFor(file.name), linkId: file.target && !file.targetInherited ? String(file.target.linkId) : "", original: file.target, inherited: file.targetInherited });
+    setFallback(file.targetInherited ? file.target ?? null : currentPath && file.target ? "loading" : null);
     setTargetOptions(undefined);
     setTargetError("");
+    if (currentPath && file.target && !file.targetInherited) {
+      const parts = currentPath.split("/");
+      const parentName = parts.pop();
+      void api.listFiles(selected.id, parts.join("/")).then((result) => {
+        if (request !== targetRequest.current) return;
+        const parent = filesFrom(result).find((item) => item.name === parentName);
+        setFallback(parent ? parent.target ?? null : "unknown");
+      }).catch(() => { if (request === targetRequest.current) setFallback("unknown"); });
+    }
     try {
       const result = await api.listProjectServers(selected.id);
       if (request === targetRequest.current) setTargetOptions(projectServersFrom(result));
@@ -406,38 +397,85 @@ export default function ProjectsPage() {
 
   async function saveFileTarget(event: React.FormEvent) {
     event.preventDefault();
-    if (!selected || !targetEditor || targetSaving) return;
+    if (!selected || !targetEditor || !targetOptions || targetLock.current) return;
+    const revision = targetRequest.current;
+    targetLock.current = true;
     setTargetSaving(true);
     setTargetError("");
     try {
       await api.setProjectFileTarget(selected.id, targetEditor.path, targetEditor.linkId ? Number(targetEditor.linkId) : null);
-      closeTargetEditor();
-      await refreshFiles(selected.id, currentPath);
+      if (revision === targetRequest.current) {
+        closeTargetEditor();
+        await refreshFiles(selected.id, currentPath);
+      }
     } catch (error) {
-      setTargetError(error instanceof Error ? error.message : "Could not save the target.");
-    } finally { setTargetSaving(false); }
+      if (revision === targetRequest.current) setTargetError(error instanceof Error ? error.message : "Could not save the target.");
+    } finally { targetLock.current = false; setTargetSaving(false); }
   }
+  const chosenTarget = targetOptions?.find((option) => String(option.id) === targetEditor?.linkId);
+  const linkLabel = (link: ProjectServer) => [link.limsInstanceName ?? "No instance", link.environment].filter(Boolean).join(" / ");
+  const effectiveLabel = (target: FileTarget | null | "unknown" | "loading" | undefined) =>
+    target === "loading" ? "Checking parent target..." : target === "unknown" ? "Parent target unknown" : target
+      ? [target.server, target.instance ?? "No instance", target.environment].filter(Boolean).join(" / ") : "No target assigned";
 
-  const openServerPanel = async (project: Project) => {
-    setSelected(project);
-    setShowServers(true);
+  const openServerPanel = (project: Project) => openLocation(project.id, "", "servers");
+
+  const linksRequest = useRef(0);
+  const instancesRequest = useRef(0);
+  const linkLock = useRef(false);
+  const [linksLoading, setLinksLoading] = useState(false);
+  const [instancesLoading, setInstancesLoading] = useState(false);
+  const [linksError, setLinksError] = useState("");
+  const [linkSaving, setLinkSaving] = useState(false);
+  const [linkLoadAttempt, setLinkLoadAttempt] = useState(0);
+
+  useLayoutEffect(() => {
+    const request = ++linksRequest.current;
+    instancesRequest.current += 1;
+    setLinkedServers([]);
+    setAvailableInstances([]);
     setLinkError("");
+    setLinksError("");
+    setLinksLoading(false);
+    setInstancesLoading(false);
     setEditingLinkId(null);
     setLinkForm({ serverId: "", limsInstanceId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
+    if (selected && showServers) {
+      setLinksLoading(true);
+      api.listProjectServers(selected.id)
+        .then((result) => { if (request === linksRequest.current) setLinkedServers(projectServersFrom(result)); })
+        .catch(() => { if (request === linksRequest.current) setLinksError("Could not load server links."); })
+        .finally(() => { if (request === linksRequest.current) setLinksLoading(false); });
+    }
+    return () => { linksRequest.current += 1; instancesRequest.current += 1; };
+  }, [selected?.id, showServers, linkLoadAttempt]);
+
+  async function loadLinkInstances(serverId: number) {
+    const request = ++instancesRequest.current;
     setAvailableInstances([]);
-    const r = await api.listProjectServers(project.id);
-    setLinkedServers(projectServersFrom(r));
-  };
+    setInstancesLoading(true);
+    try {
+      const result = await api.listInstances(serverId);
+      if (request === instancesRequest.current) setAvailableInstances(instancesFrom(result));
+    } catch {
+      if (request === instancesRequest.current) setLinkError("Could not load instances for this server.");
+    } finally {
+      if (request === instancesRequest.current) setInstancesLoading(false);
+    }
+  }
 
   const linkServer = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selected) return;
+    if (!selected || linkLock.current || instancesLoading || linksLoading || linksError) return;
+    const request = linksRequest.current;
     const projectId = selected.id;
     setLinkError("");
     if (!linkForm.serverId || (linkForm.connectionMode === "ssh" && !linkForm.remotePath)) {
       setLinkError(linkForm.connectionMode === "ssh" ? "Select a server and enter remote path" : "Select a server");
       return;
     }
+    linkLock.current = true;
+    setLinkSaving(true);
     try {
       if (editingLinkId) {
         await api.updateProjectServer(projectId, editingLinkId, {
@@ -456,13 +494,12 @@ export default function ProjectsPage() {
           linkForm.limsInstanceId ? Number(linkForm.limsInstanceId) : undefined
         );
       }
-      const r = await api.listProjectServers(projectId);
-      setLinkedServers(projectServersFrom(r));
-      setEditingLinkId(null);
-      setLinkForm({ serverId: "", limsInstanceId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
-      setAvailableInstances([]);
+      if (request === linksRequest.current) setLinkLoadAttempt((value) => value + 1);
     } catch (err: unknown) {
-      setLinkError(err instanceof Error ? err.message : "Unable to link server");
+      if (request === linksRequest.current) setLinkError(err instanceof Error ? err.message : "Unable to link server");
+    } finally {
+      linkLock.current = false;
+      setLinkSaving(false);
     }
   };
 
@@ -472,7 +509,9 @@ export default function ProjectsPage() {
 
   const confirmUnlinkServer = async () => {
     if (!confirm || confirm.kind !== "link" || !selected) return;
+    const request = linksRequest.current;
     await api.unlinkServer(selected.id, confirm.id);
+    if (request !== linksRequest.current) return;
     setLinkedServers((s) => s.filter((l) => l.id !== confirm.id));
     setConfirm(null);
   };
@@ -487,11 +526,12 @@ export default function ProjectsPage() {
       environment: link.environment || "production",
       connectionMode: link.connectionMode ?? link.serverConnectionMode ?? "ssh",
     });
-    const result = await api.listInstances(link.serverId);
-    setAvailableInstances(instancesFrom(result));
+    await loadLinkInstances(link.serverId);
   };
 
   const cancelEditServerLink = () => {
+    instancesRequest.current += 1;
+    setInstancesLoading(false);
     setEditingLinkId(null);
     setLinkError("");
     setLinkForm({ serverId: "", limsInstanceId: "", remotePath: "", environment: "production", connectionMode: "ssh" });
@@ -501,7 +541,7 @@ export default function ProjectsPage() {
 
   return (
     <AppPageFrame variant="wide" className="app-page-frame-workspace">
-      {workspaceError && <p className="mb-3 rounded-[10px] border border-coral/40 bg-coral/10 px-4 py-3 text-sm text-coral" role="alert">{workspaceError}</p>}
+      {(workspaceError || projectsError) && <p className="mb-3 rounded-[10px] border border-coral/40 bg-coral/10 px-4 py-3 text-sm text-coral" role="alert">{workspaceError || projectsError}</p>}
       <div className="app-workspace-panel flex min-h-0 flex-1">
       <aside className="app-project-sidebar flex flex-col border-r border-line">
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
@@ -566,13 +606,15 @@ export default function ProjectsPage() {
             <div className="mb-6 flex items-center gap-2">
               <ServerIcon size={16} className="text-mint" />
               <h2 className="font-display text-[22px] font-semibold text-fg">Servers for {selected.name}</h2>
-              <Button type="button" variant="ghost" size="sm" onClick={() => setShowServers(false)} className="ml-auto">
+              <Button type="button" variant="ghost" size="sm" onClick={() => selected && openProject(selected)} className="ml-auto">
                 Back to files
               </Button>
             </div>
 
             <div className="mb-6 space-y-2">
-              {linkedServers.length === 0 && <p className="text-sm text-muted">No servers linked yet.</p>}
+              {linksLoading && <p role="status">Loading server links...</p>}
+              {linksError && <p role="alert">{linksError} <Button variant="ghost" onClick={() => setLinkLoadAttempt((value) => value + 1)}>Retry</Button></p>}
+              {!linksLoading && !linksError && linkedServers.length === 0 && <p className="text-sm text-muted">No servers linked yet.</p>}
               {linkedServers.map((l) => (
                 <div key={l.id} className="glass flex items-center justify-between rounded-panel px-4 py-3">
                   <div className="flex items-center gap-3">
@@ -618,7 +660,8 @@ export default function ProjectsPage() {
                       const server = allServers.find((s) => String(s.id) === e.target.value);
                       setLinkForm((f) => ({ ...f, serverId: e.target.value, limsInstanceId: "", connectionMode: server?.connectionMode ?? "ssh" }));
                       setAvailableInstances([]);
-                      if (server) api.listInstances(server.id).then((result) => setAvailableInstances(instancesFrom(result)));
+                      if (server) void loadLinkInstances(server.id);
+                      else { instancesRequest.current += 1; setInstancesLoading(false); }
                     }}
                   >
                     <option value="">Select server…</option>
@@ -627,8 +670,8 @@ export default function ProjectsPage() {
                     ))}
                   </Select>
                 </Field>
-                <Field label="LIMS instance" hint={linkForm.serverId && availableInstances.length === 0 ? "No confirmed instances on this server. Scan and import one from LIMS Instances." : undefined}>
-                  <Select value={linkForm.limsInstanceId} onChange={(e) => setLinkForm((f) => ({ ...f, limsInstanceId: e.target.value }))} disabled={!linkForm.serverId}>
+                <Field label="LIMS instance" hint={instancesLoading ? "Loading instances..." : linkForm.serverId && availableInstances.length === 0 ? "No confirmed instances on this server. Scan and import one from LIMS Instances." : undefined}>
+                  <Select value={linkForm.limsInstanceId} onChange={(e) => setLinkForm((f) => ({ ...f, limsInstanceId: e.target.value }))} disabled={!linkForm.serverId || instancesLoading}>
                     <option value="">No instance binding</option>
                     {availableInstances.map((instance) => (
                       <option key={instance.id} value={instance.id}>
@@ -686,6 +729,7 @@ export default function ProjectsPage() {
               </Button>
             </div>
 
+            <div className="ui-detail-layout flex-1">
             <div className="flex-1 overflow-y-auto p-4">
               {currentPath && (
                 <button type="button" onClick={goUp} className="mb-1 flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-muted hover:bg-white/5 hover:text-fg">
@@ -721,30 +765,34 @@ export default function ProjectsPage() {
               ))}
               {filesLoading ? <p className="px-3 text-xs text-muted" role="status">Loading files…</p> : files.length === 0 && !workspaceError && <p className="px-3 text-xs text-muted">Empty directory</p>}
             </div>
+              <Drawer presentation="responsive" open={!!targetEditor} onClose={closeTargetEditor} busy={targetSaving}
+                title="Assign server target" description={selected ? selected.name + " / " + targetEditor?.path : undefined}>
+                {targetEditor && <form onSubmit={saveFileTarget} className="space-y-4">
+                  {targetError && <p role="alert" className="text-sm text-coral">{targetError}</p>}
+                  {!targetOptions && !targetError && <p role="status">Loading linked targets...</p>}
+                  {targetOptions && <Combobox label="Server and instance" value={targetEditor.linkId} disabled={targetSaving}
+                    onChange={(linkId) => setTargetEditor({ ...targetEditor, linkId })}
+                    options={[{ value: "", label: "Use parent assignment" }, ...[...targetOptions]
+                      .sort((a, b) => (a.serverName ?? "").localeCompare(b.serverName ?? ""))
+                      .map((link) => ({ value: String(link.id), group: link.serverName ?? String(link.serverId), label: linkLabel(link) }))]} />}
+                  <dl className="grid gap-3 text-sm sm:grid-cols-2">
+                    <div><dt className="text-muted">Current target</dt><dd>{effectiveLabel(targetEditor.original)}</dd>
+                      {targetEditor.original && <small>{targetEditor.inherited ? "Inherited from " + (targetEditor.original.path ?? "unknown folder") : "Explicit assignment"}</small>}</div>
+                    <div><dt className="text-muted">After saving</dt><dd>{chosenTarget ? (chosenTarget.serverName ?? chosenTarget.serverId) + " / " + linkLabel(chosenTarget) : effectiveLabel(fallback)}</dd>
+                      <small>{chosenTarget ? "Explicit assignment" : fallback && typeof fallback === "object" ? "Inherited from " + (fallback.path ?? "unknown folder") : ""}</small></div>
+                  </dl>
+                  {chosenTarget?.environment?.toLowerCase() === "production" && <p className="text-sm text-sun">This assignment targets production.</p>}
+                  {targetOptions?.length === 0 && selected && <Button type="button" variant="ghost" onClick={() => openServerPanel(selected)}>Manage project server links</Button>}
+                  <Button type="submit" variant="primary" loading={targetSaving} disabled={!targetOptions || fallback === "loading"}>Save assignment</Button>
+                </form>}
+              </Drawer>
+            </div>
           </>
         )}
-      <Dialog open={!!targetEditor} onClose={closeTargetEditor} busy={targetSaving} title="Assign server target"
-        description="Folder assignments apply to descendants unless an item has its own assignment.">
-        {targetEditor && <form onSubmit={saveFileTarget} className="space-y-3">
-          <p className="break-all text-sm font-medium">{targetEditor.path}</p>
-          {targetError && <p className="text-sm text-coral" role="alert">{targetError}</p>}
-          {!targetOptions && !targetError && <p role="status">Loading linked targets…</p>}
-          {targetOptions && <Field label="Server and instance">
-            <Select value={targetEditor.linkId} onChange={(event) => setTargetEditor({ ...targetEditor, linkId: event.target.value })}>
-              <option value="">Use parent assignment, if available</option>
-              {targetOptions.map((target) => <option key={target.id} value={target.id}>
-                {[target.serverName ?? target.serverId, target.limsInstanceName ?? "No instance", target.environment].filter(Boolean).join(" · ")}
-              </option>)}
-            </Select>
-          </Field>}
-          {targetOptions?.length === 0 && selected && <Button type="button" variant="ghost" onClick={() => { closeTargetEditor(); void openServerPanel(selected); }}>Manage project server links</Button>}
-          <div className="flex justify-end"><Button type="submit" variant="primary" loading={targetSaving} disabled={!targetOptions}>Save assignment</Button></div>
-        </form>}
-      </Dialog>
       <ConfirmDialog
         open={confirm?.kind === "project"}
         onClose={() => setConfirm(null)}
-        title="Delete project?"
+        title={"Delete " + (projects.find((project) => project.id === confirm?.id)?.name ?? "project") + "?"}
         description="This removes the project and its associations. This action cannot be undone."
         confirmLabel="Delete project"
         tone="danger"
@@ -753,7 +801,7 @@ export default function ProjectsPage() {
       <ConfirmDialog
         open={confirm?.kind === "link"}
         onClose={() => setConfirm(null)}
-        title="Unlink server?"
+        title={"Unlink server from " + (selected?.name ?? "project") + "?"}
         description="The project will no longer use this server connection."
         confirmLabel="Unlink server"
         tone="danger"
@@ -829,7 +877,7 @@ export default function ProjectsPage() {
       <Dialog
         open={Boolean(renameTarget)}
         onClose={() => { if (!fileBusy) setRenameTarget(null); }}
-        title={`Rename ${renameTarget?.name ?? "item"}`}
+        title={`Rename ${renameTarget?.name ?? "item"}`} description={selected && renameTarget ? selected.name + " / " + renameTarget.path : undefined}
         busy={fileBusy}
         footer={<><Button type="button" variant="ghost" disabled={fileBusy} onClick={() => setRenameTarget(null)}>Cancel</Button><Button type="submit" form="rename-file-form" loading={fileBusy}>Save name</Button></>}
       >
@@ -839,7 +887,7 @@ export default function ProjectsPage() {
         open={Boolean(deleteFileTarget)}
         onClose={() => { if (!fileBusy) setDeleteFileTarget(null); }}
         title={`Delete ${deleteFileTarget?.type === "directory" ? "folder" : "file"}?`}
-        description={deleteFileTarget?.type === "directory" ? `Delete ${deleteFileTarget.name} and everything inside it?` : `Delete ${deleteFileTarget?.name ?? "this file"}?`}
+        description={selected && deleteFileTarget ? "Delete " + selected.name + " / " + deleteFileTarget.path + (deleteFileTarget.type === "directory" ? " and everything inside it?" : "?") : undefined}
         confirmLabel="Delete"
         tone="danger"
         onConfirm={confirmDeleteFile}

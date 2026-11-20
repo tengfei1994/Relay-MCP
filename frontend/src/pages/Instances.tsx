@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Boxes, Check, Database, Pencil, RefreshCw, Server, Trash2, Wrench } from "lucide-react";
 import { api } from "../api/client";
-import { Button, ConfirmDialog, Drawer, EmptyState, Field, Input, Select, StatusPill, Textarea, useToast } from "../components/ui";
+import { Button, ConfirmDialog, Drawer, EmptyState, Field, Input, Select, Skeleton, StatusPill, Textarea, useToast } from "../components/ui";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
 
 type ServiceRecord = {
@@ -188,6 +188,12 @@ export default function InstancesPage() {
   const [rootHint, setRootHint] = useState("");
   const [error, setError] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<InstanceRecord | null>(null);
+  const generation = useRef(0);
+  const scanLock = useRef(false);
+  const importLock = useRef(false);
+  const [loading, setLoading] = useState(false);
+  const [listAttempt, setListAttempt] = useState(0);
+  const [listError, setListError] = useState("");
   const selectedServer = servers.find((server) => String(server.id) === serverId);
 
   useEffect(() => {
@@ -195,49 +201,83 @@ export default function InstancesPage() {
       const nextServers = serversFrom(result);
       setServers(nextServers);
       const firstWindows = nextServers.find((server) => server.os === "windows");
-      if (firstWindows) setServerId(String(firstWindows.id));
+      if (firstWindows) changeServer(String(firstWindows.id));
     }).catch((reason: unknown) => setError(errorMessage(reason)));
   }, []);
 
-  useEffect(() => {
-    if (!serverId) {
-      setInstances([]);
-      return;
-    }
-    api.listInstances(Number(serverId))
-      .then((result) => setInstances(instancesFrom(result)))
-      .catch((reason: unknown) => setError(errorMessage(reason)));
+  function changeServer(id: string) {
+    generation.current += 1;
+    scanLock.current = false;
+    importLock.current = false;
+    setServerId(id);
     setCandidates([]);
-  }, [serverId]);
+    setInstances([]);
+    setScanning(false);
+    setSaving(null);
+    setError("");
+    setListError("");
+    setLoading(Boolean(id));
+    setEditing(null);
+    setDeleteTarget(null);
+    setRootHint("");
+  }
+
+  useEffect(() => {
+    if (!serverId) return;
+    const revision = generation.current;
+    let active = true;
+    const live = () => active && revision === generation.current;
+    setLoading(true);
+    setListError("");
+    api.listInstances(Number(serverId))
+      .then((result) => { if (live()) setInstances(instancesFrom(result)); })
+      .catch((reason: unknown) => { if (live()) setListError(errorMessage(reason)); })
+      .finally(() => { if (live()) setLoading(false); });
+    return () => { active = false; };
+  }, [serverId, listAttempt]);
 
   const scan = async () => {
+    if (!serverId || scanLock.current || importLock.current) return;
+    const revision = generation.current;
+    scanLock.current = true;
     setError("");
+    setCandidates([]);
     setScanning(true);
     try {
       const result = await api.discoverInstances(Number(serverId), rootHint.trim() ? [rootHint.trim()] : []);
+      if (revision !== generation.current) return;
       const found = candidatesFrom(result);
       setCandidates(found);
       if (found.length === 0) setError("No SampleManager instances were detected.");
     } catch (reason: unknown) {
-      setError(errorMessage(reason));
+      if (revision === generation.current) setError(errorMessage(reason));
     } finally {
-      setScanning(false);
+      if (revision === generation.current) {
+        scanLock.current = false;
+        setScanning(false);
+      }
     }
   };
 
   const importCandidate = async (candidate: CandidateRecord) => {
+    if (!serverId || loading || listError || scanLock.current || importLock.current || !candidates.includes(candidate)) return;
+    const revision = generation.current;
+    importLock.current = true;
     setSaving(candidate.rootPath);
     setError("");
     try {
       await api.saveInstance(Number(serverId), candidate);
-      const result = await api.listInstances(Number(serverId));
-      setInstances(instancesFrom(result));
+      if (revision !== generation.current) return;
       setCandidates((items) => items.filter((item) => item.rootPath !== candidate.rootPath));
+      setListAttempt((value) => value + 1);
       toast.success("Instance imported.");
     } catch (reason: unknown) {
-      setError(errorMessage(reason));
+      if (revision === generation.current) setError(errorMessage(reason));
     } finally {
-      setSaving(null);
+      if (revision === generation.current) {
+        importLock.current = false;
+        setSaving(null);
+      }
     }
   };
 
@@ -305,7 +345,7 @@ export default function InstancesPage() {
   return (
     <AppPageFrame variant="wide">
       <div className="mb-4 flex flex-wrap items-end justify-end gap-3">
-        <Field label="Windows server"><Select value={serverId} onChange={(event) => setServerId(event.target.value)} className="min-w-52"><option value="">Select a Windows server</option>{servers.filter((server) => server.os === "windows").map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}</Select></Field>
+        <Field label="Windows server"><Select value={serverId} onChange={(event) => changeServer(event.target.value)} className="min-w-52"><option value="">Select a Windows server</option>{servers.filter((server) => server.os === "windows").map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}</Select></Field>
         <Field label="Root hint"><Input value={rootHint} onChange={(event) => setRootHint(event.target.value)} placeholder="Optional custom root" className="w-52" /></Field>
         <Button onClick={scan} disabled={!serverId || scanning} loading={scanning} variant="accent"><RefreshCw size={15} /> {scanning ? "Scanning" : "Scan"}</Button>
       </div>
@@ -327,7 +367,7 @@ export default function InstancesPage() {
                   {candidate.databaseProbe?.status === "verified" && <p className="mt-1 text-[13px] text-mint">Schema verified: {candidate.databaseProbe.tableCount} tables, {candidate.databaseProbe.sampleManagerTableCount ?? 0} SampleManager core tables</p>}
                   {(candidate.warnings?.length ?? 0) > 0 && <div className="mt-2 flex items-start gap-1 text-[13px] text-sun"><AlertTriangle size={14} className="mt-0.5 shrink-0" /><span>{candidate.warnings?.join(", ")}</span></div>}
                 </div>
-                <Button onClick={() => importCandidate(candidate)} disabled={saving === candidate.rootPath} loading={saving === candidate.rootPath} variant="ghost"><Check size={14} /> Import</Button>
+                <Button onClick={() => importCandidate(candidate)} disabled={loading || Boolean(listError) || scanning || saving !== null} loading={saving === candidate.rootPath} variant="ghost"><Check size={14} /> Import</Button>
               </div>
             ))}
           </div>
@@ -343,18 +383,23 @@ export default function InstancesPage() {
                 <Boxes size={18} className="mt-1 shrink-0 text-iris" />
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2"><span className="font-medium text-fg">{instance.name}</span><span className="text-sm text-muted">{instance.version || "Version unknown"}</span><StatusPill status={runtimeLabel(instance.runtimeKind)} /><StatusPill status={instance.status || "unknown"} /></div>
-                  <p className="mt-1 truncate font-mono text-[13px] text-muted">{instance.rootPath}</p>
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-sm font-medium text-mint">Technical details</summary>
+                    <p className="mt-2 break-all font-mono text-[13px] text-muted">{instance.rootPath}</p>
                   <div className="mt-4 grid gap-4 sm:grid-cols-3">
                     <div className="flex items-start gap-2"><Server size={14} className="mt-0.5 text-muted" /><div><p className="text-[13px] text-muted">Services</p><p className="text-[13px] text-fg">{instance.services?.map((service) => service.name).join(", ") || "None configured"}</p></div></div>
                     <div className="flex items-start gap-2"><Database size={14} className="mt-0.5 text-muted" /><div><p className="text-[13px] text-muted">{instance.databaseName || "Database not configured"}</p><p className="text-[13px] text-fg">{instance.databaseHost || instance.databaseAuthType || "No target"}</p>{instance.databaseConfigSource && <p className="max-w-64 truncate text-[12px] text-muted" title={instance.databaseConfigSource}>{instance.databaseConfigSource}</p>}</div></div>
                     <div className="flex items-start gap-2"><Wrench size={14} className="mt-0.5 text-muted" /><div><p className="text-[13px] text-muted">{instance.buildProfile?.kind || "Builder unknown"}</p><p className="max-w-64 truncate text-[13px] text-fg">{instance.buildProfile?.selectedPath || "No tool selected"}</p></div></div>
                   </div>
+                  </details>
                 </div>
                 <div className="flex shrink-0 items-center gap-1"><Button onClick={() => openEdit(instance)} variant="ghost" aria-label={`Edit ${instance.name}`}><Pencil size={15} /></Button><Button onClick={() => setDeleteTarget(instance)} variant="ghost" aria-label={`Delete ${instance.name}`}><Trash2 size={15} /></Button></div>
               </div>
             </div>
           ))}
-          {instances.length === 0 && <EmptyState title="No instances configured" description="Select a Windows server and scan for SampleManager instances." />}
+          {loading && <Skeleton className="m-3 h-16" role="status" aria-label="Loading instances" />}
+          {listError && <p className="p-3" role="alert">{listError} <Button variant="ghost" onClick={() => setListAttempt((value) => value + 1)}>Retry</Button></p>}
+          {!loading && !listError && instances.length === 0 && <EmptyState title="No instances configured" description="Select a Windows server and scan for SampleManager instances." />}
         </div>
       </section>
 

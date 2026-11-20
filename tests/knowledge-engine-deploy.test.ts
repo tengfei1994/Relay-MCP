@@ -10,6 +10,9 @@ const shellPath = (path: string) => path.replaceAll("\\", "/").replace(/^([A-Za-
 const harness = String.raw`
 record() { printf '%s\n' "$*" >> "$DEPLOY_TEST_ROOT/events"; }
 apt-get() { :; }; mkdir() { :; }; chmod() { :; }; ln() { :; }; rm() { :; }
+flock() { record "flock $*"; }
+lsof() { record "lsof $*"; return 1; }
+curl() { record "curl $*"; }
 nginx() { :; }; systemctl() { :; }; hostname() { printf '127.0.0.1\n'; }
 openssl() { printf 'generated-test-secret-without-shell-specials\n'; }
 cp() { if [ "$2" = .env ]; then command cp "$@"; fi; }
@@ -32,6 +35,7 @@ node() {
   record "node $*"
   while [[ "$1" = --* ]]; do shift; done
   shift
+  [[ $# -gt 0 ]] || return 0
   case "$1" in
     stop) DEPLOY_TEST_RUNNING=0 ;;
     install) if [ "$DEPLOY_TEST_RUNNING" = 1 ]; then echo 'engine must stop before install' >&2; return 43; fi ;;
@@ -57,6 +61,21 @@ function deployment(options: { running?: boolean; installed?: boolean; bundle?: 
 }
 const index = (events: string[], part: string) => events.findIndex(event => event.includes(part));
 
+function assertSerialStart(events: string[], engineReady: boolean) {
+  const web = index(events, "pm2 startOrRestart ecosystem.config.cjs --only remote-ops-web");
+  const webReady = index(events, "/api/health");
+  const mcp = index(events, "pm2 startOrRestart ecosystem.config.cjs --only remote-ops-mcp");
+  const mcpReady = index(events, "/mcp/health/ready");
+  const idleCheck = index(events, "lsof -t");
+  const migration = index(events, "node scripts/migrate-knowledge-db.mjs");
+  assert.ok(idleCheck >= 0 && idleCheck < migration && migration < web, "wait for and migrate the database before starting web");
+  assert.ok(web >= 0 && web < webReady && webReady < mcp && mcp < mcpReady);
+  if (engineReady) {
+    const ready = index(events, "knowledge-engine.mjs wait");
+    assert.ok(ready >= 0 && ready < web);
+  }
+}
+
 test("fresh deploy installs both dependency sets before build and reads newly generated dotenv", () => {
   const f = deployment({ bundle: true, freshEnv: true });
   try {
@@ -65,7 +84,7 @@ test("fresh deploy installs both dependency sets before build and reads newly ge
     assert.equal(f.events.filter(event => event === "npm run build").length, 1);
     assert.ok(index(f.events, "install --bundle") >= 0);
     assert.ok(index(f.events, "knowledge-engine.mjs wait") >= 0);
-    assert.ok(index(f.events, "knowledge-engine.mjs wait") < index(f.events, "--only remote-ops-web,remote-ops-mcp"));
+    assertSerialStart(f.events, true);
   } finally { f.clean(); }
 });
 
@@ -78,7 +97,7 @@ test("bundle upgrade stops supervisor and engine before install, then waits befo
     assert.ok(index(f.events, "knowledge-engine.mjs stop") < index(f.events, "install --bundle"));
     assert.ok(index(f.events, "install --bundle") < index(f.events, "--only remote-ops-knowledge-engine"));
     assert.ok(index(f.events, "--only remote-ops-knowledge-engine") < index(f.events, "knowledge-engine.mjs wait"));
-    assert.ok(index(f.events, "knowledge-engine.mjs wait") < index(f.events, "pm2 startOrReload"));
+    assertSerialStart(f.events, true);
     assert.match(readFileSync(join(f.root, "runtime", "knowledge-engine", "engine.json"), "utf8"), /private-state/);
   } finally { f.clean(); }
 });
@@ -89,7 +108,7 @@ test("existing installation is reused without requiring a bundle", () => {
     assert.equal(f.result.status, 0, f.result.stderr);
     assert.equal(index(f.events, "install --bundle"), -1);
     assert.ok(index(f.events, "--only remote-ops-knowledge-engine") >= 0);
-    assert.ok(index(f.events, "pm2 startOrReload") >= 0);
+    assertSerialStart(f.events, true);
   } finally { f.clean(); }
 });
 
@@ -101,7 +120,7 @@ test("disabled engine stays stopped while Relay reloads, without installation or
     assert.equal(index(f.events, "install --bundle"), -1);
     assert.equal(index(f.events, "knowledge-engine.mjs wait"), -1);
     assert.equal(index(f.events, "--only remote-ops-knowledge-engine"), -1);
-    assert.ok(index(f.events, "pm2 startOrReload") >= 0);
+    assertSerialStart(f.events, false);
   } finally { f.clean(); }
 });
 
@@ -110,7 +129,8 @@ test("failed engine readiness prevents Relay reload and PM2 save", () => {
   try {
     assert.notEqual(f.result.status, 0);
     assert.ok(index(f.events, "knowledge-engine.mjs wait") >= 0);
-    assert.equal(index(f.events, "--only remote-ops-web,remote-ops-mcp"), -1);
+    assert.equal(index(f.events, "--only remote-ops-web"), -1);
+    assert.equal(index(f.events, "--only remote-ops-mcp"), -1);
     assert.equal(index(f.events, "pm2 save"), -1);
   } finally { f.clean(); }
 });

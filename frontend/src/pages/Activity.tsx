@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity as ActivityIcon, CheckCircle2, CircleDot, Clock3, File, RotateCw } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import JobsPage from "./Jobs";
 import { api } from "../api/client";
 import { useProjectScope } from "../context/ProjectScope";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
-import { EmptyState, ErrorState, Skeleton, StatusPill } from "../components/ui";
+import { Button, EmptyState, ErrorState, Skeleton, StatusPill } from "../components/ui";
 import "./activity.css";
 
 type JsonRecord = Record<string, unknown>;
@@ -56,22 +56,75 @@ const formatBytes = (value?: number) => {
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 };
 const statusTone = (status: string) => status === "completed" ? "completed" : ["abandoned"].includes(status) ? "abandoned" : "active";
-async function collectProjectEntries(projectId: number, path = "", depth = 2): Promise<Array<{ name: string; path: string; type?: string; size?: number; modifiedAt?: string }>> {
-  try {
-    const result = await api.listFiles(projectId, path);
-    const payload = record(result);
-    const entries = Array.isArray(payload.entries) ? payload.entries.flatMap((entry) => {
-      const item = record(entry);
-      if (typeof item.name !== "string") return [];
-      return [{ name: item.name, path: path ? `${path}/${item.name}` : item.name, type: typeof item.type === "string" ? item.type : undefined, size: typeof item.size === "number" ? item.size : undefined, modifiedAt: typeof item.modifiedAt === "string" ? item.modifiedAt : undefined }];
-    }) : [];
-    if (depth <= 0) return entries;
-    const directories = entries.filter((entry) => entry.type === "directory").slice(0, 24);
-    const nested = await Promise.all(directories.map((entry) => collectProjectEntries(projectId, entry.path, depth - 1)));
-    return [...entries, ...nested.flat()].slice(0, 240);
-  } catch {
-    return [];
+const directoryLimit = 24;
+const directoryConcurrency = 4;
+type FileScan = { files: ProjectFileActivity[]; failures: string[]; truncated: boolean; succeeded: number };
+
+async function scanDirectories(project: { id: number; name: string }, roots: string[], discover: boolean, signal: AbortSignal): Promise<FileScan> {
+  const queue = roots.map((path) => ({ path, depth: 0 }));
+  const result: FileScan = { files: [], failures: [], truncated: false, succeeded: 0 };
+  let scanned = 0;
+  while (queue.length && scanned < directoryLimit && !signal.aborted) {
+    const batch = queue.splice(0, Math.min(directoryConcurrency, directoryLimit - scanned));
+    scanned += batch.length;
+    await Promise.all(batch.map(async ({ path, depth }) => {
+      try {
+        const response = await api.listFiles(project.id, path, signal);
+        if (signal.aborted) return;
+        result.succeeded += 1;
+        for (const entry of list(response.entries)) {
+          if (typeof entry.name !== "string") continue;
+          const child = path ? path + "/" + entry.name : entry.name;
+          if (entry.type === "directory" && discover) {
+            if (depth < 2 && queue.length + scanned < directoryLimit) queue.push({ path: child, depth: depth + 1 });
+            else result.truncated = true;
+          } else if (entry.type === "file") {
+            result.files.push({ projectId: project.id, projectName: project.name, name: entry.name, path: child,
+              size: typeof entry.size === "number" ? entry.size : undefined, modifiedAt: text(entry.modifiedAt, "") });
+          }
+        }
+      } catch { if (!signal.aborted) result.failures.push(path); }
+    }));
   }
+  return result;
+}
+
+function RecentFileActivity({ project }: { project?: { id: number; name: string } }) {
+  const [snapshot, setSnapshot] = useState<FileScan>();
+  const [loading, setLoading] = useState(false);
+  const request = useRef<AbortController>();
+  useEffect(() => () => request.current?.abort(), []);
+  async function load(retry = false) {
+    if (!project || loading) return;
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
+    setLoading(true);
+    try {
+      const result = await scanDirectories(project, retry ? snapshot?.failures ?? [""] : [""], !retry || snapshot?.succeeded === 0, controller.signal);
+      if (!controller.signal.aborted) setSnapshot(retry && snapshot ? {
+        files: [...snapshot.files, ...result.files], succeeded: snapshot.succeeded + result.succeeded,
+        truncated: snapshot.truncated || result.truncated, failures: result.failures,
+      } : result);
+    } finally { if (!controller.signal.aborted) setLoading(false); }
+  }
+  const rows = (snapshot?.files ?? []).slice().sort((a, b) => (b.modifiedAt ?? "").localeCompare(a.modifiedAt ?? "")).slice(0, 12);
+  return <section className="activity-panel activity-files-panel" aria-label="Recent project file changes">
+    <div className="activity-panel-head"><h2>Recent file changes</h2><Button variant="ghost" onClick={() => void load()} loading={loading} disabled={!project}>{snapshot ? "Refresh files" : "Load files"}</Button></div>
+    {loading && !snapshot && <p className="activity-file-empty" role="status">Reading project directories...</p>}
+    {!snapshot && !loading && <p className="activity-file-empty">{project ? "Read recent file changes for " + project.name + "." : "Select a project to load file activity."}</p>}
+    {snapshot && snapshot.failures.length > 0 && <div className="activity-file-empty" role="alert">
+      <p>{snapshot.succeeded ? "Some directories could not be read." : "File activity could not be loaded."}</p>
+      <Button variant="ghost" disabled={loading} onClick={() => void load(true)}>Retry unread directories</Button>
+    </div>}
+    {snapshot?.truncated && <p className="activity-file-empty">This scan covers up to {directoryLimit} directories and two levels below the project root.</p>}
+    {snapshot?.succeeded && !rows.length ? <p className="activity-file-empty">No files were found in the directories read.</p> : null}
+    <div className="activity-file-list">{rows.map((entry) => (
+      <div key={entry.path} className="activity-file-row"><span className="activity-file-icon"><File size={15} aria-hidden="true" /></span>
+        <span><strong>{entry.path}</strong><small>{entry.modifiedAt ? formatDate(entry.modifiedAt) : "Modified time unavailable"}</small></span>
+        <code>{formatBytes(entry.size) || "file"}</code></div>
+    ))}</div>
+  </section>;
 }
 
 export default function ActivityPage() {
@@ -89,10 +142,8 @@ export default function ActivityPage() {
 }
 
 function ActivityHistory() {
-  const { projects, selectedProject, loading: projectLoading } = useProjectScope();
+  const { selectedProject, loading: projectLoading } = useProjectScope();
   const [sessions, setSessions] = useState<ActivitySession[]>([]);
-  const [fileActivity, setFileActivity] = useState<ProjectFileActivity[]>([]);
-  const [filesLoading, setFilesLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string>();
   const [filter, setFilter] = useState<"all" | "active" | "completed">("all");
   const [loading, setLoading] = useState(true);
@@ -110,29 +161,6 @@ function ActivityHistory() {
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, []);
-
-  useEffect(() => {
-    let active = true;
-    const visibleProjects = selectedProject ? projects.filter((project) => project.id === selectedProject.id) : projects;
-    if (!visibleProjects.length) {
-      setFileActivity([]);
-      setFilesLoading(false);
-      return () => { active = false; };
-    }
-    setFilesLoading(true);
-    Promise.all(visibleProjects.map(async (project) => {
-      try {
-        const entries = await collectProjectEntries(project.id);
-        return entries.filter((entry) => entry.type === "file").map((entry) => ({ projectId: project.id, projectName: project.name, name: entry.name, path: entry.path, size: entry.size, modifiedAt: entry.modifiedAt }));
-      } catch {
-        return [];
-      }
-    })).then((groups) => {
-      if (!active) return;
-      setFileActivity(groups.flat().sort((left, right) => String(right.modifiedAt ?? "").localeCompare(String(left.modifiedAt ?? ""))).slice(0, 12));
-    }).finally(() => { if (active) setFilesLoading(false); });
-    return () => { active = false; };
-  }, [projects, selectedProject]);
 
   const scopedSessions = useMemo(() => sessions.filter((session) => !selectedProject || session.projectId === String(selectedProject.id)), [selectedProject, sessions]);
   const visibleSessions = useMemo(() => scopedSessions.filter((session) => filter === "all" || (filter === "completed" ? session.status === "completed" : session.status !== "completed" && session.status !== "abandoned")), [filter, scopedSessions]);
@@ -171,10 +199,7 @@ function ActivityHistory() {
             {selected ? <><div className="activity-panel-head"><div><span className="activity-panel-kicker">Selected session</span><h2>{text(record(selected.intent).objective, "Untitled work session")}</h2></div><StatusPill status={selected.status} /></div><p className="activity-detail-summary">{selected.summary ?? text(record(selected.intent).desiredOutcome, "No summary recorded.")}</p><dl className="activity-detail-grid"><div><dt>Project</dt><dd>{projectLabel}</dd></div><div><dt>Environment</dt><dd>{selected.environment ?? "Default"}</dd></div><div><dt>Phase</dt><dd>{text(record(selected.intent).phase)}</dd></div><div><dt>Risk</dt><dd>{text(record(selected.intent).risk)}</dd></div><div><dt>Opened</dt><dd>{formatDate(selected.createdAt)}</dd></div><div><dt>Updated</dt><dd>{formatDate(selected.updatedAt)}</dd></div></dl><div className="activity-detail-section"><span className="activity-panel-kicker">Actions</span><p>{Array.isArray(record(selected.intent).actions) ? (record(selected.intent).actions as unknown[]).map(String).join(" → ") : "—"}</p></div><div className="activity-detail-section"><span className="activity-panel-kicker">Acceptance</span>{Object.keys(selected.acceptanceResults).length ? <ul>{Object.entries(selected.acceptanceResults).map(([key, value]) => <li key={key}><span>{key}</span><strong>{String(value)}</strong></li>)}</ul> : <p>No acceptance results recorded.</p>}</div></> : <div className="activity-detail-empty"><Clock3 size={18} /><p>Select a session to inspect its scope and result.</p></div>}
           </aside>
         </div>
-        <section className="activity-panel activity-files-panel" aria-label="Recent project file changes">
-          <div className="activity-panel-head"><div><span className="activity-panel-kicker">Project activity</span><h2>Recent file changes</h2></div><span className="activity-count">{fileActivity.length} shown</span></div>
-          {filesLoading ? <div className="activity-file-empty">Checking project workspaces…</div> : fileActivity.length ? <div className="activity-file-list">{fileActivity.map((entry) => <div key={`${entry.projectId}:${entry.path ?? entry.name}`} className="activity-file-row"><span className="activity-file-icon"><File size={15} aria-hidden="true" /></span><span><strong>{entry.path ?? entry.name}</strong><small>{entry.projectName} · {entry.modifiedAt ? formatDate(entry.modifiedAt) : "Modified time unavailable"}</small></span><code>{formatBytes(entry.size) || "file"}</code></div>)}</div> : <div className="activity-file-empty"><File size={18} aria-hidden="true" /><span>No file changes found in the visible project workspaces.</span></div>}
-        </section>
+        <RecentFileActivity key={selectedProject?.id} project={selectedProject} />
       </div>
   );
 }

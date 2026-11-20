@@ -43,7 +43,7 @@ function LegacyCandidateDrawer({row,onClose,onReviewed}:{row:JsonRecord;onClose:
   const [selected,setSelected]=useState<string[]>([]); const [reason,setReason]=useState(""); const [error,setError]=useState(""); const [busy,setBusy]=useState(false);
   const refs=Array.isArray(row.evidenceRefs) ? row.evidenceRefs.map(String) : [];
   const act=async (action:"approve"|"reject"|"needs_info") => {if(!reason.trim()) {setError("Enter a review reason.");return;} setBusy(true);setError("");try {await api.legacyCandidateReview(text(row.id),{action,reason,...(action==="approve" ? {scope,title,statement,memoryType,evidenceRefs:selected} : {})});onReviewed();}catch(err){setError(err instanceof Error ? err.message : "Review failed");}finally{setBusy(false);}};
-  return <Drawer open title="Review historical candidate" onClose={onClose}><div className="space-y-5"><div className="flex flex-wrap gap-2"><StatusPill status={row.status} /><Badge tone="iris">Project {text(row.projectId,"none")}</Badge><Badge>{text(row.candidateType)}</Badge></div><p className="text-sm text-muted">This is historical, automatically captured material. Review and rewrite it into a concise experience before approval; remove unrelated output and credentials.</p><section><h3 className="font-semibold">Evidence</h3>{refs.length ? <ul className="mt-2 space-y-2">{refs.map(ref=><li key={ref} className="flex flex-wrap items-center gap-2"><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={selected.includes(ref)} onChange={event=>setSelected(current=>event.target.checked ? [...current,ref] : current.filter(item=>item!==ref))} />Attach <code>{ref}</code></label><Button variant="ghost" onClick={()=>void downloadReviewEvidence("legacy-candidates",text(row.id),ref).catch(err=>setError(err instanceof Error ? err.message : "Unable to read evidence"))}>Download</Button></li>)}</ul> : <p className="mt-2 text-sm text-muted">No external evidence attached.</p>}</section>{["approve","reject"].includes(text(row.status)) ? <p className="text-sm text-muted">Review: {text(row.status)} · {text(row.reviewReason)}{row.memoryId ? ` · Memory ${text(row.memoryId)}` : ""}</p> : <><label className="block text-sm">Final scope<Select className="mt-1" value={scope} onChange={event=>setScope(event.target.value as typeof scope)}>{row.projectId && <option value="project">Source project</option>}<option value="general">General</option></Select></label>{scope==="general" && row.projectId && <p className="text-sm text-muted">General Memory is visible across projects. Remove private details before approval.</p>}<label className="block text-sm">Memory type<Select className="mt-1" value={memoryType} onChange={event=>setMemoryType(event.target.value as typeof memoryType)}>{TYPES.map(type=><option key={type}>{type}</option>)}</Select></label><label className="block text-sm">Reviewed title<Input className="mt-1" value={title} onChange={event=>setTitle(event.target.value)} /></label><label className="block text-sm">Reviewed experience<textarea className="ui-control mt-1 min-h-32" value={statement} onChange={event=>setStatement(event.target.value)} /></label><label className="block text-sm">Decision reason<textarea className="ui-control mt-1 min-h-20" value={reason} onChange={event=>setReason(event.target.value)} /></label><div className="flex flex-wrap gap-2"><Button variant="primary" disabled={busy || !title.trim() || !statement.trim()} onClick={()=>void act("approve")}>Approve as Memory</Button><Button variant="ghost" disabled={busy} onClick={()=>void act("needs_info")}>Request information</Button><Button variant="ghost" disabled={busy} onClick={()=>void act("reject")}>Reject</Button></div></>}{error && <p className="text-sm text-coral" role="alert">{error}</p>}</div></Drawer>;
+  return <Drawer open presentation="responsive" title="Review historical candidate" onClose={onClose}><div className="space-y-5"><div className="flex flex-wrap gap-2"><StatusPill status={row.status} /><Badge tone="iris">Project {text(row.projectId,"none")}</Badge><Badge>{text(row.candidateType)}</Badge></div><p className="text-sm text-muted">This is historical, automatically captured material. Review and rewrite it into a concise experience before approval; remove unrelated output and credentials.</p><section><h3 className="font-semibold">Evidence</h3>{refs.length ? <ul className="mt-2 space-y-2">{refs.map(ref=><li key={ref} className="flex flex-wrap items-center gap-2"><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={selected.includes(ref)} onChange={event=>setSelected(current=>event.target.checked ? [...current,ref] : current.filter(item=>item!==ref))} />Attach <code>{ref}</code></label><Button variant="ghost" onClick={()=>void downloadReviewEvidence("legacy-candidates",text(row.id),ref).catch(err=>setError(err instanceof Error ? err.message : "Unable to read evidence"))}>Download</Button></li>)}</ul> : <p className="mt-2 text-sm text-muted">No external evidence attached.</p>}</section>{["approve","reject"].includes(text(row.status)) ? <p className="text-sm text-muted">Review: {text(row.status)} · {text(row.reviewReason)}{row.memoryId ? ` · Memory ${text(row.memoryId)}` : ""}</p> : <><label className="block text-sm">Final scope<Select className="mt-1" value={scope} onChange={event=>setScope(event.target.value as typeof scope)}>{row.projectId && <option value="project">Source project</option>}<option value="general">General</option></Select></label>{scope==="general" && row.projectId && <p className="text-sm text-muted">General Memory is visible across projects. Remove private details before approval.</p>}<label className="block text-sm">Memory type<Select className="mt-1" value={memoryType} onChange={event=>setMemoryType(event.target.value as typeof memoryType)}>{TYPES.map(type=><option key={type}>{type}</option>)}</Select></label><label className="block text-sm">Reviewed title<Input className="mt-1" value={title} onChange={event=>setTitle(event.target.value)} /></label><label className="block text-sm">Reviewed experience<textarea className="ui-control mt-1 min-h-32" value={statement} onChange={event=>setStatement(event.target.value)} /></label><label className="block text-sm">Decision reason<textarea className="ui-control mt-1 min-h-20" value={reason} onChange={event=>setReason(event.target.value)} /></label><div className="flex flex-wrap gap-2"><Button variant="primary" disabled={busy || !title.trim() || !statement.trim()} onClick={()=>void act("approve")}>Approve as Memory</Button><Button variant="ghost" disabled={busy} onClick={()=>void act("needs_info")}>Request information</Button><Button variant="ghost" disabled={busy} onClick={()=>void act("reject")}>Reject</Button></div></>}{error && <p className="text-sm text-coral" role="alert">{error}</p>}</div></Drawer>;
 }
 
 function RecordDrawer({ row, tab, onClose }: { row: JsonRecord; tab: MemoryTab; onClose: () => void }) {
@@ -59,7 +59,7 @@ function RecordDrawer({ row, tab, onClose }: { row: JsonRecord; tab: MemoryTab; 
     ["Confirmed by", row.confirmedBy ?? row.reviewerId],
   ];
   return (
-    <Drawer open title={titleOf(row)} onClose={onClose}>
+    <Drawer open presentation="responsive" title={titleOf(row)} onClose={onClose}>
       <div className="space-y-8">
         <section>
           <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -114,7 +114,7 @@ function SubmissionDrawer({ row, isAdmin, onClose, onReviewed }: { row: JsonReco
     try { await api.memorySubmissionReview(text(row.id), { action, reason, ...(action === "approve" ? { scope, title, statement } : {}) }); onReviewed(); }
     catch (err) { setError(err instanceof Error ? err.message : "Review could not be saved."); } finally { setBusy(false); }
   };
-  return <Drawer open title={titleOf(row)} onClose={onClose}><div className="space-y-5">
+  return <Drawer open presentation="responsive" title={titleOf(row)} onClose={onClose}><div className="space-y-5">
     <div className="flex flex-wrap gap-2"><StatusPill status={row.status} /><Badge tone="iris">{text(row.requestedScope)} request</Badge><span className="text-sm text-muted">Submitted {dateOf(row.createdAt)}</span></div>
     <dl className="grid gap-3 sm:grid-cols-2">{[["Project", row.projectId], ["Type", row.memoryType], ["Task or goal", row.objective], ["Outcome", row.outcome], ["Applicability", row.applicability], ["Unknowns", Array.isArray(row.unknowns) ? row.unknowns.join("; ") : row.unknowns], ["Reviewed by", row.reviewerId], ["Reviewed at", row.reviewedAt], ["Review reason", row.reviewReason]].map(([label,value]) => <div key={text(label)}><dt className="text-sm text-muted">{text(label)}</dt><dd className="mt-1 whitespace-pre-wrap text-sm">{text(value, "—")}</dd></div>)}</dl>
     <section><h3 className="font-semibold">Evidence</h3>{evidence.length ? <ul className="mt-2 space-y-1 text-sm text-muted">{evidence.map((item,index) => <li key={index} className="flex flex-wrap items-center gap-2"><code>{text(item)}</code>{isAdmin && <Button variant="ghost" onClick={() => void downloadEvidence(text(item))}>Download for review</Button>}</li>)}</ul> : <p className="mt-2 text-sm text-muted">No external evidence attached. The statement is the submitter's account, not independent verification.</p>}</section>
@@ -128,6 +128,7 @@ function HistoricalInsightDrawer({ row, onClose, onReviewed }: {row:JsonRecord;o
   const [session,setSession]=useState<JsonRecord>({});
   const [history,setHistory]=useState<JsonRecord[]>([]);
   const [statement,setStatement]=useState(text(row.statement));
+  const dirty = statement !== text(insight.statement);
   const [reason,setReason]=useState("");
   const [error,setError]=useState("");
   const [busy,setBusy]=useState(false);
@@ -135,6 +136,7 @@ function HistoricalInsightDrawer({ row, onClose, onReviewed }: {row:JsonRecord;o
   const load=async () => { const [detail,audit]=await Promise.all([api.knowledgeCandidateInsight(id),api.knowledgeCandidateInsightHistory(id)]); if(isRecord(detail.insight)) {setInsight(detail.insight);setStatement(text(detail.insight.statement));} setSession(isRecord(detail.sourceSession) ? detail.sourceSession : {}); setHistory(listFrom(audit.history)); };
   useEffect(() => { void load().catch(err => setError(err instanceof Error ? err.message : "Unable to load candidate")); },[id]);
   const act=async (action:"edit"|"confirm"|"reject"|"promote"|"scope") => {
+    if (busy || (dirty && (action === "confirm" || action === "promote"))) return;
     if(!reason.trim()) {setError("Enter a reason for the review action.");return;}
     setBusy(true);setError("");
     try {
@@ -147,7 +149,7 @@ function HistoricalInsightDrawer({ row, onClose, onReviewed }: {row:JsonRecord;o
     } catch(err) {setError(err instanceof Error ? err.message : "Review failed");} finally {setBusy(false);}
   };
   const refs=Array.isArray(insight.evidenceRefs) ? insight.evidenceRefs : [];
-  return <Drawer open title="Review historical candidate" onClose={onClose}><div className="space-y-5"><div className="flex flex-wrap gap-2"><StatusPill status={insight.status} /><Badge tone="iris">Project {text(insight.projectId)}</Badge><Badge>{text(insight.kind)}</Badge></div><p className="whitespace-pre-wrap text-sm text-muted">{text(insight.whyProposed,"No explanation recorded.")}</p><section><h3 className="font-semibold">Evidence</h3>{refs.length ? <ul className="mt-2 space-y-1">{refs.map((ref,index)=><li key={index} className="flex flex-wrap items-center gap-2"><code className="text-xs">{text(ref)}</code><Button variant="ghost" onClick={() => void downloadReviewEvidence("candidate-insights",id,text(ref)).catch(err => setError(err instanceof Error ? err.message : "Unable to read evidence"))}>Download for review</Button></li>)}</ul> : <p className="mt-2 text-sm text-muted">No external evidence attached.</p>}</section><section><h3 className="font-semibold">Review history</h3>{history.length ? <ul className="mt-2 space-y-2 text-sm text-muted">{history.map((item,index)=><li key={index}>{text(item.action)} · {text(item.reason)} · {dateOf(item.createdAt)}</li>)}</ul> : <p className="mt-2 text-sm text-muted">No review recorded.</p>}</section><label className="block text-sm">Statement<textarea className="ui-control mt-1 min-h-32" value={statement} onChange={event=>setStatement(event.target.value)} /></label><label className="block text-sm">Review reason<textarea className="ui-control mt-1 min-h-20" value={reason} onChange={event=>setReason(event.target.value)} /></label>{error && <p className="text-sm text-coral" role="alert">{error}</p>}<div className="flex flex-wrap gap-2">{["draft","edited"].includes(text(insight.status)) && <><Button variant="ghost" disabled={busy || !statement.trim()} onClick={()=>void act("edit")}>Save edit</Button><Button variant="primary" disabled={busy} onClick={()=>void act("confirm")}>Confirm candidate</Button><Button variant="ghost" disabled={busy} onClick={()=>void act("reject")}>Reject</Button></>}{Boolean(insight.scopeReviewRequired) && <Button variant="ghost" disabled={busy || !session.updatedAt} onClick={()=>void act("scope")}>Review source scope</Button>}{insight.status==="accepted" && !insight.promotion && <Button variant="primary" disabled={busy || Boolean(insight.scopeReviewRequired)} onClick={()=>void act("promote")}>Promote to project Memory</Button>}</div>{Boolean(insight.promotion) && <p className="text-sm text-muted">This candidate has been promoted.</p>}</div></Drawer>;
+  return <Drawer open presentation="responsive" title="Review historical candidate" onClose={onClose} busy={busy}><div className="space-y-5"><div className="flex flex-wrap gap-2"><StatusPill status={insight.status} /><Badge tone="iris">Project {text(insight.projectId)}</Badge><Badge>{text(insight.kind)}</Badge></div><p className="whitespace-pre-wrap text-sm text-muted">{text(insight.whyProposed,"No explanation recorded.")}</p><section><h3 className="font-semibold">Evidence</h3>{refs.length ? <ul className="mt-2 space-y-1">{refs.map((ref,index)=><li key={index} className="flex flex-wrap items-center gap-2"><code className="text-xs">{text(ref)}</code><Button variant="ghost" onClick={() => void downloadReviewEvidence("candidate-insights",id,text(ref)).catch(err => setError(err instanceof Error ? err.message : "Unable to read evidence"))}>Download for review</Button></li>)}</ul> : <p className="mt-2 text-sm text-muted">No external evidence attached.</p>}</section><section><h3 className="font-semibold">Review history</h3>{history.length ? <ul className="mt-2 space-y-2 text-sm text-muted">{history.map((item,index)=><li key={index}>{text(item.action)} · {text(item.reason)} · {dateOf(item.createdAt)}</li>)}</ul> : <p className="mt-2 text-sm text-muted">No review recorded.</p>}</section><label className="block text-sm">Statement<textarea className="ui-control mt-1 min-h-32" disabled={busy} value={statement} onChange={event=>setStatement(event.target.value)} /></label>{dirty && <p role="status" className="text-sm text-sun">Save the revised statement before confirming or promoting this candidate.</p>}<label className="block text-sm">Review reason<textarea className="ui-control mt-1 min-h-20" disabled={busy} value={reason} onChange={event=>setReason(event.target.value)} /></label>{error && <p className="text-sm text-coral" role="alert">{error}</p>}<div className="flex flex-wrap gap-2">{["draft","edited"].includes(text(insight.status)) && <><Button variant="ghost" disabled={busy || !dirty || !statement.trim()} onClick={()=>void act("edit")}>Save edit</Button><Button variant="primary" disabled={busy || dirty} onClick={()=>void act("confirm")}>Confirm candidate</Button><Button variant="ghost" disabled={busy} onClick={()=>void act("reject")}>Reject</Button></>}{Boolean(insight.scopeReviewRequired) && <Button variant="ghost" disabled={busy || !session.updatedAt} onClick={()=>void act("scope")}>Review source scope</Button>}{insight.status==="accepted" && !insight.promotion && <Button variant="primary" disabled={busy || dirty || Boolean(insight.scopeReviewRequired)} onClick={()=>void act("promote")}>Promote to project Memory</Button>}</div>{Boolean(insight.promotion) && <p className="text-sm text-muted">This candidate has been promoted.</p>}</div></Drawer>;
 }
 
 function LegacyScopeQueue() {
@@ -176,6 +178,9 @@ export default function KnowledgeMemory() {
   const [projectId, setProjectId] = useState(params.get("projectId") ?? "");
   const [projects, setProjects] = useState<Array<{ id: number; name: string }>>([]);
   const [offset, setOffset] = useState(0);
+  const reviewSource = params.get("source");
+  const reviewStatus = params.get("status");
+  const reviewProjectId = params.get("projectId") ?? undefined;
   const [queueOffset,setQueueOffset] = useState(0);
   const [queueHasMore,setQueueHasMore] = useState(false);
   const [total, setTotal] = useState(0);
@@ -190,6 +195,8 @@ export default function KnowledgeMemory() {
 
   useEffect(() => { void api.listProjects().then(result => setProjects(result.projects as Array<{ id:number; name:string }>)).catch(() => setProjects([])); }, []);
   useEffect(() => { setTab(routeTab); }, [routeTab]);
+  useEffect(() => { setQueueOffset(0); }, [reviewSource, reviewStatus, reviewProjectId]);
+  const serverQuery = tab === "confirmed-memory" ? query : "";
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -197,9 +204,25 @@ export default function KnowledgeMemory() {
     let task: Promise<unknown>;
     if (tab === "confirmed-memory") {
       if (scope !== "general" && !projectId) { setRows([]); setTotal(0); setLoading(false); return () => { active = false; }; }
-      task = api.knowledgeConfirmedMemories(scope === "general" ? undefined : projectId, { type, scope, q: query, limit: 50, offset });
+      task = api.knowledgeConfirmedMemories(scope === "general" ? undefined : projectId, { type, scope, q: serverQuery, limit: 50, offset });
     } else if (tab === "memory-submissions") {
-      task = Promise.all([api.memorySubmissions(queueOffset),user?.isAdmin ? api.knowledgeCandidateInsights(undefined,{limit:50,offset:queueOffset}) : Promise.resolve({insights:[]}),user?.isAdmin ? api.legacyCandidatesForReview(queueOffset) : Promise.resolve({candidates:[]})]).then(([submissions,history,candidates]) => ({submissions:[...submissions.submissions,...history.insights.filter(isRecord).map(item=>({...item,reviewKind:"legacy"})),...candidates.candidates.filter(isRecord).map(item=>({...item,reviewKind:"legacy-candidate"}))],hasMore:[submissions.submissions,history.insights,candidates.candidates].some(items=>items.length===50)}));
+      if (reviewSource === "submissions") {
+        task = api.memorySubmissions(queueOffset, reviewStatus === "pending" ? "pending" : undefined)
+          .then((result) => ({ submissions: result.submissions, hasMore: result.page ? queueOffset + 50 < result.page.total : result.submissions.length === 50 }));
+      } else if (reviewSource === "insights") {
+        task = user?.isAdmin ? api.knowledgeCandidateInsights(reviewProjectId, { status: reviewStatus === "edited" ? "edited" : "draft", limit: 50, offset: queueOffset })
+          .then(({ insights }) => ({ submissions: insights.filter(isRecord).map((item) => ({ ...item, reviewKind: "legacy" })), hasMore: insights.length === 50 }))
+          : Promise.resolve({ submissions: [], hasMore: false });
+      } else {
+        task = Promise.all([
+          api.memorySubmissions(queueOffset),
+          user?.isAdmin ? api.knowledgeCandidateInsights(undefined, { limit: 50, offset: queueOffset }) : Promise.resolve({ insights: [] }),
+          user?.isAdmin ? api.legacyCandidatesForReview(queueOffset) : Promise.resolve({ candidates: [] }),
+        ]).then(([submissions, history, candidates]) => ({
+          submissions: [...submissions.submissions, ...history.insights.filter(isRecord).map((item) => ({ ...item, reviewKind: "legacy" })), ...candidates.candidates.filter(isRecord).map((item) => ({ ...item, reviewKind: "legacy-candidate" }))],
+          hasMore: [submissions.submissions, history.insights, candidates.candidates].some((items) => items.length === 50),
+        }));
+      }
     } else if (tab === "candidate-insights") {
       task = api.knowledgeCandidateInsights();
     } else if (tab === "sessions") {
@@ -227,7 +250,7 @@ export default function KnowledgeMemory() {
       if (active) setLoading(false);
     });
     return () => { active = false; };
-  }, [tab, type, scope, projectId, offset, queueOffset, query, reloadCount, user?.isAdmin]);
+  }, [tab, type, scope, projectId, offset, queueOffset, serverQuery, reviewSource, reviewStatus, reviewProjectId, reloadCount, user?.isAdmin]);
 
   const open = (id: string) => {
     const next = new URLSearchParams(params);
@@ -241,7 +264,7 @@ export default function KnowledgeMemory() {
   };
   const applyQuery = (value: string) => {
     setQuery(value);
-    setOffset(0);
+    if (tab === "confirmed-memory") setOffset(0);
     const next = new URLSearchParams(params);
     value ? next.set("q", value) : next.delete("q");
     setParams(next, { replace: true });
@@ -258,7 +281,11 @@ export default function KnowledgeMemory() {
   return (
     <StandardPage>
       <PageTabs section="memory" className="knowledge-local-tabs mb-6" />
-      {tab === "memory-submissions" && Boolean(user?.isAdmin) && <><LegacyScopeQueue /><p className="mb-5 text-sm text-muted">Historical <Link className="underline" to="/knowledge/candidate-insights">candidate insights</Link> and <Link className="underline" to="/knowledge/candidates">candidates</Link> remain available for review.</p></>}
+      {tab === "memory-submissions" && reviewSource && <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-medium">{reviewSource === "insights" ? (reviewStatus === "edited" ? "Edited candidate insights" : "Draft candidate insights") : "Pending Memory submissions"}{reviewProjectId && " / " + (projects.find((project) => String(project.id) === reviewProjectId)?.name ?? "Project " + reviewProjectId)}</p>
+        <Link className="text-mint underline" to="/knowledge/memory-submissions">All review sources</Link>
+      </div>}
+      {tab === "memory-submissions" && !reviewSource && Boolean(user?.isAdmin) && <><LegacyScopeQueue /><p className="mb-5 text-sm text-muted">Historical <Link className="underline" to="/knowledge/candidate-insights">candidate insights</Link> and <Link className="underline" to="/knowledge/candidates">candidates</Link> remain available for review.</p></>}
       <div className="mb-6 flex flex-wrap items-end gap-3">
         <label className="relative min-w-0 basis-64 flex-1">
           <span className="sr-only">Search {title}</span>
@@ -271,10 +298,13 @@ export default function KnowledgeMemory() {
       </div>
       {generalAccess === "denied" && tab === "confirmed-memory" && scope === "both" && <p className="mb-4 text-sm text-muted">General Memory is unavailable; showing the selected project's results.</p>}
       {error && <ErrorState className="mb-4" message={error} onRetry={() => setReloadCount((count) => count + 1)} />}
+      <div className="ui-detail-layout"><div className="min-w-0">
       {loading ? <div className="ui-glass p-6 text-sm text-muted" role="status">Loading {title.toLowerCase()}…</div> : !visibleRows.length ? <EmptyState title={`No ${title.toLowerCase()} records`} description="Try another filter or capture more knowledge." /> : <DataTable columns={columns} rows={visibleRows} rowKey={(row) => text(row.id)} selectedRowKey={selectedId ?? undefined} onRowClick={(row) => open(text(row.id))} />}
       {tab === "confirmed-memory" && <div className="mt-4 flex items-center justify-end gap-3"><Button variant="ghost" disabled={loading || offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>Previous</Button><span className="text-sm text-muted">{total ? `${offset + 1}–${Math.min(total, offset + 50)} of ${total}` : "0 results"}</span><Button variant="ghost" disabled={loading || offset + 50 >= total} onClick={() => setOffset(offset + 50)}>Next</Button></div>}
       {tab === "memory-submissions" && <div className="mt-4 flex flex-wrap items-center justify-end gap-3"><span className="text-sm text-muted">Search filters the loaded page · Page {queueOffset/50+1}</span><Button variant="ghost" disabled={loading || queueOffset===0} onClick={()=>setQueueOffset(Math.max(0,queueOffset-50))}>Previous</Button><Button variant="ghost" disabled={loading || !queueHasMore} onClick={()=>setQueueOffset(queueOffset+50)}>Next</Button></div>}
+      </div>
       {selected && (tab === "memory-submissions" ? (selected.reviewKind === "legacy" ? <HistoricalInsightDrawer key={text(selected.id)} row={selected} onClose={close} onReviewed={() => setReloadCount(count => count + 1)} /> : selected.reviewKind === "legacy-candidate" ? <LegacyCandidateDrawer key={text(selected.id)} row={selected} onClose={close} onReviewed={() => { close(); setReloadCount(count => count + 1); }} /> : <SubmissionDrawer key={text(selected.id)} row={selected} isAdmin={Boolean(user?.isAdmin)} onClose={close} onReviewed={() => { close(); setReloadCount(count => count + 1); }} />) : <RecordDrawer row={selected} tab={tab} onClose={close} />)}
+      </div>
     </StandardPage>
   );
 }

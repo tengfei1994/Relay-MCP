@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { BookOpen, CheckCircle2, ChevronRight, CircleAlert, Filter, Search, X } from "lucide-react";
 import { api } from "../api/client";
-import { Badge, Dialog, Skeleton } from "../components/ui";
+import { Badge, Drawer, Skeleton } from "../components/ui";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
 
 import "./tools.css";
@@ -73,6 +73,78 @@ function CatalogBadge({ children }: { children: string }) {
   return <Badge tone={badgeTone[children] ?? "neutral"}>{children}</Badge>;
 }
 
+type ToolTreeNode = {
+  id: string;
+  label: string;
+  children?: ToolTreeNode[];
+  select?: () => void;
+};
+
+function ToolTree({ nodes, selectedId }: { nodes: ToolTreeNode[]; selectedId: string }) {
+  const [expanded, setExpanded] = useState(new Set<string>());
+  const [focused, setFocused] = useState("all");
+
+  function toggle(id: string) {
+    setExpanded((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLLIElement>, node: ToolTreeNode) {
+    if (event.target !== event.currentTarget) return;
+    const item = event.currentTarget;
+    const tree = item.closest('[role="tree"]');
+    const items = Array.from(tree?.querySelectorAll<HTMLElement>('[role="treeitem"]') ?? []);
+    const index = items.indexOf(item);
+    let destination: HTMLElement | undefined | null;
+    switch (event.key) {
+      case "ArrowDown": destination = items[index + 1]; break;
+      case "ArrowUp": destination = items[index - 1]; break;
+      case "Home": destination = items[0]; break;
+      case "End": destination = items.at(-1); break;
+      case "ArrowRight":
+        if (node.children && !expanded.has(node.id)) toggle(node.id);
+        else if (node.children) destination = items[index + 1];
+        break;
+      case "ArrowLeft":
+        if (expanded.has(node.id)) toggle(node.id);
+        else destination = item.parentElement?.closest<HTMLElement>('[role="treeitem"]');
+        break;
+      case "Enter":
+      case " ":
+        if (node.select) node.select();
+        else if (node.children) toggle(node.id);
+        break;
+      default: return;
+    }
+    event.preventDefault();
+    destination?.focus();
+  }
+
+  function renderNode(node: ToolTreeNode) {
+    const isOpen = expanded.has(node.id);
+    return <li key={node.id} role="treeitem" aria-label={node.label} tabIndex={focused === node.id ? 0 : -1}
+      aria-expanded={node.children ? isOpen : undefined}
+      aria-selected={node.select ? node.id === selectedId : undefined}
+      onFocus={(event) => { if (event.target === event.currentTarget) setFocused(node.id); }}
+      onKeyDown={(event) => onKeyDown(event, node)}>
+      <div onClick={(event) => {
+        (event.currentTarget.parentElement as HTMLElement).focus();
+        if (node.select) node.select();
+        else toggle(node.id);
+      }}>
+        {node.children && <ChevronRight size={14} aria-hidden="true" />}{node.label}
+      </div>
+      {node.children && isOpen && <ul role="group">{node.children.map(renderNode)}</ul>}
+    </li>;
+  }
+
+  return <ul className="tools-tree" role="tree" aria-label="Tool categories">{nodes.map(renderNode)}</ul>;
+}
+
 export default function ToolsPage() {
   const [tools, setTools] = useState<Tool[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -138,38 +210,33 @@ export default function ToolsPage() {
         <div className="tools-layout">
           <aside className="tools-category-rail" aria-label="Tools category">
             <div className="tools-category-heading"><span>Tools</span><strong>Category</strong></div>
-            <nav className="tools-category-nav" aria-label="Tool categories">
-              <button type="button" className={category === "all" ? "is-active" : ""} aria-pressed={category === "all"} onClick={() => { setCategory("all"); setEntity("all"); }}><span>All tools</span><b>{tools.length}</b></button>
-              {categoryItems.map((item) => (
-                <details key={item.id} className="tools-tree-branch">
-                  <summary><ChevronRight size={14} aria-hidden="true" /><span>{item.label}</span></summary>
-                  <ul>
-                    <li><button type="button" aria-pressed={category === item.id && entity === "all"} onClick={() => { setCategory(item.id); setEntity("all"); }}>View category</button></li>
-                    {item.id === "samplemanager" ? sampleManagerEntities.map((group) => (
-                      <li key={group.id}><details className="tools-tree-branch">
-                        <summary><ChevronRight size={14} aria-hidden="true" />{group.label}</summary>
-                        <ul>
-                          <li><button type="button" aria-pressed={category === item.id && entity === group.id} onClick={() => { setCategory(item.id); setEntity(group.id); }}>View inspectors</button></li>
-                          {group.inspectors.map((inspector) => <li key={inspector.id}><button type="button" onClick={() => setSelected({ kind: "inspector", entity: group, inspector })}>{inspector.label}</button></li>)}
-                        </ul>
-                      </details></li>
-                    )) : null}
-                    {tools.filter((tool) => tool.category === item.id).map((tool) => (
-                      <li key={tool.name}><button type="button" onClick={() => setSelected({ kind: "tool", tool })}>{tool.name}</button></li>
-                    ))}
-                  </ul>
-                </details>
-              ))}
-            </nav>
+            <ToolTree selectedId={category === "all" ? "all" : entity === "all" ? category + ":view" : category + ":" + entity + ":view"} nodes={[
+              { id: "all", label: "All tools", select: () => { setCategory("all"); setEntity("all"); } },
+              ...categoryItems.map((item) => ({
+                id: item.id, label: item.label, children: [
+                  { id: item.id + ":view", label: "View category", select: () => { setCategory(item.id); setEntity("all"); } },
+                  ...(item.id === "samplemanager" ? sampleManagerEntities.map((group) => ({
+                    id: item.id + ":" + group.id, label: group.label, children: [
+                      { id: item.id + ":" + group.id + ":view", label: "View inspectors", select: () => { setCategory(item.id); setEntity(group.id); } },
+                      ...group.inspectors.map((inspector) => ({ id: group.id + ":" + inspector.id, label: inspector.label, select: () => setSelected({ kind: "inspector", entity: group, inspector }) })),
+                    ],
+                  })) : []),
+                  ...tools.filter((tool) => tool.category === item.id).map((tool) => ({
+                    id: item.id + ":" + tool.name, label: tool.name, select: () => setSelected({ kind: "tool", tool }),
+                  })),
+                ],
+              })),
+            ]} />
           </aside>
 
-          <div className="tools-directory-column">
+          <div className="ui-detail-layout"><div className="tools-directory-column">
             <header className="tools-toolbar">
               <div className="tools-toolbar-count"><span className="tools-toolbar-label">Tool directory</span><span>{category === "samplemanager" ? `${sampleManagerEntities.reduce((total, item) => total + item.inspectors.length, 0)} inspectors` : `${tools.length} commands`} · {shownCount} shown</span></div>
               <div className="tools-toolbar-controls">
                 <label className="tools-search"><Search size={15} aria-hidden="true" /><input aria-label="Search commands" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search commands" />{query && <button type="button" onClick={() => setQuery("")} aria-label="Clear search"><X size={15} /></button>}</label>
                 {category === "samplemanager" && <label className="tools-select-wrap"><span className="sr-only">Entity</span><select aria-label="Filter SampleManager entity" value={entity} onChange={(event) => setEntity(event.target.value)}><option value="all">All entities</option>{sampleManagerEntities.map((item) => <option key={item.id} value={item.id}>{item.label} ({item.inspectors.length})</option>)}</select></label>}
                 <div className="tools-access" role="group" aria-label="Filter access"><Filter size={14} aria-hidden="true" />{["all", "read-only", "mutation"].map((value) => <button type="button" key={value} onClick={() => setAccess(value)} className={access === value ? "is-active" : ""}>{value === "all" ? "All" : value === "read-only" ? "Read-only" : "Mutation"}</button>)}</div>
+                {(query || access !== "all" || category !== "all") && <button type="button" className="tools-reset" onClick={() => { setQuery(""); setAccess("all"); setCategory("all"); setEntity("all"); }}>Clear filters</button>}
               </div>
             </header>
 
@@ -188,11 +255,11 @@ export default function ToolsPage() {
               </div>)}
             </div>
           </div>
-        </div>
-
-        <Dialog open={Boolean(selected)} onClose={() => setSelected(null)} wide title={selected?.kind === "tool" ? selected.tool.name : selected?.kind === "inspector" ? selected.inspector.label : "Tool details"} description={selected?.kind === "tool" ? categoryLabels[selected.tool.category] : selected?.kind === "inspector" ? selected.entity.label : undefined}>
+        <Drawer presentation="responsive" open={Boolean(selected)} onClose={() => setSelected(null)} title={selected?.kind === "tool" ? selected.tool.name : selected?.kind === "inspector" ? selected.inspector.label : "Tool details"} description={selected?.kind === "tool" ? categoryLabels[selected.tool.category] : selected?.kind === "inspector" ? selected.entity.label : undefined}>
           {selected?.kind === "tool" ? <div className="tools-detail"><div className="tools-detail-intro"><BookOpen size={18} aria-hidden="true" /><p>{selected.tool.description}</p></div><dl className="tools-detail-facts">{selected.tool.entity && <div><dt>Entity</dt><dd>{sampleManagerEntities.find((item) => item.id === selected.tool.entity)?.label ?? selected.tool.entity}</dd></div>}{selected.tool.capability && <div><dt>Capability</dt><dd>{selected.tool.capability.replace(/_/g, " ")}</dd></div>}<div><dt>Access</dt><dd><CatalogBadge>{selected.tool.access}</CatalogBadge></dd></div><div><dt>Execution</dt><dd><CatalogBadge>{selected.tool.execution}</CatalogBadge></dd></div><div><dt>Lifecycle</dt><dd><CatalogBadge>{selected.tool.lifecycle}</CatalogBadge></dd></div></dl><p className="tools-detail-note">{selected.tool.access === "mutation" ? <><CircleAlert size={16} aria-hidden="true" />This command can change data or trigger an operation. Review its requirements before use.</> : <><CheckCircle2 size={16} aria-hidden="true" />This command is read-only in the Relay catalog.</>}</p></div> : selected?.kind === "inspector" ? <div className="tools-detail"><div className="tools-detail-intro"><BookOpen size={18} aria-hidden="true" /><p>{selected.inspector.description}</p></div><dl className="tools-detail-facts"><div><dt>Status</dt><dd><CatalogBadge>{selected.inspector.status}</CatalogBadge></dd></div><div><dt>Access</dt><dd><CatalogBadge>{selected.inspector.readOnly ? "read-only" : "mutation"}</CatalogBadge></dd></div>{selected.inspector.plannedTool && <div><dt>MCP tool</dt><dd><code>{selected.inspector.plannedTool}</code></dd></div>}</dl>{selected.inspector.relatedEntities && selected.inspector.relatedEntities.length > 0 && <div className="tools-detail-tags"><span>Related entities</span><div>{selected.inspector.relatedEntities.map((value) => <span key={value}>{sampleManagerEntities.find((item) => item.id === value)?.label ?? value}</span>)}</div></div>}<div className="tools-detail-tags"><span>Evidence</span><div>{selected.inspector.evidenceKinds.map((value) => <span key={value}>{value}</span>)}</div></div><p className="tools-detail-note">{selected.inspector.status === "ready" ? <><CheckCircle2 size={16} aria-hidden="true" />This inspector is available through the listed MCP tool.</> : <><CircleAlert size={16} aria-hidden="true" />This inspector is part of the Capability Pack roadmap and is not yet callable.</>}</p></div> : null}
-        </Dialog>
+        </Drawer>
+        </div>
+        </div>
       </div>
     </AppPageFrame>
   );

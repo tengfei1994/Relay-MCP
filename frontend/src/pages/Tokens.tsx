@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Copy, Download, Pencil, Plus, Trash2 } from "lucide-react";
 import { api } from "../api/client";
@@ -55,6 +55,8 @@ export default function TokensPage({ embedded: embeddedProp = false }: { embedde
   const embedded = embeddedProp || (location.pathname === "/admin" && query.get("view") === "tokens");
   const agentOnly = embedded ? query.get("section") === "agents" : location.pathname === "/tokens/agents";
   const toast = useToast();
+  const [projectFilter, setProjectFilter] = useState("");
+  const [serverFilter, setServerFilter] = useState("");
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [agentTokens, setAgentTokens] = useState<AgentToken[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -67,7 +69,10 @@ export default function TokensPage({ embedded: embeddedProp = false }: { embedde
   const [error, setError] = useState("");
   const [agentError, setAgentError] = useState("");
   const [loading, setLoading] = useState(true);
+  const tokenSubmitLock = useRef(false);
+  const agentSubmitLock = useRef(false);
   const [saving, setSaving] = useState(false);
+  const [savingAgent, setSavingAgent] = useState(false);
   const [agentForm, setAgentForm] = useState({ name: "", serverId: "" });
   const [form, setForm] = useState<TokenForm>(emptyForm);
   const [deleteTarget, setDeleteTarget] = useState<ApiToken | null>(null);
@@ -115,6 +120,8 @@ export default function TokensPage({ embedded: embeddedProp = false }: { embedde
 
   const createToken = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (tokenSubmitLock.current) return;
+    tokenSubmitLock.current = true;
     setError("");
     setCreatedToken("");
     setSaving(true);
@@ -138,7 +145,7 @@ export default function TokensPage({ embedded: embeddedProp = false }: { embedde
       void reload();
       if (editingTokenId) toast.success("Token permissions saved.");
     } catch (reason: unknown) { setError(messageOf(reason)); }
-    finally { setSaving(false); }
+    finally { tokenSubmitLock.current = false; setSaving(false); }
   };
 
   const editToken = (token: ApiToken) => {
@@ -158,7 +165,9 @@ export default function TokensPage({ embedded: embeddedProp = false }: { embedde
     });
     setShowCreate(true);
   };
-  const closeTokenForm = () => { setShowCreate(false); setEditingTokenId(null); setError(""); };
+  const closeTokenForm = () => {
+    setProjectFilter("");
+    setServerFilter(""); setShowCreate(false); setEditingTokenId(null); setError(""); };
   const deleteApiKey = async () => {
     if (!deleteTarget) return;
     try {
@@ -172,9 +181,11 @@ export default function TokensPage({ embedded: embeddedProp = false }: { embedde
   };
   const createAgentToken = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (agentSubmitLock.current || !agentForm.serverId) return;
+    agentSubmitLock.current = true;
     setAgentError("");
     setCreatedAgentToken("");
-    setSaving(true);
+    setSavingAgent(true);
     try {
       const result = await api.createAgentToken({ name: agentForm.name || "relay-agent", serverId: Number(agentForm.serverId) });
       setCreatedAgentId(chosenAgent?.agentId ?? "");
@@ -184,7 +195,7 @@ export default function TokensPage({ embedded: embeddedProp = false }: { embedde
       setAgentForm({ name: "", serverId: "" });
       void reload();
     } catch (reason: unknown) { setAgentError(messageOf(reason)); }
-    finally { setSaving(false); }
+    finally { agentSubmitLock.current = false; setSavingAgent(false); }
   };
   const revokeAgent = async () => {
     if (!revokeTarget) return;
@@ -221,31 +232,32 @@ export default function TokensPage({ embedded: embeddedProp = false }: { embedde
       )}
       </>}
 
-      <Dialog wide busy={saving} open={showCreate} onClose={closeTokenForm} title={editingTokenId ? "Edit token permissions" : "Create MCP Access Token"}>
+      <Dialog wide busy={saving} open={showCreate} onClose={closeTokenForm} title={editingTokenId ? "Edit token permissions" : "Create MCP Access Token"} description={editingTokenId ? undefined : "The full secret is shown once after creation."}>
         <form onSubmit={createToken} className="grid gap-4 sm:grid-cols-2">
           <Field label="Name"><Input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="codex-newpharma" /></Field>
           <Field label="Default project"><Select value={form.defaultProjectId} onChange={(event) => setForm((current) => ({ ...current, defaultProjectId: event.target.value }))}><option value="">No default project</option>{projects.filter((project) => form.allowAllProjects || form.projectIds.includes(String(project.id))).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</Select></Field>
-          <Field label="Project access" className="sm:col-span-2"><label className="flex min-h-10 items-center gap-2 text-sm text-fg"><input type="checkbox" checked={form.allowAllProjects} onChange={(event) => setForm((current) => ({ ...current, allowAllProjects: event.target.checked, projectIds: event.target.checked ? [] : current.projectIds, canCreateProjects: event.target.checked ? current.canCreateProjects : current.projectIds.length > 0 && current.canCreateProjects }))} /> All current and future projects</label>{!form.allowAllProjects && <div className="mt-2 max-h-32 space-y-1 overflow-auto rounded-[10px] border border-line p-2">{projects.map((project) => <label key={project.id} className="flex min-h-8 items-center gap-2 text-sm text-muted"><input type="checkbox" checked={form.projectIds.includes(String(project.id))} onChange={() => toggleProject(String(project.id))} />{project.name}</label>)}{projects.length === 0 && <p className="text-sm text-muted">No projects yet</p>}</div>}</Field>
+          <Field label="Project access" className="sm:col-span-2"><label className="flex min-h-10 items-center gap-2 text-sm text-fg"><input type="checkbox" checked={form.allowAllProjects} onChange={(event) => setForm((current) => ({ ...current, allowAllProjects: event.target.checked, projectIds: event.target.checked ? [] : current.projectIds, canCreateProjects: event.target.checked ? current.canCreateProjects : current.projectIds.length > 0 && current.canCreateProjects }))} /> All current and future projects</label>{!form.allowAllProjects && <><Input aria-label="Search allowed projects" type="search" placeholder="Search projects" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} /><div className="mt-2 max-h-32 space-y-1 overflow-auto rounded-[10px] border border-line p-2">{projects.filter((project) => project.name.toLowerCase().includes(projectFilter.trim().toLowerCase())).map((project) => <label key={project.id} className="flex min-h-8 items-center gap-2 text-sm text-muted"><input type="checkbox" checked={form.projectIds.includes(String(project.id))} onChange={() => toggleProject(String(project.id))} />{project.name}</label>)}{projects.length === 0 && <p className="text-sm text-muted">No projects yet</p>}</div></>}</Field>
           <p className="text-sm text-muted sm:col-span-2">With no projects selected, this token cannot access project tools or project Memory. Product Knowledge and general Memory follow your current user permission and need no project or server.</p>
-          <Field label="Allowed servers" className="sm:col-span-2"><div className="max-h-32 space-y-1 overflow-auto rounded-[10px] border border-line p-2">{servers.map((server) => <label key={server.id} className="flex min-h-8 items-center gap-2 text-sm text-muted"><input type="checkbox" checked={form.serverIds.includes(String(server.id))} onChange={() => toggleServer(String(server.id))} />{server.name}, {(server.connectionMode ?? "ssh") === "agent" ? `agent: ${server.agentId ?? "-"}` : `${server.sshUser}@${server.host}:${server.port}`}</label>)}{servers.length === 0 && <p className="text-sm text-muted">No servers yet</p>}</div></Field>
+          <Field label="Allowed servers" className="sm:col-span-2"><Input aria-label="Search allowed servers" type="search" placeholder="Search servers" value={serverFilter} onChange={(event) => setServerFilter(event.target.value)} /><div className="max-h-32 space-y-1 overflow-auto rounded-[10px] border border-line p-2">{servers.filter((server) => [server.name, server.agentId, server.host].join(" ").toLowerCase().includes(serverFilter.trim().toLowerCase())).map((server) => <label key={server.id} className="flex min-h-8 items-center gap-2 text-sm text-muted"><input type="checkbox" checked={form.serverIds.includes(String(server.id))} onChange={() => toggleServer(String(server.id))} />{server.name}, {(server.connectionMode ?? "ssh") === "agent" ? `agent: ${server.agentId ?? "-"}` : `${server.sshUser}@${server.host}:${server.port}`}</label>)}{servers.length === 0 && <p className="text-sm text-muted">No servers yet</p>}</div></Field>
           <Field label="Default server"><Select value={form.defaultServerId} onChange={(event) => setForm((current) => ({ ...current, defaultServerId: event.target.value }))} disabled={form.serverIds.length === 0}><option value="">No default server</option>{servers.filter((server) => form.serverIds.includes(String(server.id))).map((server) => <option key={server.id} value={server.id}>{server.name}, {(server.connectionMode ?? "ssh") === "agent" ? server.agentId : server.host}</option>)}</Select></Field>
           <Field label="Environment"><Input value={form.environment} onChange={(event) => setForm((current) => ({ ...current, environment: event.target.value }))} /></Field>
           <label className="flex min-h-10 items-center gap-2 text-sm text-fg sm:col-span-2"><input type="checkbox" disabled={!form.allowAllProjects && form.projectIds.length === 0} checked={form.canCreateProjects && (form.allowAllProjects || form.projectIds.length > 0)} onChange={(event) => setForm((current) => ({ ...current, canCreateProjects: event.target.checked }))} /> Allow this client to create projects and project directories</label>
           <section className="rounded-field border border-line bg-[var(--bg-0)] p-3 text-sm sm:col-span-2" aria-label="Permission summary">
             <h3 className="font-medium">Permission summary</h3>
             <p>{form.allowAllProjects ? "All current and future projects" : form.projectIds.length + " selected projects"} · {form.serverIds.length} allowed servers</p>
+            <p>Default project: {projects.find((project) => String(project.id) === form.defaultProjectId)?.name ?? "None"} · Default server: {servers.find((server) => String(server.id) === form.defaultServerId)?.name ?? "None"}</p>
             <p className="text-muted">{form.canCreateProjects ? "Can create projects and project directories." : "Project creation disabled."} Share the token only with clients you trust.</p>
           </section>
           {error && <p className="text-sm text-coral sm:col-span-2" role="alert">{error}</p>}
           <div className="flex justify-end gap-2 sm:col-span-2"><Button type="button" variant="ghost" disabled={saving} onClick={closeTokenForm}>Cancel</Button><Button type="submit" variant="primary" loading={saving}>{editingTokenId ? "Save permissions" : "Generate token"}</Button></div>
         </form>
       </Dialog>
-      <Dialog open={showCreateAgent} busy={saving} onClose={() => setShowCreateAgent(false)} title="Create Relay Agent Token" description="First add a server in Relay agent mode. It is a configuration record and does not need to be online yet."><form onSubmit={createAgentToken} className="space-y-4"><Field label="Name"><Input value={agentForm.name} onChange={(event) => setAgentForm((current) => ({ ...current, name: event.target.value }))} placeholder="Lab agent token" /></Field><Field label="Agent server" hint="The token is bound to this server's Agent ID."><Select required value={agentForm.serverId} onChange={(event) => setAgentForm((current) => ({ ...current, serverId: event.target.value }))}><option value="">Select an agent server</option>{agentServers.map((server) => <option key={server.id} value={server.id}>{server.name}, {server.agentId}</option>)}</Select></Field>{agentServers.length === 0 && <p className="text-sm text-muted">No Relay agent servers yet. <Link className="text-mint underline" to="/servers" onClick={() => setShowCreateAgent(false)}>Add a server</Link>, choose Relay agent, and enter an Agent ID before generating its token.</p>}{agentError && <p className="text-sm text-coral" role="alert">{agentError}</p>}<div className="flex justify-end gap-2"><Button type="button" variant="ghost" disabled={saving} onClick={() => setShowCreateAgent(false)}>Cancel</Button><Button type="submit" variant="primary" loading={saving} disabled={agentServers.length === 0}>Generate token</Button></div></form></Dialog>
-      <Dialog open={Boolean(createdToken)} onClose={() => setCreatedToken("")} title="MCP Access Token created"
+      <Dialog open={showCreateAgent} busy={savingAgent} onClose={() => setShowCreateAgent(false)} title="Create Relay Agent Token" description="First add a server in Relay agent mode. It is a configuration record and does not need to be online yet."><form onSubmit={createAgentToken} className="space-y-4"><Field label="Name"><Input value={agentForm.name} onChange={(event) => setAgentForm((current) => ({ ...current, name: event.target.value }))} placeholder="Lab agent token" /></Field><Field label="Agent server" hint="The secret is shown once and is bound to this server's Agent ID."><Select required value={agentForm.serverId} onChange={(event) => setAgentForm((current) => ({ ...current, serverId: event.target.value }))}><option value="">Select an agent server</option>{agentServers.map((server) => <option key={server.id} value={server.id}>{server.name}, {server.agentId}</option>)}</Select></Field>{agentServers.length === 0 && <p className="text-sm text-muted">No Relay agent servers yet. <Link className="text-mint underline" to="/servers" onClick={() => setShowCreateAgent(false)}>Add a server</Link>, choose Relay agent, and enter an Agent ID before generating its token.</p>}{agentError && <p className="text-sm text-coral" role="alert">{agentError}</p>}<div className="flex justify-end gap-2"><Button type="button" variant="ghost" disabled={savingAgent} onClick={() => setShowCreateAgent(false)}>Cancel</Button><Button type="submit" variant="primary" loading={savingAgent} disabled={agentServers.length === 0}>Generate token</Button></div></form></Dialog>
+      <Dialog closeOnOverlay={false} open={Boolean(createdToken)} onClose={() => setCreatedToken("")} title="MCP Access Token created"
         description="Copy the secret now. The full token is shown only once."
         footer={<Button variant="primary" onClick={() => setCreatedToken("")}>Done</Button>}>
         <div className="space-y-3">
-          <pre className="max-h-40 overflow-auto rounded-field border border-line bg-[var(--bg-0)] p-3 font-mono text-sm">{createdToken}</pre>
+          <pre className="max-h-40 select-all overflow-auto rounded-field border border-line bg-[var(--bg-0)] p-3 font-mono text-sm">{createdToken}</pre>
           <div className="flex flex-wrap gap-2">
             <Button onClick={() => void copy(createdToken)} variant="ghost"><Copy size={14} /> Copy token</Button>
             <Button onClick={() => downloadTokenConfig("relay-mcp-setup.ps1", clientConfig)} variant="ghost"><Download size={14} /> Download PowerShell setup</Button>
@@ -255,11 +267,11 @@ export default function TokensPage({ embedded: embeddedProp = false }: { embedde
           </details>
         </div>
       </Dialog>
-      <Dialog open={Boolean(createdAgentToken)} onClose={() => setCreatedAgentToken("")} title="Relay Agent Token created"
+      <Dialog closeOnOverlay={false} open={Boolean(createdAgentToken)} onClose={() => setCreatedAgentToken("")} title="Relay Agent Token created"
         description="Copy the secret now and paste it into the Agent Client. The full token is shown only once."
         footer={<Button variant="primary" onClick={() => setCreatedAgentToken("")}>Done</Button>}>
         <div className="space-y-3">
-          <pre className="max-h-40 overflow-auto rounded-field border border-line bg-[var(--bg-0)] p-3 font-mono text-sm">{createdAgentToken}</pre>
+          <pre className="max-h-40 select-all overflow-auto rounded-field border border-line bg-[var(--bg-0)] p-3 font-mono text-sm">{createdAgentToken}</pre>
           <div className="flex flex-wrap gap-2">
             <Button onClick={() => void copy(createdAgentToken)} variant="ghost"><Copy size={14} /> Copy token</Button>
             <Button onClick={() => downloadTokenConfig("relay-agent-connection.txt", "Relay URL: " + window.location.origin + "\nAgent ID: " + createdAgentId + "\nAgent Token: " + createdAgentToken + "\n")} variant="ghost"><Download size={14} /> Download connection details</Button>

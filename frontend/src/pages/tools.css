@@ -482,3 +482,14 @@
 .tools-tree-branch>ul{margin-inline-start:14px;padding-inline-start:5px;border-inline-start:1px solid var(--line)}
 .tools-category-nav .tools-tree-branch button{justify-content:flex-start;min-height:40px;overflow-wrap:anywhere;white-space:normal;text-align:start}
 .tools-tree-branch button[aria-pressed=true],.tools-tree-branch>summary:hover{background:var(--hover);color:rgb(var(--brand-blue-deep))}
+
+.tools-tree,.tools-tree ul{display:grid;gap:2px;margin:0;padding:0;list-style:none}
+.tools-tree ul{padding-inline-start:12px}
+.tools-tree li{min-width:0;outline:none}
+.tools-tree li>div{display:flex;align-items:center;gap:6px;border-radius:7px;min-height:36px;padding:5px 8px;cursor:pointer;overflow-wrap:anywhere}
+.tools-tree li:focus-visible>div{outline:2px solid rgb(var(--brand-blue));outline-offset:-2px}
+.tools-tree li[aria-selected=true]>div{color:rgb(var(--brand-blue));background:var(--hover);font-weight:600}
+.tools-tree li>div:hover{background:var(--hover)}
+.tools-tree li>div svg{flex:none}
+.tools-tree li[aria-expanded=true]>div svg{transform:rotate(90deg)}
+.tools-reset{color:rgb(var(--brand-blue));min-height:36px;padding-inline:8px}

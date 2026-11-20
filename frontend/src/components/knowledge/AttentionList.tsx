@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 
 export interface AttentionListProps {
-  pendingReview: number | undefined;
+  reviewQueues: { label: string; to: string; value: number | string | undefined }[];
   unlinkedEvidence: number | undefined;
   failedRuns: number | undefined;
   isAdmin: boolean;
@@ -10,24 +10,24 @@ export interface AttentionListProps {
 interface AttentionItem {
   label: string;
   to: string;
-  value: number | undefined;
+  value: number | string | undefined;
   tone: "sun" | "mint" | "coral";
 }
 
-export default function AttentionList({ pendingReview, unlinkedEvidence, failedRuns, isAdmin }: AttentionListProps) {
+export default function AttentionList({ reviewQueues, unlinkedEvidence, failedRuns, isAdmin }: AttentionListProps) {
   const items: AttentionItem[] = [
-    { label: "Candidate insights waiting for review", to: "/knowledge/candidate-insights", value: pendingReview, tone: "sun" },
+    ...reviewQueues.map((queue) => ({ ...queue, tone: "sun" as const })),
     { label: "Evidence not linked to any knowledge", to: "/knowledge/evidence", value: unlinkedEvidence, tone: "mint" },
     { label: "Imports that failed", to: isAdmin ? "/knowledge/product-docs/imports" : "/knowledge/operations/ingest", value: failedRuns, tone: "coral" },
   ];
-  const hasAttention = items.some((item) => item.value === undefined || item.value > 0);
+  const hasAttention = items.some((item) => item.value !== 0);
 
   if (!hasAttention) return <p className="attention-empty">Nothing needs attention</p>;
 
   return (
     <div className="attention-list">
       {items.map((item) => {
-        const active = item.value === undefined || item.value > 0;
+        const active = item.value !== 0;
         return (
           <Link className="attention-row" to={item.to} key={item.label}>
             <span>{item.label}</span>

@@ -234,13 +234,25 @@ export default function ServersPage() {
     }
   };
 
+  const testLocks = useRef(new Set<number>());
+  const [sshTests, setSshTests] = useState<Record<number, { pending: boolean; at?: string; error?: string }>>({});
   const testServer = async (id: number) => {
+    if (testLocks.current.has(id)) return;
+    testLocks.current.add(id);
+    setSshTests((tests) => ({ ...tests, [id]: { pending: true } }));
+    let failure: string | undefined;
     try {
-      setError("");
-      const r = await api.testServer(id);
-      const ok = typeof r === "object" && r !== null && "ok" in r && r.ok === true;
-      setServers((s) => s.map((sv) => (sv.id === id ? { ...sv, status: ok ? "connected" : "failed" } : sv)));
-    } catch (reason) { setError(messageFrom(reason)); }
+      const result = await api.testServer(id);
+      if (!result || typeof result !== "object" || !("ok" in result) || result.ok !== true) {
+        failure = result && typeof result === "object" && "error" in result && typeof result.error === "string"
+          ? result.error : "SSH test failed.";
+      }
+      setServers((items) => items.map((item) => item.id === id ? { ...item, status: failure ? "failed" : "connected" } : item));
+    } catch (reason) { failure = messageFrom(reason); }
+    finally {
+      testLocks.current.delete(id);
+      setSshTests((tests) => ({ ...tests, [id]: { pending: false, at: new Date().toISOString(), error: failure } }));
+    }
   };
 
   const deleteServer = async (id: number) => {
@@ -309,7 +321,14 @@ export default function ServersPage() {
                   <Key size={14} />
                 </button>
               )}
-              {!isAgentServer(s) && <Button variant="ghost" size="sm" onClick={() => void testServer(s.id)}>Test SSH</Button>}
+              {!isAgentServer(s) && <div className="flex flex-wrap items-center gap-2">
+                <Button variant="ghost" size="sm" loading={sshTests[s.id]?.pending} onClick={() => void testServer(s.id)}>
+                  {sshTests[s.id]?.pending ? "Testing" : sshTests[s.id]?.error ? "Retry SSH" : "Test SSH"}
+                </Button>
+                {sshTests[s.id]?.error && <Button variant="ghost" size="sm" onClick={() => openEdit(s)}>Edit connection</Button>}
+                {sshTests[s.id]?.at && <time className="text-xs text-muted" dateTime={sshTests[s.id].at}>{new Date(sshTests[s.id].at!).toLocaleTimeString()}</time>}
+                {sshTests[s.id]?.error && <p className="w-full break-words text-sm text-coral" role="alert">{sshTests[s.id]?.error}</p>}
+              </div>}
               <button
                 type="button"
                 onClick={() => openEdit(s)}
@@ -351,10 +370,11 @@ export default function ServersPage() {
             <Input value={newServer.name} onChange={(e) => setNewServer((s) => ({ ...s, name: e.target.value }))} placeholder="my-prod-server" required />
           </Field>
           <Field label="Connection">
-            <Select value={newServer.connectionMode} onChange={(e) => setNewServer((s) => ({ ...s, connectionMode: e.target.value }))}>
-              <option value="ssh">SSH</option>
-              <option value="agent">Relay agent</option>
-            </Select>
+            <div role="group" aria-label="Connection" className="flex flex-wrap gap-2">
+              {(["ssh", "agent"] as const).map((mode) => <Button key={mode} type="button"
+                variant={newServer.connectionMode === mode ? "primary" : "ghost"}
+                aria-pressed={newServer.connectionMode === mode} onClick={() => setNewServer((s) => ({ ...s, connectionMode: mode }))}>{mode === "ssh" ? "SSH" : "Relay agent"}</Button>)}
+            </div>
           </Field>
           {newServer.connectionMode === "ssh" ? (
             <>
@@ -405,10 +425,11 @@ export default function ServersPage() {
             <Input value={editForm.name} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} required />
           </Field>
           <Field label="Connection">
-            <Select value={editForm.connectionMode} onChange={(e) => setEditForm((f) => ({ ...f, connectionMode: e.target.value }))}>
-              <option value="ssh">SSH</option>
-              <option value="agent">Relay agent</option>
-            </Select>
+            <div role="group" aria-label="Connection" className="flex flex-wrap gap-2">
+              {(["ssh", "agent"] as const).map((mode) => <Button key={mode} type="button"
+                variant={editForm.connectionMode === mode ? "primary" : "ghost"}
+                aria-pressed={editForm.connectionMode === mode} onClick={() => setEditForm((f) => ({ ...f, connectionMode: mode }))}>{mode === "ssh" ? "SSH" : "Relay agent"}</Button>)}
+            </div>
           </Field>
           {editForm.connectionMode === "ssh" ? (
             <>

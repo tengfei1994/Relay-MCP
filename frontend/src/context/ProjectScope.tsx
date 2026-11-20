@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 
 export interface Project {
@@ -26,10 +27,12 @@ function isProject(value: unknown): value is Project {
 }
 
 export function ProjectScopeProvider({ children }: { children: ReactNode }) {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [projects, setProjects] = useState<Project[]>([]);
   const requestRef = useRef<Promise<{ projects: unknown[] }> | undefined>(undefined);
   const effectIdRef = useRef(0);
-  const [projectId, setProjectIdState] = useState<number>();
+  const [storedId, setProjectIdState] = useState<number>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
 
@@ -67,8 +70,32 @@ export function ProjectScopeProvider({ children }: { children: ReactNode }) {
     };
   }, [attempt]);
 
+  const inProjects = location.pathname === "/projects";
+  const requestedId = inProjects ? Number(new URLSearchParams(location.search).get("project")) : 0;
+  const projectId = projects.some((project) => project.id === requestedId) ? requestedId : storedId;
+
+  useEffect(() => {
+    if (!inProjects || !projectId) return;
+    if (requestedId !== projectId) {
+      const next = new URLSearchParams(location.search);
+      next.set("project", String(projectId));
+      next.delete("path");
+      next.delete("view");
+      navigate({ pathname: location.pathname, search: next.toString() }, { replace: true });
+      return;
+    }
+    if (storedId !== projectId) {
+      setProjectIdState(projectId);
+      localStorage.setItem("knowledge.projectId", String(projectId));
+    }
+  }, [inProjects, projectId, requestedId, storedId, location.pathname, location.search, navigate]);
+
   const setProjectId = (nextId: number) => {
-    if (!projects.some((project) => project.id === nextId)) return;
+    if (!projects.some((project) => project.id === nextId) || nextId === projectId) return;
+    if (inProjects) {
+      navigate("/projects?project=" + nextId);
+      return;
+    }
     setProjectIdState(nextId);
     localStorage.setItem("knowledge.projectId", String(nextId));
   };
@@ -79,7 +106,7 @@ export function ProjectScopeProvider({ children }: { children: ReactNode }) {
   );
   const value = useMemo(
     () => ({ projects, projectId, selectedProject, setProjectId, loading, error, refresh }),
-    [projects, projectId, selectedProject, loading, error, refresh],
+    [projects, projectId, selectedProject, loading, error, refresh, location.pathname, navigate],
   );
 
   return <ProjectScopeContext.Provider value={value}>{children}</ProjectScopeContext.Provider>;

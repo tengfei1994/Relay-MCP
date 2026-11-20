@@ -101,9 +101,9 @@ export const api = {
     request<{ project: unknown }>("POST", "/projects", { name, description }),
   deleteProject: (id: number) =>
     request<{ ok: boolean }>("DELETE", `/projects/${id}`),
-  listFiles: (id: number, path = "") =>
+  listFiles: (id: number, path = "", signal?: AbortSignal) =>
     request<{ path: string; entries: unknown[] }>(
-      "GET", `/projects/${id}/files?path=${encodeURIComponent(path)}`
+      "GET", `/projects/${id}/files?path=${encodeURIComponent(path)}`, undefined, undefined, { signal }
     ),
   previewFile: (id: number, path: string) =>
     request<{ path: string; name?: string; content: string; size: number; modifiedAt: string; truncated: boolean }>(
@@ -236,7 +236,7 @@ export const api = {
   knowledgeCandidateInsightPromote: (id: string, body: { target: "fact" | "decision" | "case" | "pattern"; reason: string; title?: string }) => request<{ promotion: unknown }>("POST", `/knowledge/candidate-insights/${encodeURIComponent(id)}/promote`, body),
   knowledgeConfirmedMemories: (projectId?: string | number, params: Record<string, string | number | undefined> = {}) => { const query = new URLSearchParams(); if (projectId !== undefined && projectId !== "") query.set("projectId", String(projectId)); Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== "") query.set(key, String(value)); }); return request<{ memories: unknown[]; page: { limit: number; offset: number; total: number }; generalAccess: string }>("GET", `/knowledge/confirmed-memories?${query.toString()}`); },
   knowledgeConfirmedMemory: (id: string) => request<{ memory: unknown }>("GET", `/knowledge/confirmed-memories/${encodeURIComponent(id)}`),
-  memorySubmissions: (offset = 0) => request<{ submissions: unknown[] }>("GET", `/knowledge/memory-submissions?limit=50&offset=${offset}`),
+  memorySubmissions: (offset = 0, status?: string, limit = 50) => request<{ submissions: unknown[]; page?: { total: number } }>("GET", "/knowledge/memory-submissions?" + new URLSearchParams({ limit: String(limit), offset: String(offset), ...(status ? { status } : {}) })),
   legacyCandidatesForReview: (offset = 0) => request<{ candidates: unknown[] }>("GET", `/knowledge/legacy-candidates/review?limit=50&offset=${offset}`),
   legacyCandidateReview: (id:string, body:{action:"approve"|"reject"|"needs_info";reason:string;scope?:"project"|"general";title?:string;statement?:string;memoryType?:"Fact"|"Decision"|"Case"|"Pattern";evidenceRefs?:string[]}) => request<unknown>("POST", `/knowledge/legacy-candidates/${encodeURIComponent(id)}/review`,body),
   memorySubmissionReview: (id: string, body: { action: "approve" | "reject" | "needs_info"; reason: string; scope?: "project" | "general"; title?: string; statement?: string }) => request<{ submission: unknown }>("POST", `/knowledge/memory-submissions/${encodeURIComponent(id)}/review`, body),

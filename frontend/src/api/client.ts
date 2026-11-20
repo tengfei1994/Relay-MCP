@@ -1,5 +1,28 @@
 import { buildKnowledgeScope, withKnowledgeScope, type KnowledgeScope } from "../knowledge/integrated-search";
 
+export interface RelayJob {
+  id: string;
+  project: string;
+  projectId?: string;
+  environment?: string;
+  kind: string;
+  description?: string;
+  status: string;
+  phase?: string;
+  startedAt: string;
+  finishedAt?: string;
+  lastHeartbeatAt?: string;
+  errorCategory?: string;
+  retrySafe: boolean;
+  retryOf?: string;
+}
+
+export interface RelayJobLog {
+  at: string;
+  level: "info" | "stdout" | "stderr";
+  message: string;
+}
+
 const BASE = "/api";
 
 function getToken() {
@@ -55,6 +78,8 @@ async function requestBlob(path: string): Promise<Blob> {
 
 export const api = {
   health: () => request<{ ok: boolean; version: string; commit: string; buildTime: string; process: string; ts: string }>("GET", "/health"),
+  listJobs: (limit = 100) => request<{ jobs: RelayJob[] }>("GET", "/jobs?limit=" + limit),
+  job: (id: string) => request<{ job: RelayJob & { logs: RelayJobLog[]; target?: { server: string; instance?: string | null } } }>("GET", "/jobs/" + encodeURIComponent(id)),
   // Auth
   login: (username: string, password: string) =>
     request<{ token: string; user: { id: number; username: string; isAdmin: boolean; knowledgeEnabled?: boolean } }>(
@@ -86,6 +111,8 @@ export const api = {
     ),
   previewImage: (id: number, path: string) => requestBlob(`/projects/${id}/files/raw?path=${encodeURIComponent(path)}`),
   previewArchive: (id: number, path: string) => request<{ path: string; name?: string; size: number; modifiedAt: string; entries: Array<{ path: string; size: number; type: "file" | "directory" }> }>("GET", `/projects/${id}/files/archive?path=${encodeURIComponent(path)}`),
+  setProjectFileTarget: (id: number, path: string, linkId: number | null) =>
+    request<{ ok: boolean }>("PUT", "/projects/" + id + "/file-target", { path, linkId }),
   renameFile: (id: number, path: string, name: string) =>
     request<{ ok: boolean; path: string; name: string }>("PATCH", `/projects/${id}/files`, { path, name }),
   deleteFile: (id: number, path: string) =>

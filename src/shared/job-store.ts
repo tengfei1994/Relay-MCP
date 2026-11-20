@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { validateStateId } from "./state-id.js";
 import { classifyRemoteError, RemoteCommandTimeoutError } from "./remote-runner.js";
@@ -335,7 +335,14 @@ export function writeAudit(entry: Record<string, unknown>): void {
 
 export function saveJob(job: JobRecord): void {
   ensureState();
-  writeFileSync(jobPath(job.id), JSON.stringify(job, null, 2), "utf8");
+  const destination = jobPath(job.id);
+  const temporary = destination + "." + process.pid + ".tmp";
+  try {
+    writeFileSync(temporary, JSON.stringify(job, null, 2), "utf8");
+    renameSync(temporary, destination);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
 }
 
 export function getJob(id: string): JobRecord | undefined {

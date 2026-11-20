@@ -5,6 +5,11 @@ import { mkdirSync } from "fs";
 import { RemoteCommandTimeoutError } from "./remote-runner.js";
 import "dotenv/config";
 
+export function agentHeartbeatIsFresh(lastSeenAt: string, now = Date.now(), maxAgeMs = Number(process.env.RELAY_AGENT_OFFLINE_MS ?? 90000)): boolean {
+  const ageMs = now - Date.parse(lastSeenAt);
+  return Number.isFinite(ageMs) && ageMs <= maxAgeMs;
+}
+
 export interface AgentState {
   userId: number;
   agentId: string;
@@ -105,6 +110,7 @@ export class AgentStore {
       SELECT user_id, agent_id, username, machine, last_seen_at, last_client_timestamp
       FROM agent_states
       WHERE user_id = ? AND lower(agent_id) = lower(?)
+      ORDER BY last_seen_at DESC LIMIT 1
     `).get(userId, agentId) as any;
     if (!row) return undefined;
     return {
@@ -122,8 +128,8 @@ export class AgentStore {
     if (!state) {
       throw new AgentOfflineError(`Agent link exists, but agent '${agentId}' has never checked in`);
     }
-    const ageMs = Date.now() - Date.parse(state.lastSeenAt);
-    if (!Number.isFinite(ageMs) || ageMs > maxAgeMs) {
+
+    if (!agentHeartbeatIsFresh(state.lastSeenAt, Date.now(), maxAgeMs)) {
       throw new AgentOfflineError(`Agent link exists, but agent '${agentId}' is offline; last heartbeat ${state.lastSeenAt}`);
     }
     return state;

@@ -1,11 +1,11 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { eq, and } from "drizzle-orm";
+import { eq, and, or, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { projects } from "../db/schema.js";
+import { limsInstances, projectFileTargets, projectServers, projects, servers } from "../db/schema.js";
 import { z } from "zod";
 import { unzipSync } from "fflate";
 import { existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from "fs";
-import { join } from "path";
+import { join, relative, sep } from "path";
 import "dotenv/config";
 import { createProjectWorkspace, resolveWorkspacePath } from "../../shared/workspace-path.js";
 import { writeAudit } from "../../shared/job-store.js";
@@ -16,6 +16,18 @@ const MAX_BINARY_PREVIEW_BYTES = 16 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES = 5_000;
 const MAX_ARCHIVE_UNCOMPRESSED_BYTES = 128 * 1024 * 1024;
+
+function workspaceKey(root: string, absolute: string): string {
+  return relative(root, absolute).split(sep).join("/");
+}
+
+function targetSubtree(projectId: number, path: string) {
+  const prefix = path + "/";
+  return and(eq(projectFileTargets.projectId, projectId), or(
+    eq(projectFileTargets.path, path),
+    sql`substr(${projectFileTargets.path}, 1, length(${prefix})) = ${prefix}`,
+  ));
+}
 
 const CreateProjectSchema = z.object({
   name: z.string().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/),
@@ -195,11 +207,31 @@ export async function projectRoutes(app: FastifyInstance) {
       let names: string[];
       try { names = readdirSync(targetDir); }
       catch (error) { return sendFileError(reply, error, "Unable to read directory"); }
+      const directory = workspaceKey(project.workspacePath, targetDir);
+      const targets = new Map(db.select({
+        path: projectFileTargets.path,
+        linkId: projectServers.id,
+        server: servers.name,
+        instance: limsInstances.name,
+        environment: projectServers.environment,
+      }).from(projectFileTargets)
+        .innerJoin(projectServers, and(eq(projectFileTargets.projectServerId, projectServers.id), eq(projectServers.projectId, project.id)))
+        .innerJoin(servers, and(eq(projectServers.serverId, servers.id), eq(servers.userId, userId)))
+        .leftJoin(limsInstances, and(eq(projectServers.limsInstanceId, limsInstances.id), eq(limsInstances.serverId, servers.id)))
+        .where(eq(projectFileTargets.projectId, project.id)).all().map((target) => [target.path, target]));
+      let inherited: ReturnType<typeof targets.get>;
+      for (let ancestor = directory; ancestor; ancestor = ancestor.slice(0, Math.max(0, ancestor.lastIndexOf("/")))) {
+        inherited = targets.get(ancestor);
+        if (inherited) break;
+      }
+
       const entries = names.flatMap((name) => {
         try {
           const fullPath = resolveWorkspacePath(project.workspacePath, relPath ? join(relPath, name) : name, { mustExist: true });
           const stat = statSync(fullPath);
-          return [{ name, type: stat.isDirectory() ? "directory" : "file", size: stat.isDirectory() ? null : stat.size, modifiedAt: stat.mtime.toISOString() }];
+          const explicit = targets.get(workspaceKey(project.workspacePath, fullPath));
+          const target = explicit ?? inherited;
+          return [{ name, target, targetInherited: !!target && !explicit, type: stat.isDirectory() ? "directory" : "file", size: stat.isDirectory() ? null : stat.size, modifiedAt: stat.mtime.toISOString() }];
         } catch {
           // Do not expose metadata for broken links or links outside this project.
           return [];
@@ -281,6 +313,38 @@ export async function projectRoutes(app: FastifyInstance) {
     }
   );
 
+  app.put(
+    "/api/projects/:id/file-target",
+    { onRequest: [app.authenticate] },
+    async (req, reply) => {
+      const project = projectForUser(Number((req.params as { id: string }).id), req.user.id);
+      if (!project) return reply.status(404).send({ error: "Project not found" });
+      const body = z.object({ path: z.string().min(1).max(4096), linkId: z.number().int().positive().nullable() }).safeParse(req.body);
+      if (!body.success) return reply.status(400).send({ error: "Invalid file target" });
+      const { path, linkId } = body.data;
+      let key: string;
+      try {
+        key = workspaceKey(project.workspacePath, resolveWorkspacePath(project.workspacePath, path, { mustExist: true }));
+      } catch (error) { return sendPathError(reply, error); }
+      const changed = db.transaction((tx) => {
+        if (linkId === null) {
+          tx.delete(projectFileTargets).where(and(eq(projectFileTargets.projectId, project.id), eq(projectFileTargets.path, key))).run();
+          return true;
+        }
+        const link = tx.select({ id: projectServers.id }).from(projectServers)
+          .innerJoin(servers, and(eq(servers.id, projectServers.serverId), eq(servers.userId, req.user.id)))
+          .where(and(eq(projectServers.projectId, project.id), eq(projectServers.id, linkId))).get();
+        if (!link) return false;
+        tx.insert(projectFileTargets).values({ projectId: project.id, path: key, projectServerId: link.id })
+          .onConflictDoUpdate({ target: [projectFileTargets.projectId, projectFileTargets.path], set: { projectServerId: link.id } }).run();
+        return true;
+      });
+      if (!changed) return reply.status(404).send({ error: "Target is not linked to this project" });
+      writeAudit({ event: "project_file_target_changed", userId: req.user.id, projectId: project.id, path: key, linkId });
+      return reply.send({ ok: true });
+    }
+  );
+
   app.patch(
     "/api/projects/:id/files",
     { onRequest: [app.authenticate] },
@@ -297,7 +361,16 @@ export async function projectRoutes(app: FastifyInstance) {
         destinationPath = resolveWorkspacePath(project.workspacePath, parentPath ? `${parentPath}/${body.data.name}` : body.data.name);
       } catch (error) { return sendPathError(reply, error); }
       if (existsSync(destinationPath)) return reply.status(409).send({ error: "A file or directory with that name already exists" });
-      try { renameSync(sourcePath, destinationPath); }
+      try {
+        const from = workspaceKey(project.workspacePath, sourcePath);
+        const to = workspaceKey(project.workspacePath, destinationPath);
+        db.transaction((tx) => {
+          tx.delete(projectFileTargets).where(targetSubtree(projectId, to)).run();
+          tx.update(projectFileTargets).set({ path: sql`${to} || substr(${projectFileTargets.path}, length(${from}) + 1)` })
+            .where(targetSubtree(projectId, from)).run();
+          renameSync(sourcePath, destinationPath);
+        });
+      }
       catch (error) { return sendFileError(reply, error, "Unable to rename file"); }
       const parentPath = body.data.path.replaceAll("\\", "/").split("/").slice(0, -1).filter(Boolean).join("/");
       const nextPath = parentPath ? `${parentPath}/${body.data.name}` : body.data.name;
@@ -318,7 +391,12 @@ export async function projectRoutes(app: FastifyInstance) {
       let targetPath: string;
       try { targetPath = resolveWorkspacePath(project.workspacePath, query.data.path, { mustExist: true }); }
       catch (error) { return sendPathError(reply, error); }
-      try { rmSync(targetPath, { recursive: true, force: false }); }
+      try {
+        db.transaction((tx) => {
+          tx.delete(projectFileTargets).where(targetSubtree(projectId, workspaceKey(project.workspacePath, targetPath))).run();
+          rmSync(targetPath, { recursive: true, force: false });
+        });
+      }
       catch (error) { return sendFileError(reply, error, "Unable to delete file"); }
       writeAudit({ event: "project_file_deleted", userId: req.user.id, projectId, path: query.data.path });
       return reply.send({ ok: true, path: query.data.path });

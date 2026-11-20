@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { sqliteTable, primaryKey, text, integer } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 export const users = sqliteTable("users", {
@@ -87,6 +87,12 @@ export const projectServers = sqliteTable("project_servers", {
   connectionMode: text("connection_mode").default("ssh"), // ssh | agent
   limsInstanceId: integer("lims_instance_id").references(() => limsInstances.id, { onDelete: "set null" }),
 });
+
+export const projectFileTargets = sqliteTable("project_file_targets", {
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  path: text("path").notNull(),
+  projectServerId: integer("project_server_id").notNull().references(() => projectServers.id, { onDelete: "cascade" }),
+}, (table) => ({ pk: primaryKey({ columns: [table.projectId, table.path] }) }));
 
 export const mcpTokens = sqliteTable("mcp_tokens", {
   id: integer("id").primaryKey({ autoIncrement: true }),

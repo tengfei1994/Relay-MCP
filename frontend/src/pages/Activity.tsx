@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity as ActivityIcon, CheckCircle2, CircleDot, Clock3, File, RotateCw } from "lucide-react";
+import { Link, useSearchParams } from "react-router-dom";
+import JobsPage from "./Jobs";
 import { api } from "../api/client";
 import { useProjectScope } from "../context/ProjectScope";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
@@ -73,6 +75,20 @@ async function collectProjectEntries(projectId: number, path = "", depth = 2): P
 }
 
 export default function ActivityPage() {
+  const [query] = useSearchParams();
+  const history = query.get("view") === "history";
+  return (
+    <AppPageFrame variant="wide">
+      <nav className="shell-page-tabs mb-4" aria-label="Activity view">
+        <Link to="/activity" className={`shell-page-tab${history ? "" : " active"}`} aria-current={!history ? "page" : undefined}>Jobs</Link>
+        <Link to="/activity?view=history" className={`shell-page-tab${history ? " active" : ""}`} aria-current={history ? "page" : undefined}>Sessions &amp; files</Link>
+      </nav>
+      {history ? <ActivityHistory /> : <JobsPage embedded />}
+    </AppPageFrame>
+  );
+}
+
+function ActivityHistory() {
   const { projects, selectedProject, loading: projectLoading } = useProjectScope();
   const [sessions, setSessions] = useState<ActivitySession[]>([]);
   const [fileActivity, setFileActivity] = useState<ProjectFileActivity[]>([]);
@@ -129,22 +145,21 @@ export default function ActivityPage() {
   }, [selected, selectedId, visibleSessions]);
 
   return (
-    <AppPageFrame variant="wide">
       <div className="activity-page">
         <div className="activity-toolbar">
           <div className="activity-toolbar-copy">
             <span className="activity-kicker">Workspace activity</span>
-            <p className="runtime-page-summary">{visibleSessions.length} runs · {projectLabel}</p>
+            <p className="runtime-page-summary">{visibleSessions.length} work sessions · {projectLabel}</p>
           </div>
           <div className="activity-filters" role="group" aria-label="Activity filter">
-            {["all", "active", "completed"].map((value) => <button key={value} type="button" onClick={() => setFilter(value as typeof filter)} className={filter === value ? "active" : ""}>{value === "all" ? "All runs" : value === "active" ? "Active" : "Completed"}</button>)}
+            {["all", "active", "completed"].map((value) => <button key={value} type="button" onClick={() => setFilter(value as typeof filter)} className={filter === value ? "active" : ""}>{value === "all" ? "All sessions" : value === "active" ? "Active" : "Completed"}</button>)}
           </div>
         </div>
 
         {error && <ErrorState className="mb-4" message={error} />}
         <div className="activity-layout">
-          <section className="activity-panel" aria-label="Run history">
-            <div className="activity-panel-head"><div><span className="activity-panel-kicker">Run history</span><h1>Recent activity</h1></div><span className="activity-count">{scopedSessions.length.toString().padStart(2, "0")} total</span></div>
+          <section className="activity-panel" aria-label="Work session history">
+            <div className="activity-panel-head"><div><h1>Work sessions</h1></div><span className="activity-count">{scopedSessions.length.toString().padStart(2, "0")} total</span></div>
             {loading ? <div className="activity-skeleton"><Skeleton className="h-14 w-full" /><Skeleton className="h-14 w-full" /><Skeleton className="h-14 w-full" /></div> : !visibleSessions.length ? <EmptyState title="No activity yet" description="Work Sessions for this project will appear here when a run is opened." /> : <div className="activity-list">{visibleSessions.map((session) => {
               const intent = record(session.intent);
               const objective = text(intent.objective, "Untitled work session");
@@ -153,7 +168,7 @@ export default function ActivityPage() {
           </section>
 
           <aside className="activity-panel activity-detail" aria-label="Selected activity">
-            {selected ? <><div className="activity-panel-head"><div><span className="activity-panel-kicker">Selected run</span><h2>{text(record(selected.intent).objective, "Untitled work session")}</h2></div><StatusPill status={selected.status} /></div><p className="activity-detail-summary">{selected.summary ?? text(record(selected.intent).desiredOutcome, "No summary recorded.")}</p><dl className="activity-detail-grid"><div><dt>Project</dt><dd>{projectLabel}</dd></div><div><dt>Environment</dt><dd>{selected.environment ?? "Default"}</dd></div><div><dt>Phase</dt><dd>{text(record(selected.intent).phase)}</dd></div><div><dt>Risk</dt><dd>{text(record(selected.intent).risk)}</dd></div><div><dt>Opened</dt><dd>{formatDate(selected.createdAt)}</dd></div><div><dt>Updated</dt><dd>{formatDate(selected.updatedAt)}</dd></div></dl><div className="activity-detail-section"><span className="activity-panel-kicker">Actions</span><p>{Array.isArray(record(selected.intent).actions) ? (record(selected.intent).actions as unknown[]).map(String).join(" → ") : "—"}</p></div><div className="activity-detail-section"><span className="activity-panel-kicker">Acceptance</span>{Object.keys(selected.acceptanceResults).length ? <ul>{Object.entries(selected.acceptanceResults).map(([key, value]) => <li key={key}><span>{key}</span><strong>{String(value)}</strong></li>)}</ul> : <p>No acceptance results recorded.</p>}</div></> : <div className="activity-detail-empty"><Clock3 size={18} /><p>Select a run to inspect its scope and result.</p></div>}
+            {selected ? <><div className="activity-panel-head"><div><span className="activity-panel-kicker">Selected session</span><h2>{text(record(selected.intent).objective, "Untitled work session")}</h2></div><StatusPill status={selected.status} /></div><p className="activity-detail-summary">{selected.summary ?? text(record(selected.intent).desiredOutcome, "No summary recorded.")}</p><dl className="activity-detail-grid"><div><dt>Project</dt><dd>{projectLabel}</dd></div><div><dt>Environment</dt><dd>{selected.environment ?? "Default"}</dd></div><div><dt>Phase</dt><dd>{text(record(selected.intent).phase)}</dd></div><div><dt>Risk</dt><dd>{text(record(selected.intent).risk)}</dd></div><div><dt>Opened</dt><dd>{formatDate(selected.createdAt)}</dd></div><div><dt>Updated</dt><dd>{formatDate(selected.updatedAt)}</dd></div></dl><div className="activity-detail-section"><span className="activity-panel-kicker">Actions</span><p>{Array.isArray(record(selected.intent).actions) ? (record(selected.intent).actions as unknown[]).map(String).join(" → ") : "—"}</p></div><div className="activity-detail-section"><span className="activity-panel-kicker">Acceptance</span>{Object.keys(selected.acceptanceResults).length ? <ul>{Object.entries(selected.acceptanceResults).map(([key, value]) => <li key={key}><span>{key}</span><strong>{String(value)}</strong></li>)}</ul> : <p>No acceptance results recorded.</p>}</div></> : <div className="activity-detail-empty"><Clock3 size={18} /><p>Select a session to inspect its scope and result.</p></div>}
           </aside>
         </div>
         <section className="activity-panel activity-files-panel" aria-label="Recent project file changes">
@@ -161,6 +176,5 @@ export default function ActivityPage() {
           {filesLoading ? <div className="activity-file-empty">Checking project workspaces…</div> : fileActivity.length ? <div className="activity-file-list">{fileActivity.map((entry) => <div key={`${entry.projectId}:${entry.path ?? entry.name}`} className="activity-file-row"><span className="activity-file-icon"><File size={15} aria-hidden="true" /></span><span><strong>{entry.path ?? entry.name}</strong><small>{entry.projectName} · {entry.modifiedAt ? formatDate(entry.modifiedAt) : "Modified time unavailable"}</small></span><code>{formatBytes(entry.size) || "file"}</code></div>)}</div> : <div className="activity-file-empty"><File size={18} aria-hidden="true" /><span>No file changes found in the visible project workspaces.</span></div>}
         </section>
       </div>
-    </AppPageFrame>
   );
 }

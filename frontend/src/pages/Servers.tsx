@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Server as ServerIcon, CheckCircle, XCircle, Clock, Copy, Trash2, Key, Pencil, Terminal } from "lucide-react";
+import { Plus, RefreshCw, Server as ServerIcon, CheckCircle, XCircle, Clock, Copy, Trash2, Key, Pencil, Terminal } from "lucide-react";
+import { Link } from "react-router-dom";
 import { api } from "../api/client";
-import { Button, ConfirmDialog, Dialog, Field, Input, Select } from "../components/ui";
+import { Button, ConfirmDialog, Dialog, Field, Input, Select, Skeleton, StatusPill } from "../components/ui";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
 
 type ServerStatus = "connected" | "failed" | "pending" | string;
@@ -14,6 +15,8 @@ type Server = {
   os?: "linux" | "windows" | string;
   connectionMode?: "ssh" | "agent" | string;
   agentId?: string;
+  heartbeat?: string;
+  lastSeenAt?: string;
   status: ServerStatus;
 };
 type ServerFormKey = "name" | "host" | "port" | "sshUser" | "os" | "password" | "connectionMode" | "agentId";
@@ -43,6 +46,8 @@ function serverFrom(value: unknown): Server | null {
     os: optionalString(record.os),
     connectionMode: optionalString(record.connectionMode),
     agentId: optionalString(record.agentId),
+    heartbeat: optionalString(record.heartbeat),
+    lastSeenAt: optionalString(record.lastSeenAt),
     status: value.status,
   };
 }
@@ -64,6 +69,15 @@ const STATUS_ICON: Record<string, JSX.Element> = {
   pending: <Clock size={13} className="text-sun" />,
 };
 
+function heartbeatAge(value: string) {
+  const seconds = Math.max(0, Math.round((Date.now() - Date.parse(value)) / 1000));
+  if (!Number.isFinite(seconds)) return "Unknown heartbeat time";
+  if (seconds < 60) return seconds + " s ago";
+  if (seconds < 3600) return Math.floor(seconds / 60) + " min ago";
+  if (seconds < 86400) return Math.floor(seconds / 3600) + " h ago";
+  return Math.floor(seconds / 86400) + " d ago";
+}
+
 export default function ServersPage() {
   const [servers, setServers] = useState<Server[]>([]);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
@@ -73,6 +87,9 @@ export default function ServersPage() {
   const [editServer, setEditServer] = useState<Server | null>(null);
   const [editForm, setEditForm] = useState<EditForm>({ name: "", host: "", port: "22", sshUser: "", os: "linux", connectionMode: "ssh", agentId: "" });
   const [error, setError] = useState("");
+  const [listError, setListError] = useState(false);
+  const [loadingServers, setLoadingServers] = useState(true);
+  const [serverAttempt, setServerAttempt] = useState(0);
 
   // Terminal modal
   const [terminal, setTerminal] = useState<{ serverId: number; password: string } | null>(null);
@@ -87,8 +104,26 @@ export default function ServersPage() {
   const [setupLoading, setSetupLoading] = useState(false);
 
   useEffect(() => {
-    api.listServers().then((r) => setServers(serversFrom(r)));
-  }, []);
+    let active = true;
+    let next: number | undefined;
+    async function updateList() {
+      try {
+        const result = await api.listServers();
+        if (!active) return;
+        setServers(serversFrom(result));
+        setListError(false);
+      } catch {
+        if (active) setListError(true);
+      } finally {
+        if (active) {
+          setLoadingServers(false);
+          next = window.setTimeout(updateList, 30000);
+        }
+      }
+    }
+    void updateList();
+    return () => { active = false; window.clearTimeout(next); };
+  }, [serverAttempt]);
 
   // Auto-scroll terminal
   useEffect(() => {
@@ -192,6 +227,7 @@ export default function ServersPage() {
       const server = serverFrom(typeof r === "object" && r !== null && "server" in r ? r.server : null);
       if (!server) throw new Error("The server returned an invalid server.");
       setServers((s) => s.map((sv) => (sv.id === serverId ? server : sv)));
+      setServerAttempt((attempt) => attempt + 1);
       setEditServer(null);
     } catch (err: unknown) {
       setError(messageFrom(err));
@@ -199,11 +235,12 @@ export default function ServersPage() {
   };
 
   const testServer = async (id: number) => {
-    const r = await api.testServer(id);
-    const ok = typeof r === "object" && r !== null && "ok" in r && r.ok === true;
-    setServers((s) =>
-      s.map((sv) => (sv.id === id ? { ...sv, status: ok ? "connected" : "failed" } : sv))
-    );
+    try {
+      setError("");
+      const r = await api.testServer(id);
+      const ok = typeof r === "object" && r !== null && "ok" in r && r.ok === true;
+      setServers((s) => s.map((sv) => (sv.id === id ? { ...sv, status: ok ? "connected" : "failed" } : sv)));
+    } catch (reason) { setError(messageFrom(reason)); }
   };
 
   const deleteServer = async (id: number) => {
@@ -219,13 +256,22 @@ export default function ServersPage() {
 
 
 
+  const isAgentServer = (server: Server) => server.connectionMode === "agent";
+
   return (
     <AppPageFrame>
       <div className="runtime-page-head">
-        <p className="runtime-page-summary">{servers.length ? `${servers.length} server${servers.length === 1 ? "" : "s"}` : "No servers added yet."}</p>
-        <Button variant="primary" onClick={() => setShowAdd(true)}><Plus size={14} /> Add server</Button>
+        <div>
+          <h1 className="text-2xl font-semibold">Agents &amp; servers</h1>
+          {!loadingServers && !listError && <p className="runtime-page-summary">{servers.length ? servers.length + " configured" : "No servers added yet."}</p>}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="ghost" loading={loadingServers} onClick={() => { setLoadingServers(true); setServerAttempt((attempt) => attempt + 1); }}><RefreshCw size={15} aria-hidden="true" />Refresh</Button>
+        <Button variant="primary" onClick={() => setShowAdd(true)}><Plus size={14} /> Add server</Button></div>
       </div>
 
+      {listError && <p className="mb-4 rounded-field border border-coral/40 bg-coral/10 p-3 text-sm text-coral" role="alert">Could not refresh servers. Use Refresh to try again.</p>}
+      {loadingServers && !servers.length && <div role="status" aria-label="Loading servers"><Skeleton className="h-16 w-full" /></div>}
       {servers.length > 0 && <div className="space-y-3">
         {servers.map((s) => (
           <div key={s.id} className="glass flex flex-wrap items-center justify-between gap-4 rounded-panel px-5 py-4">
@@ -241,10 +287,17 @@ export default function ServersPage() {
               </div>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-3">
-              <div className="flex items-center gap-1 text-xs text-muted">
+              {isAgentServer(s) ? (
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+                  <StatusPill status={listError ? "Agent status unavailable" : s.heartbeat === "never_seen" ? "Agent never connected" : s.heartbeat === "online" ? "Agent online" : s.heartbeat === "offline" ? "Agent offline" : "Agent status unavailable"}
+                    tone={listError ? "neutral" : s.heartbeat === "online" ? "ok" : s.heartbeat === "offline" ? "warn" : "neutral"} />
+                  {s.lastSeenAt && <time dateTime={s.lastSeenAt} title={new Date(s.lastSeenAt).toLocaleString()}>Heartbeat {heartbeatAge(s.lastSeenAt)}</time>}
+                  {!listError && s.heartbeat !== "online" && <Link className="inline-flex min-h-10 items-center font-medium text-mint hover:underline" to="/tokens/agents">Agent tokens</Link>}
+                </div>
+              ) : <div className="flex items-center gap-1 text-xs text-muted">
                 {STATUS_ICON[s.status] ?? STATUS_ICON.pending}
                 {s.status}
-              </div>
+              </div>}
               {(s.connectionMode ?? "ssh") === "ssh" && (
                 <button
                   type="button"
@@ -256,7 +309,7 @@ export default function ServersPage() {
                   <Key size={14} />
                 </button>
               )}
-              <Button variant="ghost" size="sm" onClick={() => testServer(s.id)}>Test</Button>
+              {!isAgentServer(s) && <Button variant="ghost" size="sm" onClick={() => void testServer(s.id)}>Test SSH</Button>}
               <button
                 type="button"
                 onClick={() => openEdit(s)}
@@ -464,7 +517,7 @@ export default function ServersPage() {
         busy={termRunning}
         footer={<Button variant="ghost" disabled={termRunning} onClick={() => setTerminal(null)}>{termRunning ? "Running…" : "Close"}</Button>}
       >
-        <div ref={termRef} className="max-h-80 overflow-y-auto rounded-field border border-line bg-[#071418] p-4 font-mono text-xs space-y-1">
+        <div ref={termRef} className="max-h-80 overflow-y-auto rounded-field border border-line bg-[var(--bg-0)] p-4 font-mono text-xs space-y-1">
           {termLines.map((l, i) => (
             <div key={i} className={l.type === "success" ? "text-mint" : l.type === "error" ? "text-coral" : "text-fg"}>
               <span className="mr-2 select-none text-muted">{l.type === "success" ? "✓" : l.type === "error" ? "✗" : "›"}</span>

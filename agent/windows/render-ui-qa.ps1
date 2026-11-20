@@ -18,6 +18,7 @@ New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $qaAgentData = Join-Path $OutputDirectory "_agent-data"
 New-Item -ItemType Directory -Force -Path $qaAgentData | Out-Null
 $env:RELAY_AGENT_CONFIG_DIR = $qaAgentData
+[IO.File]::WriteAllText((Join-Path $qaAgentData "agent.env"), "AGENT_ID=QA-AGENT")
 
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName PresentationFramework

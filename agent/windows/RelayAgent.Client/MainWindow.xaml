@@ -337,7 +337,7 @@
 
                 <Border x:Name="SidebarInfoPanel" DockPanel.Dock="Bottom" Margin="16,16,16,20" Padding="12" Background="{StaticResource SurfaceAltBrush}" CornerRadius="8">
                     <StackPanel>
-                        <TextBlock Text="Service-owned execution" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" LineHeight="23"/>
+                        <TextBlock Text="Service-owned execution" TextWrapping="Wrap" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" LineHeight="23"/>
                         <TextBlock Text="Config and tokens are protected with DPAPI LocalMachine."
                                    Foreground="{StaticResource MutedBrush}"
                                    TextWrapping="Wrap"

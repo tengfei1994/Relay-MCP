@@ -17,8 +17,8 @@ export default function AdminOverview() {
   const { user } = useAuth();
   const location = useLocation();
   const adminView = new URLSearchParams(location.search).get("view") ?? "overview";
+  const showOverview = adminView !== "users" && adminView !== "tokens";
   const [users, setUsers] = useState<UserRow[]>([]);
-  const [selectedUserId, setSelectedUserId] = useState<number>();
   const [pendingCandidates, setPendingCandidates] = useState(0);
   const [pendingSubmissions, setPendingSubmissions] = useState(0);
   const [pendingClassification, setPendingClassification] = useState(0);
@@ -30,24 +30,21 @@ export default function AdminOverview() {
   const load = async () => {
     setLoading(true); setError("");
     const [userResult, candidatesResult, submissionsResult, classificationResult, providerResult] = await Promise.allSettled([
-      api.listUsers(), user?.knowledgeEnabled ? api.legacyCandidatesForReview(0) : Promise.resolve(undefined), user?.knowledgeEnabled ? api.memorySubmissions(0) : Promise.resolve(undefined), user?.knowledgeEnabled ? api.productClassificationReport(0) : Promise.resolve(undefined), api.knowledgeManagedProviders(),
+      api.listUsers(), user?.knowledgeEnabled ? api.legacyCandidatesForReview(0) : Promise.resolve(undefined), user?.knowledgeEnabled ? api.memorySubmissions(0, "pending", 1) : Promise.resolve(undefined), user?.knowledgeEnabled ? api.productClassificationReport(0) : Promise.resolve(undefined), api.knowledgeManagedProviders(),
     ]);
     if (userResult.status === "fulfilled") setUsers(usersFrom(userResult.value.users)); else setError("Account data is unavailable. Try again.");
     if (candidatesResult.status === "fulfilled" && candidatesResult.value) setPendingCandidates(Array.isArray(candidatesResult.value.candidates) ? candidatesResult.value.candidates.length : 0);
-    if (submissionsResult.status === "fulfilled" && submissionsResult.value) setPendingSubmissions(Array.isArray(submissionsResult.value.submissions) ? submissionsResult.value.submissions.length : 0);
+    if (submissionsResult.status === "fulfilled" && submissionsResult.value) setPendingSubmissions(submissionsResult.value.page?.total ?? 0);
     if (classificationResult.status === "fulfilled" && classificationResult.value) setPendingClassification(Number(record(classificationResult.value.totals).pending ?? 0));
     if (providerResult.status === "fulfilled") setProviderCount(Array.isArray(providerResult.value.providers) ? providerResult.value.providers.length : 0);
     setLoading(false);
   };
 
-  useEffect(() => { void load(); }, [user?.knowledgeEnabled]);
+  useEffect(() => { if (showOverview) void load(); }, [showOverview, user?.knowledgeEnabled]);
   useEffect(() => { const previous = document.title; document.title = adminView === "users" ? "Relay MCP — User administration" : adminView === "tokens" ? "Relay MCP — Token management" : "Relay MCP — Administrator overview"; return () => { document.title = previous; }; }, [adminView]);
-  useEffect(() => { if (selectedUserId === undefined && users[0]) setSelectedUserId(users[0].id); }, [selectedUserId, users]);
-
-  const pendingAccounts = users.filter((item) => item.accountStatus !== "active").length;
-  const activeAccounts = users.filter((item) => item.accountStatus === "active").length;
+  const pendingAccounts = users.filter((item) => item.accountStatus === "pending").length;
+  const activeAccounts = users.filter((item) => (item.accountStatus ?? "active") === "active").length;
   const knowledgeQueue = pendingCandidates + pendingSubmissions + pendingClassification;
-  const selectedUser = users.find((item) => item.id === selectedUserId);
   const runtimeState = health === "healthy" ? "Healthy" : health === "offline" ? "Offline" : health === "degraded" ? "Degraded" : "Checking";
 
   if (adminView === "users") return <UsersPage embedded />;
@@ -77,14 +74,14 @@ export default function AdminOverview() {
         <div><h2>People</h2><span>{loading ? "Loading accounts..." : users.length + " accounts"}</span></div>
         <div className="admin-workbench-actions"><Link to="/admin?view=users&section=requests" className="admin-inline-action">Review requests{pendingAccounts ? " (" + pendingAccounts + ")" : ""}</Link><button className="admin-icon-button" type="button" onClick={() => void load()} aria-label="Refresh administrator data"><RefreshCw size={15} className={loading ? "admin-spin" : ""} aria-hidden="true" /></button></div>
       </div>
-      <div className="admin-workbench-body">
-        <div className="admin-people-list">
-          <div className="admin-list-head"><span>User</span><span>Role</span><span>Knowledge</span><span>Status</span></div>
-          {users.length ? users.map((item) => <button key={item.id} type="button" className={"admin-person-row" + (item.id === selectedUserId ? " selected" : "")} onClick={() => setSelectedUserId(item.id)} aria-pressed={item.id === selectedUserId}><span><strong>{item.username}</strong><small>Joined account</small></span><span>{item.isAdmin ? "Admin" : "User"}</span><span>{item.knowledgeEnabled === false ? "Off" : "On"}</span><span className={item.accountStatus === "active" ? "is-good" : "is-warn"}>{item.accountStatus || "pending"}</span></button>) : <div className="admin-list-empty">{loading ? "Loading accounts..." : "No users found."}</div>}
-        </div>
-        <aside className="admin-inspector" aria-live="polite">
-          {selectedUser ? <><div className="admin-inspector-head"><div><span>User</span><h3>{selectedUser.username}</h3><p className={selectedUser.accountStatus === "active" ? "is-good" : "is-warn"}>{selectedUser.accountStatus || "pending"} · {selectedUser.isAdmin ? "administrator" : "member"}</p></div><Link to="/admin?view=users" className="admin-inline-action">Manage</Link></div><dl className="admin-inspector-facts"><div><dt>Knowledge</dt><dd>{selectedUser.knowledgeEnabled === false ? "Disabled" : "Enabled"}</dd></div><div><dt>Account ID</dt><dd>#{selectedUser.id}</dd></div><div><dt>Projects</dt><dd><Link to="/projects">Open projects</Link></dd></div><div><dt>Activity</dt><dd><Link to="/activity">Open history</Link></dd></div></dl><div className="admin-inspector-section"><h4>Actions</h4><div className="admin-inspector-links"><Link to="/admin?view=users&section=requests">Review account status <ArrowRight size={14} aria-hidden="true" /></Link><Link to="/admin?view=users&section=permissions">Change Knowledge access <ArrowRight size={14} aria-hidden="true" /></Link><Link to="/admin?view=tokens">View access tokens <ArrowRight size={14} aria-hidden="true" /></Link></div></div></> : <div className="admin-inspector-empty"><span>Select a user</span><p>Choose an account to inspect its status and open related projects or activity.</p></div>}
-        </aside>
+      <div className="admin-people-list">
+        <div className="admin-list-head"><span>User</span><span>Role</span><span>Knowledge</span><span>Status</span></div>
+        {users.length ? users.map((item) => (
+          <Link key={item.id} to={"/admin?view=users&user=" + item.id} className="admin-person-row">
+            <span><strong>{item.username}</strong></span><span>{item.isAdmin ? "Admin" : "User"}</span>
+            <span>{item.knowledgeEnabled ? "On" : "Off"}</span><span className={item.accountStatus === "active" ? "is-good" : "is-warn"}>{item.accountStatus || "pending"}</span>
+          </Link>
+        )) : <div className="admin-list-empty">{loading ? "Loading accounts..." : "No users found."}</div>}
       </div>
     </section>
   </AppPageFrame>;

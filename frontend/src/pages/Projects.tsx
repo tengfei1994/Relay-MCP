@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useId, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Archive, ChevronRight, Eye, File, FileImage, FileText, Folder, Plus, Server as ServerIcon, Link2, Unlink, Settings, Pencil, Trash2 } from "lucide-react";
+import { Archive, ChevronRight, Eye, Ellipsis, File, FileImage, FileText, Folder, Plus, Server as ServerIcon, Link2, Unlink, Settings, Pencil, Trash2 } from "lucide-react";
 import { api } from "../api/client";
 import { useProjectScope } from "../context/ProjectScope";
 import { Button, Combobox, ConfirmDialog, Dialog, Drawer, Field, Input, Select } from "../components/ui";
@@ -174,6 +174,86 @@ function filePreviewDetails(size?: number, modifiedAt?: string): string {
   ].filter(Boolean).join(" · ");
 }
 
+type FileActions = {
+  open: (file: FileEntry, path: string) => void;
+  assign: (file: FileEntry, path: string) => void;
+  rename: (file: FileEntry, path: string) => void;
+  remove: (file: FileEntry, path: string) => void;
+};
+
+function FileTreeRow({ file, path, projectId, actions, depth = 0 }: {
+  file: FileEntry; path: string; projectId: number; actions: FileActions; depth?: number;
+}) {
+  const id = useId();
+  const menu = useRef<HTMLButtonElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [children, setChildren] = useState<FileEntry[]>();
+  const [loadError, setLoadError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+  const isDirectory = file.type === "directory";
+  useEffect(() => {
+    if (!expanded) return;
+    const controller = new AbortController();
+    setChildren(undefined);
+    setLoadError("");
+    api.listFiles(projectId, path, controller.signal)
+      .then((result) => { if (!controller.signal.aborted) setChildren(filesFrom(result)); })
+      .catch((reason) => { if (!controller.signal.aborted) setLoadError(reason instanceof Error ? reason.message : "Could not load this folder."); });
+    return () => controller.abort();
+  }, [expanded, projectId, path, attempt]);
+
+  function run(action: keyof FileActions) {
+    menu.current?.focus();
+    setMenuOpen(false);
+    actions[action](file, path);
+  }
+
+  return <li className={depth ? "border-l border-line pl-1 sm:pl-3" : ""}>
+    <div className="flex min-w-0 items-center gap-1" onContextMenu={(event) => {
+      event.preventDefault();
+      menu.current?.focus();
+      setMenuOpen(true);
+    }}>
+      {isDirectory && <button type="button" className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-ctl text-muted hover:bg-[var(--hover)]"
+        aria-label={(expanded ? "Collapse " : "Expand ") + file.name} aria-expanded={expanded} aria-controls={id + "-children"}
+        onClick={() => setExpanded(!expanded)}>
+        <ChevronRight size={16} className={expanded ? "rotate-90" : ""} aria-hidden="true" />
+      </button>}
+      <button type="button" className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-ctl px-2 py-1.5 text-left text-sm hover:bg-[var(--hover)]"
+        aria-label={(isDirectory ? "Open folder " : "Preview ") + file.name} onClick={() => actions.open(file, path)}>
+        {isDirectory ? <Folder size={14} className="shrink-0 text-mint" /> : <File size={14} className="shrink-0" />}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate" title={file.name}>{file.name}</span>
+          <span className="block break-words text-xs text-muted">{file.target
+            ? [file.target.server, file.target.instance ?? "No instance", file.target.environment, file.targetInherited ? "Inherited" : ""].filter(Boolean).join(" · ")
+            : "No target assigned"}</span>
+        </span>
+        {!isDirectory && <span className="shrink-0 text-xs text-muted">{formatBytes(file.size)}</span>}
+      </button>
+      <button type="button" ref={menu} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-ctl text-muted hover:bg-[var(--hover)]"
+        aria-label={"More actions for " + file.name} aria-expanded={menuOpen} aria-controls={id + "-actions"}
+        onClick={() => setMenuOpen(!menuOpen)} onKeyDown={(event) => { if (event.key === "Escape") setMenuOpen(false); }}>
+        <Ellipsis size={18} aria-hidden="true" />
+      </button>
+    </div>
+    {menuOpen && <div id={id + "-actions"} role="group" aria-label={"Actions for " + file.name} className="flex flex-wrap justify-end gap-1 border-b border-line pb-1"
+      onBlur={(event) => { if (event.relatedTarget !== menu.current && !event.currentTarget.contains(event.relatedTarget)) setMenuOpen(false); }}
+      onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); menu.current?.focus(); setMenuOpen(false); } }}>
+      <Button type="button" variant="ghost" onClick={() => run("assign")} aria-label={"Assign target for " + file.name}><Link2 size={14} />Assign target</Button>
+      {!isDirectory && <Button type="button" variant="ghost" onClick={() => run("open")}><Eye size={14} />Preview</Button>}
+      <Button type="button" variant="ghost" onClick={() => run("rename")} aria-label={"Rename " + file.name}><Pencil size={14} />Rename</Button>
+      <Button type="button" variant="ghost" onClick={() => run("remove")} aria-label={"Delete " + file.name}><Trash2 size={14} />Delete</Button>
+    </div>}
+    {expanded && <div id={id + "-children"} className={depth < 5 ? "ml-3 sm:ml-5" : undefined}>
+      {loadError ? <div className="px-3 text-sm text-coral" role="alert">{loadError} <Button variant="ghost" type="button" onClick={() => setAttempt((value) => value + 1)}>Retry</Button></div>
+        : !children ? <p className="px-3 text-sm text-muted" role="status">Loading folder…</p>
+          : children.length === 0 ? <p className="px-3 text-sm text-muted">Empty directory</p>
+            : <ul>{children.map((child) => <FileTreeRow key={child.name} file={child} path={path + "/" + child.name} projectId={projectId} actions={actions} depth={depth + 1} />)}</ul>}
+    </div>}
+  </li>;
+}
+
 export default function ProjectsPage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -277,7 +357,6 @@ export default function ProjectsPage() {
     return () => { filesRequest.current += 1; previewRequest.current += 1; targetRequest.current += 1; };
   }, [selected?.id, currentPath, showServers]);
 
-  const openDir = (name: string) => { if (selected) openLocation(selected.id, pathFor(name)); };
   const goUp = () => {
     if (selected) openLocation(selected.id, currentPath.split("/").slice(0, -1).join("/"));
   };
@@ -371,15 +450,16 @@ export default function ProjectsPage() {
     setTargetEditor(undefined);
   }
 
-  async function editFileTarget(file: FileEntry) {
+  async function editFileTarget(file: FileEntry, filePath: string) {
     if (!selected || targetLock.current) return;
     const request = ++targetRequest.current;
-    setTargetEditor({ path: pathFor(file.name), linkId: file.target && !file.targetInherited ? String(file.target.linkId) : "", original: file.target, inherited: file.targetInherited });
-    setFallback(file.targetInherited ? file.target ?? null : currentPath && file.target ? "loading" : null);
+    const parentPath = filePath.split("/").slice(0, -1).join("/");
+    setTargetEditor({ path: filePath, linkId: file.target && !file.targetInherited ? String(file.target.linkId) : "", original: file.target, inherited: file.targetInherited });
+    setFallback(file.targetInherited ? file.target ?? null : parentPath && file.target ? "loading" : null);
     setTargetOptions(undefined);
     setTargetError("");
-    if (currentPath && file.target && !file.targetInherited) {
-      const parts = currentPath.split("/");
+    if (parentPath && file.target && !file.targetInherited) {
+      const parts = parentPath.split("/");
       const parentName = parts.pop();
       void api.listFiles(selected.id, parts.join("/")).then((result) => {
         if (request !== targetRequest.current) return;
@@ -693,7 +773,7 @@ export default function ProjectsPage() {
                   <Input placeholder="production" value={linkForm.environment} onChange={(e) => setLinkForm((f) => ({ ...f, environment: e.target.value }))} />
                 </Field>
                 {linkError && <p className="text-sm text-coral" role="alert">{linkError}</p>}
-                <Button type="submit" className="w-full">{editingLinkId ? "Save link" : "Link server"}</Button>
+                <Button type="submit" className="w-full" loading={linkSaving} disabled={linksLoading || instancesLoading}>{editingLinkId ? "Save link" : "Link server"}</Button>
               </form>
             </div>
           </div>
@@ -736,33 +816,14 @@ export default function ProjectsPage() {
                   ..
                 </button>
               )}
-              {files.map((f) => (
-                <div key={f.name} className="group flex items-center gap-2 rounded px-1 py-0.5 text-sm">
-                  <button
-                    type="button"
-                    onClick={() => f.type === "directory" ? void openDir(f.name) : void openPreview(pathFor(f.name), f)}
-                    className={`flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1.5 text-left transition-colors ${
-                      f.type === "directory" ? "text-fg hover:bg-white/5" : "text-muted hover:bg-white/5 hover:text-fg"
-                    }`}
-                    aria-label={`${f.type === "directory" ? "Open folder" : "Preview"} ${f.name}`}
-                  >
-                    {f.type === "directory" ? <Folder size={14} className="shrink-0 text-mint" /> : <File size={14} className="shrink-0" />}
-                                        <span className="min-w-0 flex-1">
-                      <span className="block truncate" title={f.name}>{f.name}</span>
-                      <span className="block break-words text-xs text-muted">
-                        {f.target ? [f.target.server, f.target.instance ?? "No instance", f.target.environment, f.targetInherited ? "Inherited" : ""].filter(Boolean).join(" · ") : "No target assigned"}
-                      </span>
-                    </span>
-                    {f.type === "file" && <span className="shrink-0 text-xs text-muted">{formatBytes(f.size)}</span>}
-                  </button>
-                  <span className="flex shrink-0 items-center gap-1">
-                    <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:text-mint" onClick={() => void editFileTarget(f)} title="Assign target" aria-label={`Assign target for ${f.name}`}><Link2 size={14} /></button>
-                    {f.type === "file" && <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:bg-white/10 hover:text-mint" onClick={() => void openPreview(pathFor(f.name), f)} title={`Preview ${f.name}`} aria-label={`Preview ${f.name}`}><Eye size={14} /></button>}
-                    <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:bg-white/10 hover:text-mint" onClick={() => { setRenameTarget({ path: pathFor(f.name), name: f.name }); setRenameName(f.name); }} title={`Rename ${f.name}`} aria-label={`Rename ${f.name}`}><Pencil size={14} /></button>
-                    <button type="button" className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-muted hover:bg-coral/10 hover:text-coral" onClick={() => { setDeleteFileTarget({ path: pathFor(f.name), name: f.name, type: f.type }); }} title={`Delete ${f.name}`} aria-label={`Delete ${f.name}`}><Trash2 size={14} /></button>
-                  </span>
-                </div>
-              ))}
+              <ul aria-label="Project files">{files.map((file) => (
+                <FileTreeRow key={pathFor(file.name)} file={file} path={pathFor(file.name)} projectId={selected.id} actions={{
+                  open: (item, path) => item.type === "directory" ? openLocation(selected.id, path) : void openPreview(path, item),
+                  assign: (item, path) => void editFileTarget(item, path),
+                  rename: (item, path) => { setRenameTarget({ path, name: item.name }); setRenameName(item.name); },
+                  remove: (item, path) => setDeleteFileTarget({ path, name: item.name, type: item.type }),
+                }} />
+              ))}</ul>
               {filesLoading ? <p className="px-3 text-xs text-muted" role="status">Loading files…</p> : files.length === 0 && !workspaceError && <p className="px-3 text-xs text-muted">Empty directory</p>}
             </div>
               <Drawer presentation="responsive" open={!!targetEditor} onClose={closeTargetEditor} busy={targetSaving}

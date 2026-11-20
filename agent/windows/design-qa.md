@@ -2,6 +2,19 @@
 
 final result: passed
 
+## Issue #80 follow-up — 2026-11-20
+
+The Release build passed with zero errors and warnings. The offscreen WPF
+harness used isolated local data and rendered 44 screens across 1240 × 820,
+1060 × 680, 980 × 760, and 900 × 700. The tray lifecycle passed, and Command
+Audit displayed 100 of 105 fixture entries at each viewport. The shell and
+Windows icon now use the same blue R and cyan arrow as the Web app. The sidebar
+service heading wraps at the default width. The harness uses a synthetic Agent
+ID and does not connect to a Relay server.
+
+The 1060 × 680 case verifies the available layout area. Windows Server 2019
+and host-specific DPI settings still require an installed-client smoke test.
+
 ## Reference
 
 - Selected direction: adaptive WPF operations workspace.

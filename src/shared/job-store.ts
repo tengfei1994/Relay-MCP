@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { validateStateId } from "./state-id.js";
 import { classifyRemoteError, RemoteCommandTimeoutError } from "./remote-runner.js";
@@ -339,7 +339,17 @@ export function saveJob(job: JobRecord): void {
   const temporary = destination + "." + process.pid + ".tmp";
   try {
     writeFileSync(temporary, JSON.stringify(job, null, 2), "utf8");
-    renameSync(temporary, destination);
+    try {
+      renameSync(temporary, destination);
+    } catch (error) {
+      // OneDrive and some Windows file-system filters can reject an atomic
+      // rename even though the temporary file is complete. Preserve the
+      // durable write contract with a same-volume copy fallback.
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(String(code))) throw error;
+      copyFileSync(temporary, destination);
+      rmSync(temporary, { force: true });
+    }
   } finally {
     rmSync(temporary, { force: true });
   }

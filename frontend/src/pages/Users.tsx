@@ -4,6 +4,7 @@ import { BookOpen, KeyRound, UserPlus } from "lucide-react";
 import { api } from "../api/client";
 import { useAuth } from "../App";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
+import { AdminSectionNav } from "../components/shell/AdminSectionNav";
 import { Button, ConfirmDialog, DataTable, Dialog, EmptyState, ErrorState, Field, Input, Select, Skeleton, StatusPill, useToast } from "../components/ui";
 import "./users.css";
 
@@ -136,9 +137,6 @@ export default function UsersPage({ embedded: embeddedProp = false }: { embedded
     ? query.get("section") === "requests" ? "requests" : query.get("section") === "permissions" ? "permissions" : "accounts"
     : location.pathname === "/users/requests" ? "requests" : location.pathname === "/users/permissions" ? "permissions" : "accounts";
   useEffect(() => { setStatusFilter(""); }, [mode]);
-  const usersPath = embedded ? "/admin?view=users" : "/users";
-  const requestsPath = embedded ? "/admin?view=users&section=requests" : "/users/requests";
-  const permissionsPath = embedded ? "/admin?view=users&section=permissions" : "/users/permissions";
   const visibleUsers = users.filter((account) => {
     const status = account.accountStatus ?? "active";
     return (mode !== "requests" || status !== "active")
@@ -158,14 +156,10 @@ export default function UsersPage({ embedded: embeddedProp = false }: { embedded
 
   const content = (
       <div className="mx-auto max-w-[1100px] px-3 sm:px-0">
+        {embedded && <AdminSectionNav />}
         <div className="users-page-toolbar">
           <div className="users-page-title"><strong>{mode === "requests" ? "Access requests" : mode === "permissions" ? "Knowledge permissions" : "Users"}</strong></div>
           <div className="users-page-actions">
-            <nav className={`shell-page-tabs ${embedded ? "admin-tabs" : "admin-mobile-tabs"}`} aria-label="Administrator sections">
-              <Link to={usersPath} className={`shell-page-tab${mode === "accounts" ? " active" : ""}`} aria-current={mode === "accounts" ? "page" : undefined}>Users</Link>
-              <Link to={requestsPath} className={`shell-page-tab${mode === "requests" ? " active" : ""}`} aria-current={mode === "requests" ? "page" : undefined}>Access requests</Link>
-              <Link to={permissionsPath} className={`shell-page-tab${mode === "permissions" ? " active" : ""}`} aria-current={mode === "permissions" ? "page" : undefined}>Knowledge permissions</Link>
-            </nav>
             {mode === "accounts" && <Button onClick={() => { setError(""); setShowCreate(true); }} variant="primary"><UserPlus size={15} /> Add user</Button>}
           </div>
         </div>

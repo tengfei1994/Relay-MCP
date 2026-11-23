@@ -128,7 +128,7 @@ export default function JobsPage({ embedded = false }: { embedded?: boolean }) {
       pending = true;
       let interval = 30000;
       try {
-        const result = await api.listJobs();
+        const result = await api.listJobs(100, selectedProject?.name);
         if (!active) return;
         setJobs(result.jobs);
         setLastSuccess(new Date().toISOString());
@@ -152,7 +152,7 @@ export default function JobsPage({ embedded = false }: { embedded?: boolean }) {
     window.addEventListener("online", reconnect);
     void load();
     return () => { active = false; window.clearTimeout(next); window.removeEventListener("online", reconnect); };
-  }, [attempt]);
+  }, [attempt, selectedProject?.id]);
 
   function refresh() {
     setRefreshing(true);

@@ -7,7 +7,7 @@ import { TOOL_CATALOG } from "../../shared/tool-catalog.js";
 import { getJob, listJobs, type JobRecord } from "../../shared/job-store.js";
 import { sanitizeAuditArguments } from "../../shared/audit-sanitizer.js";
 
-const querySchema = z.object({ limit: z.coerce.number().int().min(1).max(100).default(50) });
+const querySchema = z.object({ limit: z.coerce.number().int().min(1).max(100).default(50), project: z.string().trim().min(1).max(120).optional() });
 const jobParams = z.object({ id: z.string().max(256).regex(/^[A-Za-z0-9_-]+$/) });
 
 const descriptions = new Map(TOOL_CATALOG.map((tool) => [tool.name, tool.description]));
@@ -53,7 +53,7 @@ export async function jobRoutes(app: FastifyInstance) {
   app.get("/api/jobs", auth, async (request, reply) => {
     const query = querySchema.safeParse(request.query);
     if (!query.success) return reply.code(400).send({ error: "Invalid jobs limit" });
-    const jobs = listJobs(request.user.id, query.data.limit).map(jobMetadata);
+    const jobs = listJobs(request.user.id, query.data.limit, query.data.project).map(jobMetadata);
     return reply.header("Cache-Control", "no-store").send({ jobs });
   });
 

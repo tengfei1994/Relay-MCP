@@ -68,7 +68,6 @@ export const knowledgeNavigation = [
       "/knowledge/memory-submissions",
     ].some((path) => matchesPath(pathname, path)),
   },
-  { label: "Playbooks", path: "/knowledge/playbooks", matches: (pathname: string) => matchesPath(pathname, "/knowledge/playbooks") },
   { label: "Operations", path: "/knowledge/operations/capture", matches: (pathname: string) => matchesPath(pathname, "/knowledge/operations") },
 ];
 

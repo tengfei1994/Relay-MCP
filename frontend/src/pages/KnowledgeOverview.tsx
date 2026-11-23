@@ -103,14 +103,11 @@ export default function KnowledgeOverview() {
     setLoading(true);
     setError("");
     try {
-      const [captureResult, runResult, indexResult, productResult, submissions, draft, edited] = await Promise.all([
+      const [captureResult, indexResult, productResult, submissions] = await Promise.all([
         api.knowledgeOperationsCapture().catch(() => undefined),
-        api.knowledgeOperationsIngestRuns(8).catch(() => undefined),
         api.knowledgeOperationsIndex().catch(() => undefined),
         api.productDocumentsList({ limit: 1 }).catch(() => undefined),
         api.memorySubmissions(0, "pending", 1).catch(() => undefined),
-        isAdmin ? api.knowledgeCandidateInsights(projectId, { status: "draft", limit: 101 }).catch(() => undefined) : undefined,
-        isAdmin ? api.knowledgeCandidateInsights(projectId, { status: "edited", limit: 101 }).catch(() => undefined) : undefined,
       ]);
       if (requestRef.current !== controller || controller.signal.aborted) return;
       const candidateQueue = (status: "draft" | "edited", count?: number) => ({
@@ -124,12 +121,27 @@ export default function KnowledgeOverview() {
         indexAvailable: indexResult !== undefined,
         reviewQueues: [
           { label: isAdmin ? "Pending Memory submissions (all projects)" : "My pending Memory submissions", to: "/knowledge/memory-submissions?source=submissions&status=pending", value: submissions?.page?.total },
-          ...(isAdmin ? [candidateQueue("draft", draft?.insights.length), candidateQueue("edited", edited?.insights.length)] : []),
+          ...(isAdmin ? [candidateQueue("draft"), candidateQueue("edited")] : []),
         ],
         capture: captureData(captureResult),
-        runs: runList(runResult),
+        runs: [],
         productDocumentCount: pageTotal(productResult),
         unlinkedEvidence: undefined,
+      });
+      void Promise.all([
+        api.knowledgeOperationsIngestRuns(8).catch(() => undefined),
+        isAdmin ? api.knowledgeCandidateInsights(projectId, { status: "draft", limit: 101 }).catch(() => undefined) : undefined,
+        isAdmin ? api.knowledgeCandidateInsights(projectId, { status: "edited", limit: 101 }).catch(() => undefined) : undefined,
+      ]).then(([runResult, draft, edited]) => {
+        if (requestRef.current !== controller || controller.signal.aborted) return;
+        setSnapshot((current) => current ? {
+          ...current,
+          runs: runList(runResult),
+          reviewQueues: [
+            { label: isAdmin ? "Pending Memory submissions (all projects)" : "My pending Memory submissions", to: "/knowledge/memory-submissions?source=submissions&status=pending", value: submissions?.page?.total },
+            ...(isAdmin ? [candidateQueue("draft", draft?.insights.length), candidateQueue("edited", edited?.insights.length)] : []),
+          ],
+        } : current);
       });
       if (projectId !== undefined) {
         void api.knowledgeEvidenceList(projectId, { unlinked: "true", limit: 1 }, { signal: controller.signal })

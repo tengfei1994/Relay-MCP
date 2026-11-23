@@ -132,7 +132,7 @@ export default function App() {
           <Route path="knowledge/candidates" element={<KnowledgeProject />} />
           <Route path="knowledge/cases" element={<KnowledgeProject />} />
           <Route path="knowledge/patterns" element={<KnowledgeProject />} />
-          <Route path="knowledge/playbooks" element={<KnowledgeProject />} />
+          <Route path="knowledge/playbooks" element={<Navigate to={{ pathname: "/knowledge/candidates", search: location.search }} replace />} />
           <Route path="knowledge/operations/capture" element={<KnowledgeOperations />} />
           <Route path="knowledge/operations/ingest" element={<KnowledgeOperations />} />
           <Route path="knowledge/operations/index" element={<KnowledgeOperations />} />

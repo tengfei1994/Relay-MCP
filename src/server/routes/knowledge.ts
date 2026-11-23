@@ -1943,7 +1943,7 @@ export async function knowledgeRoutes(app: FastifyInstance) {
     const scopeProject = projectId ?? "", scopeEnvironment = environment ?? "";
     const jobLimit = parseBoundedInt(query.limit, 20, 1, 100), jobOffset = parseBoundedInt(query.offset, 0, 0, 1_000_000);
     const topicLimit = parseBoundedInt(query.topicLimit, 25, 1, 100), topicOffset = parseBoundedInt(query.topicOffset, 0, 0, 1_000_000);
-    const topicRecords = listWikiTopicGenerationStatuses(store, { projectId, environment,includePublic:knowledgeUserEnabled(request.user.id) });
+    const topicRecords = queryValue(query, "view") === "jobs" ? [] : listWikiTopicGenerationStatuses(store, { projectId, environment,includePublic:knowledgeUserEnabled(request.user.id) });
     const topicStatuses = topicRecords.slice(topicOffset, topicOffset + topicLimit);
     const jobScope = "kind='wiki_generation' AND COALESCE(json_extract(payload_json,'$.projectId'),'')=? AND COALESCE(json_extract(payload_json,'$.environment'),'')=?";
     const jobTotal = Number((store.db.prepare(`SELECT COUNT(*) AS count FROM knowledge_ingest_jobs WHERE ${jobScope}`).get(scopeProject, scopeEnvironment) as { count?: number } | undefined)?.count ?? 0);

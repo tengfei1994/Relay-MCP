@@ -7,9 +7,9 @@ import { PageTabs } from "../components/shell/PageTabs";
 import { StandardPage } from "../components/knowledge/KnowledgeFrame";
 import { Badge, Button, DataTable, Drawer, EmptyState, ErrorState, Input, Select, StatusPill } from "../components/ui";
 
-type MemoryTab = "sessions" | "evidence" | "observations" | "candidate-insights" | "confirmed-memory" | "memory-submissions";
+type MemoryTab = "workspace" | "sessions" | "evidence" | "observations" | "candidate-insights" | "confirmed-memory" | "memory-submissions";
 type JsonRecord = Record<string, unknown>;
-const TABS: readonly MemoryTab[] = ["sessions", "evidence", "observations", "candidate-insights", "confirmed-memory", "memory-submissions"];
+const TABS: readonly MemoryTab[] = ["workspace", "sessions", "evidence", "observations", "candidate-insights", "confirmed-memory", "memory-submissions"];
 const TYPES = ["Fact", "Decision", "Case", "Pattern"] as const;
 const isRecord = (value: unknown): value is JsonRecord => typeof value === "object" && value !== null;
 const text = (value: unknown, fallback = "") => typeof value === "string" || typeof value === "number" ? String(value) : fallback;
@@ -20,13 +20,51 @@ const listFromPayload = (value: unknown, key: MemoryPayloadKey): JsonRecord[] =>
   return listFrom(value[key]);
 };
 
+type WorkspaceStats = { sessions?: number | string; evidence?: number; candidates?: number; confirmed?: number };
+const countPayload = (value: unknown, key: MemoryPayloadKey): number | undefined => {
+  if (!isRecord(value)) return undefined;
+  const page = isRecord(value.page) ? value.page : undefined;
+  if (page?.total !== undefined) {
+    const total = Number(page.total);
+    return Number.isFinite(total) ? total : undefined;
+  }
+  return Array.isArray(value[key]) ? value[key].length : undefined;
+};
+
 const titleOf = (row: JsonRecord) => text(row.title ?? row.displayTitle ?? row.statement ?? row.summary ?? row.id, "Untitled record");
 const summaryOf = (row: JsonRecord) => text(row.statement ?? row.displaySummary ?? row.summary ?? row.objective, "No summary available");
-const labelOf = (tab: MemoryTab) => tab === "candidate-insights" ? "Historical candidate insights" : tab === "confirmed-memory" ? "Confirmed memory" : tab === "memory-submissions" ? "Memory submissions" : tab[0].toUpperCase() + tab.slice(1);
+const labelOf = (tab: MemoryTab) => tab === "workspace" ? "Memory workspace" : tab === "candidate-insights" ? "Historical candidate insights" : tab === "confirmed-memory" ? "Confirmed memory" : tab === "memory-submissions" ? "Memory submissions" : tab[0].toUpperCase() + tab.slice(1);
 const dateOf = (value: unknown) => {
   const date = new Date(String(value ?? ""));
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
 };
+
+function MemoryWorkspace({ stats, loading, isAdmin }: { stats: WorkspaceStats; loading: boolean; isAdmin: boolean }) {
+  const statItems = [
+    ["Sessions", stats.sessions ?? "—", "/knowledge/sessions"],
+    ["Evidence", stats.evidence ?? "—", "/knowledge/evidence"],
+    ["Candidates waiting review", isAdmin ? stats.candidates ?? "—" : "—", "/knowledge/candidate-insights"],
+    ["Confirmed", stats.confirmed ?? "—", "/knowledge/confirmed-memory"],
+  ] as const;
+  return <div className="knowledge-memory-workspace" aria-busy={loading}>
+    <header className="knowledge-memory-hero">
+      <div>
+        <p className="knowledge-memory-kicker">Memory</p>
+        <h1>Keep what the work taught you.</h1>
+        <p>Memory separates captured sessions from evidence, candidate insights and confirmed experience. Project and general scope are kept explicit.</p>
+      </div>
+      <Link className="ui-button ui-button-primary" to="/knowledge/sessions">Open sessions</Link>
+    </header>
+    <div className="knowledge-memory-stats" aria-label="Memory totals">
+      {statItems.map(([label, value, to]) => <Link key={label} to={to} className="knowledge-memory-stat"><span>{label}</span><strong>{loading && value === "—" ? "…" : value}</strong></Link>)}
+    </div>
+    <div className="knowledge-memory-sections">
+      <section className="knowledge-memory-section"><div><p className="knowledge-memory-section-label">Confirmed memory</p><h2>Approved experience ready to use</h2><p>Reviewed records are searchable only in their declared project or general scope.</p></div><Link to="/knowledge/confirmed-memory" className="knowledge-memory-link">Review confirmed memory</Link></section>
+      <section className="knowledge-memory-section"><div><p className="knowledge-memory-section-label">Candidate insights</p><h2>Work waiting for a decision</h2><p>Observations can become candidates, but they stay drafts until a reviewer confirms them.</p></div><Link to="/knowledge/candidate-insights" className="knowledge-memory-link">Open candidate queue</Link></section>
+      <section className="knowledge-memory-section"><div><p className="knowledge-memory-section-label">Sessions and evidence</p><h2>Trace the source before it becomes knowledge</h2><p>Start with a session, inspect its evidence, then follow the review history.</p></div><div className="knowledge-memory-links"><Link to="/knowledge/sessions" className="knowledge-memory-link">Sessions</Link><Link to="/knowledge/evidence" className="knowledge-memory-link">Evidence</Link><Link to="/knowledge/memory-submissions" className="knowledge-memory-link">Submissions</Link></div></section>
+    </div>
+  </div>;
+}
 
 async function downloadReviewEvidence(kind: "memory-submissions" | "candidate-insights" | "legacy-candidates", id: string, evidenceId: string) {
   const token=localStorage.getItem("token");
@@ -171,7 +209,7 @@ export default function KnowledgeMemory() {
   const [params, setParams] = useSearchParams();
   const { user } = useAuth();
 
-  const routeTab = (TABS.find((item) => location.pathname.endsWith(`/${item}`)) ?? "confirmed-memory") as MemoryTab;
+  const routeTab = (TABS.find((item) => item !== "workspace" && location.pathname.endsWith(`/${item}`)) ?? "workspace") as MemoryTab;
   const [tab, setTab] = useState<MemoryTab>(routeTab);
   const [type, setType] = useState("");
   const [scope, setScope] = useState<"project" | "general" | "both">(params.get("projectId") ? "both" : "general");
@@ -189,6 +227,7 @@ export default function KnowledgeMemory() {
   const [rows, setRows] = useState<JsonRecord[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [workspaceStats, setWorkspaceStats] = useState<WorkspaceStats>({});
   const [reloadCount, setReloadCount] = useState(0);
   const selectedId = params.get("id");
   const selected = useMemo(() => rows.find((row) => text(row.id) === selectedId), [rows, selectedId]);
@@ -201,6 +240,29 @@ export default function KnowledgeMemory() {
     let active = true;
     setLoading(true);
     setError("");
+    if (tab === "workspace") {
+      void Promise.allSettled([
+        api.knowledgeSessions(50),
+        api.knowledgeEvidenceList(undefined, { limit: 1 }),
+        user?.isAdmin ? api.knowledgeCandidateInsights(undefined, { limit: 1 }) : Promise.resolve(undefined),
+        api.knowledgeConfirmedMemories(undefined, { scope: "general", limit: 1 }),
+      ]).then(([sessions, evidence, candidates, confirmed]) => {
+        if (!active) return;
+        const sessionsValue = sessions.status === "fulfilled" ? sessions.value : undefined;
+        const sessionsCount = countPayload(sessionsValue, "sessions");
+        const candidateValue = candidates.status === "fulfilled" ? candidates.value : undefined;
+        setWorkspaceStats({
+          sessions: sessionsCount !== undefined ? (sessionsCount === 50 ? "50+" : sessionsCount) : undefined,
+          evidence: countPayload(evidence.status === "fulfilled" ? evidence.value : undefined, "evidence"),
+          candidates: countPayload(candidateValue, "insights"),
+          confirmed: countPayload(confirmed.status === "fulfilled" ? confirmed.value : undefined, "memories"),
+        });
+        setRows([]);
+      }).catch((reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : "Unable to load Memory workspace");
+      }).finally(() => { if (active) setLoading(false); });
+      return () => { active = false; };
+    }
     let task: Promise<unknown>;
     if (tab === "confirmed-memory") {
       if (scope !== "general" && !projectId) { setRows([]); setTotal(0); setLoading(false); return () => { active = false; }; }
@@ -277,6 +339,8 @@ export default function KnowledgeMemory() {
     { key: "scope", header: "Scope", render: (row: JsonRecord) => <span className="text-sm text-muted">{text(row.memoryScope ?? row.requestedScope ?? row.projectId, "—")}</span> },
     { key: "updated", header: "Updated", render: (row: JsonRecord) => <span className="text-sm text-muted">{dateOf(row.updatedAt ?? row.confirmedAt ?? row.createdAt)}</span> },
   ];
+
+  if (tab === "workspace") return <StandardPage className="knowledge-memory-page"><PageTabs section="memory" className="knowledge-local-tabs mb-6" /><MemoryWorkspace stats={workspaceStats} loading={loading} isAdmin={Boolean(user?.isAdmin)} /></StandardPage>;
 
   return (
     <StandardPage>

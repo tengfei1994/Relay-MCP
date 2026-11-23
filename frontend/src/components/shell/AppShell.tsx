@@ -5,6 +5,7 @@ import { useAuth } from "../../App";
 import { ProjectScopeProvider } from "../../context/ProjectScope";
 import { RelayHealthProvider } from "../../context/RelayHealth";
 import { ContextRail } from "./ContextRail";
+import { KnowledgeSectionNav } from "./KnowledgeSectionNav";
 import { TopBar } from "./TopBar";
 import { primaryNavigation, matchesPath } from "./navigation";
 import "./shell.css";
@@ -65,6 +66,7 @@ function ShellContent() {
       </aside>
       <div className="shell-content-column">
         <TopBar openNavigation={openDrawer} />
+        {matchesPath(location.pathname, "/knowledge") && <KnowledgeSectionNav />}
         <main id="main" tabIndex={-1}>
           <Suspense fallback={<p className="p-5 text-muted" role="status">Loading page…</p>}><Outlet /></Suspense>
         </main>

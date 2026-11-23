@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { KnowledgeStore } from "./store.js";
 import type { SecretResolver } from "./provider-secret.js";
@@ -22,7 +22,13 @@ export class ProviderCredentialStore implements SecretResolver {
           writeFileSync(temporary, randomBytes(32), { flag: "wx", mode: 0o600 });
           // Publish only a complete key; another Web/MCP process may win the race.
           try { linkSync(temporary, this.keyFile); }
-          catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+          catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code !== "EEXIST" && !existsSync(this.keyFile)) {
+              if (process.platform !== "win32" || !["EPERM", "EACCES", "EXDEV", "ENOTSUP"].includes(String(code))) throw error;
+              renameSync(temporary, this.keyFile);
+            }
+          }
         } finally { if (existsSync(temporary)) unlinkSync(temporary); }
       }
       const key = readFileSync(this.keyFile);

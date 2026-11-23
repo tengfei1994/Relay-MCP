@@ -8,6 +8,7 @@ import "./console-overview.css";
 import { useAuth } from "../App";
 import UsersPage from "./Users";
 import TokensPage from "./Tokens";
+import { AdminSectionNav } from "../components/shell/AdminSectionNav";
 
 type UserRow = { id: number; username: string; accountStatus?: string; isAdmin?: boolean; knowledgeEnabled?: boolean };
 function record(value: unknown): Record<string, unknown> { return typeof value === "object" && value !== null ? value as Record<string, unknown> : {}; }
@@ -59,6 +60,8 @@ export default function AdminOverview() {
         <Link className="admin-button" to="/workspace">Workspace <ArrowRight size={15} aria-hidden="true" /></Link>
       </div>
     </header>
+
+    <AdminSectionNav />
 
     {error && <div className="admin-error" role="alert"><CircleAlert size={15} aria-hidden="true" />{error}<button type="button" onClick={() => void load()}>Retry</button></div>}
 

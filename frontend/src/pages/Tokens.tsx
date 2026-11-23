@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 import { Copy, Download, Pencil, Plus, Trash2 } from "lucide-react";
 import { api } from "../api/client";
 import { AppPageFrame } from "../components/shell/AppPageFrame";
+import { AdminSectionNav } from "../components/shell/AdminSectionNav";
 import { Button, ConfirmDialog, Dialog, EmptyState, Field, Input, Select, StatusPill, useToast } from "../components/ui";
 type Project = { id: number; name: string };
 type Server = { id: number; name: string; host?: string; agentId?: string; sshUser?: string; port?: number; connectionMode?: string };
@@ -215,6 +216,7 @@ export default function TokensPage({ embedded: embeddedProp = false }: { embedde
 
   const content = (
       <div className={`tokens-page${embedded ? " admin-embedded-tokens" : ""}`}>
+      {embedded && <AdminSectionNav />}
       <div className="tokens-toolbar">
         <nav className={`shell-page-tabs tokens-mobile-tabs${embedded ? " admin-token-tabs" : ""}`} aria-label="Token sections"><Link to={embedded ? "/admin?view=tokens" : "/tokens"} className={`shell-page-tab${!agentOnly ? " active" : ""}`} aria-current={!agentOnly ? "page" : undefined}>MCP Access Tokens</Link><Link to={embedded ? "/admin?view=tokens&section=agents" : "/tokens/agents"} className={`shell-page-tab${agentOnly ? " active" : ""}`} aria-current={agentOnly ? "page" : undefined}>Relay Agent Tokens</Link></nav>
         {agentOnly ? <Button onClick={() => { setAgentError(""); setShowCreateAgent(true); }} variant="accent"><Plus size={15} /> New Relay Agent Token</Button> : <Button onClick={() => { setEditingTokenId(null); setForm(emptyForm); setError(""); setShowCreate(true); }} variant="primary"><Plus size={15} /> New MCP Access Token</Button>}

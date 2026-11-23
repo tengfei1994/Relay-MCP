@@ -352,12 +352,13 @@ export function getJob(id: string): JobRecord | undefined {
   return JSON.parse(readFileSync(path, "utf8")) as JobRecord;
 }
 
-export function listJobs(userId: number, limit = 20): JobRecord[] {
+export function listJobs(userId: number, limit = 20, project?: string): JobRecord[] {
   ensureState();
   return readdirSync(JOB_ROOT)
     .filter((name) => name.endsWith(".json"))
     .map((name) => JSON.parse(readFileSync(join(JOB_ROOT, name), "utf8")) as JobRecord)
     .filter((job) => job.userId === userId)
+    .filter((job) => !project || job.project === project)
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
     .slice(0, Math.max(1, Math.min(limit, 100)));
 }

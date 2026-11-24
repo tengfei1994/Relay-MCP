@@ -218,12 +218,8 @@ export default function ToolsPage() {
                   ...(item.id === "samplemanager" ? sampleManagerEntities.map((group) => ({
                     id: item.id + ":" + group.id, label: group.label, children: [
                       { id: item.id + ":" + group.id + ":view", label: "View inspectors", select: () => { setCategory(item.id); setEntity(group.id); } },
-                      ...group.inspectors.map((inspector) => ({ id: group.id + ":" + inspector.id, label: inspector.label, select: () => setSelected({ kind: "inspector", entity: group, inspector }) })),
                     ],
                   })) : []),
-                  ...tools.filter((tool) => tool.category === item.id).map((tool) => ({
-                    id: item.id + ":" + tool.name, label: tool.name, select: () => setSelected({ kind: "tool", tool }),
-                  })),
                 ],
               })),
             ]} />
